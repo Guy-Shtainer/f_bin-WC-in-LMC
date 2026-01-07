@@ -19,30 +19,33 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from pathlib import Path
 from datetime import datetime
+from matplotlib.animation import FuncAnimation, PillowWriter
 import re
 
 clight = 2.9979e5  # km s⁻¹
+
 
 class CCFclass:
     # ------------------------------------------------------------------ #
     # constructor                                                         #
     # ------------------------------------------------------------------ #
     def __init__(
-        self,
-        intr_kind: str = "cubic",
-        Fit_Range_in_fraction: float = 0.95,
-        CrossCorRangeA=((4000.0, 4500.0),),
-        CrossVeloMin: float = -400.0,
-        CrossVeloMax: float = 400.0,
-        PlotFirst: bool = False,
-        PlotAll: bool = False,
-        star_name: str | None = None,
-        epoch: str | int | None = None,
-        spectrum: str | int | None = None,
-        line_tag: str = "",
-        savePlot: bool = False,
-        run_ts: str = "",
-        nm: bool = True,
+            self,
+            intr_kind: str = "cubic",
+            Fit_Range_in_fraction: float = 0.95,
+            CrossCorRangeA=((4000.0, 4500.0),),
+            CrossVeloMin: float = -400.0,
+            CrossVeloMax: float = 400.0,
+            PlotFirst: bool = False,
+            PlotAll: bool = False,
+            star_name: str | None = None,
+            epoch: str | int | None = None,
+            spectrum: str | int | None = None,
+            line_tag: str = "",
+            savePlot: bool = False,
+            run_ts: str = "",
+            nm: bool = True,
+            make_gif: bool = False,
     ):
         # ---- original parameters --------------------------------------
         self.intr_kind = intr_kind
@@ -63,6 +66,7 @@ class CCFclass:
         self.line_tag = line_tag
         self.run_ts = run_ts
         self.nm = nm
+        self.make_gif = make_gif  # <--- STORE IT
 
     # ------------------------------------------------------------------ #
     # static helpers                                                      #
@@ -76,18 +80,20 @@ class CCFclass:
     # internal core: parabola-fit cross-correlation                       #
     # ------------------------------------------------------------------ #
     def _crosscorreal(
-        self,
-        Observation,
-        Mask,
-        CrossCorInds,
-        sRange,
-        N,
-        veloRange,
-        wavegridlog,
-        obs_plot_clean=None,  # cleaned, NOT mean-subtracted
-        obs_plot_raw=None,  # raw,    NOT mean-subtracted
+            self,
+            Observation,
+            Mask,
+            CrossCorInds,
+            sRange,
+            N,
+            veloRange,
+            wavegridlog,
+            obs_plot_clean=None,  # cleaned, NOT mean-subtracted
+            obs_plot_raw=None,  # raw,    NOT mean-subtracted
     ):
-        wavegridlog = wavegridlog*10
+        # Ensure working in Angstroms for the grid calculations
+        wavegridlog = wavegridlog * 10
+
         CCFarr = np.array(
             [
                 self._CCF(np.copy(Observation), (np.roll(Mask, s))[CrossCorInds], N)
@@ -96,22 +102,14 @@ class CCFclass:
         )
 
         IndMax = np.argmax(CCFarr)
-        # CCFarr = CCFarr[:IndMax].concatenate(CCFarr[IndMax+1:])
-        # print(f'CCFMax is {CCFarr[IndMax]} at index {IndMax}')
-        # CCFarr[IndMax] = np.average([CCFarr[IndMax-3:IndMax-1],CCFarr[IndMax+2:IndMax+4]])
         CCFMAX1 = np.average(
-            [CCFarr[IndMax - 3 : IndMax - 1], CCFarr[IndMax + 2 : IndMax + 4]]
+            [CCFarr[IndMax - 3: IndMax - 1], CCFarr[IndMax + 2: IndMax + 4]]
         )
-        # print(f"After removing local max, CCFMax is {CCFarr[IndMax]} at index {IndMax}")
-        # vmax = veloRange[IndMax]
-        # CCFMAX1  = CCFarr[IndMax]
-        # CCFarr = CCFarr[:IndMax - 1].concatenate(CCFarr[IndMax + 2 :])
-        # IndMax = np.argmax(CCFarr)
 
         # edges at fitfac·CCFMAX1
         LeftEdgeArr = np.abs(self.Fit_Range_in_fraction * CCFMAX1 - CCFarr[:IndMax])
         RightEdgeArr = np.abs(
-            self.Fit_Range_in_fraction * CCFMAX1 - CCFarr[IndMax + 1 :]
+            self.Fit_Range_in_fraction * CCFMAX1 - CCFarr[IndMax + 1:]
         )
 
         if len(LeftEdgeArr) == 0 or len(RightEdgeArr) == 0:
@@ -125,17 +123,20 @@ class CCFclass:
         IndFit2 = np.argmin(RightEdgeArr) + IndMax + 1
         a, b, c = np.polyfit(
             np.concatenate(
-                (veloRange[IndFit1:IndMax], veloRange[IndMax + 1 : IndFit2 + 1])
+                (veloRange[IndFit1:IndMax], veloRange[IndMax + 1: IndFit2 + 1])
             ),
-            np.concatenate((CCFarr[IndFit1:IndMax], CCFarr[IndMax + 1 : IndFit2 + 1])),
+            np.concatenate((CCFarr[IndFit1:IndMax], CCFarr[IndMax + 1: IndFit2 + 1])),
             2,
         )
         vmax = -b / (2 * a)
-        CCFAtMax = min(1 - 1e-20, c - b**2 / 4.0 / a)
+        CCFAtMax = min(1 - 1e-20, c - b ** 2 / 4.0 / a)
         FineVeloGrid = np.arange(veloRange[IndFit1], veloRange[IndFit2], 0.1)
-        parable = a * FineVeloGrid**2 + b * FineVeloGrid + c
-        sigma = np.sqrt(-1.0 / (N * 2 * a * CCFAtMax / (1 - CCFAtMax**2)))
+        parable = a * FineVeloGrid ** 2 + b * FineVeloGrid + c
+        sigma = np.sqrt(-1.0 / (N * 2 * a * CCFAtMax / (1 - CCFAtMax ** 2)))
 
+        # ------------------------------------------------------------------ #
+        # PLOTTING, LABELS & GIF GENERATION
+        # ------------------------------------------------------------------ #
         if self.PlotFirst or self.PlotAll or self.savePlot:
 
             # -------- 0.  Gather & format metadata --------------------------
@@ -147,19 +148,21 @@ class CCFclass:
             line_rng = self.CrossCorRangeA[0]  # first interval
             line_tag = getattr(self, "line_tag", "")
 
-            # units for labels based on nm flag
-            wave_units = "nm" if self.nm else "Å"
+            # --- FORCE ANGSTROMS IN LABELS ---
+            wave_units = "Å"
+            # Convert range to Å for display (if self.nm is True, multiply by 10)
+            l_start_A = line_rng[0] * 10 if self.nm else line_rng[0]
+            l_end_A = line_rng[1] * 10 if self.nm else line_rng[1]
+
             line_txt = (
-                f"{line_tag}  ({line_rng[0]*10:.0f}–{line_rng[1]*10:.0f} {wave_units})"
+                f"{line_tag}  ({l_start_A:.0f}–{l_end_A:.0f} {wave_units})"
                 if line_tag
-                else f"{line_rng[0]*10:.0f}–{line_rng[1]*10:.0f} {wave_units}"
+                else f"{l_start_A:.0f}–{l_end_A:.0f} {wave_units}"
             )
 
-            # epoch/spectrum label parts
             epoch_txt = f"Epoch {epoch}" if epoch is not None else "Epoch ?"
             spec_txt = f"  |  Spec {spectrum}" if spectrum is not None else ""
 
-            # safe strings for filenames
             clean_star = re.sub(r"[^A-Za-z0-9_-]", "_", star_name)
             epoch_str = str(epoch) if epoch is not None else "NA"
             spec_str = (
@@ -169,41 +172,23 @@ class CCFclass:
             )
             rv_tag = f"{RV:+.1f}".replace("+", "p").replace("-", "m")
 
+            out_dir = None
+            if getattr(self, "savePlot", False):
+                ts_str = self.run_ts
+                out_dir = Path("../output") / clean_star / "CCF" / ts_str / line_tag
+                out_dir.mkdir(parents=True, exist_ok=True)
+
             # -------- 1.  CCF figure ----------------------------------------
             fig1, ax1 = plt.subplots(figsize=(10, 6))
             ax1.plot(veloRange, CCFarr, label="CCF", color="C0")
-            # Add both horizontal lines for original and averaged max
-            ax1.axhline(
-                y=CCFarr[IndMax],
-                color="red",
-                linestyle=":",
-                label=f"Original Max ({CCFarr[IndMax]:.3f})",
-                alpha=0.7,
-            )
-            ax1.axhline(
-                y=CCFMAX1,
-                color="gray",
-                linestyle="--",
-                label=f"Averaged Max ({CCFMAX1:.3f})",
-                alpha=0.7,
-            )
+            ax1.axhline(y=CCFarr[IndMax], color="red", linestyle=":", alpha=0.7)
+            ax1.axhline(y=CCFMAX1, color="gray", linestyle="--", alpha=0.7)
             ax1.axhline(
                 y=self.Fit_Range_in_fraction * CCFMAX1,
                 color="blue",
                 linestyle="-.",
-                label=f"Fit Range ({self.Fit_Range_in_fraction:.2f}×avg_max)",
                 alpha=0.7,
             )
-            # Add horizontal line at fit range fraction
-            ax1.axhline(
-                y=self.Fit_Range_in_fraction * np.max(CCFarr),
-                color="gray",
-                linestyle="--",
-                label=f"Fit Range ({self.Fit_Range_in_fraction:.2f}×max)",
-                alpha=0.7,
-            )
-
-            # Mark fit range points
             ax1.plot(
                 [veloRange[IndFit1], veloRange[IndFit2]],
                 [CCFarr[IndFit1], CCFarr[IndFit2]],
@@ -214,9 +199,6 @@ class CCFclass:
             ax1.axvline(
                 RV, ls="--", color="r", label=f"RV = {RV:.2f} ± {RV_error:.2f} km/s"
             )
-
-            # ax1.set_title(f"CCF  |  {star_name}  |  Epoch {epoch_str}  |  {line_txt}",
-            #               fontsize=14, weight='bold')
             ax1.set_title(
                 f"CCF  |  {star_name}  |  {epoch_txt}{spec_txt}  |  {line_txt}",
                 fontsize=14,
@@ -227,88 +209,114 @@ class CCFclass:
             ax1.grid(ls="--", alpha=0.4)
             ax1.legend()
             plt.tight_layout()
-            if self.PlotFirst or self.PlotAll:
-                plt.show()
-            else:
-                plt.close(fig1)
 
-            # -------- 2.  Spectrum vs template (overlay; zero-mean all) -----------
+            # -------- 2.  Spectrum vs template ---------------------------
             fig2, ax2 = plt.subplots(figsize=(10, 6))
 
-            # zero-mean helper
             def _zm(y):
-                if y is None:
-                    return None
+                if y is None: return None
                 m = np.nanmean(y)
                 return y - (0.0 if (m is None or not np.isfinite(m)) else m)
 
-            # zero-mean versions for a fair visual comparison
-            y_raw   = _zm(obs_plot_raw)
+            y_raw = _zm(obs_plot_raw)
             y_clean = _zm(obs_plot_clean)
-            y_mask  = Mask - np.mean(Mask)  # already zero-mean
+            y_mask = Mask - np.mean(Mask)
 
-            # Raw first (blue), then cleaned (green)
             if y_raw is not None:
-                ax2.plot(
-                    wavegridlog[CrossCorInds], y_raw,
-                    label="Observation (raw)", color="steelblue", alpha=0.70,
-                )
+                ax2.plot(wavegridlog[CrossCorInds], y_raw, label="Observation (raw)", color="steelblue", alpha=0.70)
             if y_clean is not None:
-                ax2.plot(
-                    wavegridlog[CrossCorInds], y_clean,
-                    label="Observation (cleaned)", color="forestgreen", alpha=0.95,
-                )
+                ax2.plot(wavegridlog[CrossCorInds], y_clean, label="Observation (cleaned)", color="forestgreen",
+                         alpha=0.95)
             else:
-                # fallback: what CCF used (zero-mean)
-                ax2.plot(
-                    wavegridlog[CrossCorInds], Observation,
-                    label="Observation (cleaned, zero-mean)", color="forestgreen", alpha=0.95,
-                )
+                ax2.plot(wavegridlog[CrossCorInds], Observation, label="Observation (cleaned, zero-mean)",
+                         color="forestgreen", alpha=0.95)
 
-            # Templates (zero-mean)
-            ax2.plot(
-                wavegridlog, y_mask,
-                label="Template (unshifted)", color="orchid", alpha=0.9,
-            )
-            ax2.plot(
-                wavegridlog * (1 + RV / clight), y_mask,
-                label="Template (shifted)", color="turquoise", alpha=0.9,
-            )
+            ax2.plot(wavegridlog, y_mask, label="Template (unshifted)", color="orchid", alpha=0.9)
+            ax2.plot(wavegridlog * (1 + RV / clight), y_mask, label="Template (shifted)", color="turquoise",
+                     alpha=0.9)
 
             ax2.set_title(
                 f"Spectra  |  {star_name}  |  {epoch_txt}{spec_txt}  |  {line_txt}",
                 fontsize=14, weight="bold",
             )
+            # UPDATED LABEL: Forces Angstroms
             ax2.set_xlabel(rf"Wavelength [{wave_units}]")
             ax2.set_ylabel("Normalized Flux (zero-mean)")
             ax2.grid(ls="--", alpha=0.4)
             ax2.legend()
             plt.tight_layout()
 
-            # -------- 3.  Optional saving -----------------------------------
-            if getattr(self, "savePlot", False):
-                ts_str = self.run_ts
-                out_dir = Path("../output") / clean_star / "CCF" / ts_str / line_tag
-                out_dir.mkdir(parents=True, exist_ok=True)
-
-                # fig1.savefig(out_dir / f"{clean_star}_MJD{epoch_str}_RV{rv_tag}_CCF.png", dpi=150)
-                # fig2.savefig(out_dir / f"{clean_star}_MJD{epoch_str}_RV{rv_tag}_SPEC.png", dpi=150)
+            # -------- Save Static Plots -----------------------------------
+            if getattr(self, "savePlot", False) and out_dir:
                 fig1.savefig(
-                    out_dir
-                    / f"{clean_star}_MJD{epoch_str}{spec_str}_RV{rv_tag}_CCF.png",
+                    out_dir / f"{clean_star}_MJD{epoch_str}{spec_str}_RV{rv_tag}_CCF.png",
                     dpi=150,
                 )
                 fig2.savefig(
-                    out_dir
-                    / f"{clean_star}_MJD{epoch_str}{spec_str}_RV{rv_tag}_SPEC.png",
+                    out_dir / f"{clean_star}_MJD{epoch_str}{spec_str}_RV{rv_tag}_SPEC.png",
                     dpi=150,
                 )
-
                 print(f"[saved] plots to {out_dir}")
+
+                # -------- NEW: GIF ANIMATION GENERATION -----------------------
+                # Change the line below to check self.make_gif
+                if getattr(self, "savePlot", False) and getattr(self, "make_gif", False) and out_dir:
+                    print(f"Generating CCF Animation GIF for {clean_star}...")
+
+                # Setup Figure with 2 Subplots
+                fig_anim, (ax_anim_spec, ax_anim_ccf) = plt.subplots(2, 1, figsize=(10, 8))
+
+                # -- Top: Spectrum + Moving Template --
+                obs_data = y_clean if y_clean is not None else Observation
+                ax_anim_spec.plot(wavegridlog[CrossCorInds], obs_data, color="forestgreen", alpha=0.6,
+                                  label="Observation")
+
+                mask_zm = Mask - np.mean(Mask)
+                line_template, = ax_anim_spec.plot([], [], color="orchid", lw=2, label="Moving Template")
+
+                ax_anim_spec.set_xlim(wavegridlog[0], wavegridlog[-1])
+                all_y = np.concatenate([obs_data, mask_zm])  # approximate Y-limits
+                ax_anim_spec.set_ylim(np.min(all_y) * 1.1, np.max(all_y) * 1.1)
+                ax_anim_spec.set_xlabel(rf"Wavelength [{wave_units}]")
+                ax_anim_spec.set_ylabel("Flux (Zero-Mean)")
+                ax_anim_spec.legend(loc="upper right")
+                ax_anim_spec.set_title(f"Template Scan: {star_name}")
+
+                # -- Bottom: Building CCF --
+                ax_anim_ccf.plot(veloRange, CCFarr, color="lightgray", ls="--", alpha=0.5)  # ghost of full CCF
+                line_ccf, = ax_anim_ccf.plot([], [], color="C0", lw=2, label="CCF Value")
+                point_ccf, = ax_anim_ccf.plot([], [], marker="o", color="red")
+
+                ax_anim_ccf.set_xlim(veloRange[0], veloRange[-1])
+                ax_anim_ccf.set_ylim(np.min(CCFarr) * 1.1, np.max(CCFarr) * 1.1)
+                ax_anim_ccf.set_xlabel("Radial Velocity [km/s]")
+                ax_anim_ccf.set_ylabel("CCF")
+                ax_anim_ccf.legend(loc="upper right")
+
+                def update(frame):
+                    s = sRange[frame]
+                    v = veloRange[frame]
+
+                    # 1. Update Template (Roll Y-values to simulate shift)
+                    shifted_mask = np.roll(mask_zm, s)
+                    line_template.set_data(wavegridlog, shifted_mask)
+
+                    # 2. Update CCF Line (Plot up to current frame)
+                    line_ccf.set_data(veloRange[:frame + 1], CCFarr[:frame + 1])
+                    point_ccf.set_data([v], [CCFarr[frame]])
+                    return line_template, line_ccf, point_ccf
+
+                # Create and Save GIF
+                anim = FuncAnimation(fig_anim, update, frames=len(sRange), interval=40, blit=True)
+                gif_path = out_dir / f"{clean_star}_MJD{epoch_str}{spec_str}_scan.gif"
+                anim.save(gif_path, writer=PillowWriter(fps=25))
+                plt.close(fig_anim)
+                print(f"[saved] GIF to {gif_path}")
 
             if self.PlotFirst or self.PlotAll:
                 plt.show()
             else:
+                plt.close(fig1)
                 plt.close(fig2)
             self.PlotFirst = False
 
@@ -319,7 +327,7 @@ class CCFclass:
 
         CFFdvdvAtMax = 2 * a
         return np.array(
-            [vmax, np.sqrt(-1.0 / (N * CFFdvdvAtMax * CCFAtMax / (1 - CCFAtMax**2)))]
+            [vmax, np.sqrt(-1.0 / (N * CFFdvdvAtMax * CCFAtMax / (1 - CCFAtMax ** 2)))]
         )
 
         # ------------------------------------------------------------------ #
@@ -386,13 +394,82 @@ class CCFclass:
             # Why? If the Left window is clean but the Right window hits a cosmic ray,
             # the Mean would be skewed high. The Median will pick the cleaner value.
             # (If there are only 2 values, Median equals Mean, which is also fine).
-            noise = float(np.min(noises))
+            # noise = float(np.min(noises))
+            noise = float(np.mean(noises))
 
         # Avoid division by zero
         snr = (1.0 / noise) if (noise > 1e-9 and np.isfinite(noise)) else 0.0
         return snr, noise
 
     def _ew_sigma_rule_of_thumb(self, w, f):
+        """
+        Calculates EW and estimates combined error (statistical + systematic).
+
+        Assumes continuum was normalized using linear interpolation between
+        2 anchors, where each anchor is an average of 20 pixels.
+        """
+        # 1. Setup specific to your method
+        POINTS_PER_ANCHOR = 20
+        N_ANCHORS = 2
+        TOTAL_REF_POINTS = POINTS_PER_ANCHOR * N_ANCHORS  # Total = 40
+
+        # ensure increasing wavelength for integration
+        if w[0] > w[-1]:
+            idx = np.argsort(w)
+            w = w[idx]
+            f = f[idx]
+
+        total_EW = 0.0
+        sum_dlam2N = 0.0  # For statistical error (Cayrel 1988)
+        total_width_Ang = 0.0  # For continuum/systematic error
+
+        for r in np.atleast_2d(self.CrossCorRangeA):
+            m = (w > r[0]) & (w < r[1])
+            if np.count_nonzero(m) < 2:
+                continue
+
+            dlam = np.median(np.diff(w[m]))
+
+            # --- Integration ---
+            total_EW += np.trapz(f[m] - 1.0, w[m], dx=dlam)
+
+            # --- Accumulate Error Terms ---
+            Nk = np.count_nonzero(m)
+
+            # Term A: Statistical Fluctuations (inside the line)
+            sum_dlam2N += (dlam * dlam) * Nk
+
+            # Term B: Line Width (for continuum placement error)
+            total_width_Ang += (r[1] - r[0])
+
+        # --- SNR Estimation ---
+        snr, _ = self._estimate_snr_robust(w, f, for_ew=True)
+
+        if snr <= 0 or not np.isfinite(snr):
+            return total_EW, np.nan, 0.0
+
+        # ==========================================================
+        # CALCULATE TOTAL SIGMA
+        # ==========================================================
+
+        # 1. Statistical Error (Photon Noise)
+        # "I trust the continuum is perfect, but the line pixels are noisy"
+        sigma_stat = np.sqrt(sum_dlam2N) / snr
+
+        # 2. Systematic Error (Continuum Placement)
+        # "My continuum might be slightly too high or too low"
+        # The uncertainty in the level is Noise / sqrt(40)
+        continuum_level_err = (1.0 / snr) / np.sqrt(TOTAL_REF_POINTS)
+
+        # This error affects the ENTIRE width of the line
+        sigma_sys = total_width_Ang * continuum_level_err
+
+        # 3. Combine in Quadrature
+        sigma_total = np.sqrt(sigma_stat ** 2 + sigma_sys ** 2)
+
+        return total_EW, sigma_total, snr
+
+    def _ew_sigma_rule_of_thumb_old(self, w, f):
         """
         Compute emission EW over CrossCorRangeA with continuum=1,
         and the rule-of-thumb sigma(EW) using SNR from a 5 Å window
@@ -441,13 +518,13 @@ class CCFclass:
     # public: single-spectrum RV                                          #
     # ------------------------------------------------------------------ #
     def compute_RV(
-        self,
-        obs_wave,
-        obs_flux,
-        tpl_wave,
-        tpl_flux,
-        clean=True,  # << NEW: clean inside compute_RV
-        clean_kwargs=None,  # << NEW: overrides for the cleaner
+            self,
+            obs_wave,
+            obs_flux,
+            tpl_wave,
+            tpl_flux,
+            clean=False,  # << NEW: clean inside compute_RV
+            clean_kwargs=None,  # << NEW: overrides for the cleaner
     ):
 
         """
@@ -491,7 +568,7 @@ class CCFclass:
         )
 
         Ns = (
-            IntFs - IntIs
+                IntFs - IntIs
         )  # number of points in range. if there are several ranges at once it accounts for them
         N = np.sum(Ns)  # relevant in case i pass several emission lines ranges
 
@@ -561,13 +638,14 @@ class CCFclass:
         # ================= CLEANING STEP (NEW) =================
         # Keep the raw flux as provided to this method
         obs_flux_raw = np.asarray(obs_flux, dtype=float)
-
+        clean_absorption = False
         if ('C IV 5801-5812' in self.line_tag) and True:
             parts_to_split = 8
             deg_to_use = 6
             sigma_pos = 7
             sigma_neg = 8
-        elif ((self.star_name == 'Brey  16a' and (self.line_tag == 'O VI 5210-5340' or self.line_tag == 'C IV 17396')) or
+        elif ((self.star_name == 'Brey  16a' and (
+                self.line_tag == 'O VI 5210-5340' or self.line_tag == 'C IV 17396')) or
               self.star_name == 'HD 269888' and (self.line_tag == "He II 5412 & C IV 5471")):
             parts_to_split = 2
             deg_to_use = 10
@@ -586,8 +664,12 @@ class CCFclass:
         else:
             parts_to_split = 8
             deg_to_use = 6
-            sigma_neg=4
-            sigma_pos=5
+            sigma_neg = 4
+            sigma_pos = 5
+
+        if self.star_name == "Brey  90a" and (
+                self.line_tag == "C IV 3650-3900" or self.line_tag == "C III 6700-6800" or self.line_tag == "He II 5412 & C IV 5471" or self.line_tag == "C IV 7063" or self.line_tag == "C IV 17396"):
+            clean_absorption = False
 
         # Defaults that mimic your double_ccf cleaner setup
         default_clean_kwargs = dict(
@@ -602,6 +684,7 @@ class CCFclass:
             random_state=42,
             plot=False,  # avoid extra cleaning plots here
             add_noise=True,
+            clean_absorption=clean_absorption,
             noise_source="leftwin",
         )
         if clean_kwargs is not None:
@@ -657,14 +740,6 @@ class CCFclass:
         )
         return CCFeval[0], CCFeval[1]
 
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from pathlib import Path
-    import re
-
-    # Assuming 'clight' is defined globally or in the class,
-    # if not, define it: clight = 299792.458
-
     def clean_line_with_iterative_poly(
             self,
             wave,
@@ -683,34 +758,26 @@ class CCFclass:
             noise_source="residual",
             noise_floor=1e-6,
             n_split=1,
-            clean_absorption=False,  # <--- NEW ARGUMENT
+            clean_absorption=False,
     ):
         """
         Staged cleaning with asymmetric σ-clipping.
-
-        Args:
-            clean_absorption (bool): If True, enables aggressive cleaning of absorption lines
-                                     (negative features) by pre-filling deep dips and using
-                                     stricter negative clipping thresholds.
+        Now includes 'Pre-Cleaning' with naturally matched noise.
         """
         wave = np.asarray(wave, dtype=float)
         flux = np.asarray(flux, dtype=float)
 
-        # 0. Adjust Logic for Absorption Cleaning
-        # If we want to clean absorption, we must not be lenient with negative outliers.
-        # We also want to be very careful NOT to clip the positive emission peaks.
+        # --- 1. Threshold Setup ---
+        # Tighter thresholds when clean_absorption is True
         if clean_absorption:
-            # Tighter negative clip to catch the "wings" of absorption lines
-            eff_sigma_clip_neg = 1.3
-            # Looser positive clip so we don't accidentally cut the emission line top
-            eff_sigma_clip_pos = 10.0
+            eff_sigma_clip_neg = 1.25  # Scrub absorption wings
+            eff_sigma_clip_pos = 5.0  # Catch cosmic rays (Epoch 3 spike), but spare broad emission
         else:
             eff_sigma_clip_neg = sigma_clip_neg
             eff_sigma_clip_pos = sigma_clip_pos
 
-        # 1. Determine base ranges
+        # --- 2. Determine Ranges ---
         if focus_range is None:
-            # Ensure self.CrossVeloMax/Min and clight are available
             ranges = [
                 tuple(
                     [
@@ -726,7 +793,7 @@ class CCFclass:
                 raise ValueError("focus_range must satisfy lo < hi.")
             ranges = [(lo, hi)]
 
-        # 2. Apply Splitting Logic
+        # --- 3. Split Ranges (if n_split > 1) ---
         processing_ranges = []
         for start, end in ranges:
             if n_split > 1:
@@ -755,21 +822,48 @@ class CCFclass:
             yi = f_in[in_mask].copy()
             M = xi.size
 
-            # --- NEW PRE-CLEANING STEP ---
-            # If cleaning absorption, huge dips will drag the first polyfit down.
-            # We crudely fill them in using median stats BEFORE the first fit.
+            # ==========================================
+            # === PRE-CLEANING (Absorption Filling) ===
+            # ==========================================
             if clean_absorption:
+                # 1. Calc robust stats for the current window
                 med_pre = np.median(yi)
                 mad_pre = np.median(np.abs(yi - med_pre))
                 sig_pre = 1.4826 * mad_pre if mad_pre > 0 else np.std(yi)
-                # Identify points significantly below median (e.g., > 2 sigma)
-                # This "pre-fills" the absorption line so the polynomial
-                # sits on top of the continuum/emission immediately.
-                bad_dips = yi < (med_pre - 2.0 * sig_pre)
-                if np.any(bad_dips):
-                    # Replace with median (or random noise around median) to neutralize the dip
-                    yi[bad_dips] = med_pre
+                sig_pre = max(float(sig_pre), float(noise_floor))
 
+                # 2. Determine Noise Level (Mimicking your logic below)
+                if noise_source == "residual":
+                    # For pre-cleaning, "residual" sigma is approximated by the robust sigma of the data
+                    noise_sigma_pre = sig_pre
+                elif noise_source == "leftwin":
+                    _, noise_sigma_pre = self._estimate_snr_robust(w, f_in, for_ew=True)
+                elif noise_source == "local":
+                    noise_sigma_pre = float(np.std(f_in[in_mask]))
+                elif noise_source == "global":
+                    noise_sigma_pre = float(np.std(f_in))
+                else:
+                    noise_sigma_pre = sig_pre
+
+                noise_sigma_pre = max(float(noise_sigma_pre), float(noise_floor))
+
+                # 3. Identify and Fill "Potholes"
+                # Any deep dip (> 2.0 sigma) is treated as absorption to be neutralized
+                bad_dips = yi < (med_pre - 2.0 * sig_pre)
+
+                if np.any(bad_dips):
+                    # We replace the dip with the Median + Random Noise
+                    # This ensures the texture matches the rest of the spectrum
+                    if add_noise:
+                        yi[bad_dips] = med_pre + rng.normal(
+                            0.0, noise_sigma_pre, size=int(bad_dips.sum())
+                        )
+                    else:
+                        yi[bad_dips] = med_pre
+
+            # ==========================================
+            # === MAIN ITERATIVE FITTING LOOP ===
+            # ==========================================
             k = max(3 * deg + 1, int(np.ceil(sample_frac * M)))
             k = min(k, M)
 
@@ -784,6 +878,7 @@ class CCFclass:
             model_full_final = np.full_like(f_in, np.nan, dtype=float)
 
             for stage in range(n_stages_eff):
+                # A. Generate Model (Average of Polyfits)
                 preds = np.empty((it_per_stage, M), dtype=float)
                 for t in range(it_per_stage):
                     idx = rng.choice(M, size=k, replace=False)
@@ -791,6 +886,7 @@ class CCFclass:
                     preds[t] = np.polyval(coeffs, xi0)
                 model_i = preds.mean(axis=0)
 
+                # B. Analyze Residuals
                 res = yi - model_i
                 med = np.median(res)
                 mad = np.median(np.abs(res - med))
@@ -801,13 +897,13 @@ class CCFclass:
                 )
                 sigma = max(float(sigma), float(noise_floor))
 
+                # C. Detect Outliers (Using Clean_Absorption Thresholds)
                 r = res - med
-                # Use the effective clipping values determined at start
                 outliers_local = (r > eff_sigma_clip_pos * sigma) | (
                         r < -eff_sigma_clip_neg * sigma
                 )
 
-                # --- Noise Source Logic ---
+                # D. Determine Noise for Replacements (Your Standard Logic)
                 if noise_source == "residual":
                     noise_sigma = sigma
                 elif noise_source == "leftwin":
@@ -820,6 +916,7 @@ class CCFclass:
                     noise_sigma = sigma
                 noise_sigma = max(float(noise_sigma), float(noise_floor))
 
+                # E. Replace Outliers
                 if np.any(outliers_local):
                     if add_noise:
                         yi[outliers_local] = model_i[outliers_local] + rng.normal(
@@ -828,6 +925,7 @@ class CCFclass:
                     else:
                         yi[outliers_local] = model_i[outliers_local]
 
+                # F. Update Masks/History
                 tmp_mask = np.zeros_like(f_in, dtype=bool)
                 tmp_mask[in_mask] = outliers_local
                 replaced_union |= tmp_mask
@@ -835,6 +933,7 @@ class CCFclass:
                 if stage == n_stages_eff - 1:
                     model_full_final[in_mask] = model_i
 
+                # Early exit if converged
                 if not np.any(outliers_local) and stage < n_stages_eff - 1:
                     model_full_final[in_mask] = model_i
                     break
@@ -843,7 +942,7 @@ class CCFclass:
             f_out[in_mask] = yi
             return f_out, model_full_final, replaced_union
 
-        # 3. Clean all ranges sequentially
+        # 4. Process All Ranges
         for lo, hi in processing_ranges:
             cleaned_flux, model_full, replaced_full = _clean_one_range_staged(
                 wave, cleaned_flux, lo, hi
@@ -941,13 +1040,13 @@ class CCFclass:
     # public: two-pass RV + coadd                                         #
     # ------------------------------------------------------------------ #
     def double_ccf(
-        self,
-        obs_list,
-        tpl_wave,
-        tpl_flux,
-        return_coadd=False,
-        return_meta=False,
-        skip_clean_epochs=None,
+            self,
+            obs_list,
+            tpl_wave,
+            tpl_flux,
+            return_coadd=False,
+            return_meta=False,
+            skip_clean_epochs=None,
     ):
         """
         Two-pass CCF with EW-based epoch gating.
@@ -975,6 +1074,7 @@ class CCFclass:
         cleaned_obs_list = []
         cleaned_template = False
         can_clean_Template = False
+        clean_absorption = False
         for i, (ep, w, f) in enumerate(obs_list):
             if ep in skip_clean_epochs:
                 print(f"Info: Skipping cleaning for epoch {ep}")
@@ -987,8 +1087,9 @@ class CCFclass:
                     deg_to_use = 6
                     sigma_pos = 7
                     sigma_neg = 8
-                elif (self.star_name == 'Brey  16a' and (self.line_tag == 'O VI 5210-5340' or self.line_tag == 'C IV 17396') or
-              self.star_name == 'HD 269888' and (self.line_tag == "He II 5412 & C IV 5471")):
+                elif (self.star_name == 'Brey  16a' and (
+                        self.line_tag == 'O VI 5210-5340' or self.line_tag == 'C IV 17396') or
+                      self.star_name == 'HD 269888' and (self.line_tag == "He II 5412 & C IV 5471")):
                     parts_to_split = 2
                     deg_to_use = 10
                     sigma_neg = 4
@@ -1006,27 +1107,32 @@ class CCFclass:
                 else:
                     parts_to_split = 8
                     deg_to_use = 6
-                    sigma_neg=4
-                    sigma_pos=5
+                    sigma_neg = 4
+                    sigma_pos = 5
                     can_clean_Template = True
+
+                if self.star_name == "Brey  90a" and (
+                        self.line_tag == "C IV 3650-3900" or self.line_tag == "C III 6700-6800" or self.line_tag == "He II 5412 & C IV 5471" or self.line_tag == "C IV 7063" or self.line_tag == "C IV 17396"):
+                    clean_absorption = False
 
                 if can_clean_Template and not cleaned_template:
                     tpl_flux, _, _ = self.clean_line_with_iterative_poly(
-                    wave=tpl_wave,
-                    flux=tpl_flux,
-                    n_split=parts_to_split,  # <--- Pass the new argument here
+                        wave=tpl_wave,
+                        flux=tpl_flux,
+                        n_split=parts_to_split,  # <--- Pass the new argument here
 
-                    # Your other robust settings from before:
-                    n_iter=100,
-                    n_stages=20,
-                    sample_frac=0.9,
-                    deg=deg_to_use, # You might be able to LOWER this if you are splitting!
-                            # e.g., deg=5 might be enough if you split into 5 small chunks
-                    sigma_clip_neg=sigma_neg,
-                    sigma_clip_pos=sigma_pos,
-                    random_state=42,
-                    noise_source="leftwin",
-                    plot=False,
+                        # Your other robust settings from before:
+                        n_iter=100,
+                        n_stages=20,
+                        sample_frac=0.9,
+                        deg=deg_to_use,  # You might be able to LOWER this if you are splitting!
+                        # e.g., deg=5 might be enough if you split into 5 small chunks
+                        sigma_clip_neg=sigma_neg,
+                        sigma_clip_pos=sigma_pos,
+                        random_state=42,
+                        noise_source="leftwin",
+                        plot=False,
+                        clean_absorption=clean_absorption,
                     )
                     cleaned_template = True
 
@@ -1034,15 +1140,15 @@ class CCFclass:
                     wave=w,
                     flux=f,
                     n_split=parts_to_split,  # <--- Pass the new argument here
-                    
+
                     # Your other robust settings from before:
-                    n_iter=100,          
+                    n_iter=100,
                     n_stages=20,
-                    sample_frac=0.9,    
-                    deg=deg_to_use, # You might be able to LOWER this if you are splitting!
-                            # e.g., deg=5 might be enough if you split into 5 small chunks
-                    sigma_clip_neg=sigma_neg,  
-                    sigma_clip_pos=sigma_pos,  
+                    sample_frac=0.9,
+                    deg=deg_to_use,  # You might be able to LOWER this if you are splitting!
+                    # e.g., deg=5 might be enough if you split into 5 small chunks
+                    sigma_clip_neg=sigma_neg,
+                    sigma_clip_pos=sigma_pos,
                     random_state=42,
                     noise_source="leftwin",
                     plot=False,
@@ -1104,7 +1210,7 @@ class CCFclass:
 
         # weights from included-only SNRs, normalized to sum=1 over included
         S2N_included = np.asarray([S2N_all[i] for i in idx_keep])
-        wts = S2N_included**2
+        wts = S2N_included ** 2
         wts /= np.sum(wts)
 
         print("Building coadded template (included epochs only)…")
