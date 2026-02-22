@@ -259,59 +259,93 @@ class CCFclass:
                 print(f"[saved] plots to {out_dir}")
 
                 # -------- NEW: GIF ANIMATION GENERATION -----------------------
-                # Change the line below to check self.make_gif
                 if getattr(self, "savePlot", False) and getattr(self, "make_gif", False) and out_dir:
                     print(f"Generating CCF Animation GIF for {clean_star}...")
 
-                # Setup Figure with 2 Subplots
-                fig_anim, (ax_anim_spec, ax_anim_ccf) = plt.subplots(2, 1, figsize=(10, 8))
+                    # Setup Figure
+                    fig_anim, (ax_anim_spec, ax_anim_ccf) = plt.subplots(2, 1, figsize=(10, 8))
 
-                # -- Top: Spectrum + Moving Template --
-                obs_data = y_clean if y_clean is not None else Observation
-                ax_anim_spec.plot(wavegridlog[CrossCorInds], obs_data, color="forestgreen", alpha=0.6,
-                                  label="Observation")
+                    # -- Top: Spectrum + Moving Template --
+                    # Use cleaned data if available
+                    obs_data = y_clean if y_clean is not None else Observation
 
-                mask_zm = Mask - np.mean(Mask)
-                line_template, = ax_anim_spec.plot([], [], color="orchid", lw=2, label="Moving Template")
+                    # 1. Visual Alignment Fix:
+                    # Subtract local mean of template so it aligns vertically with the zero-mean observation
+                    mask_zm = Mask - np.mean(Mask)
+                    local_offset = np.mean(mask_zm[CrossCorInds])
+                    mask_vis = mask_zm - local_offset
 
-                ax_anim_spec.set_xlim(wavegridlog[0], wavegridlog[-1])
-                all_y = np.concatenate([obs_data, mask_zm])  # approximate Y-limits
-                ax_anim_spec.set_ylim(np.min(all_y) * 1.1, np.max(all_y) * 1.1)
-                ax_anim_spec.set_xlabel(rf"Wavelength [{wave_units}]")
-                ax_anim_spec.set_ylabel("Flux (Zero-Mean)")
-                ax_anim_spec.legend(loc="upper right")
-                ax_anim_spec.set_title(f"Template Scan: {star_name}")
+                    ax_anim_spec.plot(wavegridlog[CrossCorInds], obs_data, color="forestgreen", alpha=0.6,
+                                      label="Observation")
 
-                # -- Bottom: Building CCF --
-                ax_anim_ccf.plot(veloRange, CCFarr, color="lightgray", ls="--", alpha=0.5)  # ghost of full CCF
-                line_ccf, = ax_anim_ccf.plot([], [], color="C0", lw=2, label="CCF Value")
-                point_ccf, = ax_anim_ccf.plot([], [], marker="o", color="red")
+                    line_template, = ax_anim_spec.plot([], [], color="orchid", lw=2, label="Moving Template")
 
-                ax_anim_ccf.set_xlim(veloRange[0], veloRange[-1])
-                ax_anim_ccf.set_ylim(np.min(CCFarr) * 1.1, np.max(CCFarr) * 1.1)
-                ax_anim_ccf.set_xlabel("Radial Velocity [km/s]")
-                ax_anim_ccf.set_ylabel("CCF")
-                ax_anim_ccf.legend(loc="upper right")
+                    ax_anim_spec.set_xlim(wavegridlog[0], wavegridlog[-1])
 
-                def update(frame):
-                    s = sRange[frame]
-                    v = veloRange[frame]
+                    # Fix Y-Limits to focus on Observation (avoids zooming out too far)
+                    y_pad = (np.max(obs_data) - np.min(obs_data)) * 0.2
+                    ax_anim_spec.set_ylim(np.min(obs_data) - y_pad, np.max(obs_data) + y_pad)
 
-                    # 1. Update Template (Roll Y-values to simulate shift)
-                    shifted_mask = np.roll(mask_zm, s)
-                    line_template.set_data(wavegridlog, shifted_mask)
+                    ax_anim_spec.set_xlabel(rf"Wavelength [{wave_units}]")
+                    ax_anim_spec.set_ylabel("Flux (Zero-Mean)")
+                    ax_anim_spec.legend(loc="upper right")
+                    ax_anim_spec.set_title(f"Template Scan: {star_name}")
 
-                    # 2. Update CCF Line (Plot up to current frame)
-                    line_ccf.set_data(veloRange[:frame + 1], CCFarr[:frame + 1])
-                    point_ccf.set_data([v], [CCFarr[frame]])
-                    return line_template, line_ccf, point_ccf
+                    # -- Bottom: Building CCF --
+                    ax_anim_ccf.plot(veloRange, CCFarr, color="lightgray", ls="--", alpha=0.5)
 
-                # Create and Save GIF
-                anim = FuncAnimation(fig_anim, update, frames=len(sRange), interval=40, blit=True)
-                gif_path = out_dir / f"{clean_star}_MJD{epoch_str}{spec_str}_scan.gif"
-                anim.save(gif_path, writer=PillowWriter(fps=25))
-                plt.close(fig_anim)
-                print(f"[saved] GIF to {gif_path}")
+                    # 2. PARABOLA SETUP (Legend Fix):
+                    # Initialize with DATA and LABEL. We do NOT set visible=False yet.
+                    line_fit, = ax_anim_ccf.plot(FineVeloGrid, parable, color="C1", lw=2.5,
+                                                 label="Fit (parabola)", zorder=5)
+
+                    line_ccf, = ax_anim_ccf.plot([], [], color="C0", lw=2, label="CCF Value")
+                    point_ccf, = ax_anim_ccf.plot([], [], marker="o", color="red", zorder=4)
+
+                    ax_anim_ccf.set_xlim(veloRange[0], veloRange[-1])
+                    ax_anim_ccf.set_ylim(np.min(CCFarr) * 1.1, np.max(CCFarr) * 1.1)
+                    ax_anim_ccf.set_xlabel("Radial Velocity [km/s]")
+                    ax_anim_ccf.set_ylabel("CCF")
+
+                    # Create Legend immediately so it captures the parabola label
+                    ax_anim_ccf.legend(loc="upper right")
+
+                    # NOW hide the parabola before animation starts
+                    line_fit.set_visible(False)
+
+                    # Animation Settings
+                    n_scan = len(sRange)
+                    # 3. Longer Duration: Increased pause from 15 to 30 frames
+                    pause_frames = 30
+                    total_frames = n_scan + pause_frames
+
+                    def update(frame):
+                        # Freezes the scan index if we are in the "pause" phase
+                        idx = min(frame, n_scan - 1)
+
+                        s = sRange[idx]
+                        v = veloRange[idx]
+
+                        # Update Template
+                        shifted_mask = np.roll(mask_vis, s)
+                        line_template.set_data(wavegridlog, shifted_mask)
+
+                        # Update CCF Line
+                        line_ccf.set_data(veloRange[:idx + 1], CCFarr[:idx + 1])
+                        point_ccf.set_data([v], [CCFarr[idx]])
+
+                        # Toggle Visibility: Turn ON when scan finishes
+                        if frame >= n_scan - 1:
+                            line_fit.set_visible(True)
+                        # (No need for else block here, it stays visible once turned on)
+
+                        return line_template, line_ccf, point_ccf, line_fit
+
+                    anim = FuncAnimation(fig_anim, update, frames=total_frames, interval=40, blit=True)
+                    gif_path = out_dir / f"{clean_star}_MJD{epoch_str}{spec_str}_scan.gif"
+                    anim.save(gif_path, writer=PillowWriter(fps=25))
+                    plt.close(fig_anim)
+                    print(f"[saved] GIF to {gif_path}")
 
             if self.PlotFirst or self.PlotAll:
                 plt.show()

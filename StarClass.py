@@ -16,9 +16,9 @@ import multiprocess
 from itertools import product
 from functools import partial
 from tabulate import tabulate
-from astroquery.simbad import Simbad
-from astroquery.vizier import Vizier
-from astroquery.gaia import Gaia
+# from astroquery.simbad import Simbad
+# from astroquery.vizier import Vizier
+# from astroquery.gaia import Gaia
 
 # Tomers tools
 from CCF import CCFclass
@@ -35,7 +35,7 @@ import catalogs
 
 # SIMBAD
 import requests
-from bs4 import BeautifulSoup
+# from bs4 import BeautifulSoup
 import re
 
 
@@ -765,7 +765,7 @@ class Star:
 
         # Load the FITS file using FITSFile class from FitsClass
         try:
-            fits_file = myfits(file_path)
+            fits_file = myfits(file_path,to_print = self.to_print)
             fits_file.load_data()
             return fits_file
         except Exception as e:
@@ -991,6 +991,403 @@ class Star:
     ########################################                                       ########################################
 
     def plot_spectra(
+            self,
+            epoch_nums=None,
+            bands=None,
+            save=False,
+            linewidth=1.5,
+            scatter=False,
+            normalize=False,
+            Rest_frame=False,
+            log=False,
+            color_combined=False,
+            add_continuum=False,
+            add_RV_emission_lines=False,
+    ):
+        """
+        Plot flux vs. wavelength for selected epochs and bands.
+
+        Flags:
+          - normalize: if True, use 'norm_anchor_wavelengths' from COMBINED to build a
+            piecewise-linear pseudo-continuum and divide the spectrum by it.
+          - Rest_frame: if True, add each epoch's RV to the legend. If normalize=True,
+            also shift the anchor points into a common velocity frame before interpolation.
+          - log: if True, set the y-axis to logarithmic scale and mask <=0 flux.
+          - color_combined: if True and band is 'COMBINED', color parts of the spectrum
+            based on the original instruments (UVB=blue, VIS=green, NIR=red).
+          - add_continuum: if True, load 'interpolated_flux' property and plot it
+            over the spectrum (follows log scale logic).
+          - add_RV_emission_lines: if True, loads 'ccf_settings_with_global_lines.json',
+            gets default lines, applies star-specific overrides, and highlights them.
+
+        Notes:
+          - ALL WAVELENGTHS ARE CONVERTED TO ANGSTROMS (Å) FOR PLOTTING.
+          - Anchors and RVs are loaded via self.load_property(..., ep, 'COMBINED').
+          - If RVs contain multiple lines, the mean full_RV across available lines is used.
+        """
+        import os
+        import json
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from datetime import datetime
+        from itertools import product
+
+        c_kms = 299792.458  # km/s
+
+        # ---- helpers -----------------------------------------------------------
+        def _coerce_anchors(obj):
+            """Accept array-like or dict-like and return a clean, sorted 1D array (nm)."""
+            if obj is None:
+                return None
+            cand = None
+            if isinstance(obj, dict):
+                for k in ("wavelengths", "anchors", "norm_anchor_wavelengths", "lambda", "lam"):
+                    if k in obj:
+                        cand = obj[k]
+                        break
+            else:
+                cand = obj
+            if cand is None:
+                return None
+            arr = np.asarray(cand, dtype=float).ravel()
+            arr = arr[np.isfinite(arr)]
+            arr = np.unique(arr)
+            return arr if arr.size >= 2 else None
+
+        def _extract_full_rvs_from_dict(rv_dict):
+            """From a dict of {line: structure}, pull full_RV values and average them."""
+            vals = []
+            for v in rv_dict.values():
+                try:
+                    v = v.item()
+                except Exception:
+                    pass
+                if isinstance(v, dict) and "full_RV" in v:
+                    try:
+                        vals.append(float(v["full_RV"]))
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        vals.append(float(v))
+                    except Exception:
+                        pass
+            if vals:
+                return float(np.nanmean(vals))
+            return None
+
+        def _get_epoch_rv(ep):
+            """Load COMBINED RVs for an epoch and return a single representative RV (km/s)."""
+            try:
+                rvs_prop = self.load_property("RVs", ep, "COMBINED")
+            except Exception:
+                rvs_prop = None
+            if rvs_prop is None:
+                return None
+            if isinstance(rvs_prop, dict):
+                for k in ("global", "combined", "CCF", "median"):
+                    if k in rvs_prop:
+                        try:
+                            val = rvs_prop[k]
+                            try:
+                                val = val.item()
+                            except Exception:
+                                pass
+                            if isinstance(val, dict) and "full_RV" in val:
+                                return float(val["full_RV"])
+                            return float(val)
+                        except Exception:
+                            pass
+                return _extract_full_rvs_from_dict(rvs_prop)
+            try:
+                return float(rvs_prop)
+            except Exception:
+                return None
+
+        def _get_epoch_anchors(ep):
+            """Load COMBINED norm_anchor_wavelengths (nm) and convert to Å."""
+            try:
+                anchors_prop = self.load_property("norm_anchor_wavelengths", ep, "COMBINED")
+            except Exception:
+                anchors_prop = None
+            arr_nm = _coerce_anchors(anchors_prop)
+            if arr_nm is not None:
+                return arr_nm * 10.0  # Convert nm to Angstrom
+            return None
+
+        # ---- select epochs & bands --------------------------------------------
+        if epoch_nums is None:
+            epoch_nums = self.get_all_epoch_numbers()
+        elif not isinstance(epoch_nums, list):
+            epoch_nums = [epoch_nums]
+
+        if bands is None:
+            bands = self.get_all_bands()
+        elif not isinstance(bands, list):
+            bands = [bands]
+
+        combinations = list(product(epoch_nums, bands))
+        single_plot = len(combinations) == 1
+
+        # ---- prefetch RVs (for legend and, if normalize, for rest-frame anchors) ----
+        rv_by_epoch = {}
+        rv_ref = None
+        if Rest_frame:
+            for ep in epoch_nums:
+                try:
+                    prop = self.load_property("RVs", ep, "COMBINED")
+                    if prop is not None and isinstance(prop, dict) and 'C IV 5808-5812' in prop:
+                        val = prop['C IV 5808-5812']
+                        try:
+                            val = val.item()
+                        except:
+                            pass
+                        rv_by_epoch[ep] = float(val['full_RV'])
+                    else:
+                        rv_by_epoch[ep] = _get_epoch_rv(ep)
+                except Exception:
+                    rv_by_epoch[ep] = _get_epoch_rv(ep)
+
+            rv_vals = [v for v in rv_by_epoch.values() if v is not None and np.isfinite(v)]
+            rv_ref = float(np.mean(rv_vals)) if rv_vals else 0.0
+
+        # ---- prefetch anchors if needed ----------------------------------------
+        anchors_by_epoch = {}
+        if normalize:
+            for ep in epoch_nums:
+                anchors_by_epoch[ep] = _get_epoch_anchors(ep)
+
+        # ---- prepare colors: distinct colors for COMBINED per epoch ------------
+        combined_epochs = sorted({ep for ep, b in combinations if b == "COMBINED"})
+        prop_cycle = plt.rcParams.get("axes.prop_cycle", None)
+        palette = []
+        if prop_cycle is not None:
+            try:
+                palette = prop_cycle.by_key().get("color", [])
+            except Exception:
+                palette = []
+        if not palette:
+            palette = [f"C{i}" for i in range(10)]
+        combined_color_map = {ep: palette[i % len(palette)] for i, ep in enumerate(combined_epochs)}
+
+        # ---- plot --------------------------------------------------------------
+        plt.figure(figsize=(10, 6))
+
+        for epoch_num, band in combinations:
+            fits_file = None
+            try:
+                # Load the raw spectra from FITS
+                fits_file = self.load_observation(epoch_num, band=band)
+                data = fits_file.data
+
+                # --- CONVERT TO ANGSTROM ---
+                wavelength = np.asarray(data["WAVE"][0], dtype=float) * 10.0  # nm -> A
+                flux = np.asarray(data["FLUX"][0], dtype=float)
+
+                # --- CLEANING: Mask <= 0 values if log scale is requested ---
+                if log:
+                    flux = np.where(flux > 0, flux, np.nan)
+
+                # --- normalization using COMBINED anchors -----------------------
+                if normalize:
+                    anchors = anchors_by_epoch.get(epoch_num)
+                    if anchors is None:
+                        try:
+                            alt_prop = self.load_property("norm_anchor_wavelengths", epoch_num, band)
+                        except Exception:
+                            alt_prop = None
+                        anchors_nm = _coerce_anchors(alt_prop)
+                        if anchors_nm is not None:
+                            anchors = anchors_nm * 10.0  # nm -> A
+                        else:
+                            anchors = None
+
+                    if anchors is not None and anchors.size >= 2:
+                        use_anchors = anchors
+                        if Rest_frame:
+                            rv_ep = rv_by_epoch.get(epoch_num, None)
+                            if rv_ep is not None and np.isfinite(rv_ep):
+                                rest_anchors = anchors / (1.0 + rv_ref / c_kms)
+                                use_anchors = rest_anchors * (1.0 + rv_ep / c_kms)
+
+                        in_band = (use_anchors >= np.nanmin(wavelength)) & (use_anchors <= np.nanmax(wavelength))
+                        use_anchors = np.unique(use_anchors[in_band])
+
+                        if use_anchors.size >= 2:
+                            flux_at_anchors = np.interp(use_anchors, wavelength, flux)
+                            continuum = np.interp(wavelength, use_anchors, flux_at_anchors)
+                            good = np.isfinite(continuum) & (continuum > 0)
+                            if np.any(good):
+                                tmp = np.full_like(flux, np.nan, dtype=float)
+                                tmp[good] = flux[good] / continuum[good]
+                                flux = tmp
+                            else:
+                                print(
+                                    f"[warn] Epoch {epoch_num}, Band {band}: continuum invalid; skipping normalization.")
+                        else:
+                            print(
+                                f"[warn] Epoch {epoch_num}, Band {band}: <2 anchors within coverage; skipping normalization.")
+                    else:
+                        print(
+                            f"[warn] Epoch {epoch_num}, Band {band}: no COMBINED 'norm_anchor_wavelengths'; skipping normalization.")
+
+                # --- build label (include RV if requested) ----------------------
+                rv_suffix = ""
+                if Rest_frame:
+                    rv_val = rv_by_epoch.get(epoch_num, None)
+                    if rv_val is None or not np.isfinite(rv_val):
+                        rv_suffix = " (RV=NA)"
+                    else:
+                        rv_suffix = f" (RV={rv_val:+.1f} km/s)"
+
+                label = f"Epoch {epoch_num}"
+                if not color_combined:
+                    label += f", Band {band}"
+                label += rv_suffix
+
+                # --- choose color & plot main spectrum --------------------------
+                if band == "COMBINED" and color_combined:
+                    # Approximate X-shooter arm ranges (Converted to Angstroms)
+                    mask_uvb = wavelength <= 5600.0  # 560 nm
+                    mask_vis = (wavelength >= 5500.0) & (wavelength <= 10250.0)  # 550-1025 nm
+                    mask_nir = wavelength >= 10000.0  # 1000 nm
+
+                    def plot_segment(mask, color_seg, name):
+                        if not np.any(mask): return
+                        w_seg = wavelength[mask]
+                        f_seg = flux[mask]
+                        seg_label = f"{label} [{name}]"
+                        if scatter:
+                            plt.scatter(w_seg, f_seg, label=seg_label, linewidth=linewidth,
+                                        s=max(1.0, 10.0 - 2.0 * linewidth), color=color_seg)
+                        else:
+                            plt.plot(w_seg, f_seg, label=seg_label, linewidth=linewidth, color=color_seg)
+
+                    plot_segment(mask_uvb, "blue", "UVB")
+                    plot_segment(mask_vis, "green", "VIS")
+                    plot_segment(mask_nir, "red", "NIR")
+
+                else:
+                    if band == "COMBINED":
+                        color = combined_color_map.get(epoch_num, None)
+                    elif band == "UVB":
+                        color = "blue"
+                    elif band == "VIS":
+                        color = "green"
+                    elif band == "NIR":
+                        color = "red"
+                    else:
+                        color = None
+
+                    if scatter:
+                        plt.scatter(wavelength, flux, label=label, linewidth=linewidth,
+                                    s=max(1.0, 10.0 - 2.0 * linewidth), color=color)
+                    else:
+                        plt.plot(wavelength, flux, label=label, linewidth=linewidth, color=color)
+
+                # --- Plot Continuum if requested --------------------------------
+                if add_continuum:
+                    try:
+                        cont_data = self.load_property("interpolated_flux", epoch_num, band)
+                        if cont_data is not None:
+                            if isinstance(cont_data, dict) and "interpolated_flux" in cont_data:
+                                cont_flux = np.asarray(cont_data["interpolated_flux"], dtype=float)
+                            elif isinstance(cont_data, dict) and "flux" in cont_data:
+                                cont_flux = np.asarray(cont_data["flux"], dtype=float)
+                            else:
+                                cont_flux = np.asarray(cont_data, dtype=float)
+
+                            if log:
+                                cont_flux = np.where(cont_flux > 0, cont_flux, np.nan)
+
+                            if cont_flux.shape == wavelength.shape:
+                                plt.plot(wavelength, cont_flux, label=f"Continuum (Ep {epoch_num})",
+                                         linestyle="--", color="orange", linewidth=1.5, alpha=0.9)
+                            else:
+                                print(f"[warn] Continuum shape {cont_flux.shape} != Wave {wavelength.shape}")
+                    except Exception as e:
+                        print(f"[warn] Failed to add continuum for Epoch {epoch_num}: {e}")
+
+            except Exception as e:
+                print(f"Error reading FITS file '{fits_file}': {e}")
+                continue
+
+        # ---- Highlight RV Emission Lines (Dynamically Loaded & Converted) ------
+        if add_RV_emission_lines:
+            json_file = "ccf_settings_with_global_lines.json"
+            emission_lines_to_plot = {}
+
+            try:
+                with open(json_file, 'r') as f:
+                    settings = json.load(f)
+
+                # 1. Start with defaults
+                emission_lines_to_plot = settings.get("emission_lines_default", {}).copy()
+
+                # 2. Check for star-specific overrides using self.star_name
+                stars_list = settings.get("stars", [])
+                for s in stars_list:
+                    if s.get("star_name") == self.star_name:
+                        overrides = s.get("emission_lines", {})
+                        if overrides:
+                            emission_lines_to_plot.update(overrides)
+                        break
+
+            except Exception as e:
+                print(f"[warn] Could not load RV emission lines from '{json_file}': {e}")
+
+            # Plot the lines (Converting nm -> A)
+            if emission_lines_to_plot:
+                added_rv_label = False
+                for line_name, (w_min, w_max) in emission_lines_to_plot.items():
+                    # Convert limits from nm to Angstrom
+                    w_min_A = w_min * 10.0
+                    w_max_A = w_max * 10.0
+
+                    lbl = "RV Lines" if not added_rv_label else None
+                    plt.axvspan(w_min_A, w_max_A, color='orange', alpha=0.3, label=lbl, zorder=0)
+                    added_rv_label = True
+
+        # ---- cosmetics & save --------------------------------------------------
+        plt.xlabel(r"Wavelength [$\AA$]")
+        if normalize:
+            plt.ylabel("Normalized flux (F/Fc)")
+        else:
+            plt.ylabel(r"Flux [$\mathrm{erg}\ \mathrm{cm}^{-2}\ \mathrm{s}^{-1}\ \mathrm{\AA}^{-1}$]")
+
+        # --- Apply Log Scale if requested ---
+        if log:
+            plt.yscale('log')
+
+        title = f"Spectrum of {self.star_name}"
+        if Rest_frame and rv_ref is not None:
+            title += f"  (Ref RV = {rv_ref:+.1f} km/s)"
+        plt.title(title)
+
+        # Fix legend duplicates
+        handles, labels_leg = plt.gca().get_legend_handles_labels()
+        by_label = dict(zip(labels_leg, handles))
+        plt.legend(by_label.values(), by_label.keys())
+
+        plt.grid(True, which="major", ls="-", alpha=0.5)
+        plt.tight_layout()
+
+        if save:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            if single_plot:
+                ep0, b0 = combinations[0]
+                outdir = os.path.join(self.data_dir, self.star_name, f"epoch{ep0}", b0, "output", "Figures")
+            else:
+                outdir = os.path.join(self.data_dir, self.star_name, "output", "Figures")
+            os.makedirs(outdir, exist_ok=True)
+            fname = f"{self.star_name}_{timestamp}.png"
+            path = os.path.join(outdir, fname)
+            plt.savefig(path, dpi=200)
+            print(f"Figure saved to '{path}'")
+
+        plt.show()
+
+    def plot_spectra_less_old(
             self,
             epoch_nums=None,
             bands=None,
@@ -1352,50 +1749,59 @@ class Star:
                                 bin_window=10,
                                 clean=True,
                                 compare=False,
-                                bary_correction=False):
+                                bary_correction=False,
+                                color_combined=False,
+                                add_RV_emission_lines=False,
+                                add_continuum=False,
+                                for_presentation=False,
+                                EL_annotate=False):
         """
-        Plots normalized spectra for the specified epoch(s) and band(s).
-
-        If `separate` is True, you get a slider to adjust the vertical gap
-        between epochs (default gap=10).  If `compare` is True and a cleaned
-        spectrum exists for a given epoch+band, its original counterpart is
-        plotted just above it—and you get a second slider to tweak that “pair offset.”
-
-        Parameters
-        ----------
-        epoch_nums : int or list of int, optional
-            Epoch number(s). If None, uses all from get_all_epoch_numbers().
-        bands : str or list of str, optional
-            Which band(s) to plot (e.g. 'UVB' or ['UVB','VIS']). If None, uses
-            self.get_all_bands() (you’ll need to implement that or substitute
-            your own list).
-        save : bool, optional
-            If True, saves the figure to data_dir/star_name/output/Figures.
-        separate : bool, optional
-            If True, enables the “epoch spacing” slider.
-        separation : float, optional
-            Default vertical gap between different epochs. Default=10.
-        bin_window : int, optional
-            If >1, bin the flux over this many pixels using ut.robust_mean.
-        clean : bool, optional
-            If True, prefer 'clean_normalized_flux' over 'normalized_flux'.
-        compare : bool, optional
-            If True and a cleaned trace is drawn for an epoch+band, also plots
-            the original just above it, with its own "(orig)" legend.
+        Plots normalized spectra with reduced margins and smart annotation.
         """
+        import os
+        import json
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from matplotlib.widgets import Slider
+        from datetime import datetime
+
         c_kms = 299792.458
+
+        # ─── STYLE CONFIGURATION ────────────────────────────────────
+        if for_presentation:
+            s_title = 26
+            s_label = 20
+            s_ticks = 18
+            s_legend = 12
+            s_annot = 14
+        else:
+            s_title = 12
+            s_label = None
+            s_ticks = None
+            s_legend = 'small'
+            s_annot = 8
+        # ────────────────────────────────────────────────────────────
+
+        # 1. Initialize slider references
+        self.slider_sep = None
+        self.slider_pair = None
+
         # ─── Prepare epochs ─────────────────────────────────────────
         if epoch_nums is None:
             epoch_nums = self.get_all_epoch_numbers()
         elif not isinstance(epoch_nums, (list, tuple)):
             epoch_nums = [epoch_nums]
         if not epoch_nums:
-            print("No epochs to plot.");
+            print("No epochs to plot.")
             return
+
+        # ─── OVERRIDE: Ignore color_combined if multiple epochs ─────
+        if len(epoch_nums) > 1 and color_combined:
+            print("[info] Plotting multiple epochs: disabling 'color_combined'.")
+            color_combined = False
 
         # ─── Prepare bands ──────────────────────────────────────────
         if bands is None:
-            # replace this with your own method if needed
             bands = self.get_all_bands()
         elif isinstance(bands, str):
             bands = [bands]
@@ -1404,8 +1810,335 @@ class Star:
         def bin_data(wl, fl, wsize):
             n = len(wl)
             return (
-                np.array([wl[i:i + wsize].mean() for i in range(0, n, wsize)]),
-                np.array([ut.robust_mean(fl[i:i + wsize], 3) for i in range(0, n, wsize)])
+                np.array([np.nanmean(wl[i:i + wsize]) for i in range(0, n, wsize)]),
+                np.array([np.nanmean(fl[i:i + wsize]) for i in range(0, n, wsize)])
+            )
+
+        # ─── Load & bin everything up front ─────────────────────────
+        data_list = []
+        for ep in epoch_nums:
+            for band in bands:
+                d_clean = (self.load_property('cleaned_normalized_flux', ep, band)
+                           if clean else None)
+
+                def process_dataset(d_source, type_label):
+                    if d_source is None: return
+                    wl = np.array(d_source['wavelengths'])
+                    fl = np.array(d_source['normalized_flux'])
+
+                    if bary_correction:
+                        try:
+                            fits_file = self.load_observation(ep, 'VIS')
+                            bary = fits_file.header.get('ESO QC VRAD BARYCOR', 0.0)
+                            wl = wl * (1 + bary / c_kms)
+                        except:
+                            pass
+
+                    wl = wl * 10.0  # Convert to Angstroms
+
+                    if bin_window > 1:
+                        wl, fl = bin_data(wl, fl, bin_window)
+
+                    data_list.append({
+                        'epoch': ep, 'band': band,
+                        'wl': wl, 'fl': fl,
+                        'type': type_label
+                    })
+
+                if d_clean is not None:
+                    process_dataset(d_clean, 'clean')
+                    if compare:
+                        d_orig = self.load_property('normalized_flux', ep, band)
+                        process_dataset(d_orig, 'orig')
+                else:
+                    d_orig = self.load_property('normalized_flux', ep, band)
+                    if d_orig is None: continue
+                    process_dataset(d_orig, 'orig')
+
+        if not data_list:
+            print("No spectra loaded.")
+            return
+
+        # ─── Figure setup ──────────────────────────────────────────
+        fig_size = (9, 7) if for_presentation else (9, 5)
+        fig, ax = plt.subplots(figsize=fig_size)
+
+        # --- MARGIN ADJUSTMENT ---
+        # Standard tight margins
+        m_left = 0.15
+        m_right = 0.95
+        m_top = 0.94
+        m_bottom = 0.15
+
+        # 2. CRITICAL FIX: Only increase bottom margin if we actually DRAW sliders
+        #    (The previous code overwrote m_bottom to 0.25 unconditionally if separate=True)
+        if (separate and len(epoch_nums) > 1) or compare:
+            m_bottom = 0.25  # Only make space if sliders are actually needed
+
+        plt.subplots_adjust(left=m_left, right=m_right, top=m_top, bottom=m_bottom)
+        # -------------------------
+
+        prop_cycle = plt.rcParams.get("axes.prop_cycle", None)
+        colors = prop_cycle.by_key()["color"] if prop_cycle else [f"C{i}" for i in range(10)]
+
+        sep_val = separation
+        pair_val = separation / 4 if compare else 0
+
+        # ─── Load Emission Lines (Reusable) ────────────────────────
+        emission_lines_map = {}
+        if add_RV_emission_lines or EL_annotate:
+            json_file = "ccf_settings_with_global_lines.json"
+            try:
+                with open(json_file, 'r') as f:
+                    settings = json.load(f)
+                emission_lines_map = settings.get("emission_lines_default", {}).copy()
+                for s in settings.get("stars", []):
+                    if s.get("star_name") == self.star_name:
+                        if s.get("emission_lines"):
+                            emission_lines_map.update(s.get("emission_lines"))
+                        break
+            except Exception as e:
+                print(f"[warn] RV/EL Settings Error: {e}")
+
+        # ─── Draw Function ─────────────────────────────────────────
+        def _draw(sep, pair):
+            ax.clear()
+
+            # --- 1. RV Emission Line Backgrounds ---
+            if add_RV_emission_lines:
+                added_lbl = False
+                for _, (w_min, w_max) in emission_lines_map.items():
+                    ax.axvspan(w_min * 10.0, w_max * 10.0, color='orange', alpha=0.15,
+                               label="RV Lines" if not added_lbl else None, zorder=0)
+                    added_lbl = True
+
+            # --- 2. Plot Spectra ---
+            ref_wl, ref_fl = None, None
+
+            for entry in data_list:
+                idx = epoch_nums.index(entry['epoch'])
+                base = idx * sep
+                y_off = base + (pair if entry['type'] == 'orig' else 0)
+
+                w = entry['wl']
+                f = entry['fl']
+                final_flux = f + y_off
+                lbl = f"Ep {entry['epoch']} {entry['band']} ({entry['type']})"
+
+                if ref_wl is None:
+                    ref_wl, ref_fl = w, final_flux
+
+                if color_combined and entry['band'] == 'COMBINED':
+                    mask_uvb = w <= 5600.0
+                    mask_vis = (w >= 5500.0) & (w <= 10250.0)
+                    mask_nir = w >= 10000.0
+
+                    if np.any(mask_uvb):
+                        ax.plot(w[mask_uvb], final_flux[mask_uvb], color='blue', linewidth=1, label=lbl + " [UVB]")
+                    if np.any(mask_vis):
+                        ax.plot(w[mask_vis], final_flux[mask_vis], color='green', linewidth=1, label=lbl + " [VIS]")
+                    if np.any(mask_nir):
+                        ax.plot(w[mask_nir], final_flux[mask_nir], color='red', linewidth=1, label=lbl + " [NIR]")
+                else:
+                    c = colors[idx % len(colors)]
+                    ax.plot(w, final_flux, label=lbl, color=c, linewidth=1)
+
+                if add_continuum:
+                    ax.hlines(y_off + 1.0, w.min(), w.max(), linestyles='--', colors='gray',
+                              linewidth=0.8, alpha=0.7)
+
+            # --- 3. EL Annotations (Filtered + Smart Peak + Stacking) ---
+            if EL_annotate and emission_lines_map and ref_wl is not None:
+                lines_to_draw = []
+
+                # --- FILTERING ---
+                for el_name, (w_min_nm, w_max_nm) in emission_lines_map.items():
+                    w_min_a = w_min_nm * 10.0
+                    w_max_a = w_max_nm * 10.0
+
+                    keep_this_line = False
+                    if EL_annotate is True:
+                        keep_this_line = True
+                    elif isinstance(EL_annotate, (list, tuple)):
+                        for crit in EL_annotate:
+                            if isinstance(crit, str) and crit in el_name:
+                                keep_this_line = True
+                                break
+                            elif isinstance(crit, (int, float)):
+                                if w_min_a <= crit <= w_max_a:
+                                    keep_this_line = True
+                                    break
+
+                    if not keep_this_line:
+                        continue
+
+                    # --- POSITION (Smart Peak) ---
+                    w_center = (w_min_a + w_max_a) / 2.0
+
+                    mask = (ref_wl >= w_min_a) & (ref_wl <= w_max_a)
+                    if np.sum(mask) > 5:
+                        w_seg = ref_wl[mask]
+                        f_seg = ref_fl[mask]
+
+                        cutoff = np.percentile(f_seg, 80)  # Top 20%
+
+                        top_mask = f_seg >= cutoff
+                        w_top = w_seg[top_mask]
+
+                        if len(w_top) > 0:
+                            w_top = np.sort(w_top)
+                            split_indices = np.where(np.diff(w_top) > 2.0)[0] + 1
+                            clumps = np.split(w_top, split_indices)
+                            largest_clump = max(clumps, key=len)
+                            w_center = np.median(largest_clump)
+
+                    lines_to_draw.append((w_center, el_name))
+
+                # --- STACKING ---
+                lines_to_draw.sort(key=lambda x: x[0])
+
+                last_x = -9999
+                current_level = 0
+                min_dist_angstrom = 800.0
+                base_y = 0.95
+                step_y = 0.07
+
+                for w_center, el_name in lines_to_draw:
+                    if (w_center - last_x) < min_dist_angstrom:
+                        current_level += 1
+                    else:
+                        current_level = 0
+
+                    y_pos = base_y - (current_level * step_y)
+                    if y_pos < 0.2: y_pos = 0.2
+
+                    ax.axvline(x=w_center, color='gray', linestyle='--', alpha=0.6, linewidth=1.5)
+
+                    el_name_clean = re.sub(r'[^A-Za-z ]', '', el_name)
+
+                    ax.text(x=w_center, y=y_pos, s=f" {el_name_clean}",
+                            transform=ax.get_xaxis_transform(),
+                            color='black',
+                            fontsize=s_annot,
+                            ha='left', va='top', rotation=0)
+
+                    last_x = w_center
+
+            # --- Apply Styles ---
+            ax.set_xlabel(r'Wavelength [$\AA$]', fontsize=s_label)
+
+            ylab = 'Normalized Flux'
+            if (separate and len(epoch_nums) > 1) or compare:
+                ylab += ' (+ Offset)'
+            ax.set_ylabel(ylab, fontsize=s_label)
+
+            ax.set_title(f"{self.star_name} — Normalized Spectra", fontsize=s_title)
+
+            if s_ticks is not None:
+                ax.tick_params(axis='both', which='major', labelsize=s_ticks)
+
+            handles, labels = ax.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax.legend(by_label.values(), by_label.keys(),
+                      fontsize=s_legend, ncol=2)
+
+            ax.grid(True, which='major', alpha=0.5)
+            fig.canvas.draw_idle()
+
+        _draw(sep_val, pair_val)
+
+        # ─── UPDATE FUNCTION ───
+        def update(val):
+            s = self.slider_sep.val if self.slider_sep else sep_val
+            p = self.slider_pair.val if self.slider_pair else pair_val
+            _draw(s, p)
+
+        # ─── SLIDERS ───
+        if separate and len(epoch_nums) > 1:
+            ax_sep = fig.add_axes([0.15, 0.1, 0.3, 0.03])
+            self.slider_sep = Slider(ax_sep, 'Separation', 0, separation * 3.0, valinit=sep_val)
+            self.slider_sep.on_changed(update)
+
+        if compare:
+            ax_pair = fig.add_axes([0.6, 0.1, 0.3, 0.03])
+            self.slider_pair = Slider(ax_pair, 'Pair offset', 0, separation, valinit=pair_val)
+            self.slider_pair.on_changed(update)
+
+        if save:
+            outdir = os.path.join(self.data_dir, self.star_name, 'output', 'Figures')
+            os.makedirs(outdir, exist_ok=True)
+            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            pres_tag = "_pres" if for_presentation else ""
+            fname = f"{self.star_name}_normspec{pres_tag}_{stamp}.png"
+            plt.savefig(os.path.join(outdir, fname), dpi=200, bbox_inches='tight')
+            print(f"Saved figure to: {outdir}/{fname}")
+
+        plt.show()
+
+    def plot_normalized_spectra_old(self,
+                                epoch_nums=None,
+                                bands=None,
+                                save=False,
+                                separate=True,
+                                separation=10,
+                                bin_window=10,
+                                clean=True,
+                                compare=False,
+                                bary_correction=False,
+                                color_combined=False,
+                                add_RV_emission_lines=False,
+                                add_continuum=False):
+        """
+        Plots normalized spectra for the specified epoch(s) and band(s).
+
+        New Flags:
+          - color_combined: Color 'COMBINED' band as Blue/Green/Red.
+            (Ignored automatically if plotting >1 epoch to allow distinct epoch colors).
+          - add_RV_emission_lines: Highlight RV regions defined in JSON.
+          - add_continuum: Plot a dashed line at y=1 (the continuum level).
+
+        Note: Wavelengths are plotted in Angstroms.
+        """
+        import os
+        import json
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from matplotlib.widgets import Slider
+        from datetime import datetime
+
+        c_kms = 299792.458
+
+        # 1. Initialize slider references to None immediately
+        self.slider_sep = None
+        self.slider_pair = None
+
+        # ─── Prepare epochs ─────────────────────────────────────────
+        if epoch_nums is None:
+            epoch_nums = self.get_all_epoch_numbers()
+        elif not isinstance(epoch_nums, (list, tuple)):
+            epoch_nums = [epoch_nums]
+        if not epoch_nums:
+            print("No epochs to plot.")
+            return
+
+        # ─── OVERRIDE: Ignore color_combined if multiple epochs ─────
+        if len(epoch_nums) > 1 and color_combined:
+            print("[info] Plotting multiple epochs: disabling 'color_combined' to maintain distinct epoch colors.")
+            color_combined = False
+
+        # ─── Prepare bands ──────────────────────────────────────────
+        if bands is None:
+            bands = self.get_all_bands()
+        elif isinstance(bands, str):
+            bands = [bands]
+
+        # ─── Binning helper ─────────────────────────────────────────
+        def bin_data(wl, fl, wsize):
+            n = len(wl)
+            # Simple block average
+            return (
+                np.array([np.nanmean(wl[i:i + wsize]) for i in range(0, n, wsize)]),
+                np.array([np.nanmean(fl[i:i + wsize]) for i in range(0, n, wsize)])
             )
 
         # ─── Load & bin everything up front ─────────────────────────
@@ -1415,95 +2148,181 @@ class Star:
                 # — try cleaned first —
                 d_clean = (self.load_property('cleaned_normalized_flux', ep, band)
                            if clean else None)
-                if d_clean is not None:
-                    wl = np.array(d_clean['wavelengths'])
-                    fl = np.array(d_clean['normalized_flux'])
-                    if bary_correction:
-                        fits_file = self.load_observation(ep, 'VIS')
-                        bary = fits_file.header['ESO QC VRAD BARYCOR']
-                        wl = wl * (1 - bary / c_kms)  # correct to barycentric frame
 
-                    wl_b, fl_b = (wl, fl) if bin_window <= 1 else bin_data(wl, fl, bin_window)
-                    data_list.append({'epoch': ep, 'band': band,
-                                      'wl': wl_b, 'fl': fl_b, 'type': 'clean'})
-                    # optionally add original right above
+                # Logic to process a dataset
+                def process_dataset(d_source, type_label):
+                    if d_source is None: return
+                    wl = np.array(d_source['wavelengths'])
+                    fl = np.array(d_source['normalized_flux'])
+
+                    # 1. Barycentric Correction
+                    if bary_correction:
+                        try:
+                            fits_file = self.load_observation(ep, 'VIS')
+                            bary = fits_file.header.get('ESO QC VRAD BARYCOR', 0.0)
+                            wl = wl * (1 + bary / c_kms)
+                        except:
+                            pass
+
+                    # 2. Convert to Angstroms
+                    wl = wl * 10.0
+
+                    # 3. Binning
+                    if bin_window > 1:
+                        wl, fl = bin_data(wl, fl, bin_window)
+
+                    data_list.append({
+                        'epoch': ep, 'band': band,
+                        'wl': wl, 'fl': fl,
+                        'type': type_label
+                    })
+
+                # Process Clean
+                if d_clean is not None:
+                    process_dataset(d_clean, 'clean')
+                    # Optionally add original for comparison
                     if compare:
                         d_orig = self.load_property('normalized_flux', ep, band)
-                        if d_orig is not None:
-                            wl2 = np.array(d_orig['wavelengths'])
-                            fl2 = np.array(d_orig['normalized_flux'])
-                            wl2_b, fl2_b = (wl2, fl2) if bin_window <= 1 else bin_data(wl2, fl2, bin_window)
-                            data_list.append({'epoch': ep, 'band': band,
-                                              'wl': wl2_b, 'fl': fl2_b, 'type': 'orig'})
-                    continue
-
-                # — fallback to original only —
-                d_orig = self.load_property('normalized_flux', ep, band)
-                if d_orig is None:
-                    print(f"▶ Missing data: epoch {ep}, band {band}.")
-                    continue
-                wl = np.array(d_orig['wavelengths'])
-                fl = np.array(d_orig['normalized_flux'])
-                if bary_correction:
-                    fits_file = self.load_observation(ep, 'VIS')
-                    bary = fits_file.header['ESO QC VRAD BARYCOR']
-                    wl = wl * (1 + bary / c_kms)  # correct to barycentric frame
-                wl_b, fl_b = (wl, fl) if bin_window <= 1 else bin_data(wl, fl, bin_window)
-                data_list.append({'epoch': ep, 'band': band,
-                                  'wl': wl_b, 'fl': fl_b, 'type': 'orig'})
+                        process_dataset(d_orig, 'orig')
+                else:
+                    # Fallback to original
+                    d_orig = self.load_property('normalized_flux', ep, band)
+                    if d_orig is None:
+                        print(f"▶ Missing data: epoch {ep}, band {band}.")
+                        continue
+                    process_dataset(d_orig, 'orig')
 
         if not data_list:
-            print("No spectra loaded.");
+            print("No spectra loaded.")
             return
 
         # ─── Figure + sliders setup ────────────────────────────────
-        fig, ax = plt.subplots(figsize=(8, 6))
+        # In 'widget' mode, sometimes creating a new figure explicitly helps
+        fig, ax = plt.subplots(figsize=(10, 8))
         if separate or compare:
             plt.subplots_adjust(bottom=0.25)
 
-        # initial slider values
+        # Prepare colors for epochs (if not using color_combined)
+        prop_cycle = plt.rcParams.get("axes.prop_cycle", None)
+        colors = prop_cycle.by_key()["color"] if prop_cycle else [f"C{i}" for i in range(10)]
+
+        # Initial slider values
         sep_val = separation
         pair_val = separation / 4 if compare else 0
 
-        # draw function
+        # ─── Draw Function ─────────────────────────────────────────
         def _draw(sep, pair):
             ax.clear()
+
+            # --- RV Emission Lines (Background) ---
+            if add_RV_emission_lines:
+                json_file = "ccf_settings_with_global_lines.json"
+                emission_lines_to_plot = {}
+                try:
+                    with open(json_file, 'r') as f:
+                        settings = json.load(f)
+                    # Start with default
+                    emission_lines_to_plot = settings.get("emission_lines_default", {}).copy()
+                    # Apply overrides
+                    for s in settings.get("stars", []):
+                        if s.get("star_name") == self.star_name:
+                            if s.get("emission_lines"):
+                                emission_lines_to_plot.update(s.get("emission_lines"))
+                            break
+                except Exception as e:
+                    print(f"[warn] RV Lines Error: {e}")
+
+                added_lbl = False
+                for _, (w_min, w_max) in emission_lines_to_plot.items():
+                    # Convert nm -> Angstrom
+                    ax.axvspan(w_min * 10.0, w_max * 10.0, color='orange', alpha=0.15,
+                               label="RV Lines" if not added_lbl else None, zorder=0)
+                    added_lbl = True
+
+            # --- Plot Spectra ---
             for entry in data_list:
-                # all cleaned for this epoch sit at epoch_index*sep
+                # Calculate Y-Offset
                 idx = epoch_nums.index(entry['epoch'])
                 base = idx * sep
                 y_off = base + (pair if entry['type'] == 'orig' else 0)
-                lbl = f"Ep {entry['epoch']}, {entry['band']} ({entry['type']})"
-                ax.plot(entry['wl']*10, entry['fl'] + y_off, label=lbl)
-                ax.hlines(y_off + 1,
-                          entry['wl'].min(), entry['wl'].max(),
-                          linestyles='--', colors='gray', linewidth=0.8)
 
-            ax.set_xlabel('Wavelength [A]')
-            ax.set_ylabel('Normalized Flux')
-            ax.set_title(f"{self.star_name} — Bands: {', '.join(bands)}", fontsize=10)
-            ax.legend(fontsize='small', ncol=2)
-            ax.grid(True)
+                # Data
+                w = entry['wl']
+                f = entry['fl']
+                final_flux = f + y_off
+
+                lbl = f"Ep {entry['epoch']} {entry['band']} ({entry['type']})"
+
+                # Plotting Logic
+                if color_combined and entry['band'] == 'COMBINED':
+                    # Color Segments (in Angstroms)
+                    mask_uvb = w <= 5600.0
+                    mask_vis = (w >= 5500.0) & (w <= 10250.0)
+                    mask_nir = w >= 10000.0
+
+                    # Labels added for ALL segments to ensure they appear in legend
+                    if np.any(mask_uvb):
+                        ax.plot(w[mask_uvb], final_flux[mask_uvb], color='blue', linewidth=1, label=lbl + " [UVB]")
+                    if np.any(mask_vis):
+                        ax.plot(w[mask_vis], final_flux[mask_vis], color='green', linewidth=1, label=lbl + " [VIS]")
+                    if np.any(mask_nir):
+                        ax.plot(w[mask_nir], final_flux[mask_nir], color='red', linewidth=1, label=lbl + " [NIR]")
+
+                else:
+                    # Standard Coloring (Unique per epoch)
+                    c = colors[idx % len(colors)]
+                    ax.plot(w, final_flux, label=lbl, color=c, linewidth=1)
+
+                # Continuum Line (y=1 + offset)
+                if add_continuum:
+                    ax.hlines(y_off + 1.0, w.min(), w.max(), linestyles='--', colors='gray', linewidth=0.8, alpha=0.7)
+
+            # --- Cosmetics ---
+            ax.set_xlabel(r'Wavelength [$\AA$]')
+
+            # Conditional Y-Label
+            ylab = 'Normalized Flux'
+            if (separate and len(epoch_nums) > 1) or compare:
+                ylab += ' (+ Offset)'
+            ax.set_ylabel(ylab)
+
+            ax.set_title(f"{self.star_name} — Normalized Spectra", fontsize=12)
+
+            # Deduplicate Legend
+            handles, labels = ax.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax.legend(by_label.values(), by_label.keys(), fontsize='small', ncol=2)
+
+            ax.grid(True, which='major', alpha=0.5)
             fig.canvas.draw_idle()
 
         # initial draw
         _draw(sep_val, pair_val)
 
-        # epoch‐spacing slider
-        if separate and len(epoch_nums) > 1:
-            ax_sep = fig.add_axes([0.1, 0.15, 0.35, 0.03])
-            slider_sep = Slider(ax_sep, 'Separation',
-                                0, separation * len(epoch_nums),
-                                valinit=sep_val)
-            slider_sep.on_changed(lambda v: _draw(v, slider_pair.val if compare else pair_val))
+        # ─── UPDATE FUNCTION (Crucial for Widget Mode) ───
+        def update(val):
+            # Read directly from self.sliders to ensure we get the live object state
+            s = self.slider_sep.val if self.slider_sep else sep_val
+            p = self.slider_pair.val if self.slider_pair else pair_val
+            _draw(s, p)
 
-        # pair‐offset slider
+        # ─── SLIDER SETUP ───
+
+        # 1. Epoch Spacing Slider
+        if separate and len(epoch_nums) > 1:
+            ax_sep = fig.add_axes([0.15, 0.1, 0.3, 0.03])
+            self.slider_sep = Slider(ax_sep, 'Separation',
+                                     0, separation * 3.0,
+                                     valinit=sep_val)
+            self.slider_sep.on_changed(update)
+
+        # 2. Pair Offset Slider
         if compare:
-            ax_pair = fig.add_axes([0.55, 0.15, 0.35, 0.03])
-            slider_pair = Slider(ax_pair, 'Pair offset',
-                                 0, separation,
-                                 valinit=pair_val)
-            slider_pair.on_changed(lambda v: _draw(slider_sep.val if separate else sep_val, v))
+            ax_pair = fig.add_axes([0.6, 0.1, 0.3, 0.03])
+            self.slider_pair = Slider(ax_pair, 'Pair offset',
+                                      0, separation,
+                                      valinit=pair_val)
+            self.slider_pair.on_changed(update)
 
         # save if requested
         if save:
@@ -1511,10 +2330,11 @@ class Star:
             os.makedirs(outdir, exist_ok=True)
             stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             fname = f"{self.star_name}_normspec_{stamp}.png"
-            plt.savefig(os.path.join(outdir, fname))
+            plt.savefig(os.path.join(outdir, fname), dpi=200)
             print(f"Saved figure to: {outdir}/{fname}")
 
         plt.show()
+
 
     ########################################                                       ########################################
 

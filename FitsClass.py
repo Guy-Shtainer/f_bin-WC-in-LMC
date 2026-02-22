@@ -2,13 +2,18 @@ from astropy.io import fits
 import numpy as np
 
 class FITSFile:
-    def __init__(self, filepath):
+    def __init__(self, filepath,to_print = True):
         self.filepath = filepath
         self.primary_data = None
         self.raw_data = None
         self.data = None
         self.dataheader = None
         self.header = None
+        self.to_print = to_print
+
+    def print(self,message):
+        if self.to_print:
+            print(message)
 
     def load_data(self):
         """Load data and header from the FITS file."""
@@ -19,7 +24,7 @@ class FITSFile:
                 self.data = hdulist[1].data
                 self.dataheader = hdulist[1].header
                 self.header = hdulist[0].header
-            print(f"Data loaded from {self.filepath}")
+            self.print(f"Data loaded from {self.filepath}")
         except Exception as e:
             print(f"Error loading {self.filepath}: {e}")
 
