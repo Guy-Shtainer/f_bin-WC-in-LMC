@@ -1,0 +1,1680 @@
+"""
+pages/05_bias_correction.py — Bias Correction (Dsilva / Langer 2020 grid search)
+
+Features:
+  - Two-column layout: grid/orbital params left, sigma scan + live heatmap right
+  - Single persistent multiprocessing Pool — no per-f_bin overhead
+  - Heatmap fills in live row-by-row via imap_unordered + throttled render
+  - Sigma scan mode: run N sigma values -> max-p line chart + browse slider + animated 4D + 3D stacked
+  - Smart partial cache reuse: unchanged f_bin rows reused from prior result
+  - All BinaryParameterConfig orbital params exposed and editable
+  - User-controllable canvas dimensions (height / width in px)
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import hashlib
+import json
+import multiprocessing as mp
+import os
+import sys
+import time
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(os.path.dirname(_HERE))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+from shared import (
+    inject_theme, render_sidebar, get_settings_manager,
+    cached_load_observed_delta_rvs, cached_load_cadence,
+    cached_load_grid_result, settings_hash,
+)
+
+st.set_page_config(
+    page_title='Bias Correction — WR Binary',
+    page_icon='⚡',
+    layout='wide',
+)
+inject_theme()
+settings = render_sidebar('Bias Correction')
+sm = get_settings_manager()
+
+st.markdown('# ⚡ Bias Correction')
+st.caption(
+    'Monte-Carlo K-S grid search over (f_bin, π) to find the intrinsic binary fraction '
+    'and period-distribution power-law index that best reproduce the observed ΔRV distribution.'
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Canvas size (page-level — used by both Dsilva and Langer tabs)
+# ─────────────────────────────────────────────────────────────────────────────
+with st.expander('🖼️ Canvas size', expanded=False):
+    _cs_c1, _cs_c2, _ = st.columns([0.2, 0.2, 0.6])
+    canvas_height = _cs_c1.number_input(
+        'Height (px)', 200, 2000, 520, 20, key='bc_canvas_height')
+    canvas_width = _cs_c2.number_input(
+        'Width (px, 0 = auto)', 0, 3000, 0, 50, key='bc_canvas_width')
+
+_ch = int(canvas_height)
+_cw = int(canvas_width) if int(canvas_width) > 0 else None
+_use_cw = (_cw is None)
+
+_RESULT_DIR = os.path.join(_ROOT, 'results')
+_HISTORY_PATH = os.path.join(_ROOT, 'settings', 'run_history.json')
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model tabs
+# ─────────────────────────────────────────────────────────────────────────────
+tab_dsilva, tab_langer = st.tabs(['Dsilva (power-law)', 'Langer 2020'])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _result_path(model: str) -> str:
+    return os.path.join(_RESULT_DIR, f'{model}_result.npz')
+
+
+def _stable_cfg_hash(cfg: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(cfg, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
+
+
+def _best_point(ks_p_2d: np.ndarray, fbin_vals: np.ndarray,
+                pi_vals: np.ndarray) -> tuple[float, float, float]:
+    idx = int(np.argmax(ks_p_2d))
+    fi  = idx // ks_p_2d.shape[1]
+    pi  = idx  % ks_p_2d.shape[1]
+    return float(fbin_vals[fi]), float(pi_vals[pi]), float(ks_p_2d[fi, pi])
+
+
+def _make_heatmap_fig(
+    ks_p_2d: np.ndarray,
+    fbin_vals: np.ndarray,
+    pi_vals: np.ndarray,
+    title: str,
+    show_d: bool = False,
+    ks_d_2d: np.ndarray | None = None,
+    height: int = 520,
+    width: int | None = None,
+) -> go.Figure:
+    """Plotly heatmap of K-S p-value (or D-stat)."""
+    z = ks_d_2d if (show_d and ks_d_2d is not None) else ks_p_2d
+    colorbar_title = 'K-S D' if show_d else 'K-S p-value'
+
+    valid = z[~np.isnan(z)]
+    z_max = float(np.percentile(valid, 98)) if valid.size > 0 else 1.0
+    z_min = 0.0
+
+    best_fbin, best_pi, best_pval = _best_point(ks_p_2d, fbin_vals, pi_vals)
+
+    traces: list = [
+        go.Heatmap(
+            z=z, x=pi_vals, y=fbin_vals,
+            colorscale='RdBu_r',
+            zmin=z_min, zmax=z_max,
+            zsmooth='best',
+            colorbar=dict(title=colorbar_title, thickness=14, len=0.9),
+            hovertemplate='π=%{x:.3f}<br>f_bin=%{y:.4f}<br>' + colorbar_title +
+                          '=%{z:.4f}<extra></extra>',
+        ),
+        go.Contour(
+            z=ks_p_2d, x=pi_vals, y=fbin_vals,
+            contours=dict(
+                coloring='none',
+                showlabels=True,
+                labelfont=dict(size=10, color='white'),
+                start=0.05, end=0.30, size=0.05,
+            ),
+            line=dict(color='white', width=1, dash='dot'),
+            showscale=False,
+            hoverinfo='skip',
+        ),
+        go.Scatter(
+            x=[best_pi], y=[best_fbin],
+            mode='markers+text',
+            marker=dict(symbol='star', size=18, color='gold',
+                        line=dict(color='black', width=1)),
+            text=[f'  f={best_fbin:.3f}, π={best_pi:.2f}, p={best_pval:.3f}'],
+            textposition='middle right',
+            textfont=dict(color='gold', size=11),
+            name='Best fit',
+            showlegend=False,
+        ),
+    ]
+
+    layout_kw: dict = dict(
+        title=dict(text=title, font=dict(size=14)),
+        xaxis_title='π  (period power-law index)',
+        yaxis_title='f_bin  (intrinsic binary fraction)',
+        plot_bgcolor='#1a1a2e',
+        paper_bgcolor='#1a1a2e',
+        font_color='#e0e0e0',
+        height=height,
+        margin=dict(l=60, r=20, t=50, b=50),
+    )
+    if width is not None:
+        layout_kw['width'] = width
+
+    fig = go.Figure(traces)
+    fig.update_layout(**layout_kw)
+    return fig
+
+
+def _make_max_pval_fig(
+    sigma_vals: np.ndarray,
+    max_pvals: list[float],
+    height: int = 300,
+) -> go.Figure:
+    """Line chart: max K-S p-value vs sigma_single."""
+    best_idx = int(np.argmax(max_pvals))
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=sigma_vals, y=max_pvals,
+        mode='lines+markers',
+        marker=dict(size=8, color='#4A90D9'),
+        line=dict(color='#4A90D9', width=2),
+        hovertemplate='σ_single=%{x:.1f} km/s<br>max p=%{y:.4f}<extra></extra>',
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=[float(sigma_vals[best_idx])],
+        y=[max_pvals[best_idx]],
+        mode='markers+text',
+        marker=dict(symbol='star', size=16, color='gold',
+                    line=dict(color='black', width=1)),
+        text=[f'  σ={float(sigma_vals[best_idx]):.1f}, p={max_pvals[best_idx]:.4f}'],
+        textposition='middle right',
+        textfont=dict(color='gold', size=11),
+        showlegend=False,
+    ))
+    fig.update_layout(
+        title=dict(text='Max K-S p-value vs σ_single', font=dict(size=14)),
+        xaxis_title='σ_single (km/s)',
+        yaxis_title='Max K-S p-value',
+        plot_bgcolor='#1a1a2e',
+        paper_bgcolor='#1a1a2e',
+        font_color='#e0e0e0',
+        height=height,
+        margin=dict(l=60, r=20, t=50, b=50),
+    )
+    return fig
+
+
+def _make_3d_stacked_fig(
+    ks_p_3d: np.ndarray,
+    fbin_vals: np.ndarray,
+    pi_vals: np.ndarray,
+    sigma_vals: np.ndarray,
+    height: int = 700,
+    width: int | None = None,
+) -> go.Figure:
+    """3D stacked semi-transparent surfaces: one per sigma_single."""
+    valid = ks_p_3d[~np.isnan(ks_p_3d)]
+    global_zmax = float(np.percentile(valid, 98)) if valid.size > 0 else 1.0
+
+    fig = go.Figure()
+    pi_mesh, fbin_mesh = np.meshgrid(pi_vals, fbin_vals)
+
+    n_sigma = len(sigma_vals)
+    # Cap layers to avoid overly heavy plots
+    max_layers = 20
+    if n_sigma > max_layers:
+        indices = np.linspace(0, n_sigma - 1, max_layers, dtype=int)
+    else:
+        indices = np.arange(n_sigma)
+
+    sigma_min_val = float(sigma_vals[indices[0]])
+    sigma_max_val = float(sigma_vals[indices[-1]])
+    sigma_range = max(sigma_max_val - sigma_min_val, 1.0)
+
+    for count, i_s in enumerate(indices):
+        sigma_val = float(sigma_vals[i_s])
+        # z position = actual sigma value for meaningful axis
+        z_layer = np.full_like(pi_mesh, sigma_val)
+        p_slice = ks_p_3d[i_s]
+
+        fig.add_trace(go.Surface(
+            x=pi_mesh, y=fbin_mesh, z=z_layer,
+            surfacecolor=p_slice,
+            colorscale='RdBu_r',
+            cmin=0.0, cmax=global_zmax,
+            opacity=0.6,
+            showscale=(count == len(indices) - 1),
+            colorbar=dict(title='K-S p', thickness=14, len=0.6)
+            if count == len(indices) - 1 else None,
+            name=f'σ={sigma_val:.1f}',
+            hovertemplate=(
+                f'σ_single={sigma_val:.1f} km/s<br>'
+                'π=%{x:.2f}<br>f_bin=%{y:.3f}<br>p=%{surfacecolor:.4f}<extra></extra>'
+            ),
+        ))
+
+    layout_kw = dict(
+        title=dict(text='3D Stacked Heatmaps (f_bin x π x σ_single)',
+                   font=dict(size=14)),
+        scene=dict(
+            xaxis_title='π  (period power-law index)',
+            yaxis_title='f_bin  (binary fraction)',
+            zaxis_title='σ_single (km/s)',
+            bgcolor='#1a1a2e',
+        ),
+        plot_bgcolor='#1a1a2e',
+        paper_bgcolor='#1a1a2e',
+        font_color='#e0e0e0',
+        height=height,
+        margin=dict(l=10, r=10, t=50, b=10),
+    )
+    if width is not None:
+        layout_kw['width'] = width
+
+    fig.update_layout(**layout_kw)
+    return fig
+
+
+def _find_reusable_fbin(
+    cached: dict,
+    fbin_new: np.ndarray,
+    pi_new: np.ndarray,
+    sigma_new: np.ndarray,
+    stable_cfg: dict,
+) -> tuple[list[int], list[int]] | None:
+    """
+    Check if cached result shares the same pi grid and simulation parameters.
+    Returns (new_indices, cache_indices) for matching f_bin values, or None.
+    """
+    try:
+        if not np.allclose(np.asarray(cached['pi_grid']), pi_new, atol=1e-6):
+            return None
+        if not np.allclose(np.asarray(cached['sigma_grid']), sigma_new, atol=1e-6):
+            return None
+        cached_cfg = json.loads(str(cached.get('settings', '{}')))
+        for k in ('n_stars_sim', 'sigma_measure', 'logP_min', 'logP_max',
+                   'period_model', 'e_model', 'e_max',
+                   'mass_primary_model', 'mass_primary_fixed',
+                   'q_model', 'q_min', 'q_max'):
+            if str(cached_cfg.get(k)) != str(stable_cfg.get(k)):
+                return None
+        cached_fbin = np.asarray(cached['fbin_grid'])
+        new_idx, cache_idx = [], []
+        for i, fb in enumerate(fbin_new):
+            j = int(np.argmin(np.abs(cached_fbin - fb)))
+            if np.abs(cached_fbin[j] - fb) < 1e-6:
+                new_idx.append(i)
+                cache_idx.append(j)
+        return new_idx, cache_idx
+    except Exception:
+        return None
+
+
+def _append_run_history(entry: dict) -> None:
+    history = []
+    if os.path.exists(_HISTORY_PATH):
+        try:
+            with open(_HISTORY_PATH) as f:
+                history = json.load(f)
+        except Exception:
+            pass
+    history.append(entry)
+    with open(_HISTORY_PATH, 'w') as f:
+        json.dump(history, f, indent=2, default=str)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dsilva tab
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_dsilva:
+    gcfg   = settings.get('grid_dsilva', {})
+    simcfg = settings.get('simulation', {})
+    cls    = settings.get('classification', {})
+    orb    = gcfg.get('orbital', {})
+
+    col_left, col_right = st.columns([0.30, 0.70])
+
+    # ── Left column: grid + orbital parameters ───────────────────────────────
+    with col_left:
+        with st.expander('⚙️ Grid parameters', expanded=True):
+            fbin_min = st.number_input(
+                'f_bin min', 0.0, 0.5, float(gcfg.get('fbin_min', 0.01)), 0.01,
+                key='bc_fbin_min',
+                on_change=lambda: sm.save(['grid_dsilva', 'fbin_min'],
+                                          value=st.session_state['bc_fbin_min']))
+            fbin_max = st.number_input(
+                'f_bin max', 0.5, 1.0, float(gcfg.get('fbin_max', 0.99)), 0.01,
+                key='bc_fbin_max',
+                on_change=lambda: sm.save(['grid_dsilva', 'fbin_max'],
+                                          value=st.session_state['bc_fbin_max']))
+            fbin_steps = st.number_input(
+                'f_bin steps', 10, 500, int(gcfg.get('fbin_steps', 137)), 1,
+                key='bc_fbin_steps',
+                on_change=lambda: sm.save(['grid_dsilva', 'fbin_steps'],
+                                          value=st.session_state['bc_fbin_steps']))
+            pi_min = st.number_input(
+                'π min', -5.0, 0.0, float(gcfg.get('pi_min', -3.0)), 0.1,
+                key='bc_pi_min',
+                on_change=lambda: sm.save(['grid_dsilva', 'pi_min'],
+                                          value=st.session_state['bc_pi_min']))
+            pi_max = st.number_input(
+                'π max', 0.0, 5.0, float(gcfg.get('pi_max', 3.0)), 0.1,
+                key='bc_pi_max',
+                on_change=lambda: sm.save(['grid_dsilva', 'pi_max'],
+                                          value=st.session_state['bc_pi_max']))
+            pi_steps = st.number_input(
+                'π steps', 10, 500, int(gcfg.get('pi_steps', 249)), 1,
+                key='bc_pi_steps',
+                on_change=lambda: sm.save(['grid_dsilva', 'pi_steps'],
+                                          value=st.session_state['bc_pi_steps']))
+            n_stars_sim = st.number_input(
+                'N stars / point', 100, 50000, int(gcfg.get('n_stars_sim', 3000)), 100,
+                key='bc_n_stars',
+                on_change=lambda: sm.save(['grid_dsilva', 'n_stars_sim'],
+                                          value=st.session_state['bc_n_stars']))
+            sigma_meas = st.number_input(
+                'σ_measure (km/s)', 0.001, 20.0,
+                float(simcfg.get('sigma_measure', 1.622)), 0.001,
+                format='%.3f', key='bc_sigma_meas',
+                on_change=lambda: sm.save(['simulation', 'sigma_measure'],
+                                          value=st.session_state['bc_sigma_meas']))
+
+        with st.expander('🔧 Orbital parameters (Kepler)', expanded=False):
+            st.caption('Parameters of the Kepler orbit randomization in the simulation.')
+
+            # Period range
+            logP_min_val = st.number_input(
+                'log₁₀(P/days) min', 0.01, 10.0,
+                float(orb.get('logP_min', gcfg.get('logP_min', 0.15))), 0.01,
+                key='bc_logP_min',
+                on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'logP_min'],
+                                          value=st.session_state['bc_logP_min']))
+            logP_max_val = st.number_input(
+                'log₁₀(P/days) max', 0.1, 10.0,
+                float(orb.get('logP_max', gcfg.get('logP_max', 5.0))), 0.1,
+                key='bc_logP_max',
+                on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'logP_max'],
+                                          value=st.session_state['bc_logP_max']))
+
+            st.markdown('---')
+            # Eccentricity
+            e_model = st.selectbox(
+                'Eccentricity model', ['flat', 'zero'],
+                index=['flat', 'zero'].index(orb.get('e_model', 'flat')),
+                key='bc_e_model',
+                on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'e_model'],
+                                          value=st.session_state['bc_e_model']))
+            if e_model == 'flat':
+                e_max = st.number_input(
+                    'e_max', 0.0, 0.99, float(orb.get('e_max', 0.9)), 0.05,
+                    key='bc_e_max',
+                    on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'e_max'],
+                                              value=st.session_state['bc_e_max']))
+            else:
+                e_max = 0.0
+
+            st.markdown('---')
+            # Primary mass
+            mass_model = st.selectbox(
+                'Primary mass model', ['fixed', 'uniform'],
+                index=['fixed', 'uniform'].index(orb.get('mass_primary_model', 'fixed')),
+                key='bc_mass_model',
+                on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'mass_primary_model'],
+                                          value=st.session_state['bc_mass_model']))
+            if mass_model == 'fixed':
+                mass_fixed = st.number_input(
+                    'M₁ (M☉)', 1.0, 200.0, float(orb.get('mass_primary_fixed', 10.0)), 1.0,
+                    key='bc_mass_fixed',
+                    on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'mass_primary_fixed'],
+                                              value=st.session_state['bc_mass_fixed']))
+                mass_range = (float(mass_fixed), float(mass_fixed))
+            else:
+                mass_fixed = 10.0
+                _mr = orb.get('mass_primary_range', [10.0, 20.0])
+                mc1, mc2 = st.columns(2)
+                mass_min_v = mc1.number_input(
+                    'M₁ min', 1.0, 200.0, float(_mr[0]), 1.0, key='bc_mass_min',
+                    on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'mass_primary_range'],
+                                              value=[st.session_state['bc_mass_min'],
+                                                     st.session_state.get('bc_mass_max', _mr[1])]))
+                mass_max_v = mc2.number_input(
+                    'M₁ max', 1.0, 200.0, float(_mr[1]), 1.0, key='bc_mass_max',
+                    on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'mass_primary_range'],
+                                              value=[st.session_state.get('bc_mass_min', _mr[0]),
+                                                     st.session_state['bc_mass_max']]))
+                mass_range = (float(mass_min_v), float(mass_max_v))
+
+            st.markdown('---')
+            # Mass ratio q = M2/M1
+            q_model = st.selectbox(
+                'Mass ratio q model', ['flat', 'langer'],
+                index=['flat', 'langer'].index(orb.get('q_model', 'flat')),
+                key='bc_q_model',
+                on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'q_model'],
+                                          value=st.session_state['bc_q_model']))
+            _qr = orb.get('q_range', [0.1, 2.0])
+            qc1, qc2 = st.columns(2)
+            q_min_v = qc1.number_input(
+                'q min', 0.01, 10.0, float(_qr[0]), 0.01, key='bc_q_min',
+                on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'q_range'],
+                                          value=[st.session_state['bc_q_min'],
+                                                 st.session_state.get('bc_q_max', _qr[1])]))
+            q_max_v = qc2.number_input(
+                'q max', 0.01, 10.0, float(_qr[1]), 0.1, key='bc_q_max',
+                on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'q_range'],
+                                          value=[st.session_state.get('bc_q_min', _qr[0]),
+                                                 st.session_state['bc_q_max']]))
+            if q_model == 'langer':
+                langer_q_mu = st.number_input(
+                    'Langer q mean', 0.01, 5.0,
+                    float(orb.get('langer_q_mu', 0.7)), 0.05,
+                    key='bc_lq_mu',
+                    on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'langer_q_mu'],
+                                              value=st.session_state['bc_lq_mu']))
+                langer_q_sig = st.number_input(
+                    'Langer q sigma', 0.01, 5.0,
+                    float(orb.get('langer_q_sigma', 0.2)), 0.05,
+                    key='bc_lq_sig',
+                    on_change=lambda: sm.save(['grid_dsilva', 'orbital', 'langer_q_sigma'],
+                                              value=st.session_state['bc_lq_sig']))
+            else:
+                langer_q_mu = 0.7
+                langer_q_sig = 0.2
+
+    # ── Right column: sigma scan + actions + display ─────────────────────────
+    with col_right:
+        with st.expander('🎚️ σ_single scan (intrinsic single-star scatter)', expanded=True):
+            scan_sigma = st.toggle('Scan σ_single over a range', key='bc_scan_sigma')
+            if scan_sigma:
+                _sigma_default = float(simcfg.get('sigma_single', 5.5))
+                _sc1, _sc2, _sc3 = st.columns(3)
+                sigma_min = _sc1.number_input(
+                    'σ_single min (km/s)', 0.1, 500.0,
+                    max(0.1, _sigma_default - 2.0), 0.1,
+                    key='bc_sigma_min')
+                sigma_max_val_w = _sc2.number_input(
+                    'σ_single max (km/s)', 0.5, 500.0,
+                    _sigma_default + 2.0, 0.1,
+                    key='bc_sigma_max')
+                sigma_steps = _sc3.number_input(
+                    'σ_single steps', 2, 500, 5, 1, key='bc_sigma_steps')
+                sigma_vals = np.linspace(max(0.1, sigma_min),
+                                         max(sigma_min + 0.1, sigma_max_val_w),
+                                         int(sigma_steps))
+            else:
+                sigma_single = st.number_input(
+                    'σ_single (km/s)', 0.1, 500.0,
+                    float(simcfg.get('sigma_single', 5.5)), 0.1,
+                    key='bc_sigma_single',
+                    on_change=lambda: sm.save(
+                        ['simulation', 'sigma_single'],
+                        value=st.session_state['bc_sigma_single']))
+                sigma_vals = np.array([float(sigma_single)])
+
+        # Action row
+        max_proc = max(1, (os.cpu_count() or 2) - 1)
+        _ac1, _ac2, _ac3, _ac4 = st.columns([0.15, 0.25, 0.30, 0.30])
+        n_proc = _ac1.number_input('Workers', 1, max_proc, max_proc, key='bc_nproc')
+        view_mode = _ac2.radio('View', ['K-S p-value', 'K-S D-statistic'],
+                               horizontal=True, key='bc_view_mode')
+        show_d = view_mode == 'K-S D-statistic'
+        run_btn  = _ac3.button('▶️ Run Bias Correction', type='primary', key='bc_run')
+        load_btn = _ac4.button('📂 Load cached result', key='bc_load')
+
+        # Display slots
+        progress_slot      = st.empty()
+        status_slot        = st.empty()
+        max_pval_line_slot = st.empty()
+        sigma_browse_slot  = st.empty()
+        heatmap_slot       = st.empty()
+        result_slot        = st.empty()
+
+    # ── Stable config (used for partial reuse check) ──────────────────────────
+    stable_cfg = {
+        'n_stars_sim':        int(n_stars_sim),
+        'sigma_measure':      float(sigma_meas),
+        'logP_min':           float(logP_min_val),
+        'logP_max':           float(logP_max_val),
+        'period_model':       'powerlaw',
+        'e_model':            str(e_model),
+        'e_max':              float(e_max),
+        'mass_primary_model': str(mass_model),
+        'mass_primary_fixed': float(mass_fixed),
+        'q_model':            str(q_model),
+        'q_min':              float(q_min_v),
+        'q_max':              float(q_max_v),
+        'primary_line':       settings.get('primary_line', 'C IV 5808-5812'),
+        'threshold_dRV':      cls.get('threshold_dRV', 45.5),
+        'sigma_factor':       cls.get('sigma_factor', 4.0),
+    }
+
+    fbin_vals = np.linspace(float(fbin_min), float(fbin_max), int(fbin_steps))
+    pi_vals   = np.linspace(float(pi_min),   float(pi_max),   int(pi_steps))
+
+    # ── Load cached result if requested ──────────────────────────────────────
+    if load_btn:
+        cached = cached_load_grid_result('dsilva')
+        if cached is not None:
+            st.session_state['bc_result'] = cached
+            status_slot.success('Loaded cached result from results/dsilva_result.npz')
+        else:
+            status_slot.warning('No cached result found at results/dsilva_result.npz')
+
+    # ── Run grid ──────────────────────────────────────────────────────────────
+    if run_btn:
+        sh = settings_hash(settings)
+        try:
+            obs_delta_rv, _ = cached_load_observed_delta_rvs(sh)
+            cadence_list, cadence_weights = cached_load_cadence(sh)
+        except Exception as e:
+            status_slot.error(f'Failed to load observations: {e}')
+            st.stop()
+
+        from wr_bias_simulation import (
+            SimulationConfig, BinaryParameterConfig, _single_grid_task,
+        )
+
+        bin_cfg = BinaryParameterConfig(
+            logP_min=float(logP_min_val),
+            logP_max=float(logP_max_val),
+            period_model='powerlaw',
+            e_model=str(e_model),
+            e_max=float(e_max),
+            mass_primary_model=str(mass_model),
+            mass_primary_fixed=float(mass_fixed),
+            mass_primary_range=tuple(mass_range),
+            q_model=str(q_model),
+            q_range=(float(q_min_v), float(q_max_v)),
+            langer_q_mu=float(langer_q_mu),
+            langer_q_sigma=float(langer_q_sig),
+        )
+
+        # ── Check for partial reuse from existing result ───────────────────
+        cached_existing = None
+        reuse_info = None
+        existing_path = _result_path('dsilva')
+        if os.path.exists(existing_path):
+            try:
+                cached_existing = dict(np.load(existing_path, allow_pickle=True))
+                sigma_new_arr = np.array([float(s) for s in sigma_vals])
+                reuse_info = _find_reusable_fbin(
+                    cached_existing, fbin_vals, pi_vals, sigma_new_arr, stable_cfg)
+            except Exception:
+                cached_existing = None
+
+        if reuse_info:
+            reuse_new_idx, reuse_cache_idx = reuse_info
+            n_reused = len(reuse_new_idx)
+            status_slot.info(
+                f'♻️ Reusing {n_reused}/{len(fbin_vals)} f_bin rows from cached result. '
+                f'Running {len(fbin_vals) - n_reused} new f_bin values.'
+            )
+        else:
+            reuse_new_idx, reuse_cache_idx = [], []
+            n_reused = 0
+
+        # Pre-allocate full result arrays
+        n_sigma = len(sigma_vals)
+        n_fbin  = len(fbin_vals)
+        n_pi    = len(pi_vals)
+        accumulated_ks_p = np.full((n_sigma, n_fbin, n_pi), np.nan)
+        accumulated_ks_D = np.full_like(accumulated_ks_p, np.nan)
+
+        # Fill in reused rows from cached result
+        if reuse_info and cached_existing is not None:
+            cached_ks_p = np.asarray(cached_existing['ks_p'])
+            cached_ks_D = np.asarray(cached_existing['ks_D'])
+            for new_i, cache_i in zip(reuse_new_idx, reuse_cache_idx):
+                accumulated_ks_p[:, new_i, :] = cached_ks_p[:, cache_i, :]
+                accumulated_ks_D[:, new_i, :] = cached_ks_D[:, cache_i, :]
+
+        # Identify missing f_bin indices to compute
+        reuse_set        = set(reuse_new_idx)
+        missing_fbin_idx = [i for i in range(n_fbin) if i not in reuse_set]
+
+        # Total rows to compute (for progress bar)
+        n_rows_total = n_sigma * len(missing_fbin_idx)
+        rows_done    = 0
+        t_start      = time.time()
+
+        if n_rows_total == 0:
+            progress_slot.progress(1.0, text='All rows reused from cache.')
+            status_slot.success('All f_bin rows already computed — no new work needed.')
+        else:
+            pi_to_idx = {}
+            for i, pv in enumerate(pi_vals):
+                pi_to_idx[round(float(pv), 10)] = i
+
+            fbin_to_global = {}
+            for gj in missing_fbin_idx:
+                fbin_to_global[round(float(fbin_vals[gj]), 10)] = gj
+
+            seed_base = 1234
+            last_render_time = 0.0
+
+            # ── Single persistent Pool for the ENTIRE run ──────────────────
+            with mp.Pool(processes=int(n_proc)) as pool:
+                for i_sigma, sigma in enumerate(sigma_vals):
+                    sim_cfg_obj = SimulationConfig(
+                        n_stars=int(n_stars_sim),
+                        sigma_single=float(sigma),
+                        sigma_measure=float(sigma_meas),
+                        cadence_library=cadence_list,
+                        cadence_weights=cadence_weights,
+                    )
+
+                    tasks = []
+                    for gj in missing_fbin_idx:
+                        for i_pi, pv in enumerate(pi_vals):
+                            tasks.append((
+                                float(fbin_vals[gj]),
+                                float(pv),
+                                float(sigma),
+                                sim_cfg_obj,
+                                bin_cfg,
+                                obs_delta_rv,
+                                'powerlaw',
+                                seed_base,
+                            ))
+                            seed_base += 1
+
+                    completed_per_fbin = {gj: 0 for gj in missing_fbin_idx}
+
+                    for fb, pi_ret, sigma_ret, D, p in pool.imap_unordered(
+                            _single_grid_task, tasks, chunksize=max(1, n_pi // 4)):
+                        gj    = fbin_to_global[round(fb, 10)]
+                        i_pi  = pi_to_idx[round(pi_ret, 10)]
+
+                        accumulated_ks_p[i_sigma, gj, i_pi] = p
+                        accumulated_ks_D[i_sigma, gj, i_pi] = D
+
+                        completed_per_fbin[gj] += 1
+
+                        if completed_per_fbin[gj] == n_pi:
+                            rows_done += 1
+
+                            elapsed = time.time() - t_start
+                            eta_str = ''
+                            if rows_done > 1 and rows_done < n_rows_total:
+                                eta = elapsed / rows_done * (n_rows_total - rows_done)
+                                eta_str = f'  —  ETA {int(eta)}s'
+
+                            progress_slot.progress(
+                                rows_done / n_rows_total,
+                                text=(f'σ {i_sigma+1}/{n_sigma}, '
+                                      f'f_bin row {rows_done}/{n_rows_total}  '
+                                      f'(σ_single = {sigma:.1f} km/s){eta_str}')
+                            )
+
+                            now = time.time()
+                            if now - last_render_time > 1.0 or rows_done == n_rows_total:
+                                last_render_time = now
+                                cur_p = accumulated_ks_p[i_sigma]
+                                cur_p_disp = np.where(np.isnan(cur_p), 0.0, cur_p)
+                                cur_D_disp = np.where(
+                                    np.isnan(accumulated_ks_D[i_sigma]),
+                                    0.0, accumulated_ks_D[i_sigma])
+                                heatmap_slot.plotly_chart(
+                                    _make_heatmap_fig(
+                                        cur_p_disp, fbin_vals, pi_vals,
+                                        title=f'K-S p-value  (σ_single = {sigma:.1f} km/s)',
+                                        show_d=show_d,
+                                        ks_d_2d=cur_D_disp,
+                                        height=_ch, width=_cw,
+                                    ),
+                                    use_container_width=_use_cw,
+                                    key='bc_heatmap',
+                                )
+
+                                bf, bp, bpv = _best_point(cur_p_disp, fbin_vals, pi_vals)
+                                status_slot.markdown(
+                                    f'σ = **{sigma:.1f}** km/s  →  '
+                                    f'best f_bin = **{bf:.4f}**, π = **{bp:.3f}**, '
+                                    f'K-S p = **{bpv:.4f}**'
+                                )
+
+        elapsed_total = time.time() - t_start
+        if n_rows_total > 0:
+            progress_slot.progress(1.0, text=f'Done in {elapsed_total:.0f}s.')
+
+        # ── Save combined result ───────────────────────────────────────────
+        os.makedirs(_RESULT_DIR, exist_ok=True)
+        chash = _stable_cfg_hash({**stable_cfg,
+                                   'fbin_min': float(fbin_min),
+                                   'fbin_max': float(fbin_max),
+                                   'fbin_steps': int(fbin_steps),
+                                   'pi_min': float(pi_min),
+                                   'pi_max': float(pi_max),
+                                   'pi_steps': int(pi_steps),
+                                   'sigma_vals': sigma_vals.tolist()})
+        full_result = {
+            'fbin_grid':  fbin_vals,
+            'pi_grid':    pi_vals,
+            'sigma_grid': sigma_vals,
+            'ks_p':       accumulated_ks_p,
+            'ks_D':       accumulated_ks_D,
+        }
+        np.savez(
+            _result_path('dsilva'),
+            **full_result,
+            config_hash=chash,
+            settings=np.array(json.dumps(stable_cfg)),
+            obs_delta_rv=obs_delta_rv,
+            timestamp=np.array(_dt.datetime.now().isoformat()),
+        )
+        cached_load_grid_result.clear()
+        st.session_state['bc_result'] = full_result
+        st.session_state['result_dsilva'] = full_result
+
+        _append_run_history({
+            'timestamp':     _dt.datetime.now().isoformat(),
+            'model':         'dsilva_powerlaw',
+            'config_hash':   chash,
+            'config':        stable_cfg,
+            'elapsed_s':     round(elapsed_total, 1),
+            'result_file':   _result_path('dsilva'),
+            'n_reused_fbin': n_reused,
+        })
+
+        status_slot.success(
+            f'Saved to results/dsilva_result.npz  '
+            f'({n_reused} f_bin rows reused, '
+            f'{len(fbin_vals) - n_reused} computed in {elapsed_total:.0f}s)'
+        )
+
+    # ── Display result (always shown when result exists) ─────────────────────
+    result = st.session_state.get('bc_result') or st.session_state.get('result_dsilva')
+
+    if result is None:
+        result = cached_load_grid_result('dsilva')
+        if result is not None:
+            st.session_state['bc_result'] = result
+
+    if result is not None:
+        fbin_g  = np.asarray(result['fbin_grid'])
+        pi_g    = np.asarray(result['pi_grid'])
+        sigma_g = np.asarray(result['sigma_grid'])
+        ks_p_3d = np.asarray(result['ks_p'])
+        ks_D_3d = np.asarray(result['ks_D'])
+
+        # Ensure 3D shape
+        if ks_p_3d.ndim == 2:
+            ks_p_3d = ks_p_3d[np.newaxis, ...]
+            ks_D_3d = ks_D_3d[np.newaxis, ...]
+
+        # Compute max p-value per sigma slice
+        max_pvals = [float(np.nanmax(ks_p_3d[i_s]))
+                     for i_s in range(len(sigma_g))]
+        best_sig_idx = int(np.argmax(max_pvals))
+
+        # Show max-pval line chart if multiple sigma values
+        if len(sigma_g) > 1:
+            max_pval_line_slot.plotly_chart(
+                _make_max_pval_fig(sigma_g, max_pvals, height=280),
+                use_container_width=True,
+                key='bc_max_pval_line',
+            )
+
+            # Sigma browse slider
+            sigma_options = [f'{float(s):.1f}' for s in sigma_g]
+            selected_sigma_str = sigma_browse_slot.select_slider(
+                'Browse σ_single heatmaps',
+                options=sigma_options,
+                value=sigma_options[best_sig_idx],
+                key='bc_sigma_browse',
+            )
+            display_idx = sigma_options.index(selected_sigma_str)
+        else:
+            display_idx = 0
+
+        # Show heatmap for the selected sigma slice
+        heatmap_slot.plotly_chart(
+            _make_heatmap_fig(
+                ks_p_3d[display_idx], fbin_g, pi_g,
+                title=(f'K-S p-value  '
+                       f'(σ_single = {float(sigma_g[display_idx]):.1f} km/s)'),
+                show_d=show_d,
+                ks_d_2d=ks_D_3d[display_idx],
+                height=_ch, width=_cw,
+            ),
+            use_container_width=_use_cw,
+            key='bc_heatmap',
+        )
+
+        # Best across ALL sigma slices
+        flat_best = int(np.argmax(ks_p_3d))
+        si = flat_best // (ks_p_3d.shape[1] * ks_p_3d.shape[2])
+        fi = (flat_best % (ks_p_3d.shape[1] * ks_p_3d.shape[2])) // ks_p_3d.shape[2]
+        pi_i = flat_best % ks_p_3d.shape[2]
+        best_fbin_v  = float(fbin_g[fi])
+        best_pi_v    = float(pi_g[pi_i])
+        best_pval_v  = float(ks_p_3d[si, fi, pi_i])
+        best_sigma_v = float(sigma_g[si])
+
+        bartzakos = cls.get('bartzakos_binaries', 3)
+        total_pop = cls.get('total_population', 28)
+
+        sh_curr = settings_hash(settings)
+        try:
+            obs_drv, _ = cached_load_observed_delta_rvs(sh_curr)
+            n_det = int(np.sum(obs_drv > cls.get('threshold_dRV', 45.5)))
+        except Exception:
+            n_det = 0
+
+        result_slot.markdown(
+            f'**Best fit:**  '
+            f'f_bin = `{best_fbin_v:.4f}`,  '
+            f'π = `{best_pi_v:.4f}`,  '
+            f'σ_single = `{best_sigma_v:.1f}` km/s,  '
+            f'K-S p = `{best_pval_v:.6f}`  \n'
+            f'**Observed fraction:**  '
+            f'({n_det}+{bartzakos})/{total_pop} = '
+            f'**{(n_det+bartzakos)/total_pop*100:.1f}%**'
+        )
+
+        # ── Import simulation functions for analysis plots ─────────────────
+        from wr_bias_simulation import (
+            SimulationConfig, BinaryParameterConfig,
+            simulate_delta_rv_sample, _simulate_rv_sample_full,
+            simulate_with_params, ks_two_sample,
+        )
+
+        # Load observed data for analysis plots
+        sh_analysis = settings_hash(settings)
+        try:
+            obs_drv_analysis, obs_detail = cached_load_observed_delta_rvs(sh_analysis)
+            cadence_list_a, cadence_weights_a = cached_load_cadence(sh_analysis)
+            _has_obs = True
+        except Exception:
+            _has_obs = False
+
+        if _has_obs:
+            thresh_dRV = float(cls.get('threshold_dRV', 45.5))
+
+            # Build shared configs
+            _bin_cfg_explore = BinaryParameterConfig(
+                logP_min=float(logP_min_val),
+                logP_max=float(logP_max_val),
+                period_model='powerlaw',
+                e_model=str(e_model),
+                e_max=float(e_max),
+                mass_primary_model=str(mass_model),
+                mass_primary_fixed=float(mass_fixed),
+                mass_primary_range=tuple(mass_range),
+                q_model=str(q_model),
+                q_range=(float(q_min_v), float(q_max_v)),
+                langer_q_mu=float(langer_q_mu),
+                langer_q_sigma=float(langer_q_sig),
+            )
+
+            # ── Simulate at best-fit for analysis plots ────────────────
+            _sim_cfg_gap = SimulationConfig(
+                n_stars=int(n_stars_sim),
+                sigma_single=float(best_sigma_v),
+                sigma_measure=float(sigma_meas),
+                cadence_library=cadence_list_a,
+                cadence_weights=cadence_weights_a,
+            )
+            if 'bc_gap_sim' not in st.session_state:
+                rng_gap = np.random.default_rng(99)
+                st.session_state['bc_gap_sim'] = simulate_with_params(
+                    best_fbin_v, best_pi_v,
+                    _sim_cfg_gap, _bin_cfg_explore, rng_gap,
+                )
+            gap_sim = st.session_state['bc_gap_sim']
+
+            gap_drv = gap_sim['delta_rv']
+            gap_is_bin = gap_sim['is_binary']
+            gap_idx_bin = gap_sim['idx_bin']
+
+            intrinsic_fbin = float(gap_is_bin.mean())
+            detected_mask = gap_drv > thresh_dRV
+            observed_fbin = float(detected_mask.mean())
+            missed_count = int(np.sum(gap_is_bin & ~detected_mask))
+            detected_bin_count = int(np.sum(gap_is_bin & detected_mask))
+            total_bin = int(gap_is_bin.sum())
+
+            # Classify binaries for both logP and missed-binaries plots
+            _bin_drv = gap_drv[gap_idx_bin] if gap_idx_bin.size > 0 else np.array([])
+            _bin_detected_mask = _bin_drv > thresh_dRV
+            _bin_missed_mask = ~_bin_detected_mask
+
+            # ── logP distribution + Intrinsic vs Observed fraction ───────
+            st.markdown('---')
+            _lp_col, _bf_col = st.columns(2)
+
+            with _lp_col:
+                st.markdown('### Period Distribution  (log P)')
+
+                # Use simulated periods from gap_sim
+                _CLR_DETECTED = '#E25A53'   # tomato red
+                _CLR_MISSED   = '#F5A623'   # amber/orange
+
+                fig_logP = go.Figure()
+
+                if gap_sim['P_days'].size > 0:
+                    _logP_det = np.log10(gap_sim['P_days'][_bin_detected_mask]) if np.any(_bin_detected_mask) else np.array([])
+                    _logP_mis = np.log10(gap_sim['P_days'][_bin_missed_mask]) if np.any(_bin_missed_mask) else np.array([])
+
+                    if _logP_det.size > 0:
+                        fig_logP.add_trace(go.Histogram(
+                            x=_logP_det, nbinsx=35,
+                            histnorm='probability density',
+                            name=f'Detected ({_logP_det.size})',
+                            marker_color=_CLR_DETECTED, opacity=0.6,
+                        ))
+                    if _logP_mis.size > 0:
+                        fig_logP.add_trace(go.Histogram(
+                            x=_logP_mis, nbinsx=35,
+                            histnorm='probability density',
+                            name=f'Missed ({_logP_mis.size})',
+                            marker_color=_CLR_MISSED, opacity=0.6,
+                        ))
+
+                fig_logP.add_vline(x=float(logP_min_val), line_dash='dash',
+                                   line_color='#888', line_width=1.5,
+                                   annotation_text='logP_min',
+                                   annotation_position='top left',
+                                   annotation_font_color='#888')
+                fig_logP.add_vline(x=float(logP_max_val), line_dash='dash',
+                                   line_color='#888', line_width=1.5,
+                                   annotation_text='logP_max',
+                                   annotation_position='top right',
+                                   annotation_font_color='#888')
+                fig_logP.update_layout(
+                    barmode='overlay',
+                    title=dict(text=f'Simulated Period Distribution  (π = {best_pi_v:.3f})',
+                               font=dict(size=14)),
+                    xaxis_title='log₁₀(P / days)',
+                    yaxis_title='Probability density',
+                    plot_bgcolor='#1a1a2e',
+                    paper_bgcolor='#1a1a2e',
+                    font_color='#e0e0e0',
+                    height=400,
+                    margin=dict(l=60, r=20, t=50, b=50),
+                    legend=dict(x=0.65, y=0.95),
+                )
+                st.plotly_chart(fig_logP, use_container_width=True, key='bc_logP_hist')
+                st.caption(
+                    'Period distribution of simulated binaries at the best-fit model. '
+                    'Red: detected binaries (ΔRV above threshold). '
+                    'Amber: missed binaries (below threshold). '
+                    'Missed systems are concentrated at longer periods. '
+                    'Dashed lines mark the logP bounds used in the simulation.'
+                )
+
+            with _bf_col:
+                st.markdown('### Intrinsic vs Observed Binary Fraction')
+
+                fig_gap = go.Figure()
+                # Intrinsic bar
+                fig_gap.add_trace(go.Bar(
+                    x=['Intrinsic'], y=[intrinsic_fbin],
+                    name='Intrinsic f_bin',
+                    marker_color='#E25A53', width=0.4,
+                    text=[f'{intrinsic_fbin:.1%}'], textposition='outside',
+                ))
+                # Observed bar (split into detected + missed)
+                fig_gap.add_trace(go.Bar(
+                    x=['Observed'], y=[observed_fbin],
+                    name='Detected (ΔRV > threshold)',
+                    marker_color='#4A90D9', width=0.4,
+                    text=[f'{observed_fbin:.1%}'], textposition='outside',
+                ))
+                # Gap annotation
+                gap_pct = intrinsic_fbin - observed_fbin
+                fig_gap.add_annotation(
+                    x=1.3, y=(intrinsic_fbin + observed_fbin) / 2,
+                    text=f'Gap: {gap_pct:.1%}<br>({missed_count} missed<br>of {total_bin} binaries)',
+                    showarrow=True, arrowhead=2,
+                    ax=60, ay=0,
+                    font=dict(size=12, color='#F5A623'),
+                    arrowcolor='#F5A623',
+                )
+                # Horizontal line at intrinsic f_bin
+                fig_gap.add_hline(
+                    y=intrinsic_fbin, line_dash='dot',
+                    line_color='#E25A53', line_width=1,
+                )
+                fig_gap.update_layout(
+                    title=dict(
+                        text=(f'Binary Fraction Gap  (threshold = {thresh_dRV} km/s)'),
+                        font=dict(size=14)),
+                    yaxis_title='Binary fraction',
+                    plot_bgcolor='#1a1a2e',
+                    paper_bgcolor='#1a1a2e',
+                    font_color='#e0e0e0',
+                    height=400,
+                    margin=dict(l=60, r=80, t=50, b=50),
+                    showlegend=True,
+                    legend=dict(x=0.3, y=0.95),
+                    yaxis=dict(range=[0, min(1.0, intrinsic_fbin * 1.4)]),
+                )
+                st.plotly_chart(fig_gap, use_container_width=True, key='bc_gap_chart')
+                st.caption(
+                    f'The intrinsic binary fraction ({intrinsic_fbin:.1%}) vs the '
+                    f'fraction detected above ΔRV = {thresh_dRV} km/s '
+                    f'({observed_fbin:.1%}). The gap represents {missed_count} '
+                    f'binaries whose orbital geometry or period makes them '
+                    f'undetectable with our cadence.'
+                )
+
+            # ── Missed Binaries — Orbital Parameter Histograms ───────────
+            st.markdown('---')
+            st.markdown('### Missed Binaries — Orbital Properties')
+
+            _CLR_SINGLES  = '#4A90D9'   # steel blue
+
+            _mb_view = st.radio(
+                'Show populations',
+                ['Compare detected vs missed', 'Detected binaries only',
+                 'Missed binaries only', 'All three (detected / missed / true singles)'],
+                horizontal=True, key='bc_mb_view',
+            )
+
+            # Extract orbital params for detected and missed
+            P_det = gap_sim['P_days'][_bin_detected_mask] if gap_sim['P_days'].size > 0 else np.array([])
+            P_mis = gap_sim['P_days'][_bin_missed_mask] if gap_sim['P_days'].size > 0 else np.array([])
+            e_det = gap_sim['e'][_bin_detected_mask] if gap_sim['e'].size > 0 else np.array([])
+            e_mis = gap_sim['e'][_bin_missed_mask] if gap_sim['e'].size > 0 else np.array([])
+            q_det = gap_sim['q'][_bin_detected_mask] if gap_sim['q'].size > 0 else np.array([])
+            q_mis = gap_sim['q'][_bin_missed_mask] if gap_sim['q'].size > 0 else np.array([])
+            K1_det = gap_sim['K1'][_bin_detected_mask] if gap_sim['K1'].size > 0 else np.array([])
+            K1_mis = gap_sim['K1'][_bin_missed_mask] if gap_sim['K1'].size > 0 else np.array([])
+            i_det = np.degrees(gap_sim['i_rad'][_bin_detected_mask]) if gap_sim['i_rad'].size > 0 else np.array([])
+            i_mis = np.degrees(gap_sim['i_rad'][_bin_missed_mask]) if gap_sim['i_rad'].size > 0 else np.array([])
+
+            # For true singles, we show ΔRV distribution only (no orbital params)
+            single_drv = gap_drv[~gap_is_bin]
+
+            from plotly.subplots import make_subplots
+
+            _param_labels = ['log₁₀(P / days)', 'Eccentricity', 'Mass ratio q',
+                             'K₁ (km/s)', 'Inclination (°)']
+            _nbins_hist = 30
+
+            fig_mb = make_subplots(rows=1, cols=5, subplot_titles=_param_labels,
+                                   horizontal_spacing=0.06)
+
+            def _add_hist(fig, col, data, name, color, show_legend):
+                if data.size == 0:
+                    return
+                fig.add_trace(go.Histogram(
+                    x=data, nbinsx=_nbins_hist,
+                    histnorm='probability density',
+                    name=name,
+                    marker_color=color, opacity=0.6,
+                    legendgroup=name,
+                    showlegend=show_legend,
+                ), row=1, col=col)
+
+            if _mb_view in ('Compare detected vs missed', 'Detected binaries only',
+                            'All three (detected / missed / true singles)'):
+                _show_leg = True
+                _add_hist(fig_mb, 1, np.log10(P_det) if P_det.size > 0 else P_det,
+                          'Detected', _CLR_DETECTED, _show_leg)
+                _add_hist(fig_mb, 2, e_det, 'Detected', _CLR_DETECTED, False)
+                _add_hist(fig_mb, 3, q_det, 'Detected', _CLR_DETECTED, False)
+                _add_hist(fig_mb, 4, K1_det, 'Detected', _CLR_DETECTED, False)
+                _add_hist(fig_mb, 5, i_det, 'Detected', _CLR_DETECTED, False)
+
+            if _mb_view in ('Compare detected vs missed', 'Missed binaries only',
+                            'All three (detected / missed / true singles)'):
+                _show_leg2 = (_mb_view != 'Detected binaries only')
+                _add_hist(fig_mb, 1, np.log10(P_mis) if P_mis.size > 0 else P_mis,
+                          'Missed', _CLR_MISSED, _show_leg2)
+                _add_hist(fig_mb, 2, e_mis, 'Missed', _CLR_MISSED, False)
+                _add_hist(fig_mb, 3, q_mis, 'Missed', _CLR_MISSED, False)
+                _add_hist(fig_mb, 4, K1_mis, 'Missed', _CLR_MISSED, False)
+                _add_hist(fig_mb, 5, i_mis, 'Missed', _CLR_MISSED, False)
+
+            if _mb_view == 'All three (detected / missed / true singles)':
+                # For true singles, show only the ΔRV in the first panel as context
+                _add_hist(fig_mb, 1, np.zeros(0),
+                          'True singles', _CLR_SINGLES, True)
+                # True singles have no orbital params — add annotation
+                fig_mb.add_annotation(
+                    x=0.5, y=0.5, xref='x5 domain', yref='y5 domain',
+                    text='(no orbital params<br>for true singles)',
+                    showarrow=False,
+                    font=dict(size=10, color='#888'),
+                )
+
+            fig_mb.update_layout(
+                barmode='overlay',
+                plot_bgcolor='#1a1a2e',
+                paper_bgcolor='#1a1a2e',
+                font_color='#e0e0e0',
+                height=380,
+                margin=dict(l=40, r=20, t=40, b=50),
+                legend=dict(
+                    orientation='h', yanchor='bottom', y=1.08,
+                    xanchor='center', x=0.5,
+                ),
+            )
+            for ax_i in range(1, 6):
+                fig_mb.update_xaxes(showgrid=False, row=1, col=ax_i)
+                fig_mb.update_yaxes(showgrid=False, row=1, col=ax_i)
+
+            st.plotly_chart(fig_mb, use_container_width=True, key='bc_missed_binaries')
+            st.caption(
+                f'Orbital parameter distributions of simulated binaries at the '
+                f'best-fit model (f_bin={best_fbin_v:.3f}, π={best_pi_v:.2f}). '
+                f'**Detected** (red): {detected_bin_count} binaries with '
+                f'ΔRV > {thresh_dRV} km/s. '
+                f'**Missed** (amber): {missed_count} binaries below threshold — '
+                f'typically long-period, low-inclination, or low-K₁ systems. '
+                f'Use the toggle above to compare populations.'
+            )
+
+        # ── Model Explorer ───────────────────────────────────────────────
+        if _has_obs:
+            st.markdown('---')
+            st.markdown('## Model Explorer')
+
+            # Model selector
+            _me_c1, _me_c2, _me_c3, _me_c4 = st.columns([0.25, 0.25, 0.25, 0.25])
+            explore_fbin = _me_c1.number_input(
+                'f_bin', 0.0, 1.0, best_fbin_v, 0.001, format='%.4f',
+                key='bc_explore_fbin')
+            explore_pi = _me_c2.number_input(
+                'π', -5.0, 5.0, best_pi_v, 0.01, format='%.3f',
+                key='bc_explore_pi')
+            explore_sigma = _me_c3.number_input(
+                'σ_single (km/s)', 0.1, 500.0, best_sigma_v, 0.1,
+                key='bc_explore_sigma')
+            sim_btn = _me_c4.button('Simulate model', type='primary',
+                                     key='bc_sim_model')
+            st.caption(
+                'Pre-filled with best-fit values. Adjust to explore any model point.'
+            )
+
+            # Build configs for simulation
+            _sim_cfg_explore = SimulationConfig(
+                n_stars=int(n_stars_sim),
+                sigma_single=float(explore_sigma),
+                sigma_measure=float(sigma_meas),
+                cadence_library=cadence_list_a,
+                cadence_weights=cadence_weights_a,
+            )
+
+            # Auto-simulate at best fit on first visit, or re-simulate on button
+            _need_sim = sim_btn or 'bc_sim_drv' not in st.session_state
+            if _need_sim:
+                rng_explore = np.random.default_rng(42)
+                st.session_state['bc_sim_drv'] = simulate_delta_rv_sample(
+                    float(explore_fbin), float(explore_pi),
+                    _sim_cfg_explore, _bin_cfg_explore, rng_explore,
+                )
+                rng_explore2 = np.random.default_rng(42)
+                rv_s, rv_b = _simulate_rv_sample_full(
+                    float(explore_fbin), float(explore_pi),
+                    _sim_cfg_explore, _bin_cfg_explore, rng_explore2,
+                )
+                st.session_state['bc_sim_rv_single'] = rv_s
+                st.session_state['bc_sim_rv_binary'] = rv_b
+                st.session_state['bc_explore_vals'] = (
+                    float(explore_fbin), float(explore_pi), float(explore_sigma))
+
+            sim_drv = st.session_state.get('bc_sim_drv')
+            sim_rv_single = st.session_state.get('bc_sim_rv_single')
+            sim_rv_binary = st.session_state.get('bc_sim_rv_binary')
+            ex_fb, ex_pi, ex_sig = st.session_state.get(
+                'bc_explore_vals', (best_fbin_v, best_pi_v, best_sigma_v))
+
+            if sim_drv is not None:
+                # ── 1) CDF Comparison ────────────────────────────────────────
+                st.markdown('### CDF Comparison  (ΔRV)')
+
+                obs_sorted = np.sort(obs_drv_analysis)
+                obs_cdf = np.arange(1, len(obs_sorted) + 1) / len(obs_sorted)
+                sim_sorted = np.sort(sim_drv)
+                sim_cdf = np.arange(1, len(sim_sorted) + 1) / len(sim_sorted)
+
+                D_val, p_val = ks_two_sample(sim_drv, obs_drv_analysis)
+
+                fig_cdf = go.Figure()
+                fig_cdf.add_trace(go.Scatter(
+                    x=obs_sorted, y=obs_cdf,
+                    mode='lines', name='Observed',
+                    line=dict(color='#4A90D9', width=2.5),
+                    hovertemplate='ΔRV=%{x:.1f} km/s<br>CDF=%{y:.3f}<extra>Observed</extra>',
+                ))
+                fig_cdf.add_trace(go.Scatter(
+                    x=sim_sorted, y=sim_cdf,
+                    mode='lines', name='Simulated',
+                    line=dict(color='#E25A53', width=2.5, dash='dash'),
+                    hovertemplate='ΔRV=%{x:.1f} km/s<br>CDF=%{y:.3f}<extra>Simulated</extra>',
+                ))
+                fig_cdf.update_layout(
+                    title=dict(
+                        text=(f'ΔRV CDF — Observed vs Model  '
+                              f'(f_bin={ex_fb:.3f}, π={ex_pi:.2f}, '
+                              f'σ={ex_sig:.1f})'),
+                        font=dict(size=14),
+                    ),
+                    xaxis_title='ΔRV (km/s)',
+                    yaxis_title='Cumulative fraction',
+                    plot_bgcolor='#1a1a2e',
+                    paper_bgcolor='#1a1a2e',
+                    font_color='#e0e0e0',
+                    height=420,
+                    legend=dict(x=0.65, y=0.15),
+                    annotations=[dict(
+                        x=0.98, y=0.95, xref='paper', yref='paper',
+                        text=f'K-S D = {D_val:.4f}<br>p = {p_val:.4f}',
+                        showarrow=False,
+                        font=dict(size=12, color='#e0e0e0'),
+                        bgcolor='rgba(0,0,0,0.5)',
+                        borderpad=6,
+                        xanchor='right',
+                    )],
+                )
+                st.plotly_chart(fig_cdf, use_container_width=True, key='bc_cdf')
+                st.caption(
+                    'Empirical cumulative distribution of peak-to-peak ΔRV. '
+                    'The K-S statistic (D) measures the maximum vertical '
+                    'distance between the two CDFs; a higher p-value indicates '
+                    'a better match between model and observations.'
+                )
+
+                # ── 2) RV Distribution ───────────────────────────────────────
+                st.markdown('### RV Distribution')
+
+                obs_rv_single_list = []
+                obs_rv_binary_list = []
+                obs_rv_all_list = []
+                for star_name, info in obs_detail.items():
+                    rv_arr = info.get('rv')
+                    if rv_arr is None or len(rv_arr) == 0:
+                        continue
+                    obs_rv_all_list.append(rv_arr)
+                    if bool(info.get('is_binary', False)):
+                        obs_rv_binary_list.append(rv_arr)
+                    else:
+                        obs_rv_single_list.append(rv_arr)
+
+                obs_rv_all = np.concatenate(obs_rv_all_list) if obs_rv_all_list else np.array([])
+                obs_rv_singles = np.concatenate(obs_rv_single_list) if obs_rv_single_list else np.array([])
+                obs_rv_binaries = np.concatenate(obs_rv_binary_list) if obs_rv_binary_list else np.array([])
+
+                _rv_c1, _rv_c2 = st.columns([0.4, 0.6])
+                rv_split_mode = _rv_c1.radio(
+                    'Observed RVs', ['All combined', 'Split by classification'],
+                    horizontal=True, key='bc_rv_split')
+                show_sim_rv = _rv_c2.checkbox(
+                    'Overlay simulated RVs', value=True, key='bc_show_sim_rv')
+
+                fig_rv = go.Figure()
+                nbins = 40
+
+                if rv_split_mode == 'All combined':
+                    if obs_rv_all.size > 0:
+                        fig_rv.add_trace(go.Histogram(
+                            x=obs_rv_all, nbinsx=nbins,
+                            histnorm='probability density',
+                            name='Observed (all)',
+                            marker_color='#4A90D9', opacity=0.6,
+                        ))
+                else:
+                    if obs_rv_singles.size > 0:
+                        fig_rv.add_trace(go.Histogram(
+                            x=obs_rv_singles, nbinsx=nbins,
+                            histnorm='probability density',
+                            name='Observed — single',
+                            marker_color='#4A90D9', opacity=0.5,
+                        ))
+                    if obs_rv_binaries.size > 0:
+                        fig_rv.add_trace(go.Histogram(
+                            x=obs_rv_binaries, nbinsx=nbins,
+                            histnorm='probability density',
+                            name='Observed — binary',
+                            marker_color='#E25A53', opacity=0.5,
+                        ))
+
+                if show_sim_rv and sim_rv_single is not None:
+                    if rv_split_mode == 'All combined':
+                        sim_rv_combined = np.concatenate([sim_rv_single, sim_rv_binary])
+                        if sim_rv_combined.size > 0:
+                            fig_rv.add_trace(go.Histogram(
+                                x=sim_rv_combined, nbinsx=nbins,
+                                histnorm='probability density',
+                                name='Simulated (all)',
+                                marker_color='#8C8C8C', opacity=0.4,
+                            ))
+                    else:
+                        if sim_rv_single.size > 0:
+                            fig_rv.add_trace(go.Histogram(
+                                x=sim_rv_single, nbinsx=nbins,
+                                histnorm='probability density',
+                                name='Simulated — single',
+                                marker_color='#7EC8E3', opacity=0.4,
+                            ))
+                        if sim_rv_binary.size > 0:
+                            fig_rv.add_trace(go.Histogram(
+                                x=sim_rv_binary, nbinsx=nbins,
+                                histnorm='probability density',
+                                name='Simulated — binary',
+                                marker_color='#F0A0A0', opacity=0.4,
+                            ))
+
+                fig_rv.update_layout(
+                    barmode='overlay',
+                    title=dict(text='RV Distribution', font=dict(size=14)),
+                    xaxis_title='RV (km/s)',
+                    yaxis_title='Probability density',
+                    plot_bgcolor='#1a1a2e',
+                    paper_bgcolor='#1a1a2e',
+                    font_color='#e0e0e0',
+                    height=420,
+                    legend=dict(x=0.01, y=0.99),
+                )
+                st.plotly_chart(fig_rv, use_container_width=True, key='bc_rv_dist')
+                st.caption(
+                    'Distribution of individual RV measurements. Observed data '
+                    'can be shown combined or split by binary classification; '
+                    'simulated data is drawn from the selected model. All '
+                    'histograms are normalized to probability density for '
+                    'comparison.'
+                )
+
+                # ── 3) Detection fraction vs threshold ───────────────────────
+                st.markdown('### Detection Fraction vs Threshold')
+
+                max_drv = max(float(np.max(obs_drv_analysis)),
+                              float(np.max(sim_drv)))
+                thresholds = np.linspace(0, max_drv * 1.1, 150)
+                frac_obs_arr = np.array(
+                    [(obs_drv_analysis > T).mean() for T in thresholds])
+                frac_sim_arr = np.array(
+                    [(sim_drv > T).mean() for T in thresholds])
+
+                frac_obs_at_thresh = float(
+                    (obs_drv_analysis > thresh_dRV).mean())
+                frac_sim_at_thresh = float((sim_drv > thresh_dRV).mean())
+
+                fig_frac = go.Figure()
+                fig_frac.add_trace(go.Scatter(
+                    x=thresholds, y=frac_obs_arr,
+                    mode='lines', name='Observed',
+                    line=dict(color='#4A90D9', width=2.5),
+                ))
+                fig_frac.add_trace(go.Scatter(
+                    x=thresholds, y=frac_sim_arr,
+                    mode='lines', name='Simulated',
+                    line=dict(color='#E25A53', width=2.5, dash='dash'),
+                ))
+                fig_frac.add_vline(
+                    x=thresh_dRV, line_dash='dot',
+                    line_color='gold', line_width=1.5,
+                    annotation_text=f'Threshold = {thresh_dRV} km/s',
+                    annotation_position='top right',
+                    annotation_font_color='gold',
+                )
+                fig_frac.add_trace(go.Scatter(
+                    x=[thresh_dRV, thresh_dRV],
+                    y=[frac_obs_at_thresh, frac_sim_at_thresh],
+                    mode='markers+text',
+                    marker=dict(size=10, color=['#4A90D9', '#E25A53'],
+                                symbol='circle',
+                                line=dict(color='white', width=1)),
+                    text=[f'  {frac_obs_at_thresh:.2%}',
+                          f'  {frac_sim_at_thresh:.2%}'],
+                    textposition='middle right',
+                    textfont=dict(size=11),
+                    showlegend=False,
+                ))
+                fig_frac.update_layout(
+                    title=dict(
+                        text=(f'Detection Fraction vs ΔRV Threshold  '
+                              f'(model: f_bin={ex_fb:.3f}, π={ex_pi:.2f})'),
+                        font=dict(size=14),
+                    ),
+                    xaxis_title='ΔRV threshold (km/s)',
+                    yaxis_title='Fraction above threshold',
+                    plot_bgcolor='#1a1a2e',
+                    paper_bgcolor='#1a1a2e',
+                    font_color='#e0e0e0',
+                    height=420,
+                    legend=dict(x=0.70, y=0.95),
+                    yaxis=dict(range=[0, 1.05]),
+                )
+                st.plotly_chart(fig_frac, use_container_width=True, key='bc_det_frac')
+                st.caption(
+                    'Fraction of stars with ΔRV exceeding a given threshold. '
+                    'The vertical line marks the detection threshold used for '
+                    'binary classification. A good model should match the '
+                    'observed curve across all thresholds, not just at the '
+                    'chosen cutoff.'
+                )
+
+        # ── Multi-sigma visualizations (after model explorer) ────────────
+        if len(sigma_g) > 1:
+            st.markdown('---')
+
+            # Animated 4D figure
+            st.markdown('### Animated 4D view  (σ_single as time axis)')
+            st.caption('Use the Play button or drag the slider to step through σ_single values.')
+
+            frames = []
+            for i_s, sigma_val in enumerate(sigma_g):
+                z_frame = ks_p_3d[i_s]
+                bf_f, bp_f, _ = _best_point(z_frame, fbin_g, pi_g)
+                frames.append(go.Frame(
+                    data=[
+                        go.Heatmap(
+                            z=z_frame, x=pi_g, y=fbin_g,
+                            colorscale='RdBu_r',
+                            zmin=0.0,
+                            zmax=float(np.percentile(ks_p_3d, 98)),
+                            zsmooth='best',
+                            colorbar=dict(title='K-S p-value', thickness=14),
+                        ),
+                        go.Scatter(
+                            x=[bp_f], y=[bf_f],
+                            mode='markers',
+                            marker=dict(symbol='star', size=16, color='gold',
+                                        line=dict(color='black', width=1)),
+                        ),
+                    ],
+                    name=str(i_s),
+                    layout=go.Layout(
+                        title_text=(
+                            f'K-S p-value  —  σ_single = {sigma_val:.1f} km/s  '
+                            f'(best f_bin={bf_f:.3f}, π={bp_f:.2f})'
+                        )
+                    ),
+                ))
+
+            anim_layout: dict = dict(
+                title='Bias Correction — K-S p-value animated over σ_single',
+                xaxis_title='π  (period power-law index)',
+                yaxis_title='f_bin  (intrinsic binary fraction)',
+                updatemenus=[dict(
+                    type='buttons',
+                    showactive=False,
+                    y=1.18, x=0.5, xanchor='center',
+                    buttons=[
+                        dict(
+                            label='▶ Play',
+                            method='animate',
+                            args=[None, dict(
+                                frame=dict(duration=900, redraw=True),
+                                fromcurrent=True, mode='immediate',
+                            )],
+                        ),
+                        dict(
+                            label='⏸ Pause',
+                            method='animate',
+                            args=[[None], dict(
+                                mode='immediate',
+                                frame=dict(duration=0, redraw=False),
+                            )],
+                        ),
+                    ],
+                )],
+                sliders=[dict(
+                    active=0,
+                    currentvalue=dict(
+                        prefix='σ_single = ', suffix=' km/s', visible=True,
+                        font=dict(size=13),
+                    ),
+                    pad=dict(t=55),
+                    steps=[
+                        dict(
+                            args=[[str(i_s)], dict(
+                                mode='immediate',
+                                frame=dict(duration=0, redraw=True),
+                            )],
+                            label=f'{float(sv):.1f}',
+                            method='animate',
+                        )
+                        for i_s, sv in enumerate(sigma_g)
+                    ],
+                )],
+                plot_bgcolor='#1a1a2e',
+                paper_bgcolor='#1a1a2e',
+                font_color='#e0e0e0',
+                height=_ch + 120,
+                margin=dict(l=60, r=20, t=80, b=80),
+            )
+            if _cw is not None:
+                anim_layout['width'] = _cw
+
+            fig4d = go.Figure(data=frames[0].data, frames=frames,
+                              layout=go.Layout(**anim_layout))
+            st.plotly_chart(fig4d, use_container_width=_use_cw, key='bc_anim_4d')
+
+            # 3D stacked heatmap
+            st.markdown('### 3D Stacked View')
+            st.caption(
+                'Semi-transparent heatmap layers stacked along σ_single. '
+                'Rotate and zoom with mouse.'
+            )
+            fig_3d = _make_3d_stacked_fig(
+                ks_p_3d, fbin_g, pi_g, sigma_g,
+                height=_ch + 200, width=_cw,
+            )
+            st.plotly_chart(fig_3d, use_container_width=_use_cw, key='bc_3d_stacked')
+
+            # Summary table
+            summary_rows = []
+            for i_s, sv in enumerate(sigma_g):
+                bf_s, bp_s, bpv_s = _best_point(ks_p_3d[i_s], fbin_g, pi_g)
+                summary_rows.append({
+                    'σ_single (km/s)': round(float(sv), 2),
+                    'Best f_bin': round(bf_s, 4),
+                    'Best π': round(bp_s, 4),
+                    'K-S p': round(bpv_s, 5),
+                })
+            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+
+        # ── Simulation Methodology & Equations ───────────────────────────────
+        st.markdown('---')
+        with st.expander('Simulation methodology & equations', expanded=False):
+            st.markdown('''
+**Simulation overview** — for each grid point (f_bin, π, σ_single):
+
+1. **Draw N systems** (default 3,000). Each system is assigned as binary
+   with probability f_bin, or single with probability 1 − f_bin.
+
+2. **Assign observation cadences.** Each simulated system is randomly
+   paired with a real star's observation times (MJD from FITS headers),
+   preserving the actual time sampling of the survey.
+
+3. **Single stars:** draw RV at each epoch from
+   N(v_sys, σ_total) where σ_total = √(σ_single² + σ_measure²).
+   Compute ΔRV = max(v) − min(v).
+
+4. **Binary stars:** for each system, sample orbital parameters:
+   - Period P from power-law distribution p(log P) ∝ (log P)^π
+   - Eccentricity e from uniform [0, e_max] (or fixed at 0)
+   - Primary mass M₁ (fixed or uniform)
+   - Mass ratio q = M₂/M₁ (flat or Gaussian)
+   - Inclination i from sin(i) distribution
+   - Argument of periastron ω ~ U[0, 2π]
+   - Initial mean anomaly T₀ ~ U[0, 2π]
+
+5. **Compute the RV semi-amplitude K₁:**
+''')
+            st.latex(
+                r'K_1 = \left(\frac{2\pi G}{P}\right)^{1/3}'
+                r'\frac{M_2 \sin i}{(M_1 + M_2)^{2/3}}'
+                r'\frac{1}{\sqrt{1 - e^2}}'
+            )
+
+            st.markdown('''
+6. **Solve Kepler's equation** at each observation time t
+   via Newton-Raphson iteration:
+''')
+            st.latex(r'E - e \sin E = M, \quad M = T_0 + \frac{2\pi t}{P}')
+
+            st.markdown('7. **Compute the true anomaly** ν from E:')
+            st.latex(
+                r'\tan\frac{\nu}{2} = '
+                r'\sqrt{\frac{1+e}{1-e}} \, \tan\frac{E}{2}'
+            )
+
+            st.markdown('8. **Compute the radial velocity curve:**')
+            st.latex(
+                r'v(t) = v_{\rm sys} + K_1 '
+                r'\left[\cos(\omega + \nu) + e\cos\omega\right]'
+            )
+
+            st.markdown(r'''
+   Then ΔRV = max(v) − min(v) over the observed epochs.
+
+9. **Compare the simulated ΔRV distribution** to the observed one using
+   the two-sample Kolmogorov-Smirnov test. The K-S statistic D is the
+   maximum absolute difference between the two empirical CDFs:
+''')
+            st.latex(
+                r'D = \max_x \left| F_{\rm obs}(x) - F_{\rm sim}(x) \right|'
+            )
+
+            st.markdown(r'''
+   The associated p-value quantifies the probability that both samples
+   are drawn from the same underlying distribution. Higher p → better match.
+
+10. **Binary detection criteria** (both required):
+''')
+            st.latex(
+                r'\Delta\mathrm{RV} > 45.5 \; \mathrm{km/s}'
+                r'\quad \text{and} \quad'
+                r'\Delta\mathrm{RV} - 4\sigma > 0'
+            )
+            st.markdown(
+                'where σ is the combined measurement error of the epoch pair.'
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Langer 2020 tab  (placeholder)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_langer:
+    st.info(
+        'Langer 2020 period model — coming soon.  '
+        'Run `conda run -n guyenv python pipeline/langer_grid.py` from the terminal.'
+    )
+    langer_result = st.session_state.get('result_langer') or cached_load_grid_result('langer')
+    if langer_result is not None:
+        lg_fbin = np.asarray(langer_result['fbin_grid'])
+        lg_pi   = np.asarray(langer_result['pi_grid'])
+        lg_ks_p_raw = np.asarray(langer_result['ks_p'])
+        lg_ks_p = lg_ks_p_raw[0] if lg_ks_p_raw.ndim == 3 else lg_ks_p_raw
+        st.plotly_chart(
+            _make_heatmap_fig(lg_ks_p, lg_fbin, lg_pi,
+                              title='Langer 2020 — K-S p-value',
+                              height=_ch, width=_cw),
+            use_container_width=_use_cw,
+            key='bc_langer_heatmap',
+        )
+        bf_l, bp_l, bpv_l = _best_point(lg_ks_p, lg_fbin, lg_pi)
+        st.markdown(
+            f'**Best:** f_bin = `{bf_l:.4f}`,  π = `{bp_l:.4f}`,  p = `{bpv_l:.6f}`'
+        )

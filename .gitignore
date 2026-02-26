@@ -1,0 +1,27 @@
+# Data (21 GB FITS + reduced)
+Data/
+../output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# Logs (except Claude command history)
+*.log
+!.claude/command_history.log
+
+# Backups (local only)
+Backups/

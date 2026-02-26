@@ -47,6 +47,10 @@ from typing import Dict, Iterable, Optional, Tuple, List
 import multiprocessing as mp
 import matplotlib.pyplot as plt
 import numpy as np
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
 
 # Physical constants (SI)
 G_SI = 6.67430e-11        # m^3 kg^-1 s^-2
@@ -119,6 +123,24 @@ class SimulationConfig:
             raise ValueError("observation_times must be 1-D.")
         return t
 
+    def _build_cadence_cache(self):
+        """
+        Pre-convert cadence_library to numpy arrays and normalise weights once.
+        Results are cached on the instance so repeated grid-point calls pay no cost.
+        """
+        if hasattr(self, '_cadence_lib_cache'):
+            return  # already built
+        lib = [np.asarray(t, dtype=float) for t in self.cadence_library]
+        if any(t.ndim != 1 for t in lib):
+            raise ValueError("All cadence_library entries must be 1-D arrays.")
+        if self.cadence_weights is None:
+            weights = np.ones(len(lib), dtype=float)
+        else:
+            weights = np.asarray(self.cadence_weights, dtype=float)
+        weights = weights / weights.sum()
+        self._cadence_lib_cache = lib
+        self._cadence_weights_cache = weights
+
     def sample_times_for_systems(self, n_systems: int, rng: np.random.Generator) -> list[np.ndarray]:
         """
         For each simulated system, return a time array.
@@ -132,19 +154,11 @@ class SimulationConfig:
             t = self.get_observation_times()
             return [t] * n_systems
 
-        # Use the provided cadence library
-        lib = [np.asarray(t, dtype=float) for t in self.cadence_library]
-        if any(t.ndim != 1 for t in lib):
-            raise ValueError("All cadence_library entries must be 1-D arrays.")
-
-        if self.cadence_weights is None:
-            weights = np.ones(len(lib), dtype=float)
-        else:
-            weights = np.asarray(self.cadence_weights, dtype=float)
-        weights = weights / weights.sum()
-
-        idx = rng.choice(len(lib), size=n_systems, replace=True, p=weights)
-        return [lib[i] for i in idx]
+        # Build cache once, reuse across all grid-point calls
+        self._build_cadence_cache()
+        idx = rng.choice(len(self._cadence_lib_cache), size=n_systems, replace=True,
+                         p=self._cadence_weights_cache)
+        return [self._cadence_lib_cache[i] for i in idx]
 
 
 
@@ -466,74 +480,200 @@ def simulate_delta_rv_sample(
     delta_all = np.zeros(N, dtype=float)
 
     # ------------------------------------------------------------------
-    # Singles: RVs are Gaussian around v_sys with sigma_single + sigma_measure
+    # Singles: group by cadence length and draw all RVs in one batch
     # ------------------------------------------------------------------
-    sigma_single_total = math.sqrt(sim_cfg.sigma_single**2 + sim_cfg.sigma_measure**2)
-
+    # Build a map: cadence_length -> list of system indices
+    single_groups: dict = {}
+    single_skip = []
     for k in idx_single:
-        t = times_list[k]
-        if t.size < 2:
-            delta_all[k] = 0.0
-            continue
+        n_ep = times_list[k].size
+        if n_ep < 2:
+            single_skip.append(k)
+        else:
+            single_groups.setdefault(n_ep, []).append(k)
 
+    for n_ep, ks in single_groups.items():
+        n_stars_grp = len(ks)
+        # Draw all RVs for this group in one call: shape (n_stars_grp, n_ep)
         v = rng.normal(
             loc=sim_cfg.v_sys,
-            scale=sigma_single_total,
-            size=t.size,
+            scale=sim_cfg.sigma_single,
+            size=(n_stars_grp, n_ep),
         )
-        delta_all[k] = v.max() - v.min()
+        drv = v.max(axis=1) - v.min(axis=1)
+        for idx_in_grp, k in enumerate(ks):
+            delta_all[k] = drv[idx_in_grp]
 
     # ------------------------------------------------------------------
-    # Binaries
+    # Binaries: draw all orbital parameters at once (already vectorized),
+    # then group by cadence length to batch Kepler solver
     # ------------------------------------------------------------------
     if n_bin > 0:
-        # Draw orbital parameters for all binaries (vectorized)
         logP = sample_logP(size=n_bin, rng=rng, pi=pi, cfg=bin_cfg)
         P_days = 10.0 ** logP
 
-        e = sample_eccentricity(bin_cfg, n_bin, rng)
-        M1 = sample_primary_mass(bin_cfg, n_bin, rng)
-        q = sample_mass_ratio(bin_cfg, n_bin, rng)
-        M2 = M1 * q
-        i = sample_inclination(n_bin, rng)
+        e    = sample_eccentricity(bin_cfg, n_bin, rng)
+        M1   = sample_primary_mass(bin_cfg, n_bin, rng)
+        q    = sample_mass_ratio(bin_cfg, n_bin, rng)
+        M2   = M1 * q
+        i    = sample_inclination(n_bin, rng)
         omega = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
-        M0 = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
+        T0    = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
 
         K1 = compute_K1(P_days=P_days, e=e, M1=M1, M2=M2, i_rad=i)
 
-        # Loop over binaries, but orbital params are already drawn
+        # Group binaries by cadence length so Kepler can be solved in batches
+        # bin_groups: cadence_length -> list of (j, k) where j = index into
+        # binary param arrays, k = index into delta_all
+        bin_groups: dict = {}
         for j, k in enumerate(idx_bin):
-            t = times_list[k]
-            if t.size < 2:
+            n_ep = times_list[k].size
+            if n_ep < 2:
                 delta_all[k] = 0.0
-                continue
+            else:
+                bin_groups.setdefault(n_ep, []).append((j, k))
 
-            # Mean anomaly at each epoch
-            M_mean = M0[j] + 2.0 * np.pi * (t / P_days[j])
+        for n_ep, jk_list in bin_groups.items():
+            js = np.array([x[0] for x in jk_list])
+            ks = np.array([x[1] for x in jk_list])
+            n_grp = len(js)
 
-            # Solve Kepler for this system
-            E = solve_kepler(M_mean, e[j])
-            tan_halfE = np.tan(E / 2.0)
-            sqrt_factor = np.sqrt((1.0 + e[j]) / (1.0 - e[j]))
-            nu = 2.0 * np.arctan2(sqrt_factor * tan_halfE, 1.0)
+            # Stack time arrays: shape (n_grp, n_ep)  — all same length in this group
+            t_mat = np.vstack([times_list[k] for k in ks])  # (n_grp, n_ep)
 
-            # RV curve of star 1 (WR): v = gamma + K1[cos(ω+ν) + e cos ω]
-            v = sim_cfg.v_sys + K1[j] * (
-                np.cos(omega[j] + nu) + e[j] * np.cos(omega[j])
+            # Mean anomaly: (n_grp, n_ep)
+            M_mean = T0[js, None] + 2.0 * np.pi * (t_mat / P_days[js, None])
+
+            # Solve Kepler for the whole batch at once
+            # e[js] is shape (n_grp,); broadcast to (n_grp, n_ep)
+            E = solve_kepler(M_mean, e[js, None])
+
+            sqrt_fac = np.sqrt((1.0 + e[js, None]) / (1.0 - e[js, None]))
+            nu = 2.0 * np.arctan2(sqrt_fac * np.tan(E / 2.0), 1.0)
+
+            # RV curve: (n_grp, n_ep)
+            v = sim_cfg.v_sys + K1[js, None] * (
+                np.cos(omega[js, None] + nu) + e[js, None] * np.cos(omega[js, None])
             )
 
-            # Add measurement noise (per epoch)
-            if sim_cfg.sigma_measure > 0.0:
-                v += rng.normal(
-                    loc=0.0,
-                    scale=sim_cfg.sigma_measure,
-                    size=t.size,
-                )
-
-            delta_all[k] = v.max() - v.min()
+            drv = v.max(axis=1) - v.min(axis=1)
+            delta_all[ks] = drv
 
     return delta_all
 
+
+def simulate_with_params(
+    f_bin: float,
+    pi: float,
+    sim_cfg: SimulationConfig,
+    bin_cfg: BinaryParameterConfig,
+    rng: np.random.Generator,
+) -> dict:
+    """
+    Like simulate_delta_rv_sample but also returns per-system orbital parameters.
+
+    Returns
+    -------
+    dict with keys:
+        delta_rv   : ndarray (N,)      — peak-to-peak ΔRV for every system
+        is_binary  : ndarray (N,) bool  — True if the system is a binary
+        P_days     : ndarray (n_bin,)   — orbital period [days], binaries only
+        e          : ndarray (n_bin,)   — eccentricity, binaries only
+        q          : ndarray (n_bin,)   — mass ratio M2/M1, binaries only
+        i_rad      : ndarray (n_bin,)   — inclination [rad], binaries only
+        K1         : ndarray (n_bin,)   — RV semi-amplitude [km/s], binaries only
+        M1         : ndarray (n_bin,)   — primary mass [M_sun], binaries only
+        idx_bin    : ndarray (n_bin,)   — indices of binaries into the delta_rv array
+    """
+    N = sim_cfg.n_stars
+
+    is_binary = rng.random(N) < f_bin
+    idx_bin = np.where(is_binary)[0]
+    idx_single = np.where(~is_binary)[0]
+    n_bin = idx_bin.size
+
+    times_list = sim_cfg.sample_times_for_systems(N, rng)
+    delta_all = np.zeros(N, dtype=float)
+
+    # Singles
+    single_groups: dict = {}
+    for k in idx_single:
+        n_ep = times_list[k].size
+        if n_ep >= 2:
+            single_groups.setdefault(n_ep, []).append(k)
+
+    for n_ep, ks in single_groups.items():
+        n_stars_grp = len(ks)
+        v = rng.normal(loc=sim_cfg.v_sys, scale=sim_cfg.sigma_single,
+                       size=(n_stars_grp, n_ep))
+        drv = v.max(axis=1) - v.min(axis=1)
+        for idx_in_grp, k in enumerate(ks):
+            delta_all[k] = drv[idx_in_grp]
+
+    # Binaries — keep orbital params
+    out_P = np.array([])
+    out_e = np.array([])
+    out_q = np.array([])
+    out_i = np.array([])
+    out_K1 = np.array([])
+    out_M1 = np.array([])
+
+    if n_bin > 0:
+        logP = sample_logP(size=n_bin, rng=rng, pi=pi, cfg=bin_cfg)
+        P_days = 10.0 ** logP
+
+        e    = sample_eccentricity(bin_cfg, n_bin, rng)
+        M1   = sample_primary_mass(bin_cfg, n_bin, rng)
+        q    = sample_mass_ratio(bin_cfg, n_bin, rng)
+        M2   = M1 * q
+        i    = sample_inclination(n_bin, rng)
+        omega = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
+        T0    = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
+
+        K1 = compute_K1(P_days=P_days, e=e, M1=M1, M2=M2, i_rad=i)
+
+        bin_groups: dict = {}
+        for j, k in enumerate(idx_bin):
+            n_ep = times_list[k].size
+            if n_ep < 2:
+                delta_all[k] = 0.0
+            else:
+                bin_groups.setdefault(n_ep, []).append((j, k))
+
+        for n_ep, jk_list in bin_groups.items():
+            js = np.array([x[0] for x in jk_list])
+            ks = np.array([x[1] for x in jk_list])
+
+            t_mat = np.vstack([times_list[k] for k in ks])
+            M_mean = T0[js, None] + 2.0 * np.pi * (t_mat / P_days[js, None])
+            E = solve_kepler(M_mean, e[js, None])
+            sqrt_fac = np.sqrt((1.0 + e[js, None]) / (1.0 - e[js, None]))
+            nu = 2.0 * np.arctan2(sqrt_fac * np.tan(E / 2.0), 1.0)
+
+            v = sim_cfg.v_sys + K1[js, None] * (
+                np.cos(omega[js, None] + nu) + e[js, None] * np.cos(omega[js, None])
+            )
+            drv = v.max(axis=1) - v.min(axis=1)
+            delta_all[ks] = drv
+
+        out_P = P_days
+        out_e = e
+        out_q = q
+        out_i = i
+        out_K1 = K1
+        out_M1 = M1
+
+    return {
+        'delta_rv': delta_all,
+        'is_binary': is_binary,
+        'P_days': out_P,
+        'e': out_e,
+        'q': out_q,
+        'i_rad': out_i,
+        'K1': out_K1,
+        'M1': out_M1,
+        'idx_bin': idx_bin,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -593,10 +733,11 @@ def ks_two_sample(
 # ---------------------------------------------------------------------------
 
 def _single_grid_task(args):
-    """Worker for a single (f_bin, pi) point. Defined at top level for pickling."""
+    """Worker for a single (f_bin, pi, sigma_single) point. Defined at top level for pickling."""
     (
         f_bin,
         pi,
+        sigma_single,
         sim_cfg,
         bin_cfg,
         obs_delta_rv,
@@ -604,20 +745,24 @@ def _single_grid_task(args):
         seed,
     ) = args
 
-    # ensure period model is set on cfg copy (so we can swap Dsilva vs Langer)
+    # ensure period model is set on cfg copy
     bin_cfg_local = BinaryParameterConfig(**vars(bin_cfg))
     bin_cfg_local.period_model = period_model
+
+    # apply sigma_single override on a local copy of sim_cfg
+    from dataclasses import replace as dc_replace
+    sim_cfg_local = dc_replace(sim_cfg, sigma_single=sigma_single)
 
     rng = np.random.default_rng(seed)
     delta_sim = simulate_delta_rv_sample(
         f_bin=f_bin,
         pi=pi,
-        sim_cfg=sim_cfg,
+        sim_cfg=sim_cfg_local,
         bin_cfg=bin_cfg_local,
         rng=rng,
     )
     D, p = ks_two_sample(delta_sim, obs_delta_rv)
-    return f_bin, pi, D, p
+    return f_bin, pi, sigma_single, D, p
 
 
 def run_bias_grid(
@@ -627,12 +772,13 @@ def run_bias_grid(
     sim_cfg: Optional[SimulationConfig] = None,
     bin_cfg: Optional[BinaryParameterConfig] = None,
     period_model: str = "powerlaw",
+    sigma_values: Optional[Iterable[float]] = None,
     n_processes: Optional[int] = None,
     seed_base: int = 1234,
     use_multiprocessing: bool = True,
 ) -> Dict[str, np.ndarray]:
     """
-    Run a (f_bin, pi) grid of simulations and K-S comparisons.
+    Run a (f_bin, pi[, sigma_single]) grid of simulations and K-S comparisons.
 
     Parameters
     ----------
@@ -649,6 +795,9 @@ def run_bias_grid(
         Binary parameter configuration; if None, uses default BinaryParameterConfig().
     period_model : str
         "powerlaw" or "langer2020".
+    sigma_values : iterable of float or None
+        Grid of sigma_single values (km/s) to scan. If None, uses the
+        single value already set in sim_cfg (2D grid as before).
     n_processes : int or None
         Number of worker processes; if None, mp.Pool chooses.
     seed_base : int
@@ -659,61 +808,80 @@ def run_bias_grid(
     Returns
     -------
     result : dict with keys:
-        "fbin_grid" : 1D array of f_bin values (sorted as input).
-        "pi_grid"   : 1D array of π values (sorted as input).
-        "ks_D"      : 2D array [len(fbin_grid), len(pi_grid)] of K-S D.
-        "ks_p"      : 2D array of corresponding p-values.
+        "fbin_grid"  : 1D array of f_bin values.
+        "pi_grid"    : 1D array of π values.
+        "sigma_grid" : 1D array of sigma_single values (length 1 if not scanned).
+        "ks_D"       : 3D array [n_sigma, n_fbin, n_pi] of K-S D.
+        "ks_p"       : 3D array of corresponding p-values.
     """
     if sim_cfg is None:
         sim_cfg = SimulationConfig()
     if bin_cfg is None:
         bin_cfg = BinaryParameterConfig()
 
-    fbin_grid = np.array(list(fbin_values), dtype=float)
-    pi_grid = np.array(list(pi_values), dtype=float)
+    fbin_grid  = np.array(list(fbin_values), dtype=float)
+    pi_grid    = np.array(list(pi_values), dtype=float)
+    sigma_grid = np.array(list(sigma_values), dtype=float) if sigma_values is not None                  else np.array([sim_cfg.sigma_single], dtype=float)
 
     obs_delta_rv = np.asarray(obs_delta_rv, dtype=float)
 
     tasks = []
     idx = 0
-    for fb in fbin_grid:
-        for pi in pi_grid:
-            tasks.append(
-                (
+    for sigma in sigma_grid:
+        for fb in fbin_grid:
+            for pi in pi_grid:
+                tasks.append((
                     float(fb),
                     float(pi),
+                    float(sigma),
                     sim_cfg,
                     bin_cfg,
                     obs_delta_rv,
                     period_model,
                     seed_base + idx,
-                )
-            )
-            idx += 1
+                ))
+                idx += 1
 
-    if use_multiprocessing and len(tasks) > 1:
+    n_tasks = len(tasks)
+    desc = f"Bias grid ({period_model}, {len(sigma_grid)} σ slice(s))"
+
+    if use_multiprocessing and n_tasks > 1:
         with mp.Pool(processes=n_processes) as pool:
-            results = pool.map(_single_grid_task, tasks)
+            if tqdm is not None:
+                results = list(tqdm(
+                    pool.imap(_single_grid_task, tasks),
+                    total=n_tasks,
+                    desc=desc,
+                ))
+            else:
+                results = pool.map(_single_grid_task, tasks)
     else:
-        results = [_single_grid_task(t) for t in tasks]
+        if tqdm is not None:
+            tasks_iter = tqdm(tasks, total=n_tasks, desc=desc)
+        else:
+            tasks_iter = tasks
+        results = [_single_grid_task(t) for t in tasks_iter]
 
-    # Pack results into 2D arrays
-    n_fb = fbin_grid.size
-    n_pi = pi_grid.size
-    ks_D = np.empty((n_fb, n_pi), dtype=float)
-    ks_p = np.empty((n_fb, n_pi), dtype=float)
+    # Pack results into 3D arrays: [n_sigma, n_fbin, n_pi]
+    n_sig = sigma_grid.size
+    n_fb  = fbin_grid.size
+    n_pi  = pi_grid.size
+    ks_D  = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    ks_p  = np.empty((n_sig, n_fb, n_pi), dtype=float)
 
-    for idx, (fb, pi, D, p) in enumerate(results):
-        i_fb = idx // n_pi
-        i_pi = idx % n_pi
-        ks_D[i_fb, i_pi] = D
-        ks_p[i_fb, i_pi] = p
+    for idx, (fb, pi, sigma, D, p) in enumerate(results):
+        i_sig = idx // (n_fb * n_pi)
+        i_fb  = (idx % (n_fb * n_pi)) // n_pi
+        i_pi  = idx % n_pi
+        ks_D[i_sig, i_fb, i_pi] = D
+        ks_p[i_sig, i_fb, i_pi] = p
 
     return {
-        "fbin_grid": fbin_grid,
-        "pi_grid": pi_grid,
-        "ks_D": ks_D,
-        "ks_p": ks_p,
+        "fbin_grid":  fbin_grid,
+        "pi_grid":    pi_grid,
+        "sigma_grid": sigma_grid,
+        "ks_D":       ks_D,
+        "ks_p":       ks_p,
     }
 
 
@@ -726,7 +894,7 @@ def plot_ks_heatmap(
     use_pvalue: bool = False,
     ax=None,
 ):
-    
+
 
     fbin_grid = grid_result["fbin_grid"]
     pi_grid   = grid_result["pi_grid"]
@@ -871,7 +1039,7 @@ def plot_best_cdf(
     ax : matplotlib Axes
     best_fbin, best_pi : float
     """
-    
+
 
     obs_delta_rv = np.asarray(obs_delta_rv, dtype=float)
 
@@ -956,7 +1124,7 @@ def plot_best_detection_fraction_vs_threshold(
     ax : matplotlib Axes
     best_fbin, best_pi : float
     """
-    
+
 
     obs_delta_rv = np.asarray(obs_delta_rv, dtype=float)
 
@@ -1152,6 +1320,8 @@ def plot_best_rv_distributions(
     seed: int = 1234,
     bins: Optional[int] = 40,
     ax=None,
+    obs_single_rv: Optional[np.ndarray] = None,
+    obs_binary_rv: Optional[np.ndarray] = None,
 ):
     """
     Plot the RV distributions of single stars and binaries for the best
@@ -1173,13 +1343,18 @@ def plot_best_rv_distributions(
         Number of histogram bins. If None, matplotlib's default is used.
     ax : matplotlib Axes or None
         Optional Axes to draw on.
+    obs_single_rv : array-like or None
+        Observed RV measurements (km/s) for stars classified as singles.
+        If provided, plotted alongside the simulated distributions.
+    obs_binary_rv : array-like or None
+        Observed RV measurements (km/s) for stars classified as binaries.
+        If provided, plotted alongside the simulated distributions.
 
     Returns
     -------
     ax : matplotlib Axes
     best_fbin, best_pi : float
     """
-    
 
     best_fbin, best_pi, rv_single_all, rv_binary_all = simulate_best_rv_distributions(
         grid_result=grid_result,
@@ -1190,34 +1365,34 @@ def plot_best_rv_distributions(
         seed=seed,
     )
 
-    # Combine all RVs to define a common binning
-    if rv_single_all.size > 0 and rv_binary_all.size > 0:
-        all_rv = np.concatenate([rv_single_all, rv_binary_all])
-    elif rv_single_all.size > 0:
-        all_rv = rv_single_all
-    elif rv_binary_all.size > 0:
-        all_rv = rv_binary_all
-    else:
-        raise RuntimeError("No RV samples generated for singles or binaries.")
+    # Convert optional observed arrays
+    obs_single_rv = np.asarray(obs_single_rv, dtype=float) if obs_single_rv is not None else np.empty(0)
+    obs_binary_rv = np.asarray(obs_binary_rv, dtype=float) if obs_binary_rv is not None else np.empty(0)
+
+    # Build common bin edges from ALL arrays so everything is on the same scale
+    all_arrays = [arr for arr in [rv_single_all, rv_binary_all, obs_single_rv, obs_binary_rv] if arr.size > 0]
+    if not all_arrays:
+        raise RuntimeError("No RV samples to plot.")
+    all_rv = np.concatenate(all_arrays)
 
     if isinstance(bins, int):
-        rv_min = all_rv.min()
-        rv_max = all_rv.max()
-        bin_edges = np.linspace(rv_min, rv_max, bins + 1)
+        bin_edges = np.linspace(all_rv.min(), all_rv.max(), bins + 1)
     else:
         bin_edges = bins  # user-specified array or None
 
     if ax is None:
         fig, ax = plt.subplots()
 
-    # Normalised histograms (PDF-like)
+    # Simulated — dashed lines
     if rv_single_all.size > 0:
         ax.hist(
             rv_single_all,
             bins=bin_edges,
             density=True,
             histtype="step",
-            label="Singles",
+            linestyle="--",
+            linewidth=1.5,
+            label=f"Sim singles (f_bin={best_fbin:.2f}, π={best_pi:.2f})",
         )
     if rv_binary_all.size > 0:
         ax.hist(
@@ -1226,7 +1401,28 @@ def plot_best_rv_distributions(
             density=True,
             histtype="step",
             linestyle="--",
-            label=f"Binaries (f_bin={best_fbin:.2f}, π={best_pi:.2f})",
+            linewidth=1.5,
+            label=f"Sim binaries (f_bin={best_fbin:.2f}, π={best_pi:.2f})",
+        )
+
+    # Observed — solid lines
+    if obs_single_rv.size > 0:
+        ax.hist(
+            obs_single_rv,
+            bins=bin_edges,
+            density=True,
+            histtype="step",
+            linewidth=2,
+            label="Obs singles",
+        )
+    if obs_binary_rv.size > 0:
+        ax.hist(
+            obs_binary_rv,
+            bins=bin_edges,
+            density=True,
+            histtype="step",
+            linewidth=2,
+            label="Obs binaries",
         )
 
     ax.set_xlabel(r"RV (km s$^{-1}$)")
@@ -1235,3 +1431,183 @@ def plot_best_rv_distributions(
     ax.legend()
 
     return ax, best_fbin, best_pi
+
+
+# ---------------------------------------------------------------------------
+# 3D and animated visualisations of the (f_bin, π, σ_single) grid
+# ---------------------------------------------------------------------------
+
+def plot_3d_ks(
+    grid_result: Dict[str, np.ndarray],
+    use_pvalue: bool = True,
+    sigma_idx: Optional[int] = None,
+):
+    """
+    Interactive 3D surface of the KS statistic over (f_bin, π) for one
+    or all sigma_single slices.
+
+    If grid_result contains multiple sigma slices and sigma_idx is None,
+    the surface shown is the best p-value (or min D) projected over sigma —
+    i.e. for each (f_bin, π) cell we take the best value across all sigmas.
+    If sigma_idx is given, only that slice is shown.
+
+    Parameters
+    ----------
+    grid_result : dict
+        Output of run_bias_grid.
+    use_pvalue : bool
+        If True, plot KS p-value (higher = better).
+        If False, plot KS D statistic (lower = better).
+    sigma_idx : int or None
+        Index into sigma_grid to plot. If None and multiple sigmas exist,
+        collapses over sigma by taking max p (or min D).
+
+    Returns
+    -------
+    fig, ax : matplotlib Figure and Axes3D
+    """
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    fbin_grid  = grid_result["fbin_grid"]
+    pi_grid    = grid_result["pi_grid"]
+    sigma_grid = grid_result["sigma_grid"]
+    Z3         = grid_result["ks_p"] if use_pvalue else grid_result["ks_D"]
+    # Z3 shape: (n_sigma, n_fbin, n_pi)
+
+    if sigma_idx is not None:
+        Z = Z3[sigma_idx]
+        title = (f"KS {'p-value' if use_pvalue else 'D'} — "
+                 f"σ_single = {sigma_grid[sigma_idx]:.1f} km/s")
+    else:
+        # collapse: best p (max) or best D (min) across sigma axis
+        Z = Z3.max(axis=0) if use_pvalue else Z3.min(axis=0)
+        title = (f"KS {'p-value' if use_pvalue else 'D'} — "
+                 f"best over σ_single ∈ [{sigma_grid.min():.1f}, {sigma_grid.max():.1f}] km/s")
+
+    Pi, Fb = np.meshgrid(pi_grid, fbin_grid)
+
+    fig = plt.figure(figsize=(9, 6))
+    ax  = fig.add_subplot(111, projection="3d")
+    surf = ax.plot_surface(Pi, Fb, Z, cmap="viridis", edgecolor="none", alpha=0.9)
+    fig.colorbar(surf, ax=ax, shrink=0.5, label="KS p-value" if use_pvalue else "KS D")
+
+    ax.set_xlabel("π (period index)")
+    ax.set_ylabel("f_bin")
+    ax.set_zlabel("KS p-value" if use_pvalue else "KS D")
+    ax.set_title(title)
+
+    plt.tight_layout()
+    return fig, ax
+
+
+def plot_ks_movie(
+    grid_result: Dict[str, np.ndarray],
+    use_pvalue: bool = True,
+):
+    """
+    Animated heatmap of the KS statistic over (f_bin, π) where each frame
+    is one sigma_single value.  Includes play/pause button and a frame slider.
+
+    A second panel shows the best p-value (or min D) as a function of
+    sigma_single, with a vertical line tracking the current frame.
+
+    Parameters
+    ----------
+    grid_result : dict
+        Output of run_bias_grid.
+    use_pvalue : bool
+        If True, animate KS p-value.  If False, animate KS D.
+
+    Returns
+    -------
+    fig : matplotlib Figure
+    anim : matplotlib FuncAnimation (keep a reference to prevent GC)
+    """
+    import matplotlib.animation as animation
+    from matplotlib.widgets import Slider, Button
+
+    fbin_grid  = grid_result["fbin_grid"]
+    pi_grid    = grid_result["pi_grid"]
+    sigma_grid = grid_result["sigma_grid"]
+    Z3         = grid_result["ks_p"] if use_pvalue else grid_result["ks_D"]
+    # Z3 shape: (n_sigma, n_fbin, n_pi)
+
+    stat_label = "KS p-value" if use_pvalue else "KS D"
+    n_sigma    = sigma_grid.size
+
+    # Best statistic per sigma slice
+    best_per_sigma = Z3.max(axis=(1, 2)) if use_pvalue else Z3.min(axis=(1, 2))
+
+    # Common colour scale across all frames
+    vmin = Z3.min()
+    vmax = Z3.max()
+
+    Pi, Fb = np.meshgrid(pi_grid, fbin_grid)
+
+    # ---- layout ----
+    fig = plt.figure(figsize=(13, 6))
+    # Leave room at the bottom for widgets
+    fig.subplots_adjust(bottom=0.22, wspace=0.35)
+
+    ax_heat  = fig.add_subplot(1, 2, 1)
+    ax_sigma = fig.add_subplot(1, 2, 2)
+
+    # --- heatmap (frame 0) ---
+    mesh = ax_heat.pcolormesh(Pi, Fb, Z3[0], shading="auto",
+                              vmin=vmin, vmax=vmax, cmap="viridis")
+    fig.colorbar(mesh, ax=ax_heat, label=stat_label)
+    ax_heat.set_xlabel("π (period index)")
+    ax_heat.set_ylabel("f_bin")
+    title_obj = ax_heat.set_title(f"σ_single = {sigma_grid[0]:.2f} km/s")
+
+    # --- best-per-sigma panel ---
+    ax_sigma.plot(sigma_grid, best_per_sigma, "o-", color="steelblue")
+    vline = ax_sigma.axvline(sigma_grid[0], color="tomato", lw=2, ls="--")
+    ax_sigma.set_xlabel("σ_single (km/s)")
+    ax_sigma.set_ylabel(f"Best {stat_label}")
+    ax_sigma.set_title(f"Best {stat_label} vs σ_single")
+
+    # --- slider ---
+    ax_slider = fig.add_axes([0.15, 0.10, 0.55, 0.03])
+    slider = Slider(ax_slider, "Frame", 0, n_sigma - 1,
+                    valinit=0, valstep=1, color="steelblue")
+
+    # --- play / pause button ---
+    ax_button = fig.add_axes([0.78, 0.08, 0.10, 0.05])
+    button = Button(ax_button, "▶ Play", color="lightgray", hovercolor="silver")
+
+    # ---- animation state ----
+    state = {"playing": False, "frame": 0}
+
+    def draw_frame(i):
+        i = int(i)
+        mesh.set_array(Z3[i].ravel())
+        title_obj.set_text(f"σ_single = {sigma_grid[i]:.2f} km/s")
+        vline.set_xdata([sigma_grid[i], sigma_grid[i]])
+        slider.set_val(i)
+        fig.canvas.draw_idle()
+
+    def update_slider(val):
+        state["frame"] = int(slider.val)
+        draw_frame(state["frame"])
+
+    slider.on_changed(update_slider)
+
+    def toggle_play(event):
+        state["playing"] = not state["playing"]
+        button.label.set_text("⏸ Pause" if state["playing"] else "▶ Play")
+        fig.canvas.draw_idle()
+
+    button.on_clicked(toggle_play)
+
+    def animate(frame_unused):
+        if state["playing"]:
+            state["frame"] = (state["frame"] + 1) % n_sigma
+            draw_frame(state["frame"])
+
+    anim = animation.FuncAnimation(
+        fig, animate, interval=600, cache_frame_data=False
+    )
+
+    plt.show()
+    return fig, anim

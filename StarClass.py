@@ -51,8 +51,8 @@ class Star:
         self.observation_dict = specs.obs_file_names[star_name]
         self.observations = {}  # Cache of FITSFile instances
         self.normalized_spectra = {}  # Structure: {epoch: {sub_exp: {band: {'wavelength':..., 'flux':..., 'fitted_continuum':...}}}}
-        self.BAT_ID = self.get_bat_id()
-        self.spectral_type = self.get_spectral_type()
+        self.BAT_ID = None          # call self.get_bat_id() explicitly when SIMBAD is reachable
+        self.spectral_type = None   # call self.get_spectral_type() explicitly when needed
 
         self.normalized_wavelength = []
         self.normalized_flux = []

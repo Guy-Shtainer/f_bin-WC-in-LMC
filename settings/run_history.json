@@ -1,0 +1,208 @@
+[
+  {
+    "timestamp": "2026-02-24T23:49:27.068695",
+    "model": "dsilva_powerlaw",
+    "config_hash": "dfda576681868b73",
+    "config": {
+      "model": "dsilva_powerlaw",
+      "primary_line": "C IV 5808-5812",
+      "fbin_min": 0.01,
+      "fbin_max": 0.99,
+      "fbin_steps": 110,
+      "pi_min": -3.0,
+      "pi_max": 3.0,
+      "pi_steps": 30,
+      "n_stars_sim": 10000,
+      "sigma_single": 5.5,
+      "sigma_measure": 1.622,
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0,
+      "logP_min": 0.15,
+      "logP_max": 5.0
+    },
+    "elapsed_s": 25.7,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/dsilva_result.npz"
+  },
+  {
+    "timestamp": "2026-02-25T15:32:14.260942",
+    "model": "dsilva_powerlaw",
+    "config_hash": "44f0edae4520df3e",
+    "config": {
+      "model": "dsilva_powerlaw",
+      "primary_line": "C IV 5808-5812",
+      "fbin_min": 0.01,
+      "fbin_max": 0.99,
+      "fbin_steps": 110,
+      "pi_min": -3.0,
+      "pi_max": 3.0,
+      "pi_steps": 60,
+      "n_stars_sim": 10000,
+      "sigma_single": 5.5,
+      "sigma_measure": 1.622,
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0,
+      "logP_min": 0.15,
+      "logP_max": 5.0
+    },
+    "elapsed_s": 34.0,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/dsilva_result.npz"
+  },
+  {
+    "timestamp": "2026-02-25T16:33:56.517695",
+    "model": "dsilva_powerlaw",
+    "config_hash": "feeeb0be44b9eba6",
+    "config": {
+      "n_stars_sim": 10000,
+      "sigma_measure": 1.622,
+      "logP_min": 0.15,
+      "logP_max": 5.0,
+      "period_model": "powerlaw",
+      "primary_line": "C IV 5808-5812",
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0
+    },
+    "elapsed_s": 12.5,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/dsilva_result.npz",
+    "n_reused_fbin": 0
+  },
+  {
+    "timestamp": "2026-02-25T17:34:19.945552",
+    "model": "dsilva_powerlaw",
+    "config_hash": "feeeb0be44b9eba6",
+    "config": {
+      "n_stars_sim": 10000,
+      "sigma_measure": 1.622,
+      "logP_min": 0.15,
+      "logP_max": 5.0,
+      "period_model": "powerlaw",
+      "primary_line": "C IV 5808-5812",
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0
+    },
+    "elapsed_s": 0.0,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/dsilva_result.npz",
+    "n_reused_fbin": 110
+  },
+  {
+    "timestamp": "2026-02-25T17:42:47.600746",
+    "model": "dsilva_powerlaw",
+    "config_hash": "3ee3c4ba6fb07c54",
+    "config": {
+      "n_stars_sim": 10000,
+      "sigma_measure": 1.622,
+      "logP_min": 0.15,
+      "logP_max": 5.0,
+      "period_model": "powerlaw",
+      "primary_line": "C IV 5808-5812",
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0
+    },
+    "elapsed_s": 399.9,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/dsilva_result.npz",
+    "n_reused_fbin": 0
+  },
+  {
+    "timestamp": "2026-02-25T22:58:41.962305",
+    "model": "dsilva_powerlaw",
+    "config_hash": "3ee3c4ba6fb07c54",
+    "config": {
+      "n_stars_sim": 10000,
+      "sigma_measure": 1.622,
+      "logP_min": 0.15,
+      "logP_max": 5.0,
+      "period_model": "powerlaw",
+      "primary_line": "C IV 5808-5812",
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0
+    },
+    "elapsed_s": 0.0,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/dsilva_result.npz",
+    "n_reused_fbin": 110
+  },
+  {
+    "timestamp": "2026-02-25T22:59:01.278744",
+    "model": "dsilva_powerlaw",
+    "config_hash": "cde717f762fde83c",
+    "config": {
+      "n_stars_sim": 10000,
+      "sigma_measure": 1.622,
+      "logP_min": 0.15,
+      "logP_max": 5.0,
+      "period_model": "powerlaw",
+      "primary_line": "C IV 5808-5812",
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0
+    },
+    "elapsed_s": 8.9,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/dsilva_result.npz",
+    "n_reused_fbin": 0
+  },
+  {
+    "timestamp": "2026-02-25T23:02:18.770212",
+    "model": "dsilva_powerlaw",
+    "config_hash": "1ce85ba361d3b16d",
+    "config": {
+      "n_stars_sim": 10000,
+      "sigma_measure": 1.622,
+      "logP_min": 0.15,
+      "logP_max": 5.0,
+      "period_model": "powerlaw",
+      "primary_line": "C IV 5808-5812",
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0
+    },
+    "elapsed_s": 177.2,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/dsilva_result.npz",
+    "n_reused_fbin": 0
+  },
+  {
+    "timestamp": "2026-02-26T09:03:50.356642",
+    "model": "dsilva_powerlaw",
+    "config_hash": "792fc221745280d4",
+    "config": {
+      "n_stars_sim": 10000,
+      "sigma_measure": 1.622,
+      "logP_min": 0.15,
+      "logP_max": 5.0,
+      "period_model": "powerlaw",
+      "e_model": "flat",
+      "e_max": 0.9,
+      "mass_primary_model": "fixed",
+      "mass_primary_fixed": 10.0,
+      "q_model": "flat",
+      "q_min": 0.1,
+      "q_max": 2.0,
+      "primary_line": "C IV 5808-5812",
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0
+    },
+    "elapsed_s": 818.3,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/dsilva_result.npz",
+    "n_reused_fbin": 0
+  },
+  {
+    "timestamp": "2026-02-26T13:58:25.732333",
+    "model": "dsilva_powerlaw",
+    "config_hash": "4e34dcdd5a431605",
+    "config": {
+      "n_stars_sim": 10000,
+      "sigma_measure": 1.622,
+      "logP_min": 0.15,
+      "logP_max": 5.0,
+      "period_model": "powerlaw",
+      "e_model": "flat",
+      "e_max": 0.9,
+      "mass_primary_model": "fixed",
+      "mass_primary_fixed": 10.0,
+      "q_model": "flat",
+      "q_min": 0.1,
+      "q_max": 2.0,
+      "primary_line": "C IV 5808-5812",
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0
+    },
+    "elapsed_s": 17.9,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/dsilva_result.npz",
+    "n_reused_fbin": 0
+  }
+]

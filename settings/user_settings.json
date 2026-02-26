@@ -1,0 +1,92 @@
+{
+  "_note": "Master settings for webapp and pipeline scripts. Auto-saved on every change.",
+  "primary_line": "C IV 5808-5812",
+  "emission_lines": {
+    "O V 3100-3175": [
+      310.0,
+      317.5
+    ],
+    "O IV 3350-3480": [
+      335.0,
+      348.0
+    ],
+    "C IV 3650-3900": [
+      365.0,
+      390.0
+    ],
+    "He II 4686": [
+      456.0,
+      480.0
+    ],
+    "O VI 5210-5340": [
+      521.0,
+      533.5
+    ],
+    "He II 5412 & C IV 5471": [
+      535.0,
+      554.0
+    ],
+    "C IV 5808-5812": [
+      570.0,
+      588.0
+    ],
+    "C III 6700-6800": [
+      666.5,
+      684.0
+    ],
+    "C IV 7063": [
+      697.0,
+      714.0
+    ],
+    "C IV 17396": [
+      1710.0,
+      1763.0
+    ],
+    "C IV 20842": [
+      2050.0,
+      2100.0
+    ]
+  },
+  "ccf": {
+    "CrossVeloMin": -2000,
+    "CrossVeloMax": 2000,
+    "fit_fraction_default": 0.97,
+    "intr_kind": "cubic"
+  },
+  "classification": {
+    "threshold_dRV": 45.5,
+    "sigma_factor": 4.0,
+    "bartzakos_binaries": 3,
+    "total_population": 28
+  },
+  "simulation": {
+    "sigma_single": 5.5,
+    "sigma_measure": 1.622
+  },
+  "grid_dsilva": {
+    "fbin_min": 0.01,
+    "fbin_max": 0.99,
+    "fbin_steps": 100,
+    "pi_min": -3.0,
+    "pi_max": 3.0,
+    "pi_steps": 30,
+    "logP_min": 0.15,
+    "logP_max": 5.0,
+    "n_stars_sim": 10000,
+    "n_processes": null
+  },
+  "grid_langer": {
+    "fbin_min": 0.1,
+    "fbin_max": 0.9,
+    "fbin_steps": 17,
+    "n_stars_sim": 3000,
+    "n_processes": null
+  },
+  "ui": {
+    "last_star": "MNM2014 LMC195-1",
+    "last_epoch": 1,
+    "last_band": "COMBINED",
+    "last_result": "results/dsilva_result.npz",
+    "last_page": "Home"
+  }
+}

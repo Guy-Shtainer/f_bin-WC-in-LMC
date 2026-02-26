@@ -1,37 +1,37 @@
 import os
-import shutil
+# import shutil
 import glob
 from datetime import datetime
 import pandas as pd
+# import numpy as np
+# from scipy.interpolate import UnivariateSpline
+# import matplotlib.pyplot as plt
 import numpy as np
-from scipy.interpolate import UnivariateSpline
 import matplotlib.pyplot as plt
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, Button
+# from matplotlib.widgets import Slider, Button
 import utils as ut
 from IPython.display import display
 from astropy.io import fits
-from threading import Thread
+# from threading import Thread
 import multiprocess
-from itertools import product
+# from itertools import product
 from functools import partial
-from tabulate import tabulate
-from astroquery.simbad import Simbad
-from astroquery.vizier import Vizier
-from astroquery.gaia import Gaia
+# from tabulate import tabulate
+# from astroquery.simbad import Simbad
+# from astroquery.vizier import Vizier
+# from astroquery.gaia import Gaia
 
 # Tomer's tools
-from CCF import CCFclass
-import plot as p
-import TwoDImage as p2D
+# from CCF import CCFclass
+# import plot as p
+# import TwoDImage as p2D
 
 # My tools
 from FitsClass import FITSFile as myfits
 
 import requests
-from bs4 import BeautifulSoup
-import re
+# from bs4 import BeautifulSoup
+# import re
 
 class NRES:
     def __init__(self, star_name, data_dir, backup_dir,to_print = True):
@@ -55,8 +55,7 @@ class NRES:
         self.observations = {}         # If you want to cache loaded FITSFile objects
         self.normalized_spectra = {}   # If you store normalized data
 
-        # Optional SIMBAD usage
-        self.BAT_ID = self.get_bat_id()
+        self.BAT_ID = None   # call self.get_bat_id() explicitly when SIMBAD is reachable
 
         # The rest of these arrays in the original code:
         self.normalized_wavelength = []
