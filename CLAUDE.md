@@ -151,6 +151,14 @@ Verify zero output (no syntax or import errors) before marking work complete.
 (NOT `from app.shared import ...`). Streamlit adds the `app/` directory to
 `sys.path` when running pages, so `shared` is importable directly.
 
+**Commit after each change:** When making multiple changes to the codebase,
+commit each logical change separately with a descriptive message before moving
+to the next change. This provides fine-grained rollback points and clear history.
+
+**Backup before editing app pages:** Before modifying any file in `app/pages/`,
+run `cp app/pages/{file} Backups/{file}.bak` to create a rollback point.
+Always verify the backup compiles before overwriting it with a newer version.
+
 **Progress bars for long runs:** Any computation taking >5 seconds must show
 `st.progress()`. For multi-slice loops (e.g., sigma scan in the bias correction
 page), update the progress bar and the live heatmap slot after each slice
