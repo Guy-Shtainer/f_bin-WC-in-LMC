@@ -1009,71 +1009,138 @@ with tab_dsilva:
                 )
 
             with _bf_col:
-                st.markdown('### Intrinsic vs Observed Binary Fraction')
+                st.markdown('### Observed Binary Fraction vs Threshold')
+
+                # Compute binary fraction as a function of ΔRV threshold
+                _n_sim = len(gap_drv)
+                _thresh_arr = np.linspace(0, float(np.max(gap_drv) * 1.05), 200)
+                _fbin_curve = np.array([float(np.sum(gap_drv > t)) / _n_sim
+                                        for t in _thresh_arr])
+
+                # Also compute fraction of binaries detected and singles mis-classified
+                _bin_drv_all = gap_drv[gap_is_bin]
+                _sin_drv_all = gap_drv[~gap_is_bin]
+                _missed_bin_curve = np.array(
+                    [float(np.sum(_bin_drv_all <= t)) / _n_sim for t in _thresh_arr])
+                _false_pos_curve = np.array(
+                    [float(np.sum(_sin_drv_all > t)) / _n_sim for t in _thresh_arr])
 
                 fig_gap = go.Figure()
-                # Intrinsic bar
-                fig_gap.add_trace(go.Bar(
-                    x=['Intrinsic'], y=[intrinsic_fbin],
-                    name='Intrinsic f_bin',
-                    marker_color='#E25A53', width=0.4,
-                    text=[f'{intrinsic_fbin:.1%}'], textposition='outside',
+
+                # Shaded region: missed binaries (left of threshold)
+                fig_gap.add_trace(go.Scatter(
+                    x=_thresh_arr, y=_missed_bin_curve,
+                    fill='tozeroy', fillcolor='rgba(242,166,35,0.25)',
+                    line=dict(width=0), mode='lines',
+                    name='Missed binaries', showlegend=True,
                 ))
-                # Observed bar (split into detected + missed)
-                fig_gap.add_trace(go.Bar(
-                    x=['Observed'], y=[observed_fbin],
-                    name='Detected (ΔRV > threshold)',
-                    marker_color='#4A90D9', width=0.4,
-                    text=[f'{observed_fbin:.1%}'], textposition='outside',
+
+                # Shaded region: false positives / singles above threshold (right of threshold)
+                if np.any(_false_pos_curve > 0):
+                    fig_gap.add_trace(go.Scatter(
+                        x=_thresh_arr, y=_false_pos_curve,
+                        fill='tozeroy', fillcolor='rgba(74,144,217,0.25)',
+                        line=dict(width=0), mode='lines',
+                        name='Singles above threshold', showlegend=True,
+                    ))
+
+                # Observed f_bin curve
+                fig_gap.add_trace(go.Scatter(
+                    x=_thresh_arr, y=_fbin_curve,
+                    mode='lines',
+                    name='Observed f_bin(threshold)',
+                    line=dict(color='#4A90D9', width=2.5),
                 ))
-                # Gap annotation
-                gap_pct = intrinsic_fbin - observed_fbin
-                fig_gap.add_annotation(
-                    x=1.3, y=(intrinsic_fbin + observed_fbin) / 2,
-                    text=f'Gap: {gap_pct:.1%}<br>({missed_count} missed<br>of {total_bin} binaries)',
-                    showarrow=True, arrowhead=2,
-                    ax=60, ay=0,
-                    font=dict(size=12, color='#F5A623'),
-                    arrowcolor='#F5A623',
-                )
-                # Horizontal line at intrinsic f_bin
+
+                # Intrinsic f_bin horizontal line
                 fig_gap.add_hline(
                     y=intrinsic_fbin, line_dash='dot',
-                    line_color='#E25A53', line_width=1,
+                    line_color='#E25A53', line_width=2,
+                    annotation_text=f'Intrinsic f_bin = {intrinsic_fbin:.1%}',
+                    annotation_position='top left',
+                    annotation_font=dict(size=11, color='#E25A53'),
                 )
+
+                # Vertical line at current threshold
+                fig_gap.add_vline(
+                    x=thresh_dRV, line_dash='dash',
+                    line_color='#F5A623', line_width=2,
+                    annotation_text=f'Threshold = {thresh_dRV} km/s',
+                    annotation_position='top right',
+                    annotation_font=dict(size=11, color='#F5A623'),
+                )
+
+                # Mark the observed f_bin at the threshold
+                fig_gap.add_trace(go.Scatter(
+                    x=[thresh_dRV], y=[observed_fbin],
+                    mode='markers+text',
+                    marker=dict(size=12, color='#FFD700', symbol='star',
+                                line=dict(width=1, color='#fff')),
+                    text=[f'{observed_fbin:.1%}'],
+                    textposition='top left',
+                    textfont=dict(size=12, color='#FFD700'),
+                    name=f'Observed @ {thresh_dRV} km/s',
+                    showlegend=True,
+                ))
+
+                # Gap annotation between intrinsic and observed
+                gap_pct = intrinsic_fbin - observed_fbin
+                fig_gap.add_annotation(
+                    x=thresh_dRV + 15,
+                    y=(intrinsic_fbin + observed_fbin) / 2,
+                    text=f'Gap: {gap_pct:.1%}<br>({missed_count} missed / {total_bin} binaries)',
+                    showarrow=False,
+                    font=dict(size=11, color='#F5A623'),
+                    bgcolor='rgba(26,26,46,0.8)',
+                    bordercolor='#F5A623',
+                    borderwidth=1,
+                    borderpad=4,
+                )
+                # Arrow connecting intrinsic to observed at threshold
+                fig_gap.add_annotation(
+                    x=thresh_dRV, y=intrinsic_fbin,
+                    ax=thresh_dRV, ay=observed_fbin,
+                    xref='x', yref='y', axref='x', ayref='y',
+                    showarrow=True, arrowhead=3,
+                    arrowwidth=2, arrowcolor='#F5A623',
+                )
+
                 fig_gap.update_layout(
                     title=dict(
-                        text=(f'Binary Fraction Gap  (threshold = {thresh_dRV} km/s)'),
+                        text='Binary Fraction vs ΔRV Threshold',
                         font=dict(size=14)),
-                    yaxis_title='Binary fraction',
+                    xaxis_title='ΔRV threshold (km/s)',
+                    yaxis_title='Fraction of sample',
                     plot_bgcolor='#1a1a2e',
                     paper_bgcolor='#1a1a2e',
                     font_color='#e0e0e0',
                     height=400,
                     margin=dict(l=60, r=80, t=50, b=50),
                     showlegend=True,
-                    legend=dict(x=0.3, y=0.95),
-                    yaxis=dict(range=[0, min(1.0, intrinsic_fbin * 1.4)]),
+                    legend=dict(x=0.55, y=0.95, font=dict(size=10)),
+                    yaxis=dict(range=[0, min(1.0, intrinsic_fbin * 1.5)]),
                 )
                 st.plotly_chart(fig_gap, use_container_width=True, key='bc_gap_chart')
                 st.caption(
-                    f'The intrinsic binary fraction ({intrinsic_fbin:.1%}) vs the '
-                    f'fraction detected above ΔRV = {thresh_dRV} km/s '
-                    f'({observed_fbin:.1%}). The gap represents {missed_count} '
-                    f'binaries whose orbital geometry or period makes them '
-                    f'undetectable with our cadence.'
+                    f'Observed binary fraction as a function of ΔRV threshold. '
+                    f'The blue curve shows the fraction of stars classified as '
+                    f'binary at each threshold. The dashed red line is the '
+                    f'intrinsic f_bin = {intrinsic_fbin:.1%}. At our threshold '
+                    f'({thresh_dRV} km/s), the observed fraction is '
+                    f'{observed_fbin:.1%} — a gap of {gap_pct:.1%} due to '
+                    f'{missed_count} undetectable binaries. '
+                    f'Amber shading shows missed binaries; blue shading shows '
+                    f'singles scattered above each threshold.'
                 )
 
             # ── Missed Binaries — Orbital Parameter Histograms ───────────
             st.markdown('---')
             st.markdown('### Missed Binaries — Orbital Properties')
 
-            _CLR_SINGLES  = '#4A90D9'   # steel blue
-
             _mb_view = st.radio(
                 'Show populations',
                 ['Compare detected vs missed', 'Detected binaries only',
-                 'Missed binaries only', 'All three (detected / missed / true singles)'],
+                 'Missed binaries only'],
                 horizontal=True, key='bc_mb_view',
             )
 
@@ -1089,13 +1156,12 @@ with tab_dsilva:
             i_det = np.degrees(gap_sim['i_rad'][_bin_detected_mask]) if gap_sim['i_rad'].size > 0 else np.array([])
             i_mis = np.degrees(gap_sim['i_rad'][_bin_missed_mask]) if gap_sim['i_rad'].size > 0 else np.array([])
 
-            # For true singles, we show ΔRV distribution only (no orbital params)
-            single_drv = gap_drv[~gap_is_bin]
-
             from plotly.subplots import make_subplots
 
             _param_labels = ['log₁₀(P / days)', 'Eccentricity', 'Mass ratio q',
                              'K₁ (km/s)', 'Inclination (°)']
+            _x_labels = ['log₁₀(P / days)', 'e', 'q = M₂/M₁',
+                         'K₁ (km/s)', 'i (degrees)']
             _nbins_hist = 30
 
             fig_mb = make_subplots(rows=1, cols=5, subplot_titles=_param_labels,
@@ -1113,8 +1179,7 @@ with tab_dsilva:
                     showlegend=show_legend,
                 ), row=1, col=col)
 
-            if _mb_view in ('Compare detected vs missed', 'Detected binaries only',
-                            'All three (detected / missed / true singles)'):
+            if _mb_view in ('Compare detected vs missed', 'Detected binaries only'):
                 _show_leg = True
                 _add_hist(fig_mb, 1, np.log10(P_det) if P_det.size > 0 else P_det,
                           'Detected', _CLR_DETECTED, _show_leg)
@@ -1123,8 +1188,7 @@ with tab_dsilva:
                 _add_hist(fig_mb, 4, K1_det, 'Detected', _CLR_DETECTED, False)
                 _add_hist(fig_mb, 5, i_det, 'Detected', _CLR_DETECTED, False)
 
-            if _mb_view in ('Compare detected vs missed', 'Missed binaries only',
-                            'All three (detected / missed / true singles)'):
+            if _mb_view in ('Compare detected vs missed', 'Missed binaries only'):
                 _show_leg2 = (_mb_view != 'Detected binaries only')
                 _add_hist(fig_mb, 1, np.log10(P_mis) if P_mis.size > 0 else P_mis,
                           'Missed', _CLR_MISSED, _show_leg2)
@@ -1133,33 +1197,24 @@ with tab_dsilva:
                 _add_hist(fig_mb, 4, K1_mis, 'Missed', _CLR_MISSED, False)
                 _add_hist(fig_mb, 5, i_mis, 'Missed', _CLR_MISSED, False)
 
-            if _mb_view == 'All three (detected / missed / true singles)':
-                # For true singles, show only the ΔRV in the first panel as context
-                _add_hist(fig_mb, 1, np.zeros(0),
-                          'True singles', _CLR_SINGLES, True)
-                # True singles have no orbital params — add annotation
-                fig_mb.add_annotation(
-                    x=0.5, y=0.5, xref='x5 domain', yref='y5 domain',
-                    text='(no orbital params<br>for true singles)',
-                    showarrow=False,
-                    font=dict(size=10, color='#888'),
-                )
-
             fig_mb.update_layout(
                 barmode='overlay',
                 plot_bgcolor='#1a1a2e',
                 paper_bgcolor='#1a1a2e',
                 font_color='#e0e0e0',
                 height=380,
-                margin=dict(l=40, r=20, t=40, b=50),
+                margin=dict(l=40, r=20, t=40, b=60),
                 legend=dict(
                     orientation='h', yanchor='bottom', y=1.08,
                     xanchor='center', x=0.5,
                 ),
             )
             for ax_i in range(1, 6):
-                fig_mb.update_xaxes(showgrid=False, row=1, col=ax_i)
+                fig_mb.update_xaxes(title_text=_x_labels[ax_i - 1],
+                                    showgrid=False, row=1, col=ax_i)
                 fig_mb.update_yaxes(showgrid=False, row=1, col=ax_i)
+            # Only first y-axis gets label
+            fig_mb.update_yaxes(title_text='Probability density', row=1, col=1)
 
             st.plotly_chart(fig_mb, use_container_width=True, key='bc_missed_binaries')
             st.caption(
@@ -1168,8 +1223,7 @@ with tab_dsilva:
                 f'**Detected** (red): {detected_bin_count} binaries with '
                 f'ΔRV > {thresh_dRV} km/s. '
                 f'**Missed** (amber): {missed_count} binaries below threshold — '
-                f'typically long-period, low-inclination, or low-K₁ systems. '
-                f'Use the toggle above to compare populations.'
+                f'typically long-period, low-inclination, or low-K₁ systems.'
             )
 
         # ── Model Explorer ───────────────────────────────────────────────
