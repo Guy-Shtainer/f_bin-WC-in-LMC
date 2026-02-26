@@ -1,10 +1,21 @@
-# Cleaned Status Skill
+---
+name: cleaned-status
+description: Check whether WR stars have been spatially cleaned (2D extraction via IC2D.py). Use this skill whenever the user asks about cleaning status, spatial cleaning, include_range, IC2D, 2D image cleaning, which stars are cleaned, or whether data preparation is complete. Also trigger when the user wants to know if a star's spectra are ready for CCF analysis.
+---
 
-Use this skill when asked whether a star (or all stars) has been cleaned, or to check the cleaning status of the dataset.
+# Cleaned Status
 
 ## What "Cleaned" Means
 
-A star is considered **cleaned** if the 2D spatial cleaning has been performed for at least one epoch and band via `IC2D.py`. The cleaning saves an `include_range` property — a dict with the spatial row indices selected for extraction (`bottom_include`, `top_include`).
+A star is considered **cleaned** if 2D spatial cleaning has been performed for at
+least one epoch and band via `IC2D.py`. The cleaning saves an `include_range`
+property — a dict with the spatial row indices selected for extraction.
+
+`IC2D.py` is an interactive matplotlib GUI and must be run from terminal:
+```bash
+python IC2D.py
+```
+It cannot be run from the webapp.
 
 ## How to Check Cleaning Status
 
@@ -26,28 +37,24 @@ for star_name in specs.star_names:
                 break
         if cleaned:
             break
-    print(f"{star_name:25s}  {'✓ cleaned' if cleaned else '✗ not cleaned'}")
+    print(f"{star_name:25s}  {'cleaned' if cleaned else 'not cleaned'}")
 ```
 
-## Property Details
+Run this code to get the current cleaning status — do not rely on cached counts.
 
-- **Property name:** `'include_range'`
-- **Set by:** `IC2D.py` interactive GUI (run via `python IC2D.py` from terminal)
-- **Structure:** `{'bottom_include': int, 'top_include': int}` — spatial row indices
-- **Related properties also saved during cleaning:**
-  - `spacial_range` — visual selection boundaries
-  - `snr_bounds` — SNR measurement windows (`{'red': [x1, x2], 'blue': [x3, x4]}`)
-  - `clean_flux` — summed flux after spatial selection
-  - `cleaned_normalized_flux` — final normalized spectrum
+## Properties Saved During Cleaning
 
-## Result as of Last Run (2026-02-24)
-
-9/25 stars cleaned (36%):
-Brey 83, HD 38029, Brey 95a, MNM2014 LMC195-1, Brey 58a, HD 32228,
-H2013 LMCe 584, RMC 140, Brey 70a
+| Property                  | Description                                    |
+|---------------------------|------------------------------------------------|
+| `include_range`           | `{'bottom_include': int, 'top_include': int}` — spatial row indices |
+| `spacial_range`           | Visual selection boundaries                    |
+| `snr_bounds`              | SNR measurement windows: `{'red': [x1, x2], 'blue': [x3, x4]}` |
+| `clean_flux`              | Summed flux after spatial selection            |
+| `cleaned_normalized_flux` | Final normalized spectrum                      |
 
 ## Notes
 
 - `load_property` returns `None` if the file does not exist — no exception is raised
 - Cleaning is per-epoch and per-band; a star is considered cleaned if **any** epoch/band has it
-- To check at finer granularity (which epochs are cleaned), loop and collect all `(ep, band)` pairs where `include_range is not None`
+- To check at finer granularity (which epochs are cleaned), loop and collect all
+  `(ep, band)` pairs where `include_range is not None`

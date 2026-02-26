@@ -1,7 +1,9 @@
-# Check Binary Skill
+---
+name: check-binary
+description: Classify WR stars as binary or single based on radial velocity variations. Use this skill whenever the user asks about binary classification, binary detection criteria, the binary fraction, delta-RV thresholds, significance testing, epoch-pair scanning, or reproducing classification results. Also trigger when the user mentions the 13/28 or 46% binary fraction, the C IV 5808-5812 line for classification, the Bartzakos (2001) sample, or wants to understand why a star is classified as binary or single.
+---
 
-Use this skill when asked to determine whether stars are binary, compute the binary fraction,
-or reproduce / verify the classification logic from `bias_simulation.ipynb`.
+# Check Binary
 
 ## Sample Context — CRITICAL
 
@@ -17,7 +19,15 @@ Last measured: 10 detected + 3 = **13/28 ≈ 46%**
 
 Never report just N/25 — that undercounts the known binaries.
 
-## Classification Logic (mirrors `bias_simulation.ipynb` exactly)
+## Classification Thresholds
+
+Read thresholds from `settings/user_settings.json` → `classification` section:
+- `threshold_dRV`: 45.5 km/s
+- `sigma_factor`: 4.0
+- `bartzakos_binaries`: 3
+- `total_population`: 28
+
+## Classification Logic
 
 **Emission line:** Only `'C IV 5808-5812'` is used. Do NOT loop over all lines.
 
@@ -40,13 +50,11 @@ rv_err = RV_err_list[mask]
 ```
 
 **Two criteria — BOTH must be true:**
-1. `ΔRV > 45.5 km/s`
-2. `ΔRV − 4 × σ > 0`  where `σ = sqrt(err_i² + err_j²)`
+1. `ΔRV > threshold_dRV` (45.5 km/s)
+2. `ΔRV − sigma_factor × σ > 0`  where `σ = sqrt(err_i² + err_j²)`
 
 **Algorithm:**
 ```python
-threshold_dRV = 45.5
-
 idx_min, idx_max = np.argmin(rv), np.argmax(rv)
 abs_base   = abs(rv[idx_max] - rv[idx_min])
 sigma_base = np.sqrt(rv_err[idx_min]**2 + rv_err[idx_max]**2)
@@ -66,8 +74,16 @@ if not found:   # scan all other pairs
 is_binary = bool(found)   # ← MUST cast; numpy.bool_ is True fails Python identity check
 ```
 
-## Known Pitfall
+## Reusable Implementation
 
-`rv` is a numpy array, so comparisons return `numpy.bool_`, not Python `bool`.
-`numpy.bool_(True) is True` → **False**.
-Always wrap with `bool()` before storing or comparing with `is True`.
+`pipeline/load_observations.py` → `load_observed_delta_rvs()` implements this exact
+logic as a reusable function. It returns arrays of ΔRV values and binary flags for
+all 25 stars. The webapp uses this in `app/pages/04_classification.py`.
+
+## Key Pitfalls
+
+- **numpy.bool_**: Comparisons on numpy arrays return `numpy.bool_`, not Python `bool`.
+  `numpy.bool_(True) is True` → **False**. Always wrap with `bool()`.
+- **MJD source**: Observation times come from FITS header `fit.header['MJD-OBS']`,
+  NOT from the RV property dict. The RV dict only stores `full_RV` and `full_RV_err`.
+- **Zero-filtering**: Missing epochs are stored as 0.0 — always filter with `rv[rv != 0]`.
