@@ -728,7 +728,6 @@ with tab_dsilva:
                                         height=_ch, width=_cw,
                                     ),
                                     use_container_width=_use_cw,
-                                    key='bc_heatmap_live',
                                 )
 
                                 bf, bp, bpv = _best_point(cur_p_disp, fbin_vals, pi_vals)
@@ -845,7 +844,6 @@ with tab_dsilva:
                     height=_ch, width=_cw,
                 ),
                 use_container_width=_use_cw,
-                key='bc_heatmap_display',
             )
 
         # Best across ALL sigma slices
