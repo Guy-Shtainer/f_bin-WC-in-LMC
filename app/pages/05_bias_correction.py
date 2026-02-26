@@ -728,7 +728,7 @@ with tab_dsilva:
                                         height=_ch, width=_cw,
                                     ),
                                     use_container_width=_use_cw,
-                                    key='bc_heatmap',
+                                    key='bc_heatmap_live',
                                 )
 
                                 bf, bp, bpv = _best_point(cur_p_disp, fbin_vals, pi_vals)
@@ -833,18 +833,20 @@ with tab_dsilva:
             display_idx = 0
 
         # Show heatmap for the selected sigma slice
-        heatmap_slot.plotly_chart(
-            _make_heatmap_fig(
-                ks_p_3d[display_idx], fbin_g, pi_g,
-                title=(f'K-S p-value  '
-                       f'(σ_single = {float(sigma_g[display_idx]):.1f} km/s)'),
-                show_d=show_d,
-                ks_d_2d=ks_D_3d[display_idx],
-                height=_ch, width=_cw,
-            ),
-            use_container_width=_use_cw,
-            key='bc_heatmap',
-        )
+        # (skip when run_btn was just clicked — live heatmap already rendered)
+        if not run_btn:
+            heatmap_slot.plotly_chart(
+                _make_heatmap_fig(
+                    ks_p_3d[display_idx], fbin_g, pi_g,
+                    title=(f'K-S p-value  '
+                           f'(σ_single = {float(sigma_g[display_idx]):.1f} km/s)'),
+                    show_d=show_d,
+                    ks_d_2d=ks_D_3d[display_idx],
+                    height=_ch, width=_cw,
+                ),
+                use_container_width=_use_cw,
+                key='bc_heatmap_display',
+            )
 
         # Best across ALL sigma slices
         flat_best = int(np.argmax(ks_p_3d))
