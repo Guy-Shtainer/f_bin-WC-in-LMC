@@ -147,6 +147,12 @@ conda run -n guyenv python -m py_compile path/to/file.py
 ```
 Verify zero output (no syntax or import errors) before marking work complete.
 
+**Check common errors:** Before and after editing any `.py` file, scan for known
+bad patterns listed in `COMMON_ERRORS.md`. Run the Quick-Scan Regex from that file
+against modified files. Fix any matches before committing. When encountering a new
+recurring error, add it to `COMMON_ERRORS.md` with an ID, grep pattern, fix, and
+explanation.
+
 **Import convention for `app/pages/`:** Always use `from shared import ...`
 (NOT `from app.shared import ...`). Streamlit adds the `app/` directory to
 `sys.path` when running pages, so `shared` is importable directly.
