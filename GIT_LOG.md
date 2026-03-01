@@ -6,6 +6,21 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-01 — Common errors system + np.trapz fix
+
+| Hash | Summary |
+|------|---------|
+| `9c1a161` | Fix np.trapz → np.trapezoid across all files (numpy 2.x) |
+| `b86c5e0` | Add common-errors checking rule to CLAUDE.md |
+| `7eae2eb` | Add error-checker auto-triggered skill |
+| `9778eb9` | Create COMMON_ERRORS.md with known pitfalls and grep patterns |
+
+Created `COMMON_ERRORS.md` documenting 4 known pitfalls (E001–E004) with
+grep-ready regex patterns for automated scanning. Added auto-triggered
+`error-checker` skill that checks patterns before/after writing code.
+Fixed `np.trapz` → `np.trapezoid` in 4 files (6 occurrences) — numpy 2.x
+removed the old name.
+
 ## 2026-03-01 — Session 1: marginalization, corner plot, orbital histograms
 
 | Hash | Summary |
