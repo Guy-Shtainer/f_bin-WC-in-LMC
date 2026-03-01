@@ -729,6 +729,107 @@ def ks_two_sample(
 
 
 # ---------------------------------------------------------------------------
+# Marginalization & HDI68 credible intervals (Dsilva et al. 2023 style)
+# ---------------------------------------------------------------------------
+
+def compute_hdi68(
+    x_vals: np.ndarray,
+    posterior_1d: np.ndarray,
+) -> Tuple[float, float, float]:
+    """
+    Compute the mode and 68% Highest Density Interval from a 1D posterior.
+
+    Following Dsilva et al. (2023): the posterior is the marginalized K-S
+    p-value curve (summed over other dimensions and normalized). The HDI
+    is found by lowering a horizontal line from the mode until the enclosed
+    area under the curve equals 68% of the total area.
+
+    Parameters
+    ----------
+    x_vals : 1D array
+        Parameter grid values (e.g., f_bin values).
+    posterior_1d : 1D array
+        Marginalized posterior values (same length as x_vals).
+
+    Returns
+    -------
+    (mode, lower, upper) : tuple of floats
+        mode: parameter value at the peak
+        lower: left bound of 68% HDI
+        upper: right bound of 68% HDI
+    """
+    x_vals = np.asarray(x_vals, dtype=float)
+    posterior_1d = np.asarray(posterior_1d, dtype=float)
+
+    # Normalize to a probability density
+    dx = np.diff(x_vals)
+    # Use trapezoidal integration for normalization
+    total_area = float(np.trapz(posterior_1d, x_vals))
+    if total_area <= 0:
+        mode_idx = int(np.argmax(posterior_1d))
+        return float(x_vals[mode_idx]), float(x_vals[0]), float(x_vals[-1])
+    pdf = posterior_1d / total_area
+
+    # Mode = peak
+    mode_idx = int(np.argmax(pdf))
+    mode_val = float(x_vals[mode_idx])
+    peak_height = float(pdf[mode_idx])
+
+    # Binary search for the horizontal line height where enclosed area = 68%
+    target = 0.68
+    h_low, h_high = 0.0, peak_height
+    for _ in range(200):  # plenty of iterations for convergence
+        h_mid = (h_low + h_high) / 2.0
+        # Mask: where pdf >= h_mid
+        mask = pdf >= h_mid
+        if not np.any(mask):
+            h_high = h_mid
+            continue
+        # Area under the curve where pdf >= threshold
+        clipped = np.where(mask, pdf, 0.0)
+        area = float(np.trapz(clipped, x_vals))
+        if area > target:
+            h_low = h_mid
+        else:
+            h_high = h_mid
+
+    # Find the bounds: leftmost and rightmost x where pdf >= h_mid
+    final_h = (h_low + h_high) / 2.0
+    mask = pdf >= final_h
+    indices = np.where(mask)[0]
+    if len(indices) == 0:
+        return mode_val, float(x_vals[0]), float(x_vals[-1])
+
+    # Interpolate for smoother bounds
+    left_idx = int(indices[0])
+    right_idx = int(indices[-1])
+
+    # Left bound: interpolate between left_idx-1 and left_idx
+    if left_idx > 0:
+        x0, x1 = x_vals[left_idx - 1], x_vals[left_idx]
+        y0, y1 = pdf[left_idx - 1], pdf[left_idx]
+        if y1 != y0:
+            lower = float(x0 + (final_h - y0) * (x1 - x0) / (y1 - y0))
+        else:
+            lower = float(x_vals[left_idx])
+    else:
+        lower = float(x_vals[0])
+
+    # Right bound: interpolate between right_idx and right_idx+1
+    if right_idx < len(x_vals) - 1:
+        x0, x1 = x_vals[right_idx], x_vals[right_idx + 1]
+        y0, y1 = pdf[right_idx], pdf[right_idx + 1]
+        if y1 != y0:
+            upper = float(x0 + (final_h - y0) * (x1 - x0) / (y1 - y0))
+        else:
+            upper = float(x_vals[right_idx])
+    else:
+        upper = float(x_vals[-1])
+
+    return mode_val, lower, upper
+
+
+# ---------------------------------------------------------------------------
 # Grid runner with multiprocessing
 # ---------------------------------------------------------------------------
 
