@@ -9,7 +9,7 @@
 | 20 | Switch to matplotlib-style Plotly theming | White backgrounds, scientific fonts, traditional academic plot styling via Plotly (not pure matplotlib) | critical | graphs, webapp | open | Claude | Guy | 2026-03-01 | Y | Y |
 | 2 | Duplicate Dsilva/Langer tabs | Add ability to duplicate parameter tabs for side-by-side exploration of different grid configurations | critical | bias-correction, webapp | open | Claude | Tomer | 2026-03-01 | Y | Y |
 | 4 | Langer 2020 period model | Implement pipeline/langer_grid.py for the Langer et al. (2020) period distribution model | critical | bias-correction, pipeline | open | Claude | Tomer | 2026-03-01 | Y | Y |
-| 25 | Remove duplicate page menu in sidebar | Top page menu is ugly but functional, bottom one looks great — remove the top duplicate | critical | GUI, webapp | open | Claude | Guy | 2026-03-01 | Y | Y |
+| 25 | Remove duplicate page menu in sidebar | Top page menu is ugly but functional, bottom one looks great — remove the top duplicate. CSS hide applied via stSidebarNav | critical | GUI, webapp | to-test | Claude | Guy | 2026-03-01 | Y | Y |
 | 31 | Create project status dashboard page | Documentation of all plots and calculations, track implementation status (working, bugs, planned, not started) with interactive checklist. that would be very cool to do in the home page. | critical | webapp, global | open | Claude | Guy | 2026-03-01 | Y | Y |
 | 19 | Add f_bin vs sigma and pi vs sigma heatmaps | Near the K-S map, add additional heatmaps: f_bin vs sigma_single and pi vs sigma_single | high | bias-correction | open | Claude | Guy | 2026-03-01 | N | Y |
 | 24 | Set up Overleaf/LaTeX paper structure | Create paper/ directory with A&A format LaTeX skeleton, sync instructions for Overleaf, start drafting sections from DOCUMENTATION.md | medium | paper | open | Claude | Guy | 2026-03-01 | N | Y |
@@ -27,6 +27,8 @@
 | 1 | CDF truncation at 350 km/s | Investigate truncating the CDF at ~350 km/s where observation gaps begin — may improve K-S fit | low | bias-correction | open | Claude | Tomer | 2026-03-01 | N | Y |
 | 5 | 2D parameter histograms | Research whether 2D orbital parameter histograms (e.g. P vs e) add scientific value — confirm with Tomer | low | bias-correction, research | open | Claude | Tomer | 2026-03-01 | N | N |
 | 32 | Add more reference papers | Add relevant papers used for overview and references to papers/ folder | low | paper | open | Claude | Guy | 2026-03-01 | N | N |
+| 36 | TODO page bug fixes: compact edit, auto-priority, items in boxes | 3 fixes: single st.markdown for Eisenhower boxes, pencil edit button instead of expander, priority auto-derived from urgent/important flags | critical | webapp, GUI | to-test | Claude | Guy | 2026-03-01 | Y | Y |
+| 37 | To-test workflow + restore completed tasks | Added to-test status with green badge, confirm button, full metadata in Done table, restore button to uncheck completed tasks | critical | webapp, GUI | to-test | Claude | Guy | 2026-03-01 | Y | Y |
 
 ## Done
 

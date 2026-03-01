@@ -63,6 +63,17 @@ def _bool_str(val: bool) -> str:
     return 'Y' if val else 'N'
 
 
+def _derive_priority(urgent: bool, important: bool) -> str:
+    """Map Eisenhower quadrant to priority level."""
+    if urgent and important:
+        return 'critical'
+    if important:
+        return 'high'
+    if urgent:
+        return 'medium'
+    return 'low'
+
+
 def _parse_table_rows(lines: list[str]) -> list[list[str]]:
     """Parse markdown table rows (skip header + separator)."""
     rows = []
@@ -113,7 +124,23 @@ def load_todos() -> tuple[list[dict], list[dict]]:
             lines = section.split('\n')
             rows = _parse_table_rows(lines)
             for cells in rows[1:] if len(rows) > 1 else []:
-                if len(cells) >= 3:
+                if len(cells) >= 12:
+                    # Full metadata format (12 columns)
+                    done_tasks.append({
+                        'id': int(cells[0]) if cells[0].isdigit() else 0,
+                        'title': cells[1],
+                        'description': cells[2],
+                        'priority': cells[3].lower().strip(),
+                        'tags': cells[4],
+                        'added_by': cells[6],
+                        'suggested_by': cells[7],
+                        'date_added': cells[8],
+                        'urgent': _parse_bool(cells[9]),
+                        'important': _parse_bool(cells[10]),
+                        'date_done': cells[11],
+                    })
+                elif len(cells) >= 3:
+                    # Legacy 3-column format (backwards compatible)
                     done_tasks.append({
                         'id': int(cells[0]) if cells[0].isdigit() else 0,
                         'title': cells[1],
@@ -148,10 +175,24 @@ def save_todos(open_tasks: list[dict], done_tasks: list[dict]) -> None:
         )
 
     lines.append('\n## Done\n')
-    lines.append('| ID | Title | Date done |')
-    lines.append('|----|-------|-----------|')
+    lines.append(
+        '| ID | Title | Description | Priority | Tags | Status '
+        '| Added by | Suggested by | Date added | Urgent | Important | Date done |'
+    )
+    lines.append(
+        '|----|-------|-------------|----------|------|--------'
+        '|----------|-------------|------------|--------|-----------|-----------|'
+    )
     for t in done_tasks:
-        lines.append(f"| {t['id']} | {t['title']} | {t.get('date_done', '')} |")
+        lines.append(
+            f"| {t['id']} | {t['title']} | {t.get('description', '')} "
+            f"| {t.get('priority', 'medium')} | {t.get('tags', '')} "
+            f"| done | {t.get('added_by', '')} "
+            f"| {t.get('suggested_by', '')} | {t.get('date_added', '')} "
+            f"| {_bool_str(t.get('urgent', False))} "
+            f"| {_bool_str(t.get('important', False))} "
+            f"| {t.get('date_done', '')} |"
+        )
 
     lines.append('')
     with open(TODO_PATH, 'w', encoding='utf-8') as f:
@@ -181,27 +222,26 @@ if open_tasks:
         q_nn = [t for t in open_tasks if not t.get('urgent') and not t.get('important')]
 
         def _render_quadrant(title, color, label, tasks_q):
-            st.markdown(
+            parts = [
                 f'<div style="background:{color}22;border:1px solid {color};'
-                f'border-radius:8px;padding:10px;min-height:100px">'
+                f'border-radius:8px;padding:10px;min-height:100px">',
                 f'<b style="color:{color}">{title}</b> '
                 f'<span style="color:#888;font-size:0.8em">({label})</span><br>',
-                unsafe_allow_html=True,
-            )
+            ]
             if tasks_q:
                 for tq in tasks_q:
                     pri_e = PRIORITY_EMOJIS.get(tq.get('priority', 'medium'), '⚪')
-                    st.markdown(
-                        f'<span style="font-size:0.85em">{pri_e} {tq["title"]}</span><br>',
-                        unsafe_allow_html=True,
+                    parts.append(
+                        f'<span style="font-size:0.85em">{pri_e} {tq["title"]}'
+                        f'</span><br>'
                     )
             else:
-                st.markdown(
+                parts.append(
                     '<span style="color:#666;font-size:0.8em;font-style:italic">'
-                    'No tasks</span>',
-                    unsafe_allow_html=True,
+                    'No tasks</span>'
                 )
-            st.markdown('</div>', unsafe_allow_html=True)
+            parts.append('</div>')
+            st.markdown(''.join(parts), unsafe_allow_html=True)
 
         # Header row
         _h1, _h2 = st.columns(2)
@@ -235,13 +275,10 @@ if open_tasks:
 
 # ── Add new task ─────────────────────────────────────────────────────────────
 with st.expander('➕ Add new task', expanded=False):
-    _cols = st.columns([3, 1, 1])
+    _cols = st.columns([3, 1])
     new_title = _cols[0].text_area('Title', key='todo_new_title',
                                     placeholder='Short task name', height=68)
-    new_priority = _cols[1].selectbox('Priority',
-                                       ['high', 'critical', 'medium', 'low'],
-                                       key='todo_new_priority')
-    new_added_by = _cols[2].selectbox('Added by', ['Guy', 'Claude', 'Tomer'],
+    new_added_by = _cols[1].selectbox('Added by', ['Guy', 'Claude', 'Tomer'],
                                       key='todo_new_added_by')
 
     _cols2 = st.columns([3, 1, 1])
@@ -264,7 +301,7 @@ with st.expander('➕ Add new task', expanded=False):
                 'id': _next_id(open_tasks, done_tasks),
                 'title': title_clean,
                 'description': new_desc.strip().replace('\n', ' '),
-                'priority': new_priority,
+                'priority': _derive_priority(new_urgent, new_important),
                 'tags': new_tags.strip(),
                 'status': 'open',
                 'added_by': new_added_by,
@@ -369,16 +406,20 @@ for task in filtered:
     is_important = task.get('important', False)
 
     # Urgency/importance indicators
+    _task_status = task.get('status', 'open')
     flags = ''
-    if is_urgent and is_important:
+    if _task_status == 'to-test':
+        flags = '<span style="color:#2ECC71;font-size:0.75em;font-weight:600">🧪 TO TEST</span>'
+    elif is_urgent and is_important:
         flags = '<span style="color:#E25A53;font-size:0.75em">🔥 DO FIRST</span>'
     elif is_urgent:
         flags = '<span style="color:#F5A623;font-size:0.75em">⚡ URGENT</span>'
     elif is_important:
         flags = '<span style="color:#4A90D9;font-size:0.75em">📌 IMPORTANT</span>'
 
-    col_check, col_pri, col_title, col_flags, col_tags, col_by = st.columns(
-        [0.3, 0.5, 3, 1, 1.5, 1])
+    _edit_width = 0.7 if _task_status == 'to-test' else 0.4
+    col_check, col_pri, col_title, col_flags, col_tags, col_by, col_edit = st.columns(
+        [0.3, 0.5, 3, 1, 1.5, 0.8, _edit_width])
 
     with col_check:
         if st.checkbox('', key=f'todo_done_{task["id"]}',
@@ -409,20 +450,37 @@ for task in filtered:
             st.markdown(badges, unsafe_allow_html=True)
     with col_by:
         st.caption(task.get('suggested_by', ''))
+    with col_edit:
+        _edit_key = f'todo_editing_{task["id"]}'
+        if _task_status == 'to-test':
+            _bc1, _bc2 = st.columns(2)
+            if _bc1.button('✅', key=f'confirm_btn_{task["id"]}',
+                           help=f'Confirm #{task["id"]} works'):
+                _tasks_to_complete.append(task)
+            if _bc2.button('✏️', key=f'edit_btn2_{task["id"]}',
+                           help=f'Edit task #{task["id"]}'):
+                st.session_state[_edit_key] = not st.session_state.get(
+                    _edit_key, False)
+                st.rerun()
+        else:
+            if st.button('✏️', key=f'edit_btn_{task["id"]}',
+                         help=f'Edit task #{task["id"]}'):
+                st.session_state[_edit_key] = not st.session_state.get(
+                    _edit_key, False)
+                st.rerun()
 
-    # ── Inline edit expander ─────────────────────────────────────────────
-    with st.expander(f'Edit #{task["id"]}', expanded=False):
-        _ec1, _ec2, _ec3 = st.columns([3, 1, 1])
+    # ── Inline edit form (toggled by pencil button) ──────────────────────
+    if st.session_state.get(f'todo_editing_{task["id"]}', False):
+        _ec1, _ec2 = st.columns([3, 1])
         edit_title = _ec1.text_area(
             'Title', value=task['title'],
             key=f'edit_title_{task["id"]}', height=68)
-        edit_pri = _ec2.selectbox(
-            'Priority', ['critical', 'high', 'medium', 'low'],
-            index=['critical', 'high', 'medium', 'low'].index(pri),
-            key=f'edit_pri_{task["id"]}')
-        edit_status = _ec3.selectbox(
-            'Status', ['open', 'in-progress'],
-            index=0 if task.get('status', 'open') == 'open' else 1,
+        _status_opts = ['open', 'in-progress', 'to-test']
+        _cur_status = task.get('status', 'open')
+        edit_status = _ec2.selectbox(
+            'Status', _status_opts,
+            index=_status_opts.index(_cur_status)
+            if _cur_status in _status_opts else 0,
             key=f'edit_status_{task["id"]}')
 
         _ec4, _ec5, _ec6 = st.columns([3, 1, 1])
@@ -442,7 +500,7 @@ for task in filtered:
             if task.get('suggested_by', 'Guy') in ['Guy', 'Tomer', 'Claude'] else 0,
             key=f'edit_suggested_{task["id"]}')
 
-        _ec7, _ec8, _ec9, _ec10 = st.columns([2, 1, 1, 1])
+        _ec7, _ec8, _ec9, _ec10, _ec11 = st.columns([2, 1, 1, 0.7, 0.7])
         edit_tags = _ec7.text_input(
             'Tags', value=tags_str,
             key=f'edit_tags_{task["id"]}')
@@ -457,7 +515,7 @@ for task in filtered:
                          type='primary'):
             task['title'] = edit_title.strip().replace('\n', ' ')
             task['description'] = edit_desc.strip().replace('\n', ' ')
-            task['priority'] = edit_pri
+            task['priority'] = _derive_priority(edit_urgent, edit_important)
             task['status'] = edit_status
             task['tags'] = edit_tags.strip()
             task['added_by'] = edit_added
@@ -465,34 +523,55 @@ for task in filtered:
             task['urgent'] = edit_urgent
             task['important'] = edit_important
             save_todos(open_tasks, done_tasks)
+            st.session_state[f'todo_editing_{task["id"]}'] = False
             st.success(f'Updated #{task["id"]}')
+            st.rerun()
+
+        if _ec11.button('Cancel', key=f'edit_cancel_{task["id"]}'):
+            st.session_state[f'todo_editing_{task["id"]}'] = False
             st.rerun()
 
 # Handle completions
 if _tasks_to_complete:
     for task in _tasks_to_complete:
         open_tasks = [t for t in open_tasks if t['id'] != task['id']]
-        done_tasks.insert(0, {
-            'id': task['id'],
-            'title': task['title'],
-            'date_done': date.today().isoformat(),
-        })
+        done_entry = dict(task)
+        done_entry['date_done'] = date.today().isoformat()
+        done_entry['status'] = 'done'
+        done_tasks.insert(0, done_entry)
     save_todos(open_tasks, done_tasks)
     st.rerun()
 
 # ── Done tasks ───────────────────────────────────────────────────────────────
 if done_tasks:
     with st.expander(f'Completed ({len(done_tasks)})', expanded=False):
+        _tasks_to_restore = []
         for task in done_tasks:
-            st.markdown(
-                f'<span style="color:#666;text-decoration:line-through">'
-                f'#{task["id"]} — {task["title"]}</span>'
-                f'&nbsp;&nbsp;<span style="color:#555;font-size:0.8em">'
-                f'{task.get("date_done", "")}</span>',
-                unsafe_allow_html=True,
-            )
+            _dc1, _dc2 = st.columns([6, 0.5])
+            with _dc1:
+                st.markdown(
+                    f'<span style="color:#666;text-decoration:line-through">'
+                    f'#{task["id"]} — {task["title"]}</span>'
+                    f'&nbsp;&nbsp;<span style="color:#555;font-size:0.8em">'
+                    f'{task.get("date_done", "")}</span>',
+                    unsafe_allow_html=True,
+                )
+            with _dc2:
+                if st.button('↩️', key=f'restore_btn_{task["id"]}',
+                             help=f'Restore #{task["id"]} to open'):
+                    _tasks_to_restore.append(task)
+        if _tasks_to_restore:
+            for task in _tasks_to_restore:
+                done_tasks = [t for t in done_tasks if t['id'] != task['id']]
+                restored = dict(task)
+                restored.pop('date_done', None)
+                restored['status'] = 'open'
+                open_tasks.append(restored)
+            save_todos(open_tasks, done_tasks)
+            st.rerun()
 
 st.caption(
     f'{n_open} open tasks ({n_critical} critical, {n_high} high). '
-    f'Check the box to mark as done. Click "Edit #N" to modify any field.'
+    f'Check the box to mark as done. Click the pencil to edit, '
+    f'or the checkmark to confirm tested features.'
 )

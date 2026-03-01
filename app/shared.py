@@ -87,6 +87,8 @@ h1, h2, h3 { color: #e0e0e0; }
 .status-chip-binary { color: #E25A53; font-weight: 600; }
 .status-chip-single { color: #4A90D9; }
 .status-chip-unknown { color: #8C8C8C; }
+/* Hide the auto-generated Streamlit page navigation (keep custom render_sidebar) */
+[data-testid="stSidebarNav"] { display: none; }
 </style>
 """
 
