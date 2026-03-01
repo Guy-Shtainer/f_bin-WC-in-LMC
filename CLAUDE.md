@@ -174,6 +174,12 @@ move them from Open to Done with the completion date. When new tasks arise from
 user/Tomer conversations, add them with proper attribution. The webapp page
 `app/pages/10_todo.py` reads and writes this same file.
 
+**Documentation for paper:** At the end of each working session, update
+`DOCUMENTATION.md` Section 7 (Work Log) with a dated entry summarizing what was
+done, key results, scientific decisions, and open questions. If methodology
+changed, also update Sections 1–6. Use scientific language — this is reference
+material for the thesis, not a dev changelog.
+
 **Progress bars for long runs:** Any computation taking >5 seconds must show
 `st.progress()`. For multi-slice loops (e.g., sigma scan in the bias correction
 page), update the progress bar and the live heatmap slot after each slice
