@@ -326,4 +326,29 @@ work.
 
 ---
 
+### 2026-03-01 (cont.) — Infrastructure: error system, documentation, to-do improvements
+
+**What was done:**
+- Created `COMMON_ERRORS.md` documenting 4 known pitfalls (E001–E004) with
+  grep-ready regex patterns for automated pre/post-edit scanning.
+- Fixed `np.trapz` → `np.trapezoid` across 4 files (CCF.py, CCF-old.py,
+  wr_bias_simulation.py, 05_bias_correction.py) — numpy 2.x deprecation.
+- Restructured `DOCUMENTATION.md` with Section 7 (Work Log) containing
+  dated daily entries for each working session. Backfilled 3 entries.
+- Rewrote To-Do webapp page with Eisenhower matrix (2×2 urgent/important
+  quadrants), inline editing for all task fields, and urgent/important
+  boolean columns.
+- Populated `TODO.md` with full project roadmap (22 open tasks) translated
+  from `my_todo.md`, covering bias correction, NRES analysis, statistical
+  modeling, Overleaf paper, plots, GUI fixes, and more.
+
+**Decisions:**
+- Plots will use matplotlib-style Plotly (white backgrounds, scientific fonts)
+  rather than pure matplotlib — preserves interactivity while looking academic.
+- Wavelength axes will use Angstrom throughout.
+- Statistical RV modeling → separate page (`11_statistical_model.py`).
+- Paper will use A&A (Astronomy & Astrophysics) journal format.
+
+---
+
 *Last updated: 2026-03-01*
