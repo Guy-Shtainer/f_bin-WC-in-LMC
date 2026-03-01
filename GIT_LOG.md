@@ -6,6 +6,19 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-01 — To-Do page improvements + full roadmap population
+
+| Hash | Summary |
+|------|---------|
+| `c6ce6ae` | Populate TODO.md with full project roadmap (22 open tasks) |
+| `63be78b` | Rewrite To-Do page with Eisenhower matrix, inline editing, urgent/important fields |
+
+Rewrote To-Do webapp page: added 2×2 Eisenhower matrix (urgent/important
+quadrants), inline editing for all task fields, urgent/important boolean
+columns, quadrant filtering, and auto-sizing text areas. Populated TODO.md
+with all items from my_todo.md covering bias correction, NRES, statistical
+modeling, Overleaf paper, plots, GUI fixes, and more (22 open tasks total).
+
 ## 2026-03-01 — Documentation system for thesis writing
 
 | Hash | Summary |
