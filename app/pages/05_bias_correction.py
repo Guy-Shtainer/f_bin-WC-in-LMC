@@ -1304,41 +1304,82 @@ with tab_dsilva:
                     f'singles scattered above each threshold.'
                 )
 
-            # ── Missed Binaries — Orbital Parameter Histograms ───────────
+            # ── Binary Orbital Parameter Histograms ─────────────────────
             st.markdown('---')
-            st.markdown('### Missed Binaries — Orbital Properties')
+            st.markdown('### Binary Orbital Properties')
 
             _mb_view = st.radio(
                 'Show populations',
                 ['Compare detected vs missed', 'Detected binaries only',
-                 'Missed binaries only'],
+                 'Missed binaries only', 'All binaries (combined)'],
                 horizontal=True, key='bc_mb_view',
             )
 
             # Extract orbital params for detected and missed
-            P_det = gap_sim['P_days'][_bin_detected_mask] if gap_sim['P_days'].size > 0 else np.array([])
-            P_mis = gap_sim['P_days'][_bin_missed_mask] if gap_sim['P_days'].size > 0 else np.array([])
-            e_det = gap_sim['e'][_bin_detected_mask] if gap_sim['e'].size > 0 else np.array([])
-            e_mis = gap_sim['e'][_bin_missed_mask] if gap_sim['e'].size > 0 else np.array([])
-            q_det = gap_sim['q'][_bin_detected_mask] if gap_sim['q'].size > 0 else np.array([])
-            q_mis = gap_sim['q'][_bin_missed_mask] if gap_sim['q'].size > 0 else np.array([])
-            K1_det = gap_sim['K1'][_bin_detected_mask] if gap_sim['K1'].size > 0 else np.array([])
-            K1_mis = gap_sim['K1'][_bin_missed_mask] if gap_sim['K1'].size > 0 else np.array([])
-            i_det = np.degrees(gap_sim['i_rad'][_bin_detected_mask]) if gap_sim['i_rad'].size > 0 else np.array([])
-            i_mis = np.degrees(gap_sim['i_rad'][_bin_missed_mask]) if gap_sim['i_rad'].size > 0 else np.array([])
+            def _safe_mask(arr, mask):
+                return arr[mask] if arr.size > 0 else np.array([])
+
+            P_det = _safe_mask(gap_sim['P_days'], _bin_detected_mask)
+            P_mis = _safe_mask(gap_sim['P_days'], _bin_missed_mask)
+            e_det = _safe_mask(gap_sim['e'], _bin_detected_mask)
+            e_mis = _safe_mask(gap_sim['e'], _bin_missed_mask)
+            q_det = _safe_mask(gap_sim['q'], _bin_detected_mask)
+            q_mis = _safe_mask(gap_sim['q'], _bin_missed_mask)
+            K1_det = _safe_mask(gap_sim['K1'], _bin_detected_mask)
+            K1_mis = _safe_mask(gap_sim['K1'], _bin_missed_mask)
+            M1_det = _safe_mask(gap_sim['M1'], _bin_detected_mask)
+            M1_mis = _safe_mask(gap_sim['M1'], _bin_missed_mask)
+            i_det = np.degrees(_safe_mask(gap_sim['i_rad'], _bin_detected_mask))
+            i_mis = np.degrees(_safe_mask(gap_sim['i_rad'], _bin_missed_mask))
+
+            # New: omega, T0, M2
+            _has_omega = 'omega' in gap_sim
+            if _has_omega:
+                omega_det = np.degrees(_safe_mask(gap_sim['omega'], _bin_detected_mask))
+                omega_mis = np.degrees(_safe_mask(gap_sim['omega'], _bin_missed_mask))
+                T0_det = _safe_mask(gap_sim['T0'], _bin_detected_mask)
+                T0_mis = _safe_mask(gap_sim['T0'], _bin_missed_mask)
+            else:
+                omega_det = omega_mis = T0_det = T0_mis = np.array([])
+
+            M2_det = q_det * M1_det if q_det.size > 0 and M1_det.size > 0 else np.array([])
+            M2_mis = q_mis * M1_mis if q_mis.size > 0 and M1_mis.size > 0 else np.array([])
+
+            # All binaries (combined) arrays
+            P_all = gap_sim['P_days']
+            e_all = gap_sim['e']
+            q_all = gap_sim['q']
+            K1_all = gap_sim['K1']
+            M1_all = gap_sim['M1']
+            i_all = np.degrees(gap_sim['i_rad'])
+            omega_all = np.degrees(gap_sim['omega']) if _has_omega else np.array([])
+            T0_all = gap_sim['T0'] if _has_omega else np.array([])
+            M2_all = q_all * M1_all if q_all.size > 0 else np.array([])
 
             from plotly.subplots import make_subplots
 
-            _param_labels = ['log₁₀(P / days)', 'Eccentricity', 'Mass ratio q',
-                             'K₁ (km/s)', 'Inclination (°)']
-            _x_labels = ['log₁₀(P / days)', 'e', 'q = M₂/M₁',
-                         'K₁ (km/s)', 'i (degrees)']
+            _param_titles = [
+                'log₁₀(P / days)', 'Eccentricity', 'Mass ratio q',
+                'K₁ (km/s)', 'M₁ (M⊙)', 'M₂ (M⊙)',
+                'Inclination (°)', 'ω (°)', 'T₀ (rad)',
+            ]
+            _x_labels = [
+                'log₁₀(P / days)', 'e', 'q = M₂/M₁',
+                'K₁ (km/s)', 'M₁ (M⊙)', 'M₂ (M⊙)',
+                'i (degrees)', 'ω (degrees)', 'T₀ (rad)',
+            ]
+            _n_panels = 9
+            _n_cols = 3
+            _n_rows = 3
             _nbins_hist = 30
 
-            fig_mb = make_subplots(rows=1, cols=5, subplot_titles=_param_labels,
-                                   horizontal_spacing=0.06)
+            fig_mb = make_subplots(rows=_n_rows, cols=_n_cols,
+                                   subplot_titles=_param_titles,
+                                   horizontal_spacing=0.08, vertical_spacing=0.10)
 
-            def _add_hist(fig, col, data, name, color, show_legend):
+            _CLR_ALL = '#52B788'  # green for combined
+
+            def _add_hist(fig, row, col, data, name, color, show_legend):
                 if data.size == 0:
                     return
                 fig.add_trace(go.Histogram(
@@ -1348,44 +1389,62 @@ with tab_dsilva:
                     marker_color=color, opacity=0.6,
                     legendgroup=name,
                     showlegend=show_legend,
-                ), row=1, col=col)
+                ), row=row, col=col)
 
-            if _mb_view in ('Compare detected vs missed', 'Detected binaries only'):
-                _show_leg = True
-                _add_hist(fig_mb, 1, np.log10(P_det) if P_det.size > 0 else P_det,
-                          'Detected', _CLR_DETECTED, _show_leg)
-                _add_hist(fig_mb, 2, e_det, 'Detected', _CLR_DETECTED, False)
-                _add_hist(fig_mb, 3, q_det, 'Detected', _CLR_DETECTED, False)
-                _add_hist(fig_mb, 4, K1_det, 'Detected', _CLR_DETECTED, False)
-                _add_hist(fig_mb, 5, i_det, 'Detected', _CLR_DETECTED, False)
+            def _pos(idx):
+                """Convert 0-indexed panel to (row, col)."""
+                return (idx // _n_cols + 1, idx % _n_cols + 1)
 
-            if _mb_view in ('Compare detected vs missed', 'Missed binaries only'):
-                _show_leg2 = (_mb_view != 'Detected binaries only')
-                _add_hist(fig_mb, 1, np.log10(P_mis) if P_mis.size > 0 else P_mis,
-                          'Missed', _CLR_MISSED, _show_leg2)
-                _add_hist(fig_mb, 2, e_mis, 'Missed', _CLR_MISSED, False)
-                _add_hist(fig_mb, 3, q_mis, 'Missed', _CLR_MISSED, False)
-                _add_hist(fig_mb, 4, K1_mis, 'Missed', _CLR_MISSED, False)
-                _add_hist(fig_mb, 5, i_mis, 'Missed', _CLR_MISSED, False)
+            if _mb_view == 'All binaries (combined)':
+                _data_sets = [
+                    np.log10(P_all) if P_all.size > 0 else P_all,
+                    e_all, q_all, K1_all, M1_all, M2_all, i_all,
+                    omega_all, T0_all,
+                ]
+                for pi, d in enumerate(_data_sets):
+                    r, c = _pos(pi)
+                    _add_hist(fig_mb, r, c, d, 'All binaries', _CLR_ALL, pi == 0)
+            else:
+                _det_data = [
+                    np.log10(P_det) if P_det.size > 0 else P_det,
+                    e_det, q_det, K1_det, M1_det, M2_det, i_det,
+                    omega_det, T0_det,
+                ]
+                _mis_data = [
+                    np.log10(P_mis) if P_mis.size > 0 else P_mis,
+                    e_mis, q_mis, K1_mis, M1_mis, M2_mis, i_mis,
+                    omega_mis, T0_mis,
+                ]
+
+                if _mb_view in ('Compare detected vs missed', 'Detected binaries only'):
+                    for pi, d in enumerate(_det_data):
+                        r, c = _pos(pi)
+                        _add_hist(fig_mb, r, c, d, 'Detected', _CLR_DETECTED, pi == 0)
+
+                if _mb_view in ('Compare detected vs missed', 'Missed binaries only'):
+                    for pi, d in enumerate(_mis_data):
+                        r, c = _pos(pi)
+                        _add_hist(fig_mb, r, c, d, 'Missed', _CLR_MISSED, pi == 0)
 
             fig_mb.update_layout(
                 barmode='overlay',
                 plot_bgcolor='#1a1a2e',
                 paper_bgcolor='#1a1a2e',
                 font_color='#e0e0e0',
-                height=380,
+                height=850,
                 margin=dict(l=40, r=20, t=40, b=60),
                 legend=dict(
-                    orientation='h', yanchor='bottom', y=1.08,
+                    orientation='h', yanchor='bottom', y=1.04,
                     xanchor='center', x=0.5,
                 ),
             )
-            for ax_i in range(1, 6):
-                fig_mb.update_xaxes(title_text=_x_labels[ax_i - 1],
-                                    showgrid=False, row=1, col=ax_i)
-                fig_mb.update_yaxes(showgrid=False, row=1, col=ax_i)
-            # Only first y-axis gets label
-            fig_mb.update_yaxes(title_text='Probability density', row=1, col=1)
+            for pi in range(_n_panels):
+                r, c = _pos(pi)
+                fig_mb.update_xaxes(title_text=_x_labels[pi],
+                                    showgrid=False, row=r, col=c)
+                fig_mb.update_yaxes(showgrid=False, row=r, col=c)
+            for row_i in range(1, _n_rows + 1):
+                fig_mb.update_yaxes(title_text='Prob. density', row=row_i, col=1)
 
             st.plotly_chart(fig_mb, use_container_width=True, key='bc_missed_binaries')
             st.caption(
@@ -1393,8 +1452,9 @@ with tab_dsilva:
                 f'best-fit model (f_bin={best_fbin_v:.3f}, π={best_pi_v:.2f}). '
                 f'**Detected** (red): {detected_bin_count} binaries with '
                 f'ΔRV > {thresh_dRV} km/s. '
-                f'**Missed** (amber): {missed_count} binaries below threshold — '
-                f'typically long-period, low-inclination, or low-K₁ systems.'
+                f'**Missed** (amber): {missed_count} binaries below threshold. '
+                f'Use "All binaries" to view the full population as a sanity check '
+                f'that input distributions match expectations.'
             )
 
         # ── Model Explorer ───────────────────────────────────────────────
