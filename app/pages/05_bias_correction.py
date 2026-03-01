@@ -866,15 +866,186 @@ with tab_dsilva:
         except Exception:
             n_det = 0
 
+        # ── Marginalization + HDI68 (Dsilva 2023 style) ─────────────────
+        from wr_bias_simulation import compute_hdi68
+
+        # Marginalize: sum over other dimensions → 1D posteriors
+        _has_sigma_scan = len(sigma_g) > 1
+
+        # 1D posterior for f_bin: sum over σ and π
+        post_fbin = np.sum(ks_p_3d, axis=(0, 2))  # shape: (n_fbin,)
+        mode_fbin, lo_fbin, hi_fbin = compute_hdi68(fbin_g, post_fbin)
+
+        # 1D posterior for π: sum over σ and f_bin
+        post_pi = np.sum(ks_p_3d, axis=(0, 1))  # shape: (n_pi,)
+        mode_pi, lo_pi, hi_pi = compute_hdi68(pi_g, post_pi)
+
+        # 1D posterior for σ_single (only if multiple σ values scanned)
+        if _has_sigma_scan:
+            post_sigma = np.sum(ks_p_3d, axis=(1, 2))  # shape: (n_sigma,)
+            mode_sigma, lo_sigma, hi_sigma = compute_hdi68(sigma_g, post_sigma)
+        else:
+            mode_sigma = float(sigma_g[0])
+            lo_sigma = hi_sigma = mode_sigma
+
+        # Format errors as +upper/-lower
+        def _fmt_err(mode, lo, hi):
+            return f'{mode:.4f}' + f' ^{{+{hi - mode:.4f}}}_{{-{mode - lo:.4f}}}'
+
         result_slot.markdown(
-            f'**Best fit:**  '
-            f'f_bin = `{best_fbin_v:.4f}`,  '
-            f'π = `{best_pi_v:.4f}`,  '
-            f'σ_single = `{best_sigma_v:.1f}` km/s,  '
-            f'K-S p = `{best_pval_v:.6f}`  \n'
+            f'**Best fit (HDI68):**  '
+            f'f_bin = `{mode_fbin:.4f}` '
+            f'(+{hi_fbin - mode_fbin:.4f} / -{mode_fbin - lo_fbin:.4f}),  '
+            f'π = `{mode_pi:.4f}` '
+            f'(+{hi_pi - mode_pi:.4f} / -{mode_pi - lo_pi:.4f})'
+            + (f',  σ = `{mode_sigma:.1f}` '
+               f'(+{hi_sigma - mode_sigma:.1f} / -{mode_sigma - lo_sigma:.1f}) km/s'
+               if _has_sigma_scan else
+               f',  σ = `{mode_sigma:.1f}` km/s (fixed)')
+            + f'  \nK-S p = `{best_pval_v:.6f}`  \n'
             f'**Observed fraction:**  '
             f'({n_det}+{bartzakos})/{total_pop} = '
             f'**{(n_det+bartzakos)/total_pop*100:.1f}%**'
+        )
+
+        # ── Corner Plot ──────────────────────────────────────────────────
+        st.markdown('---')
+        st.markdown('### Marginalized Posteriors (Corner Plot)')
+
+        from plotly.subplots import make_subplots as _corner_subplots
+
+        _n_params = 3 if _has_sigma_scan else 2
+        _param_names = ['f_bin', 'π']
+        _param_grids = [fbin_g, pi_g]
+        _param_posts = [post_fbin, post_pi]
+        _param_modes = [mode_fbin, mode_pi]
+        _param_los = [lo_fbin, lo_pi]
+        _param_his = [hi_fbin, hi_pi]
+
+        if _has_sigma_scan:
+            _param_names.append('σ_single')
+            _param_grids.append(sigma_g)
+            _param_posts.append(post_sigma)
+            _param_modes.append(mode_sigma)
+            _param_los.append(lo_sigma)
+            _param_his.append(hi_sigma)
+
+        fig_corner = _corner_subplots(
+            rows=_n_params, cols=_n_params,
+            horizontal_spacing=0.06, vertical_spacing=0.06,
+        )
+
+        for i in range(_n_params):
+            # Diagonal: 1D posterior
+            _post_norm = _param_posts[i] / float(np.trapz(_param_posts[i], _param_grids[i])) \
+                if float(np.trapz(_param_posts[i], _param_grids[i])) > 0 else _param_posts[i]
+
+            fig_corner.add_trace(go.Scatter(
+                x=_param_grids[i], y=_post_norm,
+                mode='lines', line=dict(color='#4A90D9', width=2),
+                showlegend=False,
+            ), row=i + 1, col=i + 1)
+
+            # HDI68 shading
+            _mask_hdi = (_param_grids[i] >= _param_los[i]) & (_param_grids[i] <= _param_his[i])
+            _x_hdi = _param_grids[i][_mask_hdi]
+            _y_hdi = _post_norm[_mask_hdi]
+            if len(_x_hdi) > 0:
+                fig_corner.add_trace(go.Scatter(
+                    x=np.concatenate([_x_hdi, _x_hdi[::-1]]),
+                    y=np.concatenate([_y_hdi, np.zeros(len(_y_hdi))]),
+                    fill='toself', fillcolor='rgba(74,144,217,0.3)',
+                    line=dict(width=0), showlegend=False,
+                ), row=i + 1, col=i + 1)
+
+            # Mode line
+            fig_corner.add_vline(
+                x=_param_modes[i], line_dash='dash',
+                line_color='#E25A53', line_width=1.5,
+                row=i + 1, col=i + 1,
+            )
+
+            # Off-diagonal: 2D marginalized heatmaps (lower triangle only)
+            for j in range(i):
+                # Marginalize over all other dimensions to get 2D
+                axes_to_sum = [k for k in range(ks_p_3d.ndim) if k not in (
+                    # Map param index to array axis:
+                    # σ=axis0, f_bin=axis1, π=axis2
+                    [1, 2, 0][j],
+                    [1, 2, 0][i],
+                )]
+                if axes_to_sum:
+                    _2d = np.sum(ks_p_3d, axis=tuple(axes_to_sum))
+                else:
+                    _2d = ks_p_3d.copy()
+
+                # The axes mapping: param 0=f_bin→axis1, param 1=π→axis2, param 2=σ→axis0
+                # We need _2d[j_axis, i_axis] → x=param_j, y=param_i
+                # After summing, the remaining axes are in the order they appear
+                _axis_map = {0: 1, 1: 2, 2: 0}  # param_idx → ks_p_3d axis
+                _remaining = sorted([_axis_map[j], _axis_map[i]])
+                # _2d shape corresponds to _remaining axes
+                # We want x=param_j (cols), y=param_i (rows)
+                if _axis_map[j] == _remaining[0]:
+                    _z = _2d.T  # transpose so x=first remaining, y=second
+                else:
+                    _z = _2d
+
+                fig_corner.add_trace(go.Heatmap(
+                    x=_param_grids[j], y=_param_grids[i],
+                    z=_z,
+                    colorscale='Viridis', showscale=False,
+                    hovertemplate=f'{_param_names[j]}=%{{x:.4f}}<br>'
+                                 f'{_param_names[i]}=%{{y:.4f}}<br>'
+                                 f'p-sum=%{{z:.4f}}<extra></extra>',
+                ), row=i + 1, col=j + 1)
+
+                # Best-fit marker
+                fig_corner.add_trace(go.Scatter(
+                    x=[_param_modes[j]], y=[_param_modes[i]],
+                    mode='markers',
+                    marker=dict(symbol='star', size=10, color='gold',
+                                line=dict(color='black', width=1)),
+                    showlegend=False,
+                ), row=i + 1, col=j + 1)
+
+        # Axis labels (bottom row and left column)
+        for i in range(_n_params):
+            fig_corner.update_xaxes(title_text=_param_names[i],
+                                     row=_n_params, col=i + 1)
+            if i > 0:
+                fig_corner.update_yaxes(title_text=_param_names[i],
+                                         row=i + 1, col=1)
+
+        # Hide upper triangle
+        for i in range(_n_params):
+            for j in range(i + 1, _n_params):
+                fig_corner.update_xaxes(visible=False, row=i + 1, col=j + 1)
+                fig_corner.update_yaxes(visible=False, row=i + 1, col=j + 1)
+
+        fig_corner.update_layout(
+            plot_bgcolor='#1a1a2e',
+            paper_bgcolor='#1a1a2e',
+            font_color='#e0e0e0',
+            height=250 * _n_params,
+            width=250 * _n_params,
+            showlegend=False,
+            margin=dict(l=60, r=20, t=30, b=60),
+        )
+        st.plotly_chart(fig_corner, use_container_width=True, key='bc_corner_plot')
+        st.caption(
+            f'Marginalized posteriors following Dsilva et al. (2023). '
+            f'**Diagonal:** 1D posteriors with mode (dashed red) and '
+            f'68% HDI (blue shading). '
+            f'**Off-diagonal:** 2D marginalized K-S p-value sums with '
+            f'best-fit marked (gold star). '
+            f'f_bin = {mode_fbin:.4f} '
+            f'(+{hi_fbin-mode_fbin:.4f}/-{mode_fbin-lo_fbin:.4f}), '
+            f'π = {mode_pi:.4f} '
+            f'(+{hi_pi-mode_pi:.4f}/-{mode_pi-lo_pi:.4f})'
+            + (f', σ = {mode_sigma:.1f} '
+               f'(+{hi_sigma-mode_sigma:.1f}/-{mode_sigma-lo_sigma:.1f}) km/s'
+               if _has_sigma_scan else '') + '.'
         )
 
         # ── Import simulation functions for analysis plots ─────────────────
