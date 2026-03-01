@@ -159,6 +159,15 @@ to the next change. This provides fine-grained rollback points and clear history
 run `cp app/pages/{file} Backups/{file}.bak` to create a rollback point.
 Always verify the backup compiles before overwriting it with a newer version.
 
+**Git changelog:** After every push, update `GIT_LOG.md` at the project root with
+the commit hashes, summaries, and a brief description. This is the human-readable
+changelog for easy revert communication between sessions.
+
+**To-Do list:** Maintain `TODO.md` at the project root. After completing tasks,
+move them from Open to Done with the completion date. When new tasks arise from
+user/Tomer conversations, add them with proper attribution. The webapp page
+`app/pages/10_todo.py` reads and writes this same file.
+
 **Progress bars for long runs:** Any computation taking >5 seconds must show
 `st.progress()`. For multi-slice loops (e.g., sigma scan in the bias correction
 page), update the progress bar and the live heatmap slot after each slice
