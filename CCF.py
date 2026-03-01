@@ -465,7 +465,7 @@ class CCFclass:
             dlam = np.median(np.diff(w[m]))
 
             # --- Integration ---
-            total_EW += np.trapz(f[m] - 1.0, w[m], dx=dlam)
+            total_EW += np.trapezoid(f[m] - 1.0, w[m], dx=dlam)
 
             # --- Accumulate Error Terms ---
             Nk = np.count_nonzero(m)
@@ -524,7 +524,7 @@ class CCFclass:
             if np.count_nonzero(m) < 2:
                 continue
             dlam = np.median(np.diff(w[m]))
-            total_EW += np.trapz(f[m] - 1.0, w[m], dx=dlam)
+            total_EW += np.trapezoid(f[m] - 1.0, w[m], dx=dlam)
             Nk = np.count_nonzero(m)
             sum_dlam2N += (dlam * dlam) * Nk
 

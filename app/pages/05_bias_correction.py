@@ -937,8 +937,8 @@ with tab_dsilva:
 
         for i in range(_n_params):
             # Diagonal: 1D posterior
-            _post_norm = _param_posts[i] / float(np.trapz(_param_posts[i], _param_grids[i])) \
-                if float(np.trapz(_param_posts[i], _param_grids[i])) > 0 else _param_posts[i]
+            _post_norm = _param_posts[i] / float(np.trapezoid(_param_posts[i], _param_grids[i])) \
+                if float(np.trapezoid(_param_posts[i], _param_grids[i])) > 0 else _param_posts[i]
 
             fig_corner.add_trace(go.Scatter(
                 x=_param_grids[i], y=_post_norm,

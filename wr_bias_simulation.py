@@ -766,7 +766,7 @@ def compute_hdi68(
     # Normalize to a probability density
     dx = np.diff(x_vals)
     # Use trapezoidal integration for normalization
-    total_area = float(np.trapz(posterior_1d, x_vals))
+    total_area = float(np.trapezoid(posterior_1d, x_vals))
     if total_area <= 0:
         mode_idx = int(np.argmax(posterior_1d))
         return float(x_vals[mode_idx]), float(x_vals[0]), float(x_vals[-1])
@@ -789,7 +789,7 @@ def compute_hdi68(
             continue
         # Area under the curve where pdf >= threshold
         clipped = np.where(mask, pdf, 0.0)
-        area = float(np.trapz(clipped, x_vals))
+        area = float(np.trapezoid(clipped, x_vals))
         if area > target:
             h_low = h_mid
         else:
