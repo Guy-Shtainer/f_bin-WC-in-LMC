@@ -6,6 +6,24 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-01 — Session 1: marginalization, corner plot, orbital histograms
+
+| Hash | Summary |
+|------|---------|
+| `409a783` | Expand orbital histograms to 9 panels (3×3) with T₀, ω, M₂ |
+| `00a6b40` | Add omega and T₀ to simulate_with_params return dict |
+| `4ea67de` | Add marginalized posteriors corner plot to bias correction page |
+| `7d2877f` | Add compute_hdi68 marginalization helper (Dsilva 2023 style) |
+| `b869cfb` | Add GIT_LOG and TODO maintenance rules to CLAUDE.md |
+| `d4061be` | Add TODO.md and interactive to-do page in webapp |
+| `32c0b3b` | Add git-workflow and todo-manager auto-triggered skills |
+| `e3ec1ea` | Add GIT_LOG.md changelog for easy revert communication |
+
+Dsilva-style marginalization with HDI68 credible intervals for f_bin, π, σ_single.
+Corner plot with 1D posteriors (diagonal) and 2D heatmaps (off-diagonal).
+Orbital histograms expanded from 5 to 9 panels: logP, e, q, K₁, M₁, M₂, i, ω, T₀.
+Added "All binaries (combined)" toggle. Created TODO.md + webapp to-do page.
+
 ## 2026-03-01 — Infrastructure: skills, docs, papers
 
 | Hash | Summary |
