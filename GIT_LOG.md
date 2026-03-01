@@ -6,6 +6,19 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-01 — Documentation system for thesis writing
+
+| Hash | Summary |
+|------|---------|
+| `ce55316` | Add documentation-for-paper rule to CLAUDE.md |
+| `121c722` | Add documentation auto-triggered skill for thesis writing |
+| `d3094ad` | Add dated Work Log (Section 7) to DOCUMENTATION.md |
+
+Restructured `DOCUMENTATION.md` with a new Section 7 (Work Log) containing
+dated daily entries for each working session. Backfilled entries for 2026-02-25,
+2026-02-26, and 2026-03-01 with scientific context, key results, decisions,
+and open questions. Added auto-triggered skill to maintain the log going forward.
+
 ## 2026-03-01 — Common errors system + np.trapz fix
 
 | Hash | Summary |
