@@ -672,6 +672,8 @@ def simulate_with_params(
         'i_rad': out_i,
         'K1': out_K1,
         'M1': out_M1,
+        'omega': omega,   # argument of periapsis (rad)
+        'T0': T0,         # periastron phase (rad)
         'idx_bin': idx_bin,
     }
 
