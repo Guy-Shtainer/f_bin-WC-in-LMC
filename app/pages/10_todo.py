@@ -2,7 +2,8 @@
 pages/10_todo.py — Project To-Do List
 
 Interactive task manager that reads/writes TODO.md at the project root.
-Supports adding, completing, filtering, and sorting tasks.
+Features: Eisenhower matrix, inline editing, priority/tag filtering,
+urgent/important fields, checkbox completion.
 """
 from __future__ import annotations
 
@@ -44,9 +45,25 @@ PRIORITY_EMOJIS = {
     'low': '⚪',
 }
 
+# Eisenhower quadrant colors
+_Q_COLORS = {
+    'urgent_important':     ('#E25A53', 'Do First'),
+    'not_urgent_important': ('#4A90D9', 'Schedule'),
+    'urgent_not_important': ('#F5A623', 'Delegate'),
+    'not_urgent_not_important': ('#8C8C8C', 'Eliminate'),
+}
+
 
 # ── Parse / write TODO.md ────────────────────────────────────────────────────
-def _parse_table_rows(lines: list[str]) -> list[dict]:
+def _parse_bool(val: str) -> bool:
+    return val.strip().lower() in ('y', 'yes', 'true', '1')
+
+
+def _bool_str(val: bool) -> str:
+    return 'Y' if val else 'N'
+
+
+def _parse_table_rows(lines: list[str]) -> list[list[str]]:
     """Parse markdown table rows (skip header + separator)."""
     rows = []
     for line in lines:
@@ -55,7 +72,7 @@ def _parse_table_rows(lines: list[str]) -> list[dict]:
             continue
         cells = [c.strip() for c in line.split('|')[1:-1]]
         if cells and all(c == '' or set(c) <= {'-', ' '} for c in cells):
-            continue  # separator row
+            continue
         rows.append(cells)
     return rows
 
@@ -71,16 +88,14 @@ def load_todos() -> tuple[list[dict], list[dict]]:
     open_tasks = []
     done_tasks = []
 
-    # Split by sections
     sections = re.split(r'^## ', content, flags=re.MULTILINE)
     for section in sections:
         if section.startswith('Open Tasks'):
             lines = section.split('\n')
             rows = _parse_table_rows(lines)
-            # Skip header row
             for cells in rows[1:] if len(rows) > 1 else []:
                 if len(cells) >= 9:
-                    open_tasks.append({
+                    task = {
                         'id': int(cells[0]) if cells[0].isdigit() else 0,
                         'title': cells[1],
                         'description': cells[2],
@@ -90,7 +105,10 @@ def load_todos() -> tuple[list[dict], list[dict]]:
                         'added_by': cells[6],
                         'suggested_by': cells[7],
                         'date_added': cells[8],
-                    })
+                        'urgent': _parse_bool(cells[9]) if len(cells) > 9 else False,
+                        'important': _parse_bool(cells[10]) if len(cells) > 10 else False,
+                    }
+                    open_tasks.append(task)
         elif section.startswith('Done'):
             lines = section.split('\n')
             rows = _parse_table_rows(lines)
@@ -107,19 +125,26 @@ def load_todos() -> tuple[list[dict], list[dict]]:
 
 def save_todos(open_tasks: list[dict], done_tasks: list[dict]) -> None:
     """Write open_tasks + done_tasks back to TODO.md."""
-    # Sort open by priority
     open_tasks.sort(key=lambda t: PRIORITY_ORDER.get(t.get('priority', 'low'), 3))
 
     lines = ['# Project To-Do List\n']
     lines.append('\n## Open Tasks\n')
-    lines.append('| ID | Title | Description | Priority | Tags | Status | Added by | Suggested by | Date added |')
-    lines.append('|----|-------|-------------|----------|------|--------|----------|-------------|------------|')
+    lines.append(
+        '| ID | Title | Description | Priority | Tags | Status '
+        '| Added by | Suggested by | Date added | Urgent | Important |'
+    )
+    lines.append(
+        '|----|-------|-------------|----------|------|--------'
+        '|----------|-------------|------------|--------|-----------|'
+    )
     for t in open_tasks:
         lines.append(
             f"| {t['id']} | {t['title']} | {t.get('description', '')} "
             f"| {t.get('priority', 'medium')} | {t.get('tags', '')} "
             f"| {t.get('status', 'open')} | {t.get('added_by', '')} "
-            f"| {t.get('suggested_by', '')} | {t.get('date_added', '')} |"
+            f"| {t.get('suggested_by', '')} | {t.get('date_added', '')} "
+            f"| {_bool_str(t.get('urgent', False))} "
+            f"| {_bool_str(t.get('important', False))} |"
         )
 
     lines.append('\n## Done\n')
@@ -134,7 +159,6 @@ def save_todos(open_tasks: list[dict], done_tasks: list[dict]) -> None:
 
 
 def _next_id(open_tasks: list[dict], done_tasks: list[dict]) -> int:
-    """Get next available ID."""
     all_ids = [t['id'] for t in open_tasks] + [t['id'] for t in done_tasks]
     return max(all_ids, default=0) + 1
 
@@ -144,70 +168,148 @@ st.markdown('# 📝 To-Do List')
 
 open_tasks, done_tasks = load_todos()
 
-# ── Sidebar summary ─────────────────────────────────────────────────────────
 n_open = len(open_tasks)
 n_critical = sum(1 for t in open_tasks if t.get('priority') == 'critical')
 n_high = sum(1 for t in open_tasks if t.get('priority') == 'high')
 
+# ── Eisenhower Matrix ────────────────────────────────────────────────────────
+if open_tasks:
+    with st.expander('📊 Eisenhower Matrix', expanded=True):
+        q_ui = [t for t in open_tasks if t.get('urgent') and t.get('important')]
+        q_ni = [t for t in open_tasks if not t.get('urgent') and t.get('important')]
+        q_un = [t for t in open_tasks if t.get('urgent') and not t.get('important')]
+        q_nn = [t for t in open_tasks if not t.get('urgent') and not t.get('important')]
+
+        def _render_quadrant(title, color, label, tasks_q):
+            st.markdown(
+                f'<div style="background:{color}22;border:1px solid {color};'
+                f'border-radius:8px;padding:10px;min-height:100px">'
+                f'<b style="color:{color}">{title}</b> '
+                f'<span style="color:#888;font-size:0.8em">({label})</span><br>',
+                unsafe_allow_html=True,
+            )
+            if tasks_q:
+                for tq in tasks_q:
+                    pri_e = PRIORITY_EMOJIS.get(tq.get('priority', 'medium'), '⚪')
+                    st.markdown(
+                        f'<span style="font-size:0.85em">{pri_e} {tq["title"]}</span><br>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown(
+                    '<span style="color:#666;font-size:0.8em;font-style:italic">'
+                    'No tasks</span>',
+                    unsafe_allow_html=True,
+                )
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # Header row
+        _h1, _h2 = st.columns(2)
+        _h1.markdown(
+            '<div style="text-align:center;font-weight:600;color:#9ec5fe">'
+            'Important</div>', unsafe_allow_html=True)
+        _h2.markdown(
+            '<div style="text-align:center;font-weight:600;color:#888">'
+            'Not Important</div>', unsafe_allow_html=True)
+
+        # Row 1: Urgent
+        c1, c2 = st.columns(2)
+        with c1:
+            _render_quadrant('Urgent + Important', '#E25A53', 'Do First', q_ui)
+        with c2:
+            _render_quadrant('Urgent + Not Important', '#F5A623', 'Delegate', q_un)
+
+        # Row 2: Not Urgent
+        c3, c4 = st.columns(2)
+        with c3:
+            _render_quadrant('Not Urgent + Important', '#4A90D9', 'Schedule', q_ni)
+        with c4:
+            _render_quadrant('Not Urgent + Not Important', '#8C8C8C', 'Eliminate', q_nn)
+
+        st.caption(
+            f'**{len(q_ui)}** do first, '
+            f'**{len(q_ni)}** schedule, '
+            f'**{len(q_un)}** delegate, '
+            f'**{len(q_nn)}** eliminate'
+        )
+
 # ── Add new task ─────────────────────────────────────────────────────────────
 with st.expander('➕ Add new task', expanded=False):
     _cols = st.columns([3, 1, 1])
-    new_title = _cols[0].text_input('Title', key='todo_new_title',
-                                     placeholder='Short task name')
-    new_priority = _cols[1].selectbox('Priority', ['high', 'critical', 'medium', 'low'],
-                                      key='todo_new_priority')
+    new_title = _cols[0].text_area('Title', key='todo_new_title',
+                                    placeholder='Short task name', height=68)
+    new_priority = _cols[1].selectbox('Priority',
+                                       ['high', 'critical', 'medium', 'low'],
+                                       key='todo_new_priority')
     new_added_by = _cols[2].selectbox('Added by', ['Guy', 'Claude', 'Tomer'],
                                       key='todo_new_added_by')
 
     _cols2 = st.columns([3, 1, 1])
-    new_desc = _cols2[0].text_input('Description', key='todo_new_desc',
-                                     placeholder='One sentence — what needs to be done')
+    new_desc = _cols2[0].text_area('Description', key='todo_new_desc',
+                                    placeholder='What needs to be done', height=68)
     new_tags = _cols2[1].text_input('Tags', key='todo_new_tags',
-                                    placeholder='e.g. bias-correction, webapp')
-    new_suggested = _cols2[2].selectbox('Suggested by', ['Guy', 'Tomer', 'Claude'],
+                                    placeholder='e.g. bias-correction')
+    new_suggested = _cols2[2].selectbox('Suggested by',
+                                        ['Guy', 'Tomer', 'Claude'],
                                         key='todo_new_suggested')
 
-    if st.button('Add task', key='todo_add_btn', type='primary'):
-        if new_title.strip():
+    _cols3 = st.columns([1, 1, 2])
+    new_urgent = _cols3[0].checkbox('Urgent', key='todo_new_urgent')
+    new_important = _cols3[1].checkbox('Important', key='todo_new_important')
+
+    if _cols3[2].button('Add task', key='todo_add_btn', type='primary'):
+        title_clean = new_title.strip().replace('\n', ' ')
+        if title_clean:
             new_task = {
                 'id': _next_id(open_tasks, done_tasks),
-                'title': new_title.strip(),
-                'description': new_desc.strip(),
+                'title': title_clean,
+                'description': new_desc.strip().replace('\n', ' '),
                 'priority': new_priority,
                 'tags': new_tags.strip(),
                 'status': 'open',
                 'added_by': new_added_by,
                 'suggested_by': new_suggested,
                 'date_added': date.today().isoformat(),
+                'urgent': new_urgent,
+                'important': new_important,
             }
             open_tasks.append(new_task)
             save_todos(open_tasks, done_tasks)
-            st.success(f'Added: {new_title.strip()}')
+            st.success(f'Added: {title_clean}')
             st.rerun()
         else:
             st.warning('Enter a title first.')
 
 # ── Filters ──────────────────────────────────────────────────────────────────
 if open_tasks:
-    _filter_cols = st.columns([1, 1, 1, 2])
-    all_priorities = sorted(set(t.get('priority', 'medium') for t in open_tasks),
-                            key=lambda p: PRIORITY_ORDER.get(p, 3))
+    _filter_cols = st.columns([1, 1, 1, 1, 1])
+    all_priorities = sorted(
+        set(t.get('priority', 'medium') for t in open_tasks),
+        key=lambda p: PRIORITY_ORDER.get(p, 3),
+    )
     all_tags = sorted(set(
         tag.strip()
         for t in open_tasks
         for tag in t.get('tags', '').split(',')
         if tag.strip()
     ))
-    all_authors = sorted(set(t.get('added_by', '') for t in open_tasks if t.get('added_by')))
+    all_authors = sorted(
+        set(t.get('added_by', '') for t in open_tasks if t.get('added_by'))
+    )
 
-    filter_priority = _filter_cols[0].multiselect('Filter priority', all_priorities,
-                                                   default=all_priorities, key='todo_filter_pri')
-    filter_tags = _filter_cols[1].multiselect('Filter tags', all_tags,
-                                              default=all_tags, key='todo_filter_tags')
-    filter_author = _filter_cols[2].multiselect('Filter author', all_authors,
-                                                default=all_authors, key='todo_filter_author')
-    sort_by = _filter_cols[3].selectbox('Sort by', ['Priority', 'Date added', 'ID'],
-                                        key='todo_sort_by')
+    filter_priority = _filter_cols[0].multiselect(
+        'Priority', all_priorities, default=all_priorities, key='todo_filter_pri')
+    filter_tags = _filter_cols[1].multiselect(
+        'Tags', all_tags, default=all_tags, key='todo_filter_tags')
+    filter_author = _filter_cols[2].multiselect(
+        'Author', all_authors, default=all_authors, key='todo_filter_author')
+    sort_by = _filter_cols[3].selectbox(
+        'Sort by', ['Priority', 'Date added', 'ID', 'Urgent first'],
+        key='todo_sort_by')
+    filter_quadrant = _filter_cols[4].selectbox(
+        'Quadrant', ['All', 'Urgent + Important', 'Important',
+                      'Urgent', 'Neither'],
+        key='todo_filter_quadrant')
 
     # Apply filters
     filtered = [
@@ -221,11 +323,28 @@ if open_tasks:
         ) or not t.get('tags', '').strip())
     ]
 
+    # Quadrant filter
+    if filter_quadrant == 'Urgent + Important':
+        filtered = [t for t in filtered if t.get('urgent') and t.get('important')]
+    elif filter_quadrant == 'Important':
+        filtered = [t for t in filtered if t.get('important')]
+    elif filter_quadrant == 'Urgent':
+        filtered = [t for t in filtered if t.get('urgent')]
+    elif filter_quadrant == 'Neither':
+        filtered = [t for t in filtered
+                     if not t.get('urgent') and not t.get('important')]
+
     # Apply sort
     if sort_by == 'Priority':
         filtered.sort(key=lambda t: PRIORITY_ORDER.get(t.get('priority', 'low'), 3))
     elif sort_by == 'Date added':
         filtered.sort(key=lambda t: t.get('date_added', ''), reverse=True)
+    elif sort_by == 'Urgent first':
+        filtered.sort(key=lambda t: (
+            0 if t.get('urgent') and t.get('important') else
+            1 if t.get('urgent') else
+            2 if t.get('important') else 3
+        ))
     else:
         filtered.sort(key=lambda t: t.get('id', 0))
 else:
@@ -238,6 +357,7 @@ if not filtered:
     st.info('No open tasks. Use the form above to add one.')
 
 _tasks_to_complete = []
+_tasks_modified = False
 
 for task in filtered:
     pri = task.get('priority', 'medium')
@@ -245,34 +365,108 @@ for task in filtered:
     pri_emoji = PRIORITY_EMOJIS.get(pri, '⚪')
     tags_str = task.get('tags', '')
     desc = task.get('description', '')
+    is_urgent = task.get('urgent', False)
+    is_important = task.get('important', False)
 
-    col_check, col_pri, col_title, col_tags, col_by, col_date = st.columns(
-        [0.3, 0.5, 3, 1.5, 1, 1])
+    # Urgency/importance indicators
+    flags = ''
+    if is_urgent and is_important:
+        flags = '<span style="color:#E25A53;font-size:0.75em">🔥 DO FIRST</span>'
+    elif is_urgent:
+        flags = '<span style="color:#F5A623;font-size:0.75em">⚡ URGENT</span>'
+    elif is_important:
+        flags = '<span style="color:#4A90D9;font-size:0.75em">📌 IMPORTANT</span>'
+
+    col_check, col_pri, col_title, col_flags, col_tags, col_by = st.columns(
+        [0.3, 0.5, 3, 1, 1.5, 1])
 
     with col_check:
-        if st.checkbox('', key=f'todo_done_{task["id"]}', label_visibility='collapsed'):
+        if st.checkbox('', key=f'todo_done_{task["id"]}',
+                        label_visibility='collapsed'):
             _tasks_to_complete.append(task)
     with col_pri:
         st.markdown(
-            f'<span style="color:{pri_color};font-weight:600">{pri_emoji} {pri}</span>',
+            f'<span style="color:{pri_color};font-weight:600">'
+            f'{pri_emoji} {pri}</span>',
             unsafe_allow_html=True)
     with col_title:
         title_md = f'**{task["title"]}**'
         if desc:
-            title_md += f'  \n<span style="color:#888;font-size:0.85em">{desc}</span>'
+            title_md += (f'  \n<span style="color:#888;font-size:0.85em">'
+                         f'{desc}</span>')
         st.markdown(title_md, unsafe_allow_html=True)
+    with col_flags:
+        if flags:
+            st.markdown(flags, unsafe_allow_html=True)
     with col_tags:
         if tags_str:
             badges = ''.join(
                 f'<span style="background:#1a4a80;color:#9ec5fe;padding:2px 8px;'
-                f'border-radius:10px;font-size:0.75em;margin-right:4px">{t.strip()}</span>'
+                f'border-radius:10px;font-size:0.75em;margin-right:4px">'
+                f'{t.strip()}</span>'
                 for t in tags_str.split(',') if t.strip()
             )
             st.markdown(badges, unsafe_allow_html=True)
     with col_by:
-        st.caption(f'{task.get("suggested_by", "")}')
-    with col_date:
-        st.caption(task.get('date_added', ''))
+        st.caption(task.get('suggested_by', ''))
+
+    # ── Inline edit expander ─────────────────────────────────────────────
+    with st.expander(f'Edit #{task["id"]}', expanded=False):
+        _ec1, _ec2, _ec3 = st.columns([3, 1, 1])
+        edit_title = _ec1.text_area(
+            'Title', value=task['title'],
+            key=f'edit_title_{task["id"]}', height=68)
+        edit_pri = _ec2.selectbox(
+            'Priority', ['critical', 'high', 'medium', 'low'],
+            index=['critical', 'high', 'medium', 'low'].index(pri),
+            key=f'edit_pri_{task["id"]}')
+        edit_status = _ec3.selectbox(
+            'Status', ['open', 'in-progress'],
+            index=0 if task.get('status', 'open') == 'open' else 1,
+            key=f'edit_status_{task["id"]}')
+
+        _ec4, _ec5, _ec6 = st.columns([3, 1, 1])
+        edit_desc = _ec4.text_area(
+            'Description', value=desc,
+            key=f'edit_desc_{task["id"]}', height=68)
+        edit_added = _ec5.selectbox(
+            'Added by', ['Guy', 'Claude', 'Tomer'],
+            index=['Guy', 'Claude', 'Tomer'].index(
+                task.get('added_by', 'Guy'))
+            if task.get('added_by', 'Guy') in ['Guy', 'Claude', 'Tomer'] else 0,
+            key=f'edit_added_{task["id"]}')
+        edit_suggested = _ec6.selectbox(
+            'Suggested by', ['Guy', 'Tomer', 'Claude'],
+            index=['Guy', 'Tomer', 'Claude'].index(
+                task.get('suggested_by', 'Guy'))
+            if task.get('suggested_by', 'Guy') in ['Guy', 'Tomer', 'Claude'] else 0,
+            key=f'edit_suggested_{task["id"]}')
+
+        _ec7, _ec8, _ec9, _ec10 = st.columns([2, 1, 1, 1])
+        edit_tags = _ec7.text_input(
+            'Tags', value=tags_str,
+            key=f'edit_tags_{task["id"]}')
+        edit_urgent = _ec8.checkbox(
+            'Urgent', value=is_urgent,
+            key=f'edit_urgent_{task["id"]}')
+        edit_important = _ec9.checkbox(
+            'Important', value=is_important,
+            key=f'edit_important_{task["id"]}')
+
+        if _ec10.button('Save', key=f'edit_save_{task["id"]}',
+                         type='primary'):
+            task['title'] = edit_title.strip().replace('\n', ' ')
+            task['description'] = edit_desc.strip().replace('\n', ' ')
+            task['priority'] = edit_pri
+            task['status'] = edit_status
+            task['tags'] = edit_tags.strip()
+            task['added_by'] = edit_added
+            task['suggested_by'] = edit_suggested
+            task['urgent'] = edit_urgent
+            task['important'] = edit_important
+            save_todos(open_tasks, done_tasks)
+            st.success(f'Updated #{task["id"]}')
+            st.rerun()
 
 # Handle completions
 if _tasks_to_complete:
@@ -300,5 +494,5 @@ if done_tasks:
 
 st.caption(
     f'{n_open} open tasks ({n_critical} critical, {n_high} high). '
-    f'Check the box to mark a task as done.'
+    f'Check the box to mark as done. Click "Edit #N" to modify any field.'
 )
