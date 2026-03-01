@@ -200,4 +200,130 @@ The bias correction page of the Streamlit webapp provides:
 
 ---
 
-*Last updated: 2026-02-26*
+## 7. Work Log
+
+Daily summaries of work sessions — what was done, key results, decisions,
+and open questions. Written for thesis reference.
+
+---
+
+### 2026-02-25 — Webapp creation, bias correction page, performance fixes
+
+**What was done:**
+- Created the Streamlit webapp (`app/`) with 9 pages: Stars, Spectrum, CCF,
+  Classification, Bias Correction, Plots, Tables, Results, Settings.
+- Built `app/pages/05_bias_correction.py` — the main bias correction interface
+  with live-filling heatmap, sigma scan support, and animated 4D visualization.
+- Created `pipeline/load_observations.py` and `pipeline/dsilva_grid.py` as
+  standalone CLI scripts that can also be called from the webapp.
+- Parallelised 25-star data loading with `ThreadPoolExecutor` (was sequential).
+- Removed automatic SIMBAD API calls from Star/NRES `__init__` (caused startup
+  latency and network errors).
+- Added preload system in `app.py` to warm all `st.cache_data` caches at session
+  start — eliminates disk I/O on page navigation.
+- Fixed `settings_hash` to only hash classification-relevant keys (`primary_line`,
+  `classification`) so that navigating between pages does not invalidate caches.
+
+**Key results:**
+- First full bias correction grid run completed via webapp. K-S heatmap renders
+  correctly with live updates during computation.
+- Observed binary fraction: 13/28 = 46% (10 detected + 3 Bartzakos).
+
+**Decisions:**
+- All original files remain in project root (no restructuring) to avoid import
+  breakage. New code goes in `pipeline/` and `app/`.
+- Used persistent `multiprocessing.Pool` with `imap_unordered` for the grid
+  computation (avoids Pool creation overhead per row).
+- Settings stored as JSON (`settings/user_settings.json`) with immediate
+  persistence — no "Save" buttons.
+
+**Bugs found and fixed:**
+- `numpy.bool_` identity comparison (`is True` fails) — cast with `bool()`.
+- Negative default for `sigma_single` caused silent errors in grid computation.
+- Pool overhead from re-creating per f_bin row — switched to persistent Pool.
+- Variable scoping issue in nested sigma scan loop.
+- Missing zero-filter on RV arrays (epochs with no data stored as 0.0).
+
+---
+
+### 2026-02-26 — GitHub repo setup, heatmap bug fix (interrupted)
+
+**What was done:**
+- Created public GitHub repository `f_bin-WC-in-LMC` and pushed full codebase.
+- Fixed `StreamlitDuplicateElementKey` error in the bias correction heatmap —
+  the live-update path and the post-run display path both called
+  `plotly_chart()` with the same key in one script run. Fix: guard the display
+  path with `if not run_btn:`.
+- Added code quality rules to `CLAUDE.md`: commit-per-change workflow, backup
+  before editing app pages.
+
+**Decisions:**
+- `.gitignore` excludes `Data/`, `Backups/`, `__pycache__/`, `.DS_Store`,
+  `.idea/`, `*.log` — keeps repo clean of large data and IDE artifacts.
+
+**Session interrupted** — context window exhausted before completing all planned
+work.
+
+---
+
+### 2026-03-01 — Meeting 40 with Tomer: marginalization, histograms, infrastructure
+
+**Meeting with Tomer (40th):**
+- Tomer requested error bars on f_bin, π, σ_single using the K-S p-value grid.
+  Method: marginalize to 1D posteriors by summing over other dimensions,
+  normalize, find mode and 68% HDI (highest density interval) using the
+  horizontal-line method from Dsilva et al. (2023).
+- Requested corner plot: diagonal = 1D posteriors with mode + HDI68 shaded;
+  off-diagonal = 2D marginalized heatmaps.
+- Requested expanding orbital parameter histograms to include all binary
+  parameters (M₂, ω, T₀) and a toggle to view all binaries combined.
+- Discussed CDF truncation at ~350 km/s where observation gaps begin —
+  **deferred** for now, needs more thought.
+- Discussed 2D parameter histograms (e.g., P vs e) — **research only**, will
+  confirm with Tomer if scientifically useful before implementing.
+
+**What was done:**
+- Implemented `compute_hdi68()` in `wr_bias_simulation.py` — marginalizes 3D
+  K-S p-value grid to 1D posteriors, finds mode and 68% HDI via binary search
+  on a horizontal threshold line.
+- Added corner plot to bias correction page using Plotly `make_subplots`:
+  diagonal shows 1D posteriors with mode (dashed red) and HDI68 (shaded green);
+  off-diagonal shows 2D marginalized heatmaps.
+- Expanded orbital histograms from 5 to 9 panels (3×3 layout): log₁₀(P), e,
+  q, K₁, M₁, M₂, i, ω, T₀. Added "All binaries (combined)" toggle.
+- Added ω (argument of periapsis) and T₀ (periastron phase) to the
+  `simulate_with_params()` return dict — previously computed but discarded.
+- Verified K-S test scoring: `argmax(ks_p)` correctly finds the highest p-value
+  (best model fit). The `scipy.stats.ks_2samp` implementation with manual
+  fallback is correct.
+- Verified q = M₂/M₁ definition in `BinaryParameterConfig` — confirmed as
+  companion mass / primary WR star mass.
+- Created project infrastructure: `GIT_LOG.md` (changelog), `TODO.md` (task
+  tracker), `app/pages/10_todo.py` (webapp to-do page), auto-triggered skills
+  for git-workflow and todo-manager.
+- Created `COMMON_ERRORS.md` documenting 4 known pitfalls with grep-ready
+  regex patterns. Added error-checker skill for automated scanning.
+- Fixed `np.trapz` → `np.trapezoid` across 4 files (numpy 2.x deprecation).
+
+**Key results:**
+- Best-fit values now reported with HDI68 errors:
+  f_bin = mode +upper/−lower, π = mode +upper/−lower, σ_single = mode +upper/−lower.
+- Corner plot provides visual confirmation that posteriors are well-behaved
+  (single-peaked, reasonable widths).
+
+**Decisions:**
+- Used horizontal-line method for HDI68 (not equal-tailed intervals) — this is
+  the standard for asymmetric posteriors and matches Dsilva et al. (2023).
+- Layout for orbital histograms: 3×3 grid (9 panels) rather than 2×4+1 —
+  cleaner visual arrangement.
+- T₀ displayed in radians (raw orbital phase), ω converted to degrees.
+
+**Open questions:**
+- CDF truncation at 350 km/s — would this improve the K-S fit? Need to test.
+- logP_max = 4 vs 5 — does extending the period range matter?
+- Langer 2020 period model — needs implementation (pipeline/langer_grid.py).
+- Are 2D parameter histograms (P vs e, q vs i) scientifically informative?
+
+---
+
+*Last updated: 2026-03-01*
