@@ -35,7 +35,7 @@ AGENT_ROLES: dict[str, dict] = {
         ),
         'allowed_tools': ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
         'max_turns': 30,
-        'timeout': 600,
+        'timeout': 1200,  # 20 min — planner needs time to read codebase
     },
 
     # ── Stage 2: Reviewer ────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ AGENT_ROLES: dict[str, dict] = {
             'NotebookEdit',
         ],
         'max_turns': 50,
-        'timeout': 900,
+        'timeout': 1500,  # 25 min — implementer may need time for complex changes
     },
 
     # ── Stage 4: Tester ──────────────────────────────────────────────────────

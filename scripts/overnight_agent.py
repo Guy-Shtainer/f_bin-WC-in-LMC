@@ -413,6 +413,7 @@ async def run_agent(role: str, user_prompt: str, timeout: int | None = None) -> 
         system_prompt=config['system_prompt'],
         cwd=str(_ROOT),
         max_turns=config['max_turns'],
+        setting_sources=['project'],  # Read CLAUDE.md for project conventions
     )
 
     result_text = ''
