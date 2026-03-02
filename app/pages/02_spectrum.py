@@ -13,7 +13,7 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-from shared import inject_theme, render_sidebar, get_settings_manager, get_obs_manager
+from shared import inject_theme, render_sidebar, get_settings_manager, get_obs_manager, PLOTLY_THEME
 import specs
 
 st.set_page_config(page_title='Spectrum — WR Binary', page_icon='📊', layout='wide')
@@ -167,9 +167,8 @@ if rv_prop and primary_line in rv_prop:
 fig.update_layout(
     xaxis_title='Wavelength (Å)', yaxis_title='Normalised flux',
     title=f'{star_name}  —  Epoch {epoch}  —  {band}',
-    plot_bgcolor='#1a1a2e', paper_bgcolor='#1a1a2e',
-    font_color='#e0e0e0', height=500,
-    legend=dict(bgcolor='rgba(0,0,0,0)'),
+    **PLOTLY_THEME, height=500,
+    legend=dict(bgcolor='rgba(255,255,255,0.85)'),
 )
 st.plotly_chart(fig, use_container_width=True)
 

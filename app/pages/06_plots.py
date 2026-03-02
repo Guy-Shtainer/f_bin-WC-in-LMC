@@ -17,6 +17,7 @@ from shared import (
     inject_theme, render_sidebar, get_settings_manager,
     cached_load_observed_delta_rvs, settings_hash,
     get_obs_manager, COLOR_BINARY, COLOR_SINGLE,
+    PLOTLY_THEME,
 )
 import specs
 
@@ -75,8 +76,7 @@ with tab_spec:
     fig.update_layout(
         xaxis_title='Wavelength (Å)', yaxis_title='Normalised flux',
         title=f'{star_name} — {band} — all epochs',
-        plot_bgcolor='#1a1a2e', paper_bgcolor='#1a1a2e',
-        font_color='#e0e0e0', height=480,
+        **PLOTLY_THEME, height=480,
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -118,8 +118,7 @@ with tab_rv:
     fig2.update_layout(
         xaxis_title='Observation #', yaxis_title='RV (km/s)',
         title=f'{star_rv} — RV per epoch',
-        plot_bgcolor='#1a1a2e', paper_bgcolor='#1a1a2e',
-        font_color='#e0e0e0', height=380,
+        **PLOTLY_THEME, height=380,
     )
     st.plotly_chart(fig2, use_container_width=True)
 

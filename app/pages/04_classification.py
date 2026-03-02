@@ -19,6 +19,7 @@ from shared import (
     inject_theme, render_sidebar, get_settings_manager,
     cached_load_observed_delta_rvs, settings_hash,
     COLOR_BINARY, COLOR_SINGLE, COLOR_UNKNOWN,
+    PLOTLY_THEME,
 )
 import specs
 
@@ -135,8 +136,7 @@ fig.add_vline(x=threshold, line_dash='dash', line_color='gold',
 fig.update_layout(
     barmode='overlay',
     xaxis_title='ΔRV (km/s)', yaxis_title='Count',
-    plot_bgcolor='#1a1a2e', paper_bgcolor='#1a1a2e',
-    font_color='#e0e0e0', height=380,
+    **PLOTLY_THEME, height=380,
 )
 st.plotly_chart(fig, use_container_width=True)
 
@@ -156,7 +156,6 @@ fig2.add_vline(x=threshold, line_dash='dash', line_color='gold',
                annotation_position='top right')
 fig2.update_layout(
     xaxis_title='ΔRV threshold (km/s)', yaxis_title='Binary fraction (%)',
-    plot_bgcolor='#1a1a2e', paper_bgcolor='#1a1a2e',
-    font_color='#e0e0e0', height=350,
+    **PLOTLY_THEME, height=350,
 )
 st.plotly_chart(fig2, use_container_width=True)

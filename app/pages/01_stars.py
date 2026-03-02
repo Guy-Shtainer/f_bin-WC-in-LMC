@@ -18,6 +18,7 @@ from shared import (
     inject_theme, render_sidebar, get_settings_manager,
     cached_load_observed_delta_rvs, settings_hash,
     COLOR_BINARY, COLOR_SINGLE, COLOR_UNKNOWN,
+    PLOTLY_THEME,
 )
 import specs
 
@@ -140,8 +141,7 @@ if full_rows:
                   annotation_text=f'Threshold {threshold:.1f} km/s')
     fig.update_layout(
         xaxis_title='Star', yaxis_title='ΔRV (km/s)',
-        plot_bgcolor='#1a1a2e', paper_bgcolor='#1a1a2e',
-        font_color='#e0e0e0', height=420,
+        **PLOTLY_THEME, height=420,
         xaxis_tickangle=-45,
     )
     st.plotly_chart(fig, use_container_width=True)

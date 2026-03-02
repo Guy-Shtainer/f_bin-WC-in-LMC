@@ -48,40 +48,71 @@ COLOR_UNKNOWN  = '#8C8C8C'   # grey
 COLOR_CLEANED  = '#52B788'   # green
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Plotly scientific theme (matplotlib-inspired: white bg, serif font, grid)
+# ─────────────────────────────────────────────────────────────────────────────
+_AXIS_DEFAULTS = dict(
+    showgrid=True, gridcolor='#e0e0e0', gridwidth=1,
+    linecolor='#333333', linewidth=1, mirror=True,
+    ticks='outside', tickcolor='#333333',
+)
+
+PLOTLY_THEME: dict = dict(
+    plot_bgcolor='white',
+    paper_bgcolor='white',
+    font=dict(family='serif', size=13, color='#333333'),
+    xaxis=dict(**_AXIS_DEFAULTS),
+    yaxis=dict(**_AXIS_DEFAULTS),
+    title=dict(font=dict(size=15, family='serif', color='#222222')),
+    legend=dict(
+        bgcolor='rgba(255,255,255,0.85)',
+        bordercolor='#cccccc', borderwidth=1,
+    ),
+)
+
+
+def apply_theme(fig, **overrides):
+    """Apply scientific Plotly theme to *fig*, with optional overrides."""
+    merged = {**PLOTLY_THEME, **overrides}
+    fig.update_layout(**merged)
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CSS theme
 # ─────────────────────────────────────────────────────────────────────────────
 _THEME_CSS = """
 <style>
-/* Dark scientific theme */
+/* Light scientific theme */
 [data-testid="stAppViewContainer"] {
-    background-color: #1a1a2e;
+    background-color: #ffffff;
 }
 [data-testid="stSidebar"] {
-    background-color: #16213e;
+    background-color: #f5f5f5;
 }
-h1, h2, h3 { color: #e0e0e0; }
+h1, h2, h3 { color: #222222; font-family: serif; }
 .metric-card {
-    background: #0f3460;
+    background: #ffffff;
     border-radius: 10px;
     padding: 16px 20px;
     text-align: center;
-    border: 1px solid #1a4a80;
+    border: 1px solid #d0d0d0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 .metric-card .label {
     font-size: 0.82rem;
-    color: #9ec5fe;
+    color: #666666;
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
 .metric-card .value {
     font-size: 2rem;
     font-weight: 700;
-    color: #e0e0e0;
+    color: #222222;
     margin-top: 4px;
 }
 .metric-card .sub {
     font-size: 0.78rem;
-    color: #6c8ebf;
+    color: #888888;
     margin-top: 2px;
 }
 .status-chip-binary { color: #E25A53; font-weight: 600; }

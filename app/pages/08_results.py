@@ -18,6 +18,7 @@ from shared import (
     inject_theme, render_sidebar, get_settings_manager,
     cached_load_observed_delta_rvs, settings_hash,
     COLOR_BINARY, COLOR_SINGLE,
+    PLOTLY_THEME,
 )
 import specs
 
@@ -103,8 +104,7 @@ with tab_heatmap:
         title=f'{model_choice} — K-S p-value heatmap',
         xaxis_title='π  (period power-law index)',
         yaxis_title='f_bin  (intrinsic binary fraction)',
-        plot_bgcolor='#1a1a2e', paper_bgcolor='#1a1a2e',
-        font_color='#e0e0e0', height=520,
+        **PLOTLY_THEME, height=520,
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -141,8 +141,7 @@ with tab_cdf:
     fig2.update_layout(
         xaxis_title='ΔRV (km/s)', yaxis_title='Cumulative fraction',
         title=f'Best-fit CDF comparison — K-S p = {best_pval:.4f}',
-        plot_bgcolor='#1a1a2e', paper_bgcolor='#1a1a2e',
-        font_color='#e0e0e0', height=420,
+        **PLOTLY_THEME, height=420,
     )
     st.plotly_chart(fig2, use_container_width=True)
 
@@ -155,8 +154,7 @@ with tab_slice:
     fig3.update_layout(
         xaxis_title='f_bin', yaxis_title='K-S p-value (log)', yaxis_type='log',
         title=f'p-value vs f_bin at π = {best_pi:.2f}',
-        plot_bgcolor='#1a1a2e', paper_bgcolor='#1a1a2e',
-        font_color='#e0e0e0', height=380,
+        **PLOTLY_THEME, height=380,
     )
     st.plotly_chart(fig3, use_container_width=True)
 

@@ -34,6 +34,7 @@ from shared import (
     inject_theme, render_sidebar, get_settings_manager,
     cached_load_observed_delta_rvs, cached_load_cadence,
     cached_load_grid_result, settings_hash,
+    PLOTLY_THEME,
 )
 
 st.set_page_config(
@@ -155,9 +156,7 @@ def _make_heatmap_fig(
         title=dict(text=title, font=dict(size=14)),
         xaxis_title='π  (period power-law index)',
         yaxis_title='f_bin  (intrinsic binary fraction)',
-        plot_bgcolor='#1a1a2e',
-        paper_bgcolor='#1a1a2e',
-        font_color='#e0e0e0',
+        **PLOTLY_THEME,
         height=height,
         margin=dict(l=60, r=20, t=50, b=50),
     )
@@ -200,9 +199,7 @@ def _make_max_pval_fig(
         title=dict(text='Max K-S p-value vs σ_single', font=dict(size=14)),
         xaxis_title='σ_single (km/s)',
         yaxis_title='Max K-S p-value',
-        plot_bgcolor='#1a1a2e',
-        paper_bgcolor='#1a1a2e',
-        font_color='#e0e0e0',
+        **PLOTLY_THEME,
         height=height,
         margin=dict(l=60, r=20, t=50, b=50),
     )
@@ -265,11 +262,9 @@ def _make_3d_stacked_fig(
             xaxis_title='π  (period power-law index)',
             yaxis_title='f_bin  (binary fraction)',
             zaxis_title='σ_single (km/s)',
-            bgcolor='#1a1a2e',
+            bgcolor='white',
         ),
-        plot_bgcolor='#1a1a2e',
-        paper_bgcolor='#1a1a2e',
-        font_color='#e0e0e0',
+        **PLOTLY_THEME,
         height=height,
         margin=dict(l=10, r=10, t=50, b=10),
     )
@@ -1024,9 +1019,7 @@ with tab_dsilva:
                 fig_corner.update_yaxes(visible=False, row=i + 1, col=j + 1)
 
         fig_corner.update_layout(
-            plot_bgcolor='#1a1a2e',
-            paper_bgcolor='#1a1a2e',
-            font_color='#e0e0e0',
+            **PLOTLY_THEME,
             height=250 * _n_params,
             width=250 * _n_params,
             showlegend=False,
@@ -1163,9 +1156,7 @@ with tab_dsilva:
                                font=dict(size=14)),
                     xaxis_title='log₁₀(P / days)',
                     yaxis_title='Probability density',
-                    plot_bgcolor='#1a1a2e',
-                    paper_bgcolor='#1a1a2e',
-                    font_color='#e0e0e0',
+                    **PLOTLY_THEME,
                     height=400,
                     margin=dict(l=60, r=20, t=50, b=50),
                     legend=dict(x=0.65, y=0.95),
@@ -1262,7 +1253,7 @@ with tab_dsilva:
                     text=f'Gap: {gap_pct:.1%}<br>({missed_count} missed / {total_bin} binaries)',
                     showarrow=False,
                     font=dict(size=11, color='#F5A623'),
-                    bgcolor='rgba(26,26,46,0.8)',
+                    bgcolor='rgba(255,255,255,0.9)',
                     bordercolor='#F5A623',
                     borderwidth=1,
                     borderpad=4,
@@ -1282,9 +1273,7 @@ with tab_dsilva:
                         font=dict(size=14)),
                     xaxis_title='ΔRV threshold (km/s)',
                     yaxis_title='Fraction of sample',
-                    plot_bgcolor='#1a1a2e',
-                    paper_bgcolor='#1a1a2e',
-                    font_color='#e0e0e0',
+                    **PLOTLY_THEME,
                     height=400,
                     margin=dict(l=60, r=80, t=50, b=50),
                     showlegend=True,
@@ -1428,9 +1417,7 @@ with tab_dsilva:
 
             fig_mb.update_layout(
                 barmode='overlay',
-                plot_bgcolor='#1a1a2e',
-                paper_bgcolor='#1a1a2e',
-                font_color='#e0e0e0',
+                **PLOTLY_THEME,
                 height=850,
                 margin=dict(l=40, r=20, t=40, b=60),
                 legend=dict(
@@ -1545,17 +1532,15 @@ with tab_dsilva:
                     ),
                     xaxis_title='ΔRV (km/s)',
                     yaxis_title='Cumulative fraction',
-                    plot_bgcolor='#1a1a2e',
-                    paper_bgcolor='#1a1a2e',
-                    font_color='#e0e0e0',
+                    **PLOTLY_THEME,
                     height=420,
                     legend=dict(x=0.65, y=0.15),
                     annotations=[dict(
                         x=0.98, y=0.95, xref='paper', yref='paper',
                         text=f'K-S D = {D_val:.4f}<br>p = {p_val:.4f}',
                         showarrow=False,
-                        font=dict(size=12, color='#e0e0e0'),
-                        bgcolor='rgba(0,0,0,0.5)',
+                        font=dict(size=12, color='#333333'),
+                        bgcolor='rgba(255,255,255,0.9)',
                         borderpad=6,
                         xanchor='right',
                     )],
@@ -1653,9 +1638,7 @@ with tab_dsilva:
                     title=dict(text='RV Distribution', font=dict(size=14)),
                     xaxis_title='RV (km/s)',
                     yaxis_title='Probability density',
-                    plot_bgcolor='#1a1a2e',
-                    paper_bgcolor='#1a1a2e',
-                    font_color='#e0e0e0',
+                    **PLOTLY_THEME,
                     height=420,
                     legend=dict(x=0.01, y=0.99),
                 )
@@ -1696,10 +1679,10 @@ with tab_dsilva:
                 ))
                 fig_frac.add_vline(
                     x=thresh_dRV, line_dash='dot',
-                    line_color='gold', line_width=1.5,
+                    line_color='#DAA520', line_width=1.5,
                     annotation_text=f'Threshold = {thresh_dRV} km/s',
                     annotation_position='top right',
-                    annotation_font_color='gold',
+                    annotation_font_color='#DAA520',
                 )
                 fig_frac.add_trace(go.Scatter(
                     x=[thresh_dRV, thresh_dRV],
@@ -1722,9 +1705,7 @@ with tab_dsilva:
                     ),
                     xaxis_title='ΔRV threshold (km/s)',
                     yaxis_title='Fraction above threshold',
-                    plot_bgcolor='#1a1a2e',
-                    paper_bgcolor='#1a1a2e',
-                    font_color='#e0e0e0',
+                    **PLOTLY_THEME,
                     height=420,
                     legend=dict(x=0.70, y=0.95),
                     yaxis=dict(range=[0, 1.05]),
@@ -1822,9 +1803,7 @@ with tab_dsilva:
                         for i_s, sv in enumerate(sigma_g)
                     ],
                 )],
-                plot_bgcolor='#1a1a2e',
-                paper_bgcolor='#1a1a2e',
-                font_color='#e0e0e0',
+                **PLOTLY_THEME,
                 height=_ch + 120,
                 margin=dict(l=60, r=20, t=80, b=80),
             )

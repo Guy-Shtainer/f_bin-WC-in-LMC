@@ -196,11 +196,13 @@ disliked; when they seem satisfied, note what worked. Update this section with
 short descriptions of preferred graph styles as patterns emerge.
 
 **Current preferences (update as feedback arrives):**
-- Dark theme plots (`plot_bgcolor='#1a1a2e'`, `paper_bgcolor='#1a1a2e'`,
-  `font_color='#e0e0e0'`)
-- Gold star markers for best-fit points
+- Light scientific theme: white backgrounds, serif fonts, dark text (#333333)
+- Centralized via `PLOTLY_THEME` dict in `app/shared.py` — always use `**PLOTLY_THEME`
+  in `update_layout()` calls, never hardcode plot colors
+- Axes: outside ticks, thin black borders with mirror, light grey gridlines (#e0e0e0)
+- Gold star markers for best-fit points (use darker gold #DAA520 for readability on white)
 - Observed data: solid lines in steel blue (#4A90D9)
 - Simulated/model data: dashed lines in tomato red (#E25A53)
-- Annotations with key statistics (K-S D, p-value) in semi-transparent boxes
-- Contour lines on heatmaps (white, dotted)
+- Annotations with key statistics: semi-transparent white boxes with dark text
+- Contour lines on heatmaps (dark grey, dotted)
 - Semi-transparent histogram overlays for distribution comparisons
