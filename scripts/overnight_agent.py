@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-overnight_agent.py — Autonomous overnight agent for WR Binary project.
+overnight_agent.py — Multi-agent overnight supervisor for WR Binary project.
 
-Reads TODO.md, picks low-priority tasks, runs Claude to complete them,
-handles rate limits by sleeping and resuming, creates safe git branches
-for each task, and logs everything for easy review.
+Architecture: Pure-Python supervisor orchestrating a pipeline of specialized
+Claude agents per task. Each agent has a focused role (plan, review, implement,
+test, regression check, fix). Git is ONLY touched by the supervisor.
 
 Quick start:
     conda run -n guyenv python scripts/overnight_agent.py
@@ -14,9 +14,10 @@ Options:
     --quadrant X          Which tasks: eliminate (default), delegate, schedule, do_first, all
     --include-critical    Allow working on "Do First" (urgent+important) tasks
     --dry-run             Show what it would do without doing it
-    --stop                Stop a running daemon
+    --stop                Stop a running daemon + interactive branch review
+    --status              Show current agent status
     --max-tasks N         Stop after completing N tasks
-    --task "prompt"       Free-form task (skip TODO.md — e.g. paper writing, maintenance)
+    --task "prompt"       Free-form task (skip TODO.md)
 """
 from __future__ import annotations
 
@@ -36,26 +37,14 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent
 _TODO_PATH = _ROOT / 'TODO.md'
-_DOC_PATH = _ROOT / 'DOCUMENTATION.md'
 _STATE_PATH = _HERE / '.agent_state.json'
 _LOG_PATH = _HERE / 'agent_log.md'
 _PID_PATH = _HERE / '.agent.pid'
-_CLAUDE_MD = _ROOT / 'CLAUDE.md'
+_WORK_DIR = _HERE / '.agent_work'
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-RATE_LIMIT_SLEEP = 300  # 5 minutes default, adjusted by retry-after if available
-MAX_CONSECUTIVE_ERRORS = 3
-
-ALLOWED_TOOLS = [
-    'Read', 'Write', 'Edit', 'Glob', 'Grep',
-    'Bash(conda run*)', 'Bash(python*)', 'Bash(git status*)',
-    'Bash(git diff*)', 'Bash(git log*)', 'Bash(git add*)',
-    'Bash(git commit*)', 'Bash(git branch*)', 'Bash(git checkout*)',
-    'Bash(git tag*)', 'Bash(git stash*)', 'Bash(ls*)',
-    'Bash(mkdir*)', 'Bash(cp*)',
-    'WebSearch', 'WebFetch',
-    'TodoWrite', 'Task', 'NotebookEdit',
-]
+RATE_LIMIT_SLEEP = 300  # 5 minutes default
+MAX_FIX_ATTEMPTS = 2
 
 QUADRANT_FILTERS = {
     'eliminate': lambda t: not t.get('urgent') and not t.get('important'),
@@ -63,12 +52,10 @@ QUADRANT_FILTERS = {
     'schedule': lambda t: not t.get('urgent') and t.get('important'),
     'do_first': lambda t: t.get('urgent') and t.get('important'),
 }
-
-# Processing order for --quadrant all (safest first)
 QUADRANT_ORDER = ['eliminate', 'delegate', 'schedule']
 
 
-# ── TODO.md parsing (reuse same logic as 10_todo.py) ─────────────────────────
+# ── TODO.md parsing ──────────────────────────────────────────────────────────
 def _parse_bool(val: str) -> bool:
     return val.strip().lower() in ('y', 'yes', 'true', '1')
 
@@ -187,15 +174,51 @@ def save_todos(open_tasks: list[dict], done_tasks: list[dict]) -> None:
     _TODO_PATH.write_text('\n'.join(lines), encoding='utf-8')
 
 
-# ── Git helpers ───────────────────────────────────────────────────────────────
-def git(*args: str) -> str:
+# ── Git helpers (ONLY the supervisor touches git) ────────────────────────────
+def git(*args: str, check: bool = True) -> str:
+    """Run a git command in the project root."""
     result = subprocess.run(
         ['git'] + list(args),
         cwd=str(_ROOT), capture_output=True, text=True
     )
-    if result.returncode != 0:
+    if check and result.returncode != 0:
         raise RuntimeError(f'git {" ".join(args)} failed: {result.stderr.strip()}')
     return result.stdout.strip()
+
+
+def git_resolve_conflicts() -> None:
+    """Resolve any UU (unmerged) files by accepting current version."""
+    status = git('status', '--porcelain')
+    for line in status.split('\n'):
+        if line.startswith('UU '):
+            filepath = line[3:].strip()
+            log(f'Resolving conflict in {filepath} (accepting ours)')
+            git('checkout', '--ours', filepath)
+            git('add', filepath)
+    # Commit the resolution if we resolved anything
+    status_after = git('diff', '--cached', '--name-only')
+    if status_after.strip():
+        git('commit', '-m', '[AGENT] Auto-resolve merge conflicts')
+
+
+def git_safe_stash() -> bool:
+    """Stash changes safely, resolving UU files first."""
+    # First resolve any merge conflicts
+    git_resolve_conflicts()
+    # Now stash if there are changes
+    status = git('status', '--porcelain')
+    if status.strip():
+        git('stash', '--include-untracked')
+        return True
+    return False
+
+
+def git_safe_checkout(branch: str) -> None:
+    """Safely checkout a branch, handling dirty working tree."""
+    has_stash = git_safe_stash()
+    git('checkout', branch)
+    if has_stash:
+        git('stash', 'pop', check=False)  # ignore pop conflicts
 
 
 def git_checkpoint() -> str:
@@ -204,20 +227,19 @@ def git_checkpoint() -> str:
     try:
         git('tag', tag)
     except RuntimeError:
-        pass  # Tag already exists (re-run in same minute)
+        pass
     return tag
 
 
 def git_create_branch(task: dict) -> str:
+    """Create or switch to a task branch from main."""
     slug = re.sub(r'[^a-z0-9]+', '-', task['title'].lower())[:40].strip('-')
     branch = f'agent/{task["id"]}-{slug}'
 
-    # Stash any uncommitted changes (e.g. agent_log.md from dry runs)
-    has_stash = False
-    status = git('status', '--porcelain')
-    if status.strip():
-        git('stash', '--include-untracked')
-        has_stash = True
+    # Ensure we're on main first
+    current = git('branch', '--show-current')
+    if current != 'main':
+        git_safe_checkout('main')
 
     try:
         git('checkout', '-b', branch)
@@ -226,60 +248,61 @@ def git_create_branch(task: dict) -> str:
         try:
             ahead = git('rev-list', '--count', f'main..{branch}')
             if int(ahead.strip()) == 0:
-                # Empty branch from a crashed run — delete and recreate
                 git('branch', '-D', branch)
                 git('checkout', '-b', branch)
             else:
-                # Has real work — just check it out
                 git('checkout', branch)
         except RuntimeError:
             git('checkout', branch)
 
-    # Restore stashed changes
-    if has_stash:
-        try:
-            git('stash', 'pop')
-        except RuntimeError:
-            pass  # stash pop conflict — not critical
-
     return branch
 
 
-def git_commit_agent(task: dict, summary: str) -> None:
+def git_commit_all(message: str) -> bool:
+    """Stage all changes and commit. Returns True if a commit was made."""
     git('add', '-A')
-    # Check if there's anything to commit
     status = git('status', '--porcelain')
     if not status.strip():
-        return
-    msg = (
-        f'[AGENT] #{task["id"]}: {task["title"]}\n\n'
-        f'{summary}\n\n'
-        f'UNSUPERVISED — done by overnight agent, needs human review.\n\n'
-        f'Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>'
-    )
-    git('commit', '-m', msg)
+        return False
+    git('commit', '-m', message)
+    return True
 
 
 def git_back_to_main() -> None:
-    # Stash any uncommitted changes (e.g. agent_log.md written by log())
-    has_stash = False
-    status = git('status', '--porcelain')
-    if status.strip():
-        git('stash', '--include-untracked')
-        has_stash = True
-    git('checkout', 'main')
-    if has_stash:
-        try:
-            git('stash', 'pop')
-        except RuntimeError:
-            pass  # stash pop conflict — not critical
+    """Safely return to main branch."""
+    current = git('branch', '--show-current')
+    if current == 'main':
+        return
+    git_safe_checkout('main')
+
+
+def git_list_agent_branches() -> list[str]:
+    """List all agent/* branches."""
+    output = git('branch', '--list', 'agent/*')
+    return [b.strip().lstrip('* ') for b in output.split('\n') if b.strip()]
+
+
+def git_branch_diff_stat(branch: str) -> str:
+    """Get diff stat for a branch vs main."""
+    try:
+        return git('diff', '--stat', f'main...{branch}')
+    except RuntimeError:
+        return '(unable to compute diff)'
+
+
+def git_branch_log(branch: str) -> str:
+    """Get commit log for a branch vs main."""
+    try:
+        return git('log', '--oneline', f'main..{branch}')
+    except RuntimeError:
+        return '(no commits)'
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 def log(msg: str) -> None:
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     line = f'[{ts}] {msg}'
-    print(line)
+    print(line, flush=True)
     with open(_LOG_PATH, 'a', encoding='utf-8') as f:
         f.write(line + '\n')
 
@@ -289,11 +312,20 @@ def log_session_start(checkpoint: str, quadrant: str) -> None:
     header = (
         f'\n## Agent Session — {ts}\n'
         f'**Checkpoint:** `{checkpoint}`\n'
-        f'**Rollback:** `git checkout main` or `git reset --hard {checkpoint}`\n'
+        f'**Rollback:** `git reset --hard {checkpoint}`\n'
         f'**Quadrant:** {quadrant}\n\n'
     )
     with open(_LOG_PATH, 'a', encoding='utf-8') as f:
         f.write(header)
+
+
+def log_pipeline_stage(task: dict, stage: str, status: str, detail: str = '') -> None:
+    entry = (
+        f'  [{stage.upper()}] Task #{task["id"]}: {status}'
+        f'{" — " + detail if detail else ""}\n'
+    )
+    with open(_LOG_PATH, 'a', encoding='utf-8') as f:
+        f.write(entry)
 
 
 def log_task_result(task: dict, branch: str, status: str, summary: str) -> None:
@@ -320,8 +352,7 @@ def load_state() -> dict | None:
 
 
 def clear_state() -> None:
-    if _STATE_PATH.exists():
-        _STATE_PATH.unlink()
+    _STATE_PATH.unlink(missing_ok=True)
 
 
 # ── Task selection ────────────────────────────────────────────────────────────
@@ -330,7 +361,6 @@ def select_tasks(quadrant: str, include_critical: bool = False) -> list[dict]:
     open_only = [t for t in open_tasks if t.get('status', 'open') == 'open']
 
     if quadrant == 'all':
-        # Process in safety order: eliminate → delegate → schedule → (do_first if allowed)
         order = list(QUADRANT_ORDER)
         if include_critical:
             order.append('do_first')
@@ -338,7 +368,6 @@ def select_tasks(quadrant: str, include_critical: bool = False) -> list[dict]:
         for q in order:
             filt = QUADRANT_FILTERS[q]
             group = [t for t in open_only if filt(t)]
-            # Within each quadrant, lower priority first (safest)
             priority_order = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
             group.sort(key=lambda t: priority_order.get(t.get('priority', 'low'), 0))
             candidates.extend(group)
@@ -356,82 +385,333 @@ def select_tasks(quadrant: str, include_critical: bool = False) -> list[dict]:
     return candidates
 
 
-# ── Run a single task ─────────────────────────────────────────────────────────
-async def run_task(task: dict) -> tuple[str, str]:
-    """Run Claude on a single task. Returns (status, summary)."""
-    # Allow nested Claude sessions (the agent SDK spawns Claude Code internally)
-    os.environ.pop('CLAUDECODE', None)
-    from claude_agent_sdk import query, ClaudeAgentOptions
+# ── Work directory management ─────────────────────────────────────────────────
+def create_work_dir(task: dict) -> Path:
+    """Create a per-task working directory for agent artifacts."""
+    task_dir = _WORK_DIR / str(task['id'])
+    task_dir.mkdir(parents=True, exist_ok=True)
+    return task_dir
 
-    prompt = (
-        f'You are an autonomous overnight agent working on the WR Binary project.\n'
-        f'Complete this task:\n\n'
-        f'**Task #{task["id"]}:** {task["title"]}\n'
-        f'**Description:** {task.get("description", "No description")}\n'
-        f'**Tags:** {task.get("tags", "")}\n\n'
-        f'IMPORTANT RULES:\n'
-        f'- Read CLAUDE.md first for project conventions\n'
-        f'- Always run `conda run -n guyenv python -m py_compile <file>` after editing .py files\n'
-        f'- Do NOT modify any files in the "Do First" (urgent+important) category\n'
-        f'- Keep changes focused on this specific task\n'
-        f'- When done, provide a brief summary of what you did\n'
-    )
+
+# ── Agent runner ──────────────────────────────────────────────────────────────
+async def run_agent(role: str, user_prompt: str, timeout: int | None = None) -> str:
+    """Run a single Claude agent with the given role and prompt.
+
+    Returns the agent's text output, or raises on error.
+    """
+    # Allow nested Claude sessions
+    os.environ.pop('CLAUDECODE', None)
+    from agent_prompts import get_agent_config
+    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+
+    config = get_agent_config(role)
+    effective_timeout = timeout or config['timeout']
 
     options = ClaudeAgentOptions(
-        permission_mode='plan',
-        allowed_tools=ALLOWED_TOOLS,
+        permission_mode='bypassPermissions',
+        allow_dangerously_skip_permissions=True,
+        allowed_tools=config['allowed_tools'],
+        system_prompt=config['system_prompt'],
         cwd=str(_ROOT),
-        max_turns=50,
+        max_turns=config['max_turns'],
     )
 
     result_text = ''
-    session_id = None
     rate_limited = False
 
     try:
-        gen = query(prompt=prompt, options=options)
+        gen = query(prompt=user_prompt, options=options)
         try:
-            async for message in gen:
-                if hasattr(message, 'result') and message.result:
-                    result_text = message.result
-                    session_id = getattr(message, 'session_id', None)
-                elif hasattr(message, 'error') and message.error == 'rate_limit':
-                    rate_limited = True
-                    break
+            # Use asyncio.wait_for for timeout
+            async def consume():
+                nonlocal result_text, rate_limited
+                async for message in gen:
+                    if isinstance(message, ResultMessage) and message.result:
+                        result_text = message.result
+                    elif hasattr(message, 'error') and message.error == 'rate_limit':
+                        rate_limited = True
+                        return
+
+            await asyncio.wait_for(consume(), timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            log(f'  Agent [{role}] timed out after {effective_timeout}s')
+            return f'TIMEOUT after {effective_timeout}s'
         finally:
-            # Gracefully close the generator, catching anyio cancel scope errors
             try:
                 await gen.aclose()
             except (RuntimeError, Exception):
-                pass  # anyio cancel scope cleanup — safe to ignore
+                pass
     except Exception as e:
         err_str = str(e)
         if 'rate' in err_str.lower() or '429' in err_str:
             rate_limited = True
         else:
-            return 'error', f'Exception: {err_str}'
+            raise
 
     if rate_limited:
-        return 'rate_limited', session_id or ''
+        raise RateLimitError()
 
-    summary = result_text[:500] if result_text else 'No output captured'
-    return 'completed', summary
+    return result_text or 'No output captured'
+
+
+class RateLimitError(Exception):
+    """Raised when the API returns a rate limit error."""
+    pass
+
+
+async def run_agent_with_retry(role: str, user_prompt: str,
+                                timeout: int | None = None) -> str:
+    """Run an agent with rate-limit retry logic."""
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            return await run_agent(role, user_prompt, timeout)
+        except RateLimitError:
+            sleep_time = RATE_LIMIT_SLEEP * (attempt + 1)
+            log(f'  Rate limited. Sleeping {sleep_time}s (attempt {attempt + 1}/{max_retries})...')
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, time.sleep, sleep_time)
+            log('  Resuming after rate limit...')
+    raise RateLimitError(f'Rate limited {max_retries} times, giving up')
+
+
+# ── Pipeline ──────────────────────────────────────────────────────────────────
+async def run_pipeline(task: dict) -> tuple[str, str]:
+    """Run the full multi-agent pipeline for a task.
+
+    Returns (status, summary) where status is one of:
+    'completed', 'rejected', 'error', 'test_failed'
+    """
+    work_dir = create_work_dir(task)
+    task_desc = (
+        f'Task #{task["id"]}: {task["title"]}\n'
+        f'Description: {task.get("description", "No description")}\n'
+        f'Tags: {task.get("tags", "")}\n'
+    )
+
+    # ── Stage 1: Plan ────────────────────────────────────────────────────
+    log(f'  [PLANNER] Starting...')
+    save_state_stage(task, 'planner')
+    plan_path = work_dir / 'plan.md'
+    planner_prompt = (
+        f'{task_desc}\n\n'
+        f'Write your implementation plan to: {plan_path}\n\n'
+        f'Start by reading CLAUDE.md and COMMON_ERRORS.md at the project root.\n'
+        f'Then explore the codebase to understand the relevant files.\n'
+    )
+
+    try:
+        planner_result = await run_agent_with_retry('planner', planner_prompt)
+    except (RateLimitError, Exception) as e:
+        return 'error', f'Planner failed: {e}'
+
+    if planner_result.startswith('TIMEOUT'):
+        return 'error', f'Planner timed out'
+
+    # If the planner didn't write the file, save its output as the plan
+    if not plan_path.exists():
+        plan_path.write_text(planner_result, encoding='utf-8')
+
+    log_pipeline_stage(task, 'planner', 'done')
+    git_commit_all(f'[AGENT] Plan for #{task["id"]}: {task["title"]}')
+
+    # ── Stage 2: Review ──────────────────────────────────────────────────
+    log(f'  [REVIEWER] Starting...')
+    save_state_stage(task, 'reviewer')
+    review_path = work_dir / 'review.md'
+    reviewer_prompt = (
+        f'{task_desc}\n\n'
+        f'Read the implementation plan at: {plan_path}\n'
+        f'Write your review to: {review_path}\n\n'
+        f'Also read CLAUDE.md and COMMON_ERRORS.md to check the plan follows conventions.\n'
+        f'End your review with APPROVED, APPROVED WITH NOTES, or REJECTED.\n'
+    )
+
+    try:
+        reviewer_result = await run_agent_with_retry('reviewer', reviewer_prompt)
+    except (RateLimitError, Exception) as e:
+        return 'error', f'Reviewer failed: {e}'
+
+    if not review_path.exists():
+        review_path.write_text(reviewer_result, encoding='utf-8')
+
+    review_text = review_path.read_text(encoding='utf-8')
+    log_pipeline_stage(task, 'reviewer', 'done')
+    git_commit_all(f'[AGENT] Review for #{task["id"]}: {task["title"]}')
+
+    # Check if rejected
+    if 'REJECTED' in review_text.upper():
+        return 'rejected', f'Reviewer rejected the plan: {review_text[-200:]}'
+
+    # ── Stage 3: Implement ───────────────────────────────────────────────
+    log(f'  [IMPLEMENTER] Starting...')
+    save_state_stage(task, 'implementer')
+    implementer_prompt = (
+        f'{task_desc}\n\n'
+        f'Read the approved plan at: {plan_path}\n'
+        f'Read the reviewer notes at: {review_path}\n\n'
+        f'Implement the plan. Follow it exactly.\n'
+        f'Read CLAUDE.md first for project conventions.\n'
+        f'After editing any .py file, run: conda run -n guyenv python -m py_compile <file>\n'
+        f'Do NOT run any git commands.\n'
+    )
+
+    try:
+        impl_result = await run_agent_with_retry('implementer', implementer_prompt)
+    except (RateLimitError, Exception) as e:
+        return 'error', f'Implementer failed: {e}'
+
+    log_pipeline_stage(task, 'implementer', 'done', impl_result[:100])
+    git_commit_all(f'[AGENT] Implement #{task["id"]}: {task["title"]}')
+
+    # ── Stage 4: Test (with fix cycle) ───────────────────────────────────
+    test_passed = False
+    for attempt in range(1, MAX_FIX_ATTEMPTS + 2):  # +1 for initial test, +1 for range
+        log(f'  [TESTER] Starting (attempt {attempt})...')
+        save_state_stage(task, f'tester-{attempt}')
+        test_path = work_dir / f'test_report_{attempt}.md'
+
+        # Get list of changed files for the tester
+        try:
+            changed = git('diff', '--name-only', 'main')
+        except RuntimeError:
+            changed = ''
+
+        tester_prompt = (
+            f'{task_desc}\n\n'
+            f'Files changed (vs main):\n{changed}\n\n'
+            f'Read the plan at: {plan_path}\n'
+            f'Write your test report to: {test_path}\n\n'
+            f'Check all modified .py files with py_compile.\n'
+            f'Check COMMON_ERRORS.md patterns against modified files.\n'
+            f'End with: PASS or FAIL\n'
+        )
+
+        try:
+            tester_result = await run_agent_with_retry('tester', tester_prompt)
+        except (RateLimitError, Exception) as e:
+            log_pipeline_stage(task, 'tester', f'error: {e}')
+            break
+
+        if not test_path.exists():
+            test_path.write_text(tester_result, encoding='utf-8')
+
+        test_text = test_path.read_text(encoding='utf-8')
+        git_commit_all(f'[AGENT] Test report {attempt} for #{task["id"]}')
+
+        if 'PASS' in test_text.upper().split('\n')[-5:]:
+            # Check last 5 lines for PASS verdict
+            test_passed = True
+            log_pipeline_stage(task, 'tester', 'PASS')
+            break
+
+        log_pipeline_stage(task, 'tester', f'FAIL (attempt {attempt})')
+
+        if attempt > MAX_FIX_ATTEMPTS:
+            break
+
+        # ── Fix cycle ────────────────────────────────────────────────────
+        log(f'  [FIX PLANNER] Starting (attempt {attempt})...')
+        save_state_stage(task, f'fix_planner-{attempt}')
+        fix_plan_path = work_dir / f'fix_plan_{attempt}.md'
+
+        fix_planner_prompt = (
+            f'{task_desc}\n\n'
+            f'The test report at {test_path} shows FAILURES.\n'
+            f'Read the original plan at: {plan_path}\n'
+            f'Write your fix plan to: {fix_plan_path}\n\n'
+            f'Diagnose the root cause and plan specific fixes.\n'
+        )
+
+        try:
+            await run_agent_with_retry('fix_planner', fix_planner_prompt)
+        except (RateLimitError, Exception) as e:
+            log_pipeline_stage(task, 'fix_planner', f'error: {e}')
+            break
+
+        git_commit_all(f'[AGENT] Fix plan {attempt} for #{task["id"]}')
+
+        log(f'  [FIX IMPLEMENTER] Starting (attempt {attempt})...')
+        save_state_stage(task, f'fix_implementer-{attempt}')
+
+        fix_impl_prompt = (
+            f'{task_desc}\n\n'
+            f'Read the fix plan at: {fix_plan_path}\n'
+            f'Read the test report at: {test_path}\n\n'
+            f'Execute the fixes. Follow the fix plan exactly.\n'
+            f'After editing any .py file, run: conda run -n guyenv python -m py_compile <file>\n'
+            f'Do NOT run any git commands.\n'
+        )
+
+        try:
+            await run_agent_with_retry('fix_implementer', fix_impl_prompt)
+        except (RateLimitError, Exception) as e:
+            log_pipeline_stage(task, 'fix_implementer', f'error: {e}')
+            break
+
+        git_commit_all(f'[AGENT] Fix attempt {attempt} for #{task["id"]}')
+
+    # ── Stage 5: Regression ──────────────────────────────────────────────
+    log(f'  [REGRESSION] Starting...')
+    save_state_stage(task, 'regression')
+    regression_path = work_dir / 'regression.md'
+
+    try:
+        changed = git('diff', '--name-only', 'main')
+    except RuntimeError:
+        changed = ''
+
+    regression_prompt = (
+        f'{task_desc}\n\n'
+        f'Files changed (vs main):\n{changed}\n\n'
+        f'Read the plan at: {plan_path}\n'
+        f'Write your regression report to: {regression_path}\n\n'
+        f'Check that existing project files still compile:\n'
+        f'- app/app.py, app/shared.py, all files in app/pages/\n'
+        f'- CCF.py, ccf_tasks.py, ObservationClass.py, StarClass.py\n'
+        f'- wr_bias_simulation.py, pipeline/*.py\n\n'
+        f'End with: PASS or FAIL\n'
+    )
+
+    try:
+        regression_result = await run_agent_with_retry('regression', regression_prompt)
+    except (RateLimitError, Exception) as e:
+        log_pipeline_stage(task, 'regression', f'error: {e}')
+        regression_result = f'Error: {e}'
+
+    if not regression_path.exists():
+        regression_path.write_text(regression_result, encoding='utf-8')
+
+    regression_text = regression_path.read_text(encoding='utf-8')
+    git_commit_all(f'[AGENT] Regression report for #{task["id"]}')
+
+    regression_passed = 'PASS' in regression_text.upper().split('\n')[-5:]
+    log_pipeline_stage(task, 'regression', 'PASS' if regression_passed else 'FAIL')
+
+    # ── Final status ─────────────────────────────────────────────────────
+    if test_passed and regression_passed:
+        return 'completed', impl_result[:500] if impl_result else 'Implementation done'
+    elif not test_passed:
+        return 'test_failed', f'Tests failed after {MAX_FIX_ATTEMPTS} fix attempts'
+    else:
+        return 'regression_failed', f'Regression check failed: {regression_text[-200:]}'
+
+
+def save_state_stage(task: dict, stage: str) -> None:
+    """Update state with current pipeline stage."""
+    state = load_state() or {}
+    state.update({
+        'current_task_id': task['id'],
+        'current_stage': stage,
+        'updated_at': datetime.now().isoformat(),
+    })
+    save_state(state)
 
 
 # ── Main agent loop ───────────────────────────────────────────────────────────
 async def run_freeform_task(task_prompt: str, dry_run: bool) -> None:
-    """Run a single free-form task (not from TODO.md)."""
-    ts = datetime.now().strftime('%Y%m%d-%H%M')
-
-    # Commit any leftover agent_log.md from previous sessions
-    try:
-        log_status = git('status', '--porcelain', '--', 'scripts/agent_log.md')
-        if log_status.strip():
-            git('add', 'scripts/agent_log.md')
-            git('commit', '-m', '[AGENT] Save agent log from previous session')
-    except RuntimeError:
-        pass
-
+    """Run a single free-form task through the pipeline."""
+    commit_pending_log()
     checkpoint = git_checkpoint()
     log(f'Agent starting — free-form task')
     log(f'Git checkpoint: {checkpoint}')
@@ -443,71 +723,41 @@ async def run_freeform_task(task_prompt: str, dry_run: bool) -> None:
         log('Agent session complete.')
         return
 
-    branch = f'agent/freeform-{ts}'
+    task = {'id': 0, 'title': 'Free-form task', 'description': task_prompt, 'tags': ''}
+    branch = f'agent/freeform-{datetime.now().strftime("%Y%m%d-%H%M")}'
+
+    git_safe_checkout('main')
     try:
         git('checkout', '-b', branch)
     except RuntimeError:
         git('checkout', branch)
+
     log(f'Working on branch: {branch}')
+    status, summary = await run_pipeline(task)
 
-    fake_task = {'id': 0, 'title': 'Free-form task', 'description': task_prompt, 'tags': ''}
-    consecutive_rate_limits = 0
-    status, summary = await run_task(fake_task)
+    log_task_result(task, branch, status, summary)
+    log(f'Free-form task finished: {status}')
 
-    while status == 'rate_limited':
-        consecutive_rate_limits += 1
-        sleep_time = RATE_LIMIT_SLEEP * consecutive_rate_limits
-        log(f'Rate limited. Sleeping {sleep_time}s (attempt {consecutive_rate_limits})...')
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, time.sleep, sleep_time)
-        log('Resuming after rate limit...')
-        status, summary = await run_task(fake_task)
-
-    if status == 'completed':
-        git_commit_agent(fake_task, summary)
-        log_task_result(fake_task, branch, 'completed', summary)
-        log('Free-form task completed.')
-        git_back_to_main()
-        try:
-            git('merge', branch, '--no-edit')
-            log(f'Merged branch {branch} into main.')
-        except RuntimeError as e:
-            log(f'Merge conflict on {branch}: {e}. Branch preserved for manual merge.')
-    else:
-        log_task_result(fake_task, branch, status, summary)
-        log(f'Free-form task finished with status: {status}')
-        git_back_to_main()
-
+    # Return to main (do NOT merge — user reviews via --stop)
+    git_back_to_main()
     log('Agent session complete.')
 
 
 async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
                      include_critical: bool = False) -> None:
-    log(f'Agent starting — quadrant={quadrant}, max_tasks={max_tasks}')
-
-    # Commit any leftover agent_log.md from previous sessions
-    try:
-        log_status = git('status', '--porcelain', '--', 'scripts/agent_log.md')
-        if log_status.strip():
-            git('add', 'scripts/agent_log.md')
-            git('commit', '-m', '[AGENT] Save agent log from previous session')
-    except RuntimeError:
-        pass
-
-    # Create checkpoint
+    """Main loop: pick tasks, run pipeline, repeat."""
+    commit_pending_log()
     checkpoint = git_checkpoint()
+    log(f'Agent starting — quadrant={quadrant}, max_tasks={max_tasks}')
     log(f'Git checkpoint: {checkpoint}')
     log_session_start(checkpoint, quadrant)
 
-    # Load or resume state
     state = load_state()
     completed_ids: list[int] = state.get('completed_tasks', []) if state else []
     tasks_done = len(completed_ids)
 
     while True:
-        # Refresh task list each iteration (in case TODO.md was updated)
         candidates = select_tasks(quadrant, include_critical=include_critical)
-        # Skip already completed tasks
         candidates = [t for t in candidates if t['id'] not in completed_ids]
 
         if not candidates:
@@ -522,47 +772,38 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
         log(f'--- Starting task #{task["id"]}: {task["title"]} ---')
 
         if dry_run:
-            log(f'  [DRY RUN] Would work on: #{task["id"]} — {task["title"]}')
+            log(f'  [DRY RUN] Pipeline stages: planner -> reviewer -> implementer -> tester -> regression')
             log(f'  Description: {task.get("description", "N/A")}')
             completed_ids.append(task['id'])
             tasks_done += 1
             continue
 
-        # Create branch for this task
+        # Create branch
         branch = git_create_branch(task)
         log(f'Working on branch: {branch}')
 
-        # Save state before starting
         save_state({
             'current_task_id': task['id'],
             'completed_tasks': completed_ids,
             'checkpoint_tag': checkpoint,
             'quadrant': quadrant,
             'branch': branch,
+            'current_stage': 'starting',
             'started_at': datetime.now().isoformat(),
         })
 
-        # Run Claude
-        consecutive_rate_limits = 0
-        status, summary = await run_task(task)
+        # Run the full pipeline
+        try:
+            status, summary = await run_pipeline(task)
+        except Exception as e:
+            status, summary = 'error', f'Pipeline crashed: {e}'
+            log(f'  Pipeline error: {e}')
 
-        while status == 'rate_limited':
-            consecutive_rate_limits += 1
-            sleep_time = RATE_LIMIT_SLEEP * consecutive_rate_limits
-            log(f'Rate limited. Sleeping {sleep_time}s (attempt {consecutive_rate_limits})...')
-            # Use synchronous sleep in executor to avoid anyio cancel scope conflicts
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, time.sleep, sleep_time)
-            log('Resuming after rate limit...')
-            status, summary = await run_task(task)
+        log_task_result(task, branch, status, summary)
+        log(f'Task #{task["id"]} finished: {status}')
 
         if status == 'completed':
-            # Commit changes on the task branch
-            git_commit_agent(task, summary)
-            log_task_result(task, branch, 'completed', summary)
-            log(f'Task #{task["id"]} completed.')
-
-            # Update TODO.md — mark as to-test
+            # Update TODO.md
             open_tasks, done_tasks = load_todos()
             for t in open_tasks:
                 if t['id'] == task['id']:
@@ -573,36 +814,19 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
                     ).strip()
                     break
             save_todos(open_tasks, done_tasks)
-            git('add', 'TODO.md')
-            try:
-                git('commit', '-m',
-                    f'[AGENT] Mark #{task["id"]} as to-test')
-            except RuntimeError:
-                pass  # Nothing to commit
+            git_commit_all(f'[AGENT] Mark #{task["id"]} as to-test')
 
-            # Back to main and merge the branch
-            git_back_to_main()
-            try:
-                git('merge', branch, '--no-edit')
-                log(f'Merged branch {branch} into main.')
-            except RuntimeError as e:
-                log(f'Merge conflict on {branch}: {e}. Branch preserved for manual merge.')
+        # Return to main (do NOT merge — user reviews via --stop)
+        git_back_to_main()
 
-            completed_ids.append(task['id'])
-            tasks_done += 1
+        completed_ids.append(task['id'])
+        tasks_done += 1
 
-        elif status == 'error':
-            log_task_result(task, branch, 'error', summary)
-            log(f'Task #{task["id"]} failed: {summary}')
-            git_back_to_main()
-            completed_ids.append(task['id'])  # Skip it, don't retry
-            tasks_done += 1
-
-        # Update state
         save_state({
             'completed_tasks': completed_ids,
             'checkpoint_tag': checkpoint,
             'quadrant': quadrant,
+            'current_stage': 'idle',
             'started_at': state.get('started_at', datetime.now().isoformat())
             if state else datetime.now().isoformat(),
         })
@@ -611,10 +835,152 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
     log('Agent session complete.')
 
 
+def commit_pending_log() -> None:
+    """Commit any leftover agent_log.md from previous sessions."""
+    try:
+        log_status = git('status', '--porcelain', '--', 'scripts/agent_log.md')
+        if log_status.strip():
+            git('add', 'scripts/agent_log.md')
+            git('commit', '-m', '[AGENT] Save agent log from previous session')
+    except RuntimeError:
+        pass
+
+
+# ── --stop: Interactive branch review ─────────────────────────────────────────
+def stop_daemon() -> None:
+    """Stop the daemon and offer interactive branch review."""
+    if _PID_PATH.exists():
+        pid = int(_PID_PATH.read_text().strip())
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f'Stopped daemon (PID {pid}).')
+        except ProcessLookupError:
+            print(f'Daemon (PID {pid}) was not running.')
+        _PID_PATH.unlink(missing_ok=True)
+    else:
+        print('No daemon running.')
+
+    # Interactive review of agent branches
+    branches = git_list_agent_branches()
+    if not branches:
+        print('\nNo agent branches to review.')
+        return
+
+    print(f'\n{"=" * 60}')
+    print(f'  Agent Branch Review — {len(branches)} branch(es)')
+    print(f'{"=" * 60}\n')
+
+    for branch in branches:
+        print(f'\n--- Branch: {branch} ---')
+
+        # Show commit log
+        commit_log = git_branch_log(branch)
+        print(f'\nCommits:\n{commit_log}')
+
+        # Show diff stat
+        diff_stat = git_branch_diff_stat(branch)
+        print(f'\nChanges:\n{diff_stat}')
+
+        # Check for test/regression reports in work dir
+        task_id = branch.split('/')[1].split('-')[0] if '/' in branch else '0'
+        task_work = _WORK_DIR / task_id
+        if task_work.exists():
+            for report in sorted(task_work.glob('*.md')):
+                print(f'\n[{report.name}]')
+                content = report.read_text(encoding='utf-8')
+                # Show last 10 lines (usually contains verdict)
+                lines = content.strip().split('\n')
+                for line in lines[-10:]:
+                    print(f'  {line}')
+
+        # Ask user
+        print(f'\nOptions: [K]eep (leave branch) / [M]erge into main / [D]iscard (delete branch)')
+        while True:
+            choice = input(f'Choice for {branch}: ').strip().lower()
+            if choice in ('k', 'keep'):
+                print(f'  Keeping {branch}')
+                break
+            elif choice in ('m', 'merge'):
+                try:
+                    git_safe_checkout('main')
+                    git('merge', branch, '--no-edit')
+                    print(f'  Merged {branch} into main.')
+                except RuntimeError as e:
+                    print(f'  Merge failed: {e}')
+                    print(f'  Branch preserved for manual merge.')
+                break
+            elif choice in ('d', 'discard'):
+                try:
+                    git_safe_checkout('main')
+                    git('branch', '-D', branch)
+                    print(f'  Deleted {branch}.')
+                    # Clean up work dir
+                    task_work = _WORK_DIR / task_id
+                    if task_work.exists():
+                        import shutil
+                        shutil.rmtree(task_work)
+                except RuntimeError as e:
+                    print(f'  Delete failed: {e}')
+                break
+            else:
+                print('  Invalid choice. Enter K, M, or D.')
+
+    print(f'\n{"=" * 60}')
+    print('  Review complete.')
+    print(f'{"=" * 60}')
+
+
+# ── --status ──────────────────────────────────────────────────────────────────
+def show_status() -> None:
+    """Show current agent status."""
+    print(f'\n{"=" * 50}')
+    print(f'  Overnight Agent Status')
+    print(f'{"=" * 50}\n')
+
+    # Check if running
+    if _PID_PATH.exists():
+        pid = int(_PID_PATH.read_text().strip())
+        try:
+            os.kill(pid, 0)  # Check if process exists
+            print(f'Status:  RUNNING (PID {pid})')
+        except ProcessLookupError:
+            print(f'Status:  STOPPED (stale PID {pid})')
+    else:
+        print(f'Status:  STOPPED')
+
+    # Show state
+    state = load_state()
+    if state:
+        print(f'Task:    #{state.get("current_task_id", "?")}')
+        print(f'Stage:   {state.get("current_stage", "?")}')
+        print(f'Started: {state.get("started_at", "?")}')
+        completed = state.get('completed_tasks', [])
+        print(f'Done:    {len(completed)} task(s) ({completed})')
+    else:
+        print(f'State:   No active state')
+
+    # Show branches
+    branches = git_list_agent_branches()
+    print(f'\nAgent branches: {len(branches)}')
+    for b in branches:
+        log_oneline = git_branch_log(b)
+        commit_count = len([l for l in log_oneline.split('\n') if l.strip()])
+        print(f'  {b}  ({commit_count} commits)')
+
+    # Show recent log
+    if _LOG_PATH.exists():
+        lines = _LOG_PATH.read_text(encoding='utf-8').strip().split('\n')
+        print(f'\nRecent log (last 5 lines):')
+        for line in lines[-5:]:
+            print(f'  {line}')
+
+    print()
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description='Overnight autonomous agent for WR Binary project'
+        description='Multi-agent overnight supervisor for WR Binary project'
     )
     p.add_argument('--quadrant', default='eliminate',
                    choices=['eliminate', 'delegate', 'schedule', 'do_first', 'all'],
@@ -628,45 +994,35 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--daemon', action='store_true',
                    help='Run in background (detach from terminal)')
     p.add_argument('--stop', action='store_true',
-                   help='Stop a running daemon')
+                   help='Stop daemon + interactive branch review')
+    p.add_argument('--status', action='store_true',
+                   help='Show current agent status')
     p.add_argument('--task', type=str, default=None,
-                   help='Free-form task prompt (skip TODO.md, e.g. paper writing)')
+                   help='Free-form task prompt (skip TODO.md)')
     return p.parse_args()
-
-
-def stop_daemon() -> None:
-    if not _PID_PATH.exists():
-        print('No daemon running.')
-        return
-    pid = int(_PID_PATH.read_text().strip())
-    try:
-        os.kill(pid, signal.SIGTERM)
-        print(f'Stopped daemon (PID {pid}).')
-    except ProcessLookupError:
-        print(f'Daemon (PID {pid}) was not running.')
-    _PID_PATH.unlink(missing_ok=True)
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.status:
+        show_status()
+        return
 
     if args.stop:
         stop_daemon()
         return
 
     if args.daemon:
-        # Fork and detach
         pid = os.fork()
         if pid > 0:
-            # Parent
             _PID_PATH.write_text(str(pid))
             print(f'Agent daemon started (PID {pid}).')
             print(f'Logs: {_LOG_PATH}')
+            print(f'Monitor: python {__file__} --status')
             print(f'Stop: python {__file__} --stop')
             return
-        # Child continues below
         os.setsid()
-        # Redirect stdout/stderr to log
         sys.stdout = open(_LOG_PATH, 'a')
         sys.stderr = sys.stdout
 
@@ -675,7 +1031,6 @@ def main() -> None:
         os.environ['_CAFFEINATE_ACTIVE'] = '1'
         os.execvp('caffeinate', ['caffeinate', '-i', sys.executable] + sys.argv)
 
-    # Run the async loop
     try:
         if args.task:
             asyncio.run(run_freeform_task(args.task, args.dry_run))

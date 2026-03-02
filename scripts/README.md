@@ -2,40 +2,43 @@
 
 ## Overnight Agent (`overnight_agent.py`)
 
-Autonomous agent that works on your TODO tasks while you sleep.
+Multi-agent overnight supervisor. Uses a pipeline of specialized Claude agents
+(planner, reviewer, implementer, tester, regression checker) per task.
+
+### Architecture
+
+```
+Supervisor (pure Python orchestrator)
+    │
+    ├── picks task from TODO.md
+    ├── creates git branch
+    │
+    ▼ Per-task pipeline:
+    Planner ──▶ Reviewer ──▶ Implementer ──▶ Tester ──▶ Regression
+                                              │
+                                         If FAIL:
+                                    Fix Planner ──▶ Fix Implementer
+                                         (max 2 retries)
+```
+
+Each agent is a separate `query()` call with a specialized system prompt.
+Git is ONLY touched by the supervisor — agents never run git commands.
+Agent artifacts are saved to `scripts/.agent_work/{task_id}/`.
 
 ### Quick Start
 
 ```bash
-# Before bed — one command, that's it:
+# Before bed — one command:
 conda run -n guyenv python scripts/overnight_agent.py
-```
 
-It will:
-- Tag your current code as a safe rollback point (`pre-agent-{timestamp}`)
-- Pick tasks from the "Eliminate" quadrant (not urgent + not important)
-- Run Claude on each task, auto-accepting all tool calls
-- Create a git branch per task (`agent/{id}-{slug}`)
-- Sleep on rate limits, wake up and continue automatically
-- Keep your Mac awake via `caffeinate`
-- Ctrl+C to stop anytime
+# Preview what it would do:
+conda run -n guyenv python scripts/overnight_agent.py --dry-run
 
-### When You Wake Up
+# Check status while running:
+conda run -n guyenv python scripts/overnight_agent.py --status
 
-```bash
-# 1. Check what it did
-cat scripts/agent_log.md
-
-# 2. Open the webapp — tasks are marked "TO TEST" with green badges
-conda run -n guyenv streamlit run app/app.py
-
-# 3. Don't like everything? Undo ALL agent work:
-git reset --hard pre-agent-20260301-2345    # use the tag from agent_log.md
-
-# 4. Want to keep some changes but undo others?
-#    Each task is on its own branch — cherry-pick what you want:
-git log --oneline --all | grep AGENT        # see all agent commits
-git cherry-pick <commit-hash>               # pick the ones you like
+# Stop and review branches interactively:
+conda run -n guyenv python scripts/overnight_agent.py --stop
 ```
 
 ### Options
@@ -44,21 +47,15 @@ git cherry-pick <commit-hash>               # pick the ones you like
 # Work on ALL quadrants (eliminate → delegate → schedule, in order)
 conda run -n guyenv python scripts/overnight_agent.py --quadrant all
 
-# Work on "Delegate" tasks (urgent but not important) only
+# Work on specific quadrant
 conda run -n guyenv python scripts/overnight_agent.py --quadrant delegate
-
-# Work on "Schedule" tasks (important but not urgent) only
 conda run -n guyenv python scripts/overnight_agent.py --quadrant schedule
 
 # Include "Do First" tasks (urgent + important) — requires explicit opt-in
 conda run -n guyenv python scripts/overnight_agent.py --quadrant all --include-critical
 
-# Free-form task (skip TODO.md — paper writing, maintenance, anything)
-conda run -n guyenv python scripts/overnight_agent.py --task "Draft the Introduction section using DOCUMENTATION.md"
-conda run -n guyenv python scripts/overnight_agent.py --task "Run py_compile on all files, fix errors, update GIT_LOG.md"
-
-# Preview what it would do without actually doing it
-conda run -n guyenv python scripts/overnight_agent.py --dry-run
+# Free-form task (skip TODO.md)
+conda run -n guyenv python scripts/overnight_agent.py --task "Draft the Introduction section"
 
 # Stop after 3 tasks
 conda run -n guyenv python scripts/overnight_agent.py --max-tasks 3
@@ -66,36 +63,74 @@ conda run -n guyenv python scripts/overnight_agent.py --max-tasks 3
 # Run in background (detached from terminal)
 conda run -n guyenv python scripts/overnight_agent.py --daemon
 
-# Stop a background daemon
+# Stop a background daemon + review branches
 conda run -n guyenv python scripts/overnight_agent.py --stop
+
+# Show current status
+conda run -n guyenv python scripts/overnight_agent.py --status
+```
+
+### When You Wake Up
+
+```bash
+# 1. Check status
+conda run -n guyenv python scripts/overnight_agent.py --status
+
+# 2. Stop and review each branch interactively
+conda run -n guyenv python scripts/overnight_agent.py --stop
+# Shows diff, test results, asks: [K]eep / [M]erge / [D]iscard
+
+# 3. Or check the log directly
+cat scripts/agent_log.md
+
+# 4. Nuclear undo — reset ALL agent work:
+git reset --hard pre-agent-20260301-2345    # use tag from agent_log.md
 ```
 
 ### Safety
 
-- **"Do First" tasks require `--include-critical`** — never touched by default
+- **Branches never auto-merged** — you review via `--stop` first
 - **Git checkpoint** before anything — one command to undo everything
-- **Each task on its own branch** — cherry-pick what you like, discard the rest
+- **Each task on its own branch** — keep, merge, or discard individually
+- **Multi-agent pipeline** — plan is reviewed before implementation
+- **Tests + regression** — automated checks before marking done
 - **All commits prefixed with `[AGENT]`** — easy to spot in git log
-- **Tasks marked "to-test"** — you verify before they become "done"
-- **agent_log.md** — full record of what was done, with rollback commands
+- **"Do First" tasks require `--include-critical`** — never touched by default
 
-### Quadrant Priority Order
+### Pipeline Stages
 
-When using `--quadrant all`, tasks are processed in safety order (safest first):
+| Stage | Agent | What it does | Timeout |
+|-------|-------|-------------|---------|
+| 1 | Planner | Reads codebase, writes implementation plan | 10 min |
+| 2 | Reviewer | Checks plan against CLAUDE.md, approves/rejects | 5 min |
+| 3 | Implementer | Executes the plan, writes code | 15 min |
+| 4 | Tester | Runs py_compile, checks COMMON_ERRORS.md patterns | 5 min |
+| 5 | Regression | Checks existing files still compile | 5 min |
+| Fix | Fix Planner + Fix Implementer | Diagnose and fix test failures (max 2 cycles) | 5+10 min |
 
-| Quadrant | Urgent? | Important? | Agent works on it? |
-|----------|---------|------------|-------------------|
-| Eliminate | No | No | Yes (default, processed first) |
-| Delegate | Yes | No | Yes (processed second) |
-| Schedule | No | Yes | Yes (processed third) |
-| Do First | Yes | Yes | Only with `--include-critical` (last) |
+### File Structure
+
+```
+scripts/
+├── overnight_agent.py      # Supervisor (this file)
+├── agent_prompts.py        # System prompts for each agent role
+├── agent_log.md            # Human-readable log
+├── .agent_work/            # Per-task artifacts
+│   └── {task_id}/
+│       ├── plan.md
+│       ├── review.md
+│       ├── test_report_1.md
+│       ├── regression.md
+│       └── fix_plan_1.md (if needed)
+├── .agent_state.json       # Supervisor state (crash recovery)
+└── .agent.pid              # Daemon PID
+```
 
 ---
 
 ## Auto-Continue (`auto_continue.sh`)
 
-Simple "poke" script — just sends "go on" to resume a paused Claude session.
-Much simpler than the overnight agent. Use this if you just want a quick nudge.
+Simple "poke" script — sends "go on" to resume a paused Claude session.
 
 ```bash
 ./scripts/auto_continue.sh           # Run once
