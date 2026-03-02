@@ -177,3 +177,13 @@ asyncio.exceptions.CancelledError: Cancelled via cancel scope 11a79d810 by <Task
 [2026-03-02 07:51:08]   [DRY RUN] Would run free-form task:
 [2026-03-02 07:51:08]   Prompt: Draft the Introduction section
 [2026-03-02 07:51:08] Agent session complete.
+[2026-03-02 07:53:59] Agent starting — quadrant=eliminate, max_tasks=1
+[2026-03-02 07:53:59] Git checkpoint: pre-agent-20260302-0753
+
+## Agent Session — 2026-03-02 07:53
+**Checkpoint:** `pre-agent-20260302-0753`
+**Rollback:** `git checkout main` or `git reset --hard pre-agent-20260302-0753`
+**Quadrant:** eliminate
+
+[2026-03-02 07:53:59] --- Starting task #5: 2D parameter histograms ---
+[2026-03-02 07:59:10] Agent starting — quadrant=eliminate, max_tasks=1
