@@ -2,7 +2,7 @@
 
 ## Overnight Agent (`overnight_agent.py`)
 
-Autonomous agent that works on your low-priority TODO tasks while you sleep.
+Autonomous agent that works on your TODO tasks while you sleep.
 
 ### Quick Start
 
@@ -41,11 +41,21 @@ git cherry-pick <commit-hash>               # pick the ones you like
 ### Options
 
 ```bash
-# Work on "Delegate" tasks (urgent but not important) instead
+# Work on ALL quadrants (eliminate → delegate → schedule, in order)
+conda run -n guyenv python scripts/overnight_agent.py --quadrant all
+
+# Work on "Delegate" tasks (urgent but not important) only
 conda run -n guyenv python scripts/overnight_agent.py --quadrant delegate
 
-# Work on "Schedule" tasks (important but not urgent) — opt-in only
+# Work on "Schedule" tasks (important but not urgent) only
 conda run -n guyenv python scripts/overnight_agent.py --quadrant schedule
+
+# Include "Do First" tasks (urgent + important) — requires explicit opt-in
+conda run -n guyenv python scripts/overnight_agent.py --quadrant all --include-critical
+
+# Free-form task (skip TODO.md — paper writing, maintenance, anything)
+conda run -n guyenv python scripts/overnight_agent.py --task "Draft the Introduction section using DOCUMENTATION.md"
+conda run -n guyenv python scripts/overnight_agent.py --task "Run py_compile on all files, fix errors, update GIT_LOG.md"
 
 # Preview what it would do without actually doing it
 conda run -n guyenv python scripts/overnight_agent.py --dry-run
@@ -62,7 +72,7 @@ conda run -n guyenv python scripts/overnight_agent.py --stop
 
 ### Safety
 
-- **Never touches "Do First" tasks** (urgent + important) — those always need you
+- **"Do First" tasks require `--include-critical`** — never touched by default
 - **Git checkpoint** before anything — one command to undo everything
 - **Each task on its own branch** — cherry-pick what you like, discard the rest
 - **All commits prefixed with `[AGENT]`** — easy to spot in git log
@@ -71,12 +81,14 @@ conda run -n guyenv python scripts/overnight_agent.py --stop
 
 ### Quadrant Priority Order
 
+When using `--quadrant all`, tasks are processed in safety order (safest first):
+
 | Quadrant | Urgent? | Important? | Agent works on it? |
 |----------|---------|------------|-------------------|
-| Eliminate | No | No | Yes (default) |
-| Delegate | Yes | No | Yes (with `--quadrant delegate`) |
-| Schedule | No | Yes | Only if you opt in (`--quadrant schedule`) |
-| Do First | Yes | Yes | **NEVER** — always needs human |
+| Eliminate | No | No | Yes (default, processed first) |
+| Delegate | Yes | No | Yes (processed second) |
+| Schedule | No | Yes | Yes (processed third) |
+| Do First | Yes | Yes | Only with `--include-critical` (last) |
 
 ---
 

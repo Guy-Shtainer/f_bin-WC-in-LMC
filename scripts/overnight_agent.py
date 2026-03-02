@@ -10,11 +10,13 @@ Quick start:
     conda run -n guyenv python scripts/overnight_agent.py
 
 Options:
-    --daemon          Run detached in background
-    --quadrant X      Which tasks: eliminate (default), delegate, schedule
-    --dry-run         Show what it would do without doing it
-    --stop            Stop a running daemon
-    --max-tasks N     Stop after completing N tasks
+    --daemon              Run detached in background
+    --quadrant X          Which tasks: eliminate (default), delegate, schedule, do_first, all
+    --include-critical    Allow working on "Do First" (urgent+important) tasks
+    --dry-run             Show what it would do without doing it
+    --stop                Stop a running daemon
+    --max-tasks N         Stop after completing N tasks
+    --task "prompt"       Free-form task (skip TODO.md — e.g. paper writing, maintenance)
 """
 from __future__ import annotations
 
@@ -59,8 +61,11 @@ QUADRANT_FILTERS = {
     'eliminate': lambda t: not t.get('urgent') and not t.get('important'),
     'delegate': lambda t: t.get('urgent') and not t.get('important'),
     'schedule': lambda t: not t.get('urgent') and t.get('important'),
-    # 'do_first' is NEVER included — always needs human
+    'do_first': lambda t: t.get('urgent') and t.get('important'),
 }
+
+# Processing order for --quadrant all (safest first)
+QUADRANT_ORDER = ['eliminate', 'delegate', 'schedule']
 
 
 # ── TODO.md parsing (reuse same logic as 10_todo.py) ─────────────────────────
@@ -283,17 +288,32 @@ def clear_state() -> None:
 
 
 # ── Task selection ────────────────────────────────────────────────────────────
-def select_tasks(quadrant: str) -> list[dict]:
+def select_tasks(quadrant: str, include_critical: bool = False) -> list[dict]:
     open_tasks, _ = load_todos()
+    open_only = [t for t in open_tasks if t.get('status', 'open') == 'open']
+
+    if quadrant == 'all':
+        # Process in safety order: eliminate → delegate → schedule → (do_first if allowed)
+        order = list(QUADRANT_ORDER)
+        if include_critical:
+            order.append('do_first')
+        candidates = []
+        for q in order:
+            filt = QUADRANT_FILTERS[q]
+            group = [t for t in open_only if filt(t)]
+            # Within each quadrant, lower priority first (safest)
+            priority_order = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
+            group.sort(key=lambda t: priority_order.get(t.get('priority', 'low'), 0))
+            candidates.extend(group)
+        return candidates
+
     filt = QUADRANT_FILTERS.get(quadrant)
     if not filt:
         return []
-    # Only pick open tasks (not in-progress, not to-test, not done)
-    candidates = [
-        t for t in open_tasks
-        if filt(t) and t.get('status', 'open') == 'open'
-    ]
-    # Sort by priority (low priority first for eliminate quadrant)
+    if quadrant == 'do_first' and not include_critical:
+        log('WARNING: "do_first" quadrant requires --include-critical flag.')
+        return []
+    candidates = [t for t in open_only if filt(t)]
     priority_order = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
     candidates.sort(key=lambda t: priority_order.get(t.get('priority', 'low'), 0))
     return candidates
@@ -330,13 +350,21 @@ async def run_task(task: dict) -> tuple[str, str]:
     rate_limited = False
 
     try:
-        async for message in query(prompt=prompt, options=options):
-            if hasattr(message, 'result') and message.result:
-                result_text = message.result
-                session_id = getattr(message, 'session_id', None)
-            elif hasattr(message, 'error') and message.error == 'rate_limit':
-                rate_limited = True
-                break
+        gen = query(prompt=prompt, options=options)
+        try:
+            async for message in gen:
+                if hasattr(message, 'result') and message.result:
+                    result_text = message.result
+                    session_id = getattr(message, 'session_id', None)
+                elif hasattr(message, 'error') and message.error == 'rate_limit':
+                    rate_limited = True
+                    break
+        finally:
+            # Gracefully close the generator, catching anyio cancel scope errors
+            try:
+                await gen.aclose()
+            except (RuntimeError, Exception):
+                pass  # anyio cancel scope cleanup — safe to ignore
     except Exception as e:
         err_str = str(e)
         if 'rate' in err_str.lower() or '429' in err_str:
@@ -352,7 +380,60 @@ async def run_task(task: dict) -> tuple[str, str]:
 
 
 # ── Main agent loop ───────────────────────────────────────────────────────────
-async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool) -> None:
+async def run_freeform_task(task_prompt: str, dry_run: bool) -> None:
+    """Run a single free-form task (not from TODO.md)."""
+    ts = datetime.now().strftime('%Y%m%d-%H%M')
+    checkpoint = git_checkpoint()
+    log(f'Agent starting — free-form task')
+    log(f'Git checkpoint: {checkpoint}')
+    log_session_start(checkpoint, 'freeform')
+
+    if dry_run:
+        log(f'  [DRY RUN] Would run free-form task:')
+        log(f'  Prompt: {task_prompt[:200]}...' if len(task_prompt) > 200 else f'  Prompt: {task_prompt}')
+        log('Agent session complete.')
+        return
+
+    branch = f'agent/freeform-{ts}'
+    try:
+        git('checkout', '-b', branch)
+    except RuntimeError:
+        git('checkout', branch)
+    log(f'Working on branch: {branch}')
+
+    fake_task = {'id': 0, 'title': 'Free-form task', 'description': task_prompt, 'tags': ''}
+    consecutive_rate_limits = 0
+    status, summary = await run_task(fake_task)
+
+    while status == 'rate_limited':
+        consecutive_rate_limits += 1
+        sleep_time = RATE_LIMIT_SLEEP * consecutive_rate_limits
+        log(f'Rate limited. Sleeping {sleep_time}s (attempt {consecutive_rate_limits})...')
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, time.sleep, sleep_time)
+        log('Resuming after rate limit...')
+        status, summary = await run_task(fake_task)
+
+    if status == 'completed':
+        git_commit_agent(fake_task, summary)
+        log_task_result(fake_task, branch, 'completed', summary)
+        log('Free-form task completed.')
+        git_back_to_main()
+        try:
+            git('merge', branch, '--no-edit')
+            log(f'Merged branch {branch} into main.')
+        except RuntimeError as e:
+            log(f'Merge conflict on {branch}: {e}. Branch preserved for manual merge.')
+    else:
+        log_task_result(fake_task, branch, status, summary)
+        log(f'Free-form task finished with status: {status}')
+        git_back_to_main()
+
+    log('Agent session complete.')
+
+
+async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
+                     include_critical: bool = False) -> None:
     log(f'Agent starting — quadrant={quadrant}, max_tasks={max_tasks}')
 
     # Create checkpoint
@@ -367,7 +448,7 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool) -> Non
 
     while True:
         # Refresh task list each iteration (in case TODO.md was updated)
-        candidates = select_tasks(quadrant)
+        candidates = select_tasks(quadrant, include_critical=include_critical)
         # Skip already completed tasks
         candidates = [t for t in candidates if t['id'] not in completed_ids]
 
@@ -411,7 +492,9 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool) -> Non
             consecutive_rate_limits += 1
             sleep_time = RATE_LIMIT_SLEEP * consecutive_rate_limits
             log(f'Rate limited. Sleeping {sleep_time}s (attempt {consecutive_rate_limits})...')
-            await asyncio.sleep(sleep_time)
+            # Use synchronous sleep in executor to avoid anyio cancel scope conflicts
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, time.sleep, sleep_time)
             log('Resuming after rate limit...')
             status, summary = await run_task(task)
 
@@ -476,8 +559,10 @@ def parse_args() -> argparse.Namespace:
         description='Overnight autonomous agent for WR Binary project'
     )
     p.add_argument('--quadrant', default='eliminate',
-                   choices=['eliminate', 'delegate', 'schedule'],
+                   choices=['eliminate', 'delegate', 'schedule', 'do_first', 'all'],
                    help='Which Eisenhower quadrant to work on (default: eliminate)')
+    p.add_argument('--include-critical', action='store_true',
+                   help='Allow working on "Do First" (urgent+important) tasks')
     p.add_argument('--max-tasks', type=int, default=None,
                    help='Stop after completing N tasks')
     p.add_argument('--dry-run', action='store_true',
@@ -486,6 +571,8 @@ def parse_args() -> argparse.Namespace:
                    help='Run in background (detach from terminal)')
     p.add_argument('--stop', action='store_true',
                    help='Stop a running daemon')
+    p.add_argument('--task', type=str, default=None,
+                   help='Free-form task prompt (skip TODO.md, e.g. paper writing)')
     return p.parse_args()
 
 
@@ -532,7 +619,11 @@ def main() -> None:
 
     # Run the async loop
     try:
-        asyncio.run(agent_loop(args.quadrant, args.max_tasks, args.dry_run))
+        if args.task:
+            asyncio.run(run_freeform_task(args.task, args.dry_run))
+        else:
+            asyncio.run(agent_loop(args.quadrant, args.max_tasks, args.dry_run,
+                                   include_critical=args.include_critical))
     except KeyboardInterrupt:
         log('Agent stopped by user (Ctrl+C).')
     finally:
