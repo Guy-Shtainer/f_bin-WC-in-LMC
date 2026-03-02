@@ -211,11 +211,37 @@ def git_checkpoint() -> str:
 def git_create_branch(task: dict) -> str:
     slug = re.sub(r'[^a-z0-9]+', '-', task['title'].lower())[:40].strip('-')
     branch = f'agent/{task["id"]}-{slug}'
+
+    # Stash any uncommitted changes (e.g. agent_log.md from dry runs)
+    has_stash = False
+    status = git('status', '--porcelain')
+    if status.strip():
+        git('stash', '--include-untracked')
+        has_stash = True
+
     try:
         git('checkout', '-b', branch)
     except RuntimeError:
-        # Branch exists, just check it out
-        git('checkout', branch)
+        # Branch exists — check if it has commits ahead of main
+        try:
+            ahead = git('rev-list', '--count', f'main..{branch}')
+            if int(ahead.strip()) == 0:
+                # Empty branch from a crashed run — delete and recreate
+                git('branch', '-D', branch)
+                git('checkout', '-b', branch)
+            else:
+                # Has real work — just check it out
+                git('checkout', branch)
+        except RuntimeError:
+            git('checkout', branch)
+
+    # Restore stashed changes
+    if has_stash:
+        try:
+            git('stash', 'pop')
+        except RuntimeError:
+            pass  # stash pop conflict — not critical
+
     return branch
 
 
@@ -383,6 +409,16 @@ async def run_task(task: dict) -> tuple[str, str]:
 async def run_freeform_task(task_prompt: str, dry_run: bool) -> None:
     """Run a single free-form task (not from TODO.md)."""
     ts = datetime.now().strftime('%Y%m%d-%H%M')
+
+    # Commit any leftover agent_log.md from previous sessions
+    try:
+        log_status = git('status', '--porcelain', '--', 'scripts/agent_log.md')
+        if log_status.strip():
+            git('add', 'scripts/agent_log.md')
+            git('commit', '-m', '[AGENT] Save agent log from previous session')
+    except RuntimeError:
+        pass
+
     checkpoint = git_checkpoint()
     log(f'Agent starting — free-form task')
     log(f'Git checkpoint: {checkpoint}')
@@ -435,6 +471,15 @@ async def run_freeform_task(task_prompt: str, dry_run: bool) -> None:
 async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
                      include_critical: bool = False) -> None:
     log(f'Agent starting — quadrant={quadrant}, max_tasks={max_tasks}')
+
+    # Commit any leftover agent_log.md from previous sessions
+    try:
+        log_status = git('status', '--porcelain', '--', 'scripts/agent_log.md')
+        if log_status.strip():
+            git('add', 'scripts/agent_log.md')
+            git('commit', '-m', '[AGENT] Save agent log from previous session')
+    except RuntimeError:
+        pass
 
     # Create checkpoint
     checkpoint = git_checkpoint()
