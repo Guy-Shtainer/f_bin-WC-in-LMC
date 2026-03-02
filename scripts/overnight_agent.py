@@ -409,7 +409,6 @@ async def run_agent(role: str, user_prompt: str, timeout: int | None = None) -> 
 
     options = ClaudeAgentOptions(
         permission_mode='bypassPermissions',
-        allow_dangerously_skip_permissions=True,
         allowed_tools=config['allowed_tools'],
         system_prompt=config['system_prompt'],
         cwd=str(_ROOT),
