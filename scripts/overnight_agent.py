@@ -261,7 +261,18 @@ def git_commit_agent(task: dict, summary: str) -> None:
 
 
 def git_back_to_main() -> None:
+    # Stash any uncommitted changes (e.g. agent_log.md written by log())
+    has_stash = False
+    status = git('status', '--porcelain')
+    if status.strip():
+        git('stash', '--include-untracked')
+        has_stash = True
     git('checkout', 'main')
+    if has_stash:
+        try:
+            git('stash', 'pop')
+        except RuntimeError:
+            pass  # stash pop conflict — not critical
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
