@@ -291,3 +291,28 @@ All orbital parameters (P, e, q, M₁, i, ω, T₀) are drawn **independently** 
 
 [2026-03-02 08:24:05] Task #5 completed.
 [2026-03-02 08:25:30] Agent starting — quadrant=eliminate, max_tasks=None
+[2026-03-02 08:25:30] Git checkpoint: pre-agent-20260302-0825
+
+## Agent Session — 2026-03-02 08:25
+**Checkpoint:** `pre-agent-20260302-0825`
+**Rollback:** `git checkout main` or `git reset --hard pre-agent-20260302-0825`
+**Quadrant:** eliminate
+
+[2026-03-02 08:25:30] --- Starting task #5: 2D parameter histograms ---
+[2026-03-02 08:25:30]   [DRY RUN] Would work on: #5 — 2D parameter histograms
+[2026-03-02 08:25:30]   Description: Research whether 2D orbital parameter histograms (e.g. P vs e) add scientific value — confirm with Tomer
+[2026-03-02 08:25:30] --- Starting task #32: Add more reference papers ---
+[2026-03-02 08:25:30]   [DRY RUN] Would work on: #32 — Add more reference papers
+[2026-03-02 08:25:30]   Description: Add relevant papers used for overview and references to papers/ folder
+[2026-03-02 08:25:30] --- Starting task #3: Try logP_max = 4 ---
+[2026-03-02 08:25:30]   [DRY RUN] Would work on: #3 — Try logP_max = 4
+[2026-03-02 08:25:30]   Description: Run bias grid with logP_max=4 instead of default to see if longer periods matter
+[2026-03-02 08:25:30] --- Starting task #30: Make CCF settings editable from webapp ---
+[2026-03-02 08:25:30]   [DRY RUN] Would work on: #30 — Make CCF settings editable from webapp
+[2026-03-02 08:25:30]   Description: The ccf_settings_with_global_lines.json should be easily editable from the CCF page
+[2026-03-02 08:25:30] --- Starting task #6: Test full end-to-end webapp run ---
+[2026-03-02 08:25:30]   [DRY RUN] Would work on: #6 — Test full end-to-end webapp run
+[2026-03-02 08:25:30]   Description: Launch app and verify all pages work correctly, including bias correction with live heatmap
+[2026-03-02 08:25:30] No more tasks in "eliminate" quadrant. Agent done.
+[2026-03-02 08:25:30] Agent session complete.
+[2026-03-02 08:25:45] Agent starting — quadrant=eliminate, max_tasks=None
