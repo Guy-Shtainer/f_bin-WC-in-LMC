@@ -348,6 +348,8 @@ def select_tasks(quadrant: str, include_critical: bool = False) -> list[dict]:
 # ── Run a single task ─────────────────────────────────────────────────────────
 async def run_task(task: dict) -> tuple[str, str]:
     """Run Claude on a single task. Returns (status, summary)."""
+    # Allow nested Claude sessions (the agent SDK spawns Claude Code internally)
+    os.environ.pop('CLAUDECODE', None)
     from claude_agent_sdk import query, ClaudeAgentOptions
 
     prompt = (
