@@ -245,19 +245,8 @@ Error output: Check stderr output for details
 ### Task #5: 2D parameter histograms
 - **Branch:** `agent/5-2d-parameter-histograms`
 - **Status:** completed
-- **Summary:** Everything looks good. Here is a summary of what was done for **Task #5 — 2D parameter histograms**:
-
----
-
-## Summary
-
-**Task:** Research whether 2D orbital parameter histograms (e.g. P vs e) add scientific value — confirm with Tomer.
-
-**Research approach:** Analysed the simulation architecture in `wr_bias_simulation.py` and the current 9-panel 1D orbital histogram implementation in `05_bias_correction.py`.
-
-**Key finding — why P vs e is NOT informative:**
-The six orbital input parameters (log P
-- **UNSUPERVISED — needs human review and testing**
+- **Summary:** Research complete. P vs e: LOW value (independent inputs). log P vs K₁: HIGH value (detection diagram). See DOCUMENTATION.md §7 (2026-03-02) for full findings.
+- **UNSUPERVISED — needs human review and Tomer confirmation before any implementation**
 
 [2026-03-02 08:07:40] Task #5 completed.
 [2026-03-02 08:15:37] Agent starting — quadrant=eliminate, max_tasks=None
@@ -271,19 +260,33 @@ The six orbital input parameters (log P
 [2026-03-02 08:15:37] --- Starting task #5: 2D parameter histograms ---
 [2026-03-02 08:15:37]   [DRY RUN] Would work on: #5 — 2D parameter histograms
 [2026-03-02 08:15:37]   Description: Research whether 2D orbital parameter histograms (e.g. P vs e) add scientific value — confirm with Tomer
-[2026-03-02 08:15:37] --- Starting task #32: Add more reference papers ---
-[2026-03-02 08:15:37]   [DRY RUN] Would work on: #32 — Add more reference papers
-[2026-03-02 08:15:37]   Description: Add relevant papers used for overview and references to papers/ folder
-[2026-03-02 08:15:37] --- Starting task #3: Try logP_max = 4 ---
-[2026-03-02 08:15:37]   [DRY RUN] Would work on: #3 — Try logP_max = 4
-[2026-03-02 08:15:37]   Description: Run bias grid with logP_max=4 instead of default to see if longer periods matter
-[2026-03-02 08:15:37] --- Starting task #30: Make CCF settings editable from webapp ---
-[2026-03-02 08:15:37]   [DRY RUN] Would work on: #30 — Make CCF settings editable from webapp
-[2026-03-02 08:15:37]   Description: The ccf_settings_with_global_lines.json should be easily editable from the CCF page
-[2026-03-02 08:15:37] --- Starting task #6: Test full end-to-end webapp run ---
-[2026-03-02 08:15:37]   [DRY RUN] Would work on: #6 — Test full end-to-end webapp run
-[2026-03-02 08:15:37]   Description: Launch app and verify all pages work correctly, including bias correction with live heatmap
 [2026-03-02 08:15:37] No more tasks in "eliminate" quadrant. Agent done.
 [2026-03-02 08:15:37] Agent session complete.
 [2026-03-02 08:15:55] Agent starting — quadrant=eliminate, max_tasks=None
+[2026-03-02 08:15:55] (killed — replaced by 08:20 run)
 [2026-03-02 08:20:54] Agent starting — quadrant=eliminate, max_tasks=None
+[2026-03-02 08:20:54] Git checkpoint: pre-agent-20260302-0820
+
+## Agent Session — 2026-03-02 08:20
+**Checkpoint:** `pre-agent-20260302-0820`
+**Rollback:** `git checkout main` or `git reset --hard pre-agent-20260302-0820`
+**Quadrant:** eliminate
+
+[2026-03-02 08:20:54] --- Starting task #5: 2D parameter histograms ---
+[2026-03-02 08:20:54] Working on branch: agent/5-2d-parameter-histograms
+### Task #5: 2D parameter histograms
+- **Branch:** `agent/5-2d-parameter-histograms`
+- **Status:** completed
+- **Summary:** Here is my plan for **Task #5 — 2D Parameter Histograms**:
+
+---
+
+## What I found
+
+**The task is purely research** (no code changes) — it asks whether 2D orbital parameter histograms add scientific value, pending Tomer's confirmation.
+
+### Key insight from the simulation code
+All orbital parameters (P, e, q, M₁, i, ω, T₀) are drawn **independently** from their respective priors. This means most 2D combinations (P vs e, q vs M₁, e vs i, etc.) produce structureless rectangles with no scientific con
+- **UNSUPERVISED — needs human review and testing**
+
+[2026-03-02 08:24:05] Task #5 completed.
