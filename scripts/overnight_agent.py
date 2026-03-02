@@ -378,7 +378,7 @@ async def run_task(task: dict) -> tuple[str, str]:
     )
 
     options = ClaudeAgentOptions(
-        permission_mode='bypassPermissions',
+        permission_mode='plan',
         allowed_tools=ALLOWED_TOOLS,
         cwd=str(_ROOT),
         max_turns=50,
