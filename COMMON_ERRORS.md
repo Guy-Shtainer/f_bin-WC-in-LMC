@@ -151,10 +151,10 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 | | |
 |---|---|
-| **Bad** | `st.page_link('app.py', label='Dashboard')` in a subdir app |
-| **Fix** | `st.page_link('agent_app/app.py', label='Dashboard')` — full path from project root |
-| **Grep** | `st\.page_link\('[^/]` |
-| **Why** | When running `streamlit run agent_app/app.py` from the project root, `st.page_link()` resolves paths relative to CWD (project root), not the app's directory. A bare `'app.py'` resolves to the wrong file or fails with `StreamlitAPIException: Unable to create Page`. |
+| **Bad** | `st.page_link('agent_app/app.py', label='Dashboard')` — prefixed with subdir |
+| **Fix** | `st.page_link('app.py', label='Dashboard')` — bare path relative to entrypoint directory |
+| **Grep** | *(not reliably greppable — depends on directory structure)* |
+| **Why** | `st.page_link()` resolves paths relative to the **entrypoint file's parent directory**, NOT the CWD. When running `streamlit run agent_app/app.py`, a bare `'app.py'` resolves to `agent_app/app.py` (correct). Prefixing with `'agent_app/app.py'` resolves to `agent_app/agent_app/app.py` (double-nested, crashes). This matches `app/shared.py` which also uses bare paths. Note: the original bare-path error was caused by files not existing on disk (they were on a different git branch), not a path resolution issue. |
 | **Found in** | `agent_app/shared.py` (`render_sidebar`) |
 
 ---

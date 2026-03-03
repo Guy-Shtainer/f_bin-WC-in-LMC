@@ -427,14 +427,14 @@ def render_sidebar(page_name: str = '') -> dict:
 
         # ── Navigation ───────────────────────────────────────────────────
         st.markdown('**Navigation**')
-        st.page_link('agent_app/app.py',                       label='Dashboard')
-        st.page_link('agent_app/pages/01_pipeline.py',         label='Pipeline Monitor')
-        st.page_link('agent_app/pages/02_artifacts.py',        label='Artifacts')
-        st.page_link('agent_app/pages/03_branches.py',         label='Branches')
-        st.page_link('agent_app/pages/04_interventions.py',    label='Interventions')
-        st.page_link('agent_app/pages/05_notes.py',            label='Agent Notes')
-        st.page_link('agent_app/pages/06_settings.py',         label='Settings')
-        st.page_link('agent_app/pages/07_log.py',              label='Log Viewer')
+        st.page_link('app.py',                       label='Dashboard')
+        st.page_link('pages/01_pipeline.py',         label='Pipeline Monitor')
+        st.page_link('pages/02_artifacts.py',        label='Artifacts')
+        st.page_link('pages/03_branches.py',         label='Branches')
+        st.page_link('pages/04_interventions.py',    label='Interventions')
+        st.page_link('pages/05_notes.py',            label='Agent Notes')
+        st.page_link('pages/06_settings.py',         label='Settings')
+        st.page_link('pages/07_log.py',              label='Log Viewer')
 
         st.markdown('---')
 

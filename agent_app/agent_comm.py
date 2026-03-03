@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -30,11 +31,90 @@ LOG_PATH     = _SCRIPTS / 'agent_log.md'
 WORK_DIR     = _SCRIPTS / '.agent_work'
 NOTES_DIR    = _SCRIPTS / '.agent_notes'
 SETTINGS_PATH = _SCRIPTS / 'agent_settings.json'
+TODO_PATH    = _ROOT / 'TODO.md'
 
 AGENT_ROLES = [
     'global', 'planner', 'reviewer', 'implementer', 'tester',
     'regression', 'fix_planner', 'fix_implementer',
 ]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TODO.md parsing (mirrors scripts/overnight_agent.py — kept separate to avoid
+# importing the full agent with its async/SDK deps)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_bool(val: str) -> bool:
+    return val.strip().lower() in ('y', 'yes', 'true', '1')
+
+
+def _parse_table_rows(lines: list[str]) -> list[list[str]]:
+    rows = []
+    for line in lines:
+        line = line.strip()
+        if not line.startswith('|') or line.startswith('|--') or line.startswith('| --'):
+            continue
+        cells = [c.strip() for c in line.split('|')[1:-1]]
+        if cells and all(c == '' or set(c) <= {'-', ' '} for c in cells):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def load_todos() -> list[dict]:
+    """Parse TODO.md and return open tasks as dicts."""
+    if not TODO_PATH.exists():
+        return []
+    content = TODO_PATH.read_text(encoding='utf-8')
+    open_tasks: list[dict] = []
+
+    sections = re.split(r'^## ', content, flags=re.MULTILINE)
+    for section in sections:
+        if section.startswith('Open Tasks'):
+            rows = _parse_table_rows(section.split('\n'))
+            for cells in rows[1:] if len(rows) > 1 else []:
+                if len(cells) >= 9:
+                    open_tasks.append({
+                        'id': int(cells[0]) if cells[0].isdigit() else 0,
+                        'title': cells[1],
+                        'description': cells[2],
+                        'priority': cells[3].lower().strip(),
+                        'tags': cells[4],
+                        'status': cells[5].lower().strip(),
+                        'added_by': cells[6],
+                        'suggested_by': cells[7],
+                        'date_added': cells[8],
+                        'urgent': _parse_bool(cells[9]) if len(cells) > 9 else False,
+                        'important': _parse_bool(cells[10]) if len(cells) > 10 else False,
+                    })
+    return open_tasks
+
+
+def get_quadrant(task: dict) -> str:
+    """Return Eisenhower quadrant name for a task."""
+    u, i = task.get('urgent', False), task.get('important', False)
+    if u and i:
+        return 'do_first'
+    if u and not i:
+        return 'delegate'
+    if not u and i:
+        return 'schedule'
+    return 'eliminate'
+
+
+QUADRANT_LABELS = {
+    'do_first': 'Do First',
+    'delegate': 'Delegate',
+    'schedule': 'Schedule',
+    'eliminate': 'Eliminate',
+}
+
+QUADRANT_COLORS = {
+    'do_first': '#E25A53',   # red
+    'delegate': '#F5A623',   # amber
+    'schedule': '#4A90D9',   # blue
+    'eliminate': '#888888',  # grey
+}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # State
@@ -82,6 +162,7 @@ def launch_agent(
     max_tasks: int | None = None,
     include_critical: bool = False,
     freeform_task: str | None = None,
+    task_ids: list[int] | None = None,
     wait_on_reject: bool = True,
     wait_on_fail: bool = True,
     intervention_timeout: int = 1800,
@@ -101,6 +182,8 @@ def launch_agent(
 
     if freeform_task:
         cmd.extend(['--task', freeform_task])
+    elif task_ids:
+        cmd.extend(['--task-ids', ','.join(str(i) for i in task_ids)])
     else:
         cmd.extend(['--quadrant', quadrant])
         if max_tasks is not None:

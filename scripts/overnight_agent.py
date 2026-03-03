@@ -411,9 +411,19 @@ def clear_state() -> None:
 
 
 # ── Task selection ────────────────────────────────────────────────────────────
-def select_tasks(quadrant: str, include_critical: bool = False) -> list[dict]:
+def select_tasks(quadrant: str, include_critical: bool = False,
+                  task_ids: list[int] | None = None) -> list[dict]:
     open_tasks, _ = load_todos()
     open_only = [t for t in open_tasks if t.get('status', 'open') == 'open']
+
+    # Direct task ID selection (from webapp checkboxes)
+    if task_ids:
+        id_set = set(task_ids)
+        selected = [t for t in open_only if t['id'] in id_set]
+        # Preserve the order from task_ids
+        id_order = {tid: i for i, tid in enumerate(task_ids)}
+        selected.sort(key=lambda t: id_order.get(t['id'], 999))
+        return selected
 
     if quadrant == 'all':
         order = list(QUADRANT_ORDER)
@@ -1032,11 +1042,13 @@ async def run_freeform_task(task_prompt: str, dry_run: bool) -> None:
 
 
 async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
-                     include_critical: bool = False) -> None:
+                     include_critical: bool = False,
+                     task_ids: list[int] | None = None) -> None:
     """Main loop: pick tasks, run pipeline, repeat."""
     commit_pending_log()
     checkpoint = git_checkpoint()
-    log(f'Agent starting — quadrant={quadrant}, max_tasks={max_tasks}')
+    mode_desc = f'task_ids={task_ids}' if task_ids else f'quadrant={quadrant}'
+    log(f'Agent starting — {mode_desc}, max_tasks={max_tasks}')
     log(f'Git checkpoint: {checkpoint}')
     log_session_start(checkpoint, quadrant)
 
@@ -1045,7 +1057,8 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
     tasks_done = len(completed_ids)
 
     while True:
-        candidates = select_tasks(quadrant, include_critical=include_critical)
+        candidates = select_tasks(quadrant, include_critical=include_critical,
+                                  task_ids=task_ids)
         candidates = [t for t in candidates if t['id'] not in completed_ids]
 
         if not candidates:
@@ -1298,6 +1311,8 @@ def parse_args() -> argparse.Namespace:
                    help='Show current agent status')
     p.add_argument('--task', type=str, default=None,
                    help='Free-form task prompt (skip TODO.md)')
+    p.add_argument('--task-ids', type=str, default=None,
+                   help='Comma-separated TODO task IDs to run (e.g. "18,20,2")')
     p.add_argument('--wait-on-reject', action='store_true',
                    help='Wait for human input when reviewer rejects a plan')
     p.add_argument('--wait-on-fail', action='store_true',
@@ -1344,12 +1359,18 @@ def main() -> None:
         os.environ['_CAFFEINATE_ACTIVE'] = '1'
         os.execvp('caffeinate', ['caffeinate', '-i', sys.executable] + sys.argv)
 
+    # Parse --task-ids if provided
+    task_ids = None
+    if args.task_ids:
+        task_ids = [int(x.strip()) for x in args.task_ids.split(',') if x.strip().isdigit()]
+
     try:
         if args.task:
             asyncio.run(run_freeform_task(args.task, args.dry_run))
         else:
             asyncio.run(agent_loop(args.quadrant, args.max_tasks, args.dry_run,
-                                   include_critical=args.include_critical))
+                                   include_critical=args.include_critical,
+                                   task_ids=task_ids))
     except KeyboardInterrupt:
         log('Agent stopped by user (Ctrl+C).')
     finally:
