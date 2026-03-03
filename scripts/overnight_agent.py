@@ -18,6 +18,9 @@ Options:
     --status              Show current agent status
     --max-tasks N         Stop after completing N tasks
     --task "prompt"       Free-form task (skip TODO.md)
+    --wait-on-reject      Pause and wait for human input when reviewer rejects
+    --wait-on-fail        Pause and wait for human input when tester fails
+    --intervention-timeout N  Seconds to wait for human intervention (default: from settings)
 """
 from __future__ import annotations
 
@@ -41,9 +44,61 @@ _STATE_PATH = _HERE / '.agent_state.json'
 _LOG_PATH = _HERE / 'agent_log.md'
 _PID_PATH = _HERE / '.agent.pid'
 _WORK_DIR = _HERE / '.agent_work'
+_NOTES_DIR = _HERE / '.agent_notes'
+_SETTINGS_PATH = _HERE / 'agent_settings.json'
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-RATE_LIMIT_SLEEP = 300  # 5 minutes default
+
+# ── Agent settings (from agent_settings.json) ─────────────────────────────────
+_AGENT_SETTINGS_DEFAULTS = {
+    'rate_limit_sleep': 300,
+    'max_fix_attempts': 2,
+    'intervention': {
+        'wait_on_reject': False,
+        'wait_on_fail': False,
+        'timeout_seconds': 1800,
+        'auto_replan_max': 0,
+        'auto_skip_test_max': 0,
+    },
+    'auto_learn': False,
+}
+
+
+def load_agent_settings() -> dict:
+    """Load agent_settings.json, merged with defaults."""
+    defaults = dict(_AGENT_SETTINGS_DEFAULTS)
+    if _SETTINGS_PATH.exists():
+        try:
+            with open(_SETTINGS_PATH) as f:
+                loaded = json.load(f)
+            for k, v in loaded.items():
+                if isinstance(v, dict) and isinstance(defaults.get(k), dict):
+                    defaults[k] = {**defaults[k], **v}
+                else:
+                    defaults[k] = v
+        except (json.JSONDecodeError, OSError):
+            pass
+    return defaults
+
+
+# ── Constants (read from settings, with fallbacks) ────────────────────────────
+_settings_cache: dict | None = None
+
+
+def _get_settings() -> dict:
+    global _settings_cache
+    if _settings_cache is None:
+        _settings_cache = load_agent_settings()
+    return _settings_cache
+
+
+def _reload_settings() -> dict:
+    global _settings_cache
+    _settings_cache = None
+    return _get_settings()
+
+
+# Legacy constants — kept as fallbacks, but prefer _get_settings()
+RATE_LIMIT_SLEEP = 300
 MAX_FIX_ATTEMPTS = 2
 
 QUADRANT_FILTERS = {
@@ -394,6 +449,26 @@ def create_work_dir(task: dict) -> Path:
 
 
 # ── Agent runner ──────────────────────────────────────────────────────────────
+def _load_notes_for_role(role: str) -> str:
+    """Load global + role-specific notes for injection into system prompt."""
+    notes_parts = []
+    global_path = _NOTES_DIR / 'global_notes.md'
+    if global_path.exists():
+        content = global_path.read_text(encoding='utf-8').strip()
+        if content:
+            notes_parts.append(f'### General Project Notes\n{content}')
+
+    role_path = _NOTES_DIR / f'{role}_notes.md'
+    if role_path.exists():
+        content = role_path.read_text(encoding='utf-8').strip()
+        if content:
+            notes_parts.append(f'### {role.replace("_", " ").title()} Specific Notes\n{content}')
+
+    if notes_parts:
+        return '## Learnings from Previous Runs\n\n' + '\n\n'.join(notes_parts) + '\n\n---\n\n'
+    return ''
+
+
 async def run_agent(role: str, user_prompt: str, timeout: int | None = None) -> str:
     """Run a single Claude agent with the given role and prompt.
 
@@ -405,12 +480,19 @@ async def run_agent(role: str, user_prompt: str, timeout: int | None = None) -> 
     from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 
     config = get_agent_config(role)
-    effective_timeout = timeout or config['timeout']
+    # Use timeout from agent_settings.json if available
+    settings = _get_settings()
+    timeouts = settings.get('timeouts', {})
+    effective_timeout = timeout or timeouts.get(role, config['timeout'])
+
+    # Inject notes into system prompt
+    notes_prefix = _load_notes_for_role(role)
+    system_prompt = notes_prefix + config['system_prompt']
 
     options = ClaudeAgentOptions(
         permission_mode='bypassPermissions',
         allowed_tools=config['allowed_tools'],
-        system_prompt=config['system_prompt'],
+        system_prompt=system_prompt,
         cwd=str(_ROOT),
         max_turns=config['max_turns'],
         setting_sources=['project'],  # Read CLAUDE.md for project conventions
@@ -462,17 +544,38 @@ class RateLimitError(Exception):
 async def run_agent_with_retry(role: str, user_prompt: str,
                                 timeout: int | None = None) -> str:
     """Run an agent with rate-limit retry logic."""
+    settings = _get_settings()
+    rate_sleep = settings.get('rate_limit_sleep', RATE_LIMIT_SLEEP)
     max_retries = 5
     for attempt in range(max_retries):
         try:
             return await run_agent(role, user_prompt, timeout)
         except RateLimitError:
-            sleep_time = RATE_LIMIT_SLEEP * (attempt + 1)
+            sleep_time = rate_sleep * (attempt + 1)
+            resume_at = datetime.now().isoformat()
             log(f'  Rate limited. Sleeping {sleep_time}s (attempt {attempt + 1}/{max_retries})...')
+            # Update state with rate limit info
+            state = load_state() or {}
+            state['rate_limited'] = True
+            state['rate_limit_resume_at'] = (
+                datetime.now().replace(
+                    second=datetime.now().second + sleep_time
+                ).isoformat()
+            )
+            save_state(state)
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, time.sleep, sleep_time)
+            # Clear rate limit flag
+            state = load_state() or {}
+            state['rate_limited'] = False
+            state['rate_limit_resume_at'] = None
+            save_state(state)
             log('  Resuming after rate limit...')
     raise RateLimitError(f'Rate limited {max_retries} times, giving up')
+
+
+# ── CLI flags (set from main, read by pipeline) ──────────────────────────────
+_cli_flags: dict = {}
 
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -512,12 +615,13 @@ async def run_pipeline(task: dict) -> tuple[str, str]:
     if not plan_path.exists():
         plan_path.write_text(planner_result, encoding='utf-8')
 
+    stages_done = ['planner']
     log_pipeline_stage(task, 'planner', 'done')
     git_commit_all(f'[AGENT] Plan for #{task["id"]}: {task["title"]}')
 
     # ── Stage 2: Review ──────────────────────────────────────────────────
     log(f'  [REVIEWER] Starting...')
-    save_state_stage(task, 'reviewer')
+    save_state_stage(task, 'reviewer', stages_done)
     review_path = work_dir / 'review.md'
     reviewer_prompt = (
         f'{task_desc}\n\n'
@@ -536,16 +640,80 @@ async def run_pipeline(task: dict) -> tuple[str, str]:
         review_path.write_text(reviewer_result, encoding='utf-8')
 
     review_text = review_path.read_text(encoding='utf-8')
+    stages_done.append('reviewer')
     log_pipeline_stage(task, 'reviewer', 'done')
     git_commit_all(f'[AGENT] Review for #{task["id"]}: {task["title"]}')
 
-    # Check if rejected
+    # Check if rejected — with intervention support
     if 'REJECTED' in review_text.upper():
-        return 'rejected', f'Reviewer rejected the plan: {review_text[-200:]}'
+        settings = _get_settings()
+        int_cfg = settings.get('intervention', {})
+        wait_on_reject = (
+            _cli_flags.get('wait_on_reject', False) or
+            int_cfg.get('wait_on_reject', False)
+        )
+
+        if wait_on_reject:
+            intervention = await wait_for_intervention(
+                task['id'], 'reviewer_rejected',
+                timeout=_cli_flags.get('intervention_timeout')
+            )
+            if intervention:
+                action = intervention.get('action', '')
+                if action == 'approve_override':
+                    log('  Intervention: Plan approved despite rejection.')
+                elif action == 'replan_with_guidance':
+                    guidance = intervention.get('guidance', '')
+                    max_retries = intervention.get('max_retries', 1)
+                    log(f'  Intervention: Replanning with guidance (max {max_retries})...')
+                    for retry in range(max_retries):
+                        replan_prompt = (
+                            f'{task_desc}\n\n'
+                            f'Your previous plan was REJECTED.\n'
+                            f'Reviewer feedback: {review_text[-500:]}\n'
+                            f'Human guidance: {guidance}\n\n'
+                            f'Write an improved plan to: {plan_path}\n'
+                        )
+                        try:
+                            await run_agent_with_retry('planner', replan_prompt)
+                        except Exception:
+                            break
+                        git_commit_all(f'[AGENT] Replan attempt {retry+1} for #{task["id"]}')
+                        # Re-review
+                        reviewer_prompt_retry = (
+                            f'{task_desc}\n\n'
+                            f'Read the REVISED plan at: {plan_path}\n'
+                            f'Write your review to: {review_path}\n'
+                            f'End with APPROVED, APPROVED WITH NOTES, or REJECTED.\n'
+                        )
+                        try:
+                            await run_agent_with_retry('reviewer', reviewer_prompt_retry)
+                        except Exception:
+                            break
+                        review_text = review_path.read_text(encoding='utf-8')
+                        git_commit_all(f'[AGENT] Re-review {retry+1} for #{task["id"]}')
+                        if 'REJECTED' not in review_text.upper():
+                            break
+                    else:
+                        if 'REJECTED' in review_text.upper():
+                            return 'rejected', 'Plan rejected after replan attempts'
+                elif action == 'edit_plan':
+                    plan_content = intervention.get('plan_content', '')
+                    if plan_content:
+                        plan_path.write_text(plan_content, encoding='utf-8')
+                        log('  Intervention: Plan edited by human.')
+                        git_commit_all(f'[AGENT] Human-edited plan for #{task["id"]}')
+                elif action == 'abort':
+                    return 'aborted', 'Task aborted by human intervention'
+            else:
+                # Timeout — fall through to default rejection behavior
+                return 'rejected', f'Reviewer rejected the plan: {review_text[-200:]}'
+        else:
+            return 'rejected', f'Reviewer rejected the plan: {review_text[-200:]}'
 
     # ── Stage 3: Implement ───────────────────────────────────────────────
     log(f'  [IMPLEMENTER] Starting...')
-    save_state_stage(task, 'implementer')
+    save_state_stage(task, 'implementer', stages_done)
     implementer_prompt = (
         f'{task_desc}\n\n'
         f'Read the approved plan at: {plan_path}\n'
@@ -561,12 +729,15 @@ async def run_pipeline(task: dict) -> tuple[str, str]:
     except (RateLimitError, Exception) as e:
         return 'error', f'Implementer failed: {e}'
 
+    stages_done.append('implementer')
     log_pipeline_stage(task, 'implementer', 'done', impl_result[:100])
     git_commit_all(f'[AGENT] Implement #{task["id"]}: {task["title"]}')
 
     # ── Stage 4: Test (with fix cycle) ───────────────────────────────────
+    settings = _get_settings()
+    max_fix = settings.get('max_fix_attempts', MAX_FIX_ATTEMPTS)
     test_passed = False
-    for attempt in range(1, MAX_FIX_ATTEMPTS + 2):  # +1 for initial test, +1 for range
+    for attempt in range(1, max_fix + 2):  # +1 for initial test, +1 for range
         log(f'  [TESTER] Starting (attempt {attempt})...')
         save_state_stage(task, f'tester-{attempt}')
         test_path = work_dir / f'test_report_{attempt}.md'
@@ -607,7 +778,7 @@ async def run_pipeline(task: dict) -> tuple[str, str]:
 
         log_pipeline_stage(task, 'tester', f'FAIL (attempt {attempt})')
 
-        if attempt > MAX_FIX_ATTEMPTS:
+        if attempt > max_fix:
             break
 
         # ── Fix cycle ────────────────────────────────────────────────────
@@ -652,8 +823,9 @@ async def run_pipeline(task: dict) -> tuple[str, str]:
         git_commit_all(f'[AGENT] Fix attempt {attempt} for #{task["id"]}')
 
     # ── Stage 5: Regression ──────────────────────────────────────────────
+    stages_done.append('tester')
     log(f'  [REGRESSION] Starting...')
-    save_state_stage(task, 'regression')
+    save_state_stage(task, 'regression', stages_done)
     regression_path = work_dir / 'regression.md'
 
     try:
@@ -688,24 +860,124 @@ async def run_pipeline(task: dict) -> tuple[str, str]:
     regression_passed = 'PASS' in regression_text.upper().split('\n')[-5:]
     log_pipeline_stage(task, 'regression', 'PASS' if regression_passed else 'FAIL')
 
+    stages_done.append('regression')
+
     # ── Final status ─────────────────────────────────────────────────────
     if test_passed and regression_passed:
         return 'completed', impl_result[:500] if impl_result else 'Implementation done'
     elif not test_passed:
-        return 'test_failed', f'Tests failed after {MAX_FIX_ATTEMPTS} fix attempts'
+        return 'test_failed', f'Tests failed after {max_fix} fix attempts'
     else:
         return 'regression_failed', f'Regression check failed: {regression_text[-200:]}'
 
 
-def save_state_stage(task: dict, stage: str) -> None:
-    """Update state with current pipeline stage."""
+def save_state_stage(task: dict, stage: str,
+                     stages_done: list[str] | None = None) -> None:
+    """Update state with current pipeline stage (enhanced for webapp)."""
     state = load_state() or {}
     state.update({
         'current_task_id': task['id'],
+        'current_task_title': task.get('title', ''),
         'current_stage': stage,
+        'stage_started_at': datetime.now().isoformat(),
         'updated_at': datetime.now().isoformat(),
+        'pipeline_stages_done': stages_done or state.get('pipeline_stages_done', []),
+        'pipeline_stages_total': ['planner', 'reviewer', 'implementer', 'tester', 'regression'],
+        'awaiting_intervention': False,
+        'intervention_type': None,
+        'rate_limited': False,
+        'rate_limit_resume_at': None,
     })
     save_state(state)
+
+
+# ── Intervention support ─────────────────────────────────────────────────────
+def check_intervention(task_id: int) -> dict | None:
+    """Check if there's a pending intervention file. Returns its content or None."""
+    intervention_path = _WORK_DIR / str(task_id) / '.intervention.json'
+    if not intervention_path.exists():
+        return None
+    try:
+        with open(intervention_path) as f:
+            intervention = json.load(f)
+        intervention_path.unlink()  # Consume the intervention
+        # Clear awaiting flag
+        state = load_state() or {}
+        state['awaiting_intervention'] = False
+        state['intervention_type'] = None
+        save_state(state)
+        return intervention
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+async def wait_for_intervention(task_id: int, intervention_type: str,
+                                timeout: int | None = None) -> dict | None:
+    """Wait for human intervention via the webapp.
+
+    Sets state to awaiting_intervention=True, polls for .intervention.json.
+    Returns the intervention dict, or None if timeout expires.
+    """
+    settings = _get_settings()
+    int_cfg = settings.get('intervention', {})
+    effective_timeout = timeout or int_cfg.get('timeout_seconds', 1800)
+
+    # Update state to signal webapp
+    state = load_state() or {}
+    state['awaiting_intervention'] = True
+    state['intervention_type'] = intervention_type
+    state['updated_at'] = datetime.now().isoformat()
+    save_state(state)
+
+    log(f'  Waiting for human intervention ({intervention_type}). '
+        f'Timeout: {effective_timeout}s')
+
+    poll_interval = 10  # seconds
+    elapsed = 0
+    loop = asyncio.get_event_loop()
+
+    while elapsed < effective_timeout:
+        intervention = check_intervention(task_id)
+        if intervention:
+            log(f'  Received intervention: {intervention.get("action", "unknown")}')
+            return intervention
+        await loop.run_in_executor(None, time.sleep, poll_interval)
+        elapsed += poll_interval
+
+    # Timeout — clear waiting state
+    log(f'  Intervention timeout ({effective_timeout}s). Proceeding with default behavior.')
+    state = load_state() or {}
+    state['awaiting_intervention'] = False
+    state['intervention_type'] = None
+    save_state(state)
+    return None
+
+
+async def auto_learn_reflection(task: dict, status: str, summary: str) -> None:
+    """Run a brief reflection agent after task completion to append learnings."""
+    settings = _get_settings()
+    if not settings.get('auto_learn', False):
+        return
+
+    log('  [AUTO-LEARN] Running reflection...')
+    prompt = (
+        f'You just completed task #{task["id"]}: {task["title"]}\n'
+        f'Status: {status}\n'
+        f'Summary: {summary[:500]}\n\n'
+        f'Based on this experience, write 3-5 concise bullet points about what '
+        f'you learned that would help future agents working on this project.\n'
+        f'Focus on: patterns that worked, pitfalls to avoid, project-specific '
+        f'conventions discovered.\n\n'
+        f'Write your learnings to EACH of these files (append, do not overwrite):\n'
+        f'- {_NOTES_DIR}/global_notes.md\n'
+        f'- {_NOTES_DIR}/planner_notes.md\n'
+        f'- {_NOTES_DIR}/implementer_notes.md\n'
+    )
+    try:
+        await run_agent('planner', prompt, timeout=300)
+        log('  [AUTO-LEARN] Reflection complete.')
+    except Exception as e:
+        log(f'  [AUTO-LEARN] Reflection failed: {e}')
 
 
 # ── Main agent loop ───────────────────────────────────────────────────────────
@@ -784,12 +1056,19 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
 
         save_state({
             'current_task_id': task['id'],
+            'current_task_title': task.get('title', ''),
             'completed_tasks': completed_ids,
             'checkpoint_tag': checkpoint,
             'quadrant': quadrant,
             'branch': branch,
             'current_stage': 'starting',
             'started_at': datetime.now().isoformat(),
+            'pipeline_stages_done': [],
+            'pipeline_stages_total': ['planner', 'reviewer', 'implementer', 'tester', 'regression'],
+            'awaiting_intervention': False,
+            'intervention_type': None,
+            'rate_limited': False,
+            'rate_limit_resume_at': None,
         })
 
         # Run the full pipeline
@@ -801,6 +1080,10 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
 
         log_task_result(task, branch, status, summary)
         log(f'Task #{task["id"]} finished: {status}')
+
+        # Auto-learn reflection
+        if status in ('completed', 'test_failed', 'regression_failed'):
+            await auto_learn_reflection(task, status, summary)
 
         if status == 'completed':
             # Update TODO.md
@@ -999,6 +1282,12 @@ def parse_args() -> argparse.Namespace:
                    help='Show current agent status')
     p.add_argument('--task', type=str, default=None,
                    help='Free-form task prompt (skip TODO.md)')
+    p.add_argument('--wait-on-reject', action='store_true',
+                   help='Wait for human input when reviewer rejects a plan')
+    p.add_argument('--wait-on-fail', action='store_true',
+                   help='Wait for human input when tester fails')
+    p.add_argument('--intervention-timeout', type=int, default=None,
+                   help='Seconds to wait for human intervention (default: from settings)')
     return p.parse_args()
 
 
@@ -1025,6 +1314,14 @@ def main() -> None:
         os.setsid()
         sys.stdout = open(_LOG_PATH, 'a')
         sys.stderr = sys.stdout
+
+    # Set CLI flags for intervention system
+    global _cli_flags
+    _cli_flags = {
+        'wait_on_reject': args.wait_on_reject,
+        'wait_on_fail': args.wait_on_fail,
+        'intervention_timeout': args.intervention_timeout,
+    }
 
     # Wrap with caffeinate to prevent macOS sleep
     if sys.platform == 'darwin' and not os.environ.get('_CAFFEINATE_ACTIVE'):

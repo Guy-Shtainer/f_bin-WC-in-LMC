@@ -1,0 +1,24 @@
+{
+  "default_quadrant": "eliminate",
+  "max_tasks": null,
+  "include_critical": false,
+  "rate_limit_sleep": 300,
+  "max_fix_attempts": 2,
+  "timeouts": {
+    "planner": 1200,
+    "reviewer": 300,
+    "implementer": 1500,
+    "tester": 300,
+    "regression": 300,
+    "fix_planner": 300,
+    "fix_implementer": 600
+  },
+  "intervention": {
+    "wait_on_reject": true,
+    "wait_on_fail": true,
+    "timeout_seconds": 1800,
+    "auto_replan_max": 3,
+    "auto_skip_test_max": 4
+  },
+  "auto_learn": false
+}

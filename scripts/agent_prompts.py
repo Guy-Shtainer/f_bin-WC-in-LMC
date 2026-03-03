@@ -208,8 +208,27 @@ AGENT_ROLES: dict[str, dict] = {
 def get_agent_config(role: str) -> dict:
     """Get the configuration for an agent role.
 
-    Returns dict with: system_prompt, allowed_tools, max_turns, timeout
+    Returns dict with: system_prompt, allowed_tools, max_turns, timeout.
+    Timeout can be overridden by agent_settings.json.
     """
     if role not in AGENT_ROLES:
         raise ValueError(f"Unknown agent role: {role}. Valid: {list(AGENT_ROLES.keys())}")
-    return AGENT_ROLES[role]
+    config = dict(AGENT_ROLES[role])  # copy to avoid mutating
+
+    # Override timeout from agent_settings.json if present
+    import json
+    from pathlib import Path
+    settings_path = Path(__file__).resolve().parent / 'agent_settings.json'
+    if settings_path.exists():
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+            timeouts = settings.get('timeouts', {})
+            # Normalize role name for settings lookup (e.g., 'tester-2' → 'tester')
+            base_role = role.split('-')[0]
+            if base_role in timeouts:
+                config['timeout'] = timeouts[base_role]
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return config

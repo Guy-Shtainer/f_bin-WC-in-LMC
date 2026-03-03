@@ -1,0 +1,26 @@
+{
+  "current_task_id": 7,
+  "current_task_title": "Publication-quality figures",
+  "completed_tasks": [],
+  "checkpoint_tag": "pre-agent-20260303-0019",
+  "quadrant": "schedule",
+  "branch": "agent/7-publication-quality-figures",
+  "current_stage": "reviewer",
+  "started_at": "2026-03-03T00:19:38.252319",
+  "pipeline_stages_done": [
+    "planner"
+  ],
+  "pipeline_stages_total": [
+    "planner",
+    "reviewer",
+    "implementer",
+    "tester",
+    "regression"
+  ],
+  "awaiting_intervention": false,
+  "intervention_type": null,
+  "rate_limited": false,
+  "rate_limit_resume_at": null,
+  "stage_started_at": "2026-03-03T00:26:44.269039",
+  "updated_at": "2026-03-03T00:26:44.269157"
+}
