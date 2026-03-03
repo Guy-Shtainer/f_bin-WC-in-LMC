@@ -8,7 +8,7 @@ This file documents recurring bugs and deprecated patterns found in this project
 Combined grep pattern for all known bad patterns (copy-paste ready):
 
 ```bash
-grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.complex_\b|\.object_\b|\.str_\b|asyncio\.sleep|CLAUDECODE|allow_dangerously_skip_permissions|\.replace\(second=.*\.second\s*\+' --include='*.py' .
+grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.complex_\b|\.object_\b|\.str_\b|CLAUDECODE|allow_dangerously_skip_permissions|\.replace\(second=.*\.second\s*\+' --include='*.py' .
 ```
 
 ---
@@ -180,6 +180,18 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 | **Grep** | `\.replace\(second=.*\.second\s*\+` |
 | **Why** | `datetime.replace(second=N)` requires N in 0–59. When `second + sleep_time > 59`, it raises `ValueError`. Use `timedelta` addition instead. |
 | **Found in** | `scripts/overnight_agent.py` (`run_agent_with_retry`) |
+
+---
+
+### E016 — `asyncio.sleep` cancelled by SDK cancel scope
+
+| | |
+|---|---|
+| **Bad** | `await asyncio.sleep(seconds)` after SDK `query()` generator cleanup |
+| **Fix** | Use `time.sleep()` (blocking) via `_blocking_sleep()` helper instead |
+| **Grep** | `asyncio\.sleep` (in scripts/ — verify not near SDK generator usage) |
+| **Why** | `claude-agent-sdk` uses anyio cancel scopes internally. When a `query()` generator is partially consumed (e.g., bail on rate limit) and `aclose()`d, the scope cleanup runs in a background task and can cancel `asyncio.sleep()` futures in other tasks, raising `CancelledError` and crashing the process. `time.sleep()` is a blocking OS call, immune to asyncio cancellation. |
+| **Found in** | `scripts/overnight_agent.py` (`run_agent_with_retry` — sleep between retries) |
 
 ---
 

@@ -353,6 +353,24 @@ def git_branch_log(branch: str) -> str:
         return '(no commits)'
 
 
+# ── Rate-limit sleep (pure Python, immune to SDK cancel scopes — E016) ───────
+def _blocking_sleep(total_seconds: float, chunk: float = 60.0) -> None:
+    """Sleep using time.sleep in small chunks. Immune to asyncio cancel scopes.
+
+    The claude-agent-sdk uses anyio cancel scopes internally. When a query()
+    generator is partially consumed, its cleanup can cancel asyncio.sleep()
+    futures in other tasks. time.sleep() is not an asyncio future, so it
+    cannot be cancelled this way.
+    """
+    import time as _time
+    remaining = total_seconds
+    while remaining > 0:
+        _time.sleep(min(chunk, remaining))
+        remaining -= chunk
+        if remaining > 0:
+            log(f'  Rate limit wait: {remaining:.0f}s remaining...')
+
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 def log(msg: str) -> None:
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -529,9 +547,10 @@ async def run_agent(role: str, user_prompt: str, timeout: int | None = None) -> 
             log(f'  Agent [{role}] timed out after {effective_timeout}s')
             return f'TIMEOUT after {effective_timeout}s'
         finally:
+            # Close generator — shield to prevent cancel scope leak (E016)
             try:
-                await gen.aclose()
-            except (RuntimeError, Exception):
+                await asyncio.shield(gen.aclose())
+            except (RuntimeError, asyncio.CancelledError, GeneratorExit, Exception):
                 pass
     except Exception as e:
         err_str = str(e).lower()
@@ -555,49 +574,57 @@ async def run_agent_with_retry(role: str, user_prompt: str,
                                 timeout: int | None = None) -> str:
     """Run an agent with rate-limit retry logic.
 
-    Retries indefinitely with exponential backoff (capped at 1 hour).
-    After 2 failures, aligns sleep to the next hour boundary (session reset).
-    Writes rate_limited state so the webapp can show a countdown.
+    Uses time.sleep (NOT asyncio.sleep) to survive SDK cancel scope leaks (E016).
+
+    Retry strategy:
+      Attempts 1-5: sleep until the next hour boundary, then retry.
+                    (API sessions are 5h; usage typically exhausted at ~1h.)
+      Attempt 6+:  assume weekly limit hit — sleep until Sunday 11:00 AM.
     """
-    settings = _get_settings()
-    rate_sleep = settings.get('rate_limit_sleep', RATE_LIMIT_SLEEP)
     attempt = 0
     while True:
         try:
             return await run_agent(role, user_prompt, timeout)
         except RateLimitError:
             attempt += 1
-            # Exponential backoff: base * 2^(attempt-1), capped at 1 hour
-            base_sleep = min(rate_sleep * (2 ** (attempt - 1)), 3600)
+            now = datetime.now()
 
-            # After 2nd failure, align to next hour boundary (API session reset)
-            if attempt >= 2:
-                now = datetime.now()
-                next_hour = (now + timedelta(hours=1)).replace(
-                    minute=0, second=0, microsecond=0
-                )
-                sleep_time = max(base_sleep, (next_hour - now).total_seconds())
+            if attempt >= 6:
+                # Weekly limit — sleep until next Sunday 11:00 AM
+                days_until_sunday = (6 - now.weekday()) % 7
+                if days_until_sunday == 0 and now.hour >= 11:
+                    days_until_sunday = 7
+                next_sunday = (now + timedelta(days=days_until_sunday)).replace(
+                    hour=11, minute=0, second=0, microsecond=0)
+                sleep_time = (next_sunday - now).total_seconds()
+                log(f'  Weekly limit hit (attempt {attempt}). '
+                    f'Sleeping until Sunday 11:00 AM ({sleep_time / 3600:.1f}h)...')
             else:
-                sleep_time = base_sleep
+                # Hourly retry — align to next hour boundary
+                next_hour = (now + timedelta(hours=1)).replace(
+                    minute=0, second=0, microsecond=0)
+                sleep_time = (next_hour - now).total_seconds()
+                log(f'  Rate limited (attempt {attempt}/5). '
+                    f'Sleeping {sleep_time:.0f}s until {next_hour.strftime("%H:%M")}...')
 
-            resume_at = (datetime.now() + timedelta(seconds=sleep_time)).isoformat()
-            log(f'  Rate limited (attempt {attempt}). '
-                f'Sleeping {sleep_time:.0f}s until ~{resume_at}...')
+            resume_at = (now + timedelta(seconds=sleep_time)).isoformat()
 
             # Update state so webapp shows countdown
             state = load_state() or {}
             state['rate_limited'] = True
             state['rate_limit_resume_at'] = resume_at
+            state['rate_limit_attempt'] = attempt
             save_state(state)
 
-            await asyncio.sleep(sleep_time)
+            # Pure Python sleep — immune to SDK cancel scopes (E016)
+            _blocking_sleep(sleep_time)
 
             # Clear rate limit flag
             state = load_state() or {}
             state['rate_limited'] = False
             state['rate_limit_resume_at'] = None
             save_state(state)
-            log('  Resuming after rate limit...')
+            log('  Resuming after rate limit wait...')
 
 
 # ── CLI flags (set from main, read by pipeline) ──────────────────────────────
@@ -1358,6 +1385,25 @@ def main() -> None:
     if sys.platform == 'darwin' and not os.environ.get('_CAFFEINATE_ACTIVE'):
         os.environ['_CAFFEINATE_ACTIVE'] = '1'
         os.execvp('caffeinate', ['caffeinate', '-i', sys.executable] + sys.argv)
+
+    # Auto-resume: if previous run was rate-limited and process crashed, wait it out
+    prev_state = load_state()
+    if prev_state and prev_state.get('rate_limited'):
+        try:
+            resume_at = datetime.fromisoformat(prev_state['rate_limit_resume_at'])
+            now = datetime.now()
+            if resume_at > now:
+                wait = (resume_at - now).total_seconds()
+                print(f'Resuming previous rate-limited session in {wait:.0f}s '
+                      f'(until {resume_at.strftime("%Y-%m-%d %H:%M")})...')
+                _blocking_sleep(wait)
+            # Clear the flag — agent_loop will pick up from completed_tasks
+            prev_state['rate_limited'] = False
+            prev_state['rate_limit_resume_at'] = None
+            save_state(prev_state)
+            print('Rate limit window passed. Resuming agent...')
+        except (ValueError, KeyError):
+            pass  # Malformed state — ignore and start fresh
 
     # Parse --task-ids if provided
     task_ids = None

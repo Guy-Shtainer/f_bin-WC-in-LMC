@@ -20,5 +20,5 @@
     "auto_replan_max": 3,
     "auto_skip_test_max": 4
   },
-  "auto_learn": false
+  "auto_learn": true
 }
