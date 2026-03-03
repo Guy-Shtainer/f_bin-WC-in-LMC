@@ -34,6 +34,7 @@
 
 | ID | Title | Date done |
 |----|-------|-----------|
+| 38 | Fix agent webapp dark theme + page link paths + rate limit resilience | 2026-03-03 |
 | 33 | Eisenhower matrix + inline editing in To-Do page | 2026-03-01 |
 | 8 | Add marginalization + corner plot | 2026-03-01 |
 | 9 | Add M2, T0, omega histograms | 2026-03-01 |

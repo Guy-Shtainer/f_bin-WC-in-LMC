@@ -4,7 +4,7 @@ agent_app/shared.py
 Shared utilities for the Agent Control Panel webapp:
   - AgentSettingsManager  : load/save agent_settings.json
   - render_sidebar        : persistent sidebar on every page
-  - CSS theme injection (light scientific — mirrors app/shared.py)
+  - CSS theme injection (VS Code dark theme)
   - Colour constants for pipeline stages
 """
 
@@ -41,7 +41,7 @@ AGENT_NOTES_DIR   = os.path.join(SCRIPTS_DIR, '.agent_notes')
 COLOR_DONE       = '#52B788'   # green
 COLOR_ACTIVE     = '#F5A623'   # amber
 COLOR_FAILED     = '#E25A53'   # red
-COLOR_PENDING    = '#d0d0d0'   # grey
+COLOR_PENDING    = '#555555'   # grey (visible on dark bg)
 COLOR_WAITING    = '#FFD700'   # gold — awaiting human
 COLOR_RUNNING    = '#4A90D9'   # steel blue
 
@@ -61,24 +61,24 @@ AGENT_ROLES = [
 PIPELINE_STAGES = ['planner', 'reviewer', 'implementer', 'tester', 'regression']
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CSS theme (light scientific — mirrors app/shared.py)
+# CSS theme (VS Code dark theme)
 # ─────────────────────────────────────────────────────────────────────────────
 _THEME_CSS = """
 <style>
-/* ── Light scientific theme ─────────────────────────────────────────────── */
+/* ── VS Code Dark Theme ─────────────────────────────────────────────────── */
 
 /* Backgrounds */
 [data-testid="stAppViewContainer"] {
-    background-color: #ffffff;
+    background-color: #1e1e1e;
 }
 [data-testid="stSidebar"] {
-    background-color: #f5f5f5;
+    background-color: #252526;
 }
 [data-testid="stHeader"] {
-    background-color: #ffffff;
+    background-color: #1e1e1e;
 }
 
-/* ── Force dark text on ALL elements (overrides Streamlit dark mode) ───── */
+/* ── Light text on ALL elements ─────────────────────────────────────────── */
 [data-testid="stAppViewContainer"],
 [data-testid="stAppViewContainer"] p,
 [data-testid="stAppViewContainer"] span,
@@ -93,7 +93,7 @@ _THEME_CSS = """
 [data-testid="stMarkdownContainer"] td,
 [data-testid="stMarkdownContainer"] th,
 [data-testid="stMarkdownContainer"] span {
-    color: #333333;
+    color: #d4d4d4;
 }
 
 /* Sidebar text */
@@ -105,11 +105,11 @@ _THEME_CSS = """
 [data-testid="stSidebar"] div,
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
-    color: #333333;
+    color: #d4d4d4;
 }
 
 /* Headings */
-h1, h2, h3 { color: #222222; font-family: serif; }
+h1, h2, h3 { color: #e0e0e0; font-family: sans-serif; }
 
 /* Form elements */
 [data-testid="stAppViewContainer"] input,
@@ -118,52 +118,82 @@ h1, h2, h3 { color: #222222; font-family: serif; }
 [data-testid="stSidebar"] input,
 [data-testid="stSidebar"] textarea,
 [data-testid="stSidebar"] select {
-    color: #333333 !important;
-    background-color: #ffffff !important;
+    color: #d4d4d4 !important;
+    background-color: #3c3c3c !important;
+    border-color: #555555 !important;
 }
 
 /* Tab labels */
 [data-testid="stAppViewContainer"] button[data-baseweb="tab"] {
-    color: #333333;
+    color: #d4d4d4;
 }
 
 /* Selectbox / multiselect text */
 [data-testid="stAppViewContainer"] [data-baseweb="select"] span,
 [data-testid="stSidebar"] [data-baseweb="select"] span {
-    color: #333333 !important;
+    color: #d4d4d4 !important;
+}
+
+/* Dropdown menus */
+[data-baseweb="popover"],
+[data-baseweb="popover"] li,
+[data-baseweb="menu"],
+[data-baseweb="menu"] li {
+    background-color: #2d2d2d !important;
+    color: #d4d4d4 !important;
 }
 
 /* Code blocks */
 [data-testid="stAppViewContainer"] code {
-    color: #333333;
-    background-color: #f0f0f0;
+    color: #ce9178;
+    background-color: #1a1a1a;
+}
+
+/* Links */
+a { color: #569cd6; }
+a:hover { color: #9cdcfe; }
+
+/* Buttons — primary */
+[data-testid="stAppViewContainer"] button[kind="primary"],
+[data-testid="stSidebar"] button[kind="primary"] {
+    background-color: #0e639c;
+    color: #ffffff;
+    border-color: #0e639c;
+}
+
+/* Buttons — secondary */
+[data-testid="stAppViewContainer"] button[kind="secondary"],
+[data-testid="stSidebar"] button[kind="secondary"] {
+    background-color: #3c3c3c;
+    color: #d4d4d4;
+    border-color: #555555;
 }
 
 /* ── Custom components ──────────────────────────────────────────────────── */
 
 .metric-card {
-    background: #ffffff;
+    background: #2d2d2d;
     border-radius: 10px;
     padding: 16px 20px;
     text-align: center;
-    border: 1px solid #d0d0d0;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    border: 1px solid #404040;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
 .metric-card .label {
     font-size: 0.82rem;
-    color: #666666;
+    color: #9a9a9a;
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
 .metric-card .value {
     font-size: 2rem;
     font-weight: 700;
-    color: #222222;
+    color: #e0e0e0;
     margin-top: 4px;
 }
 .metric-card .sub {
     font-size: 0.78rem;
-    color: #888888;
+    color: #777777;
     margin-top: 2px;
 }
 /* Pipeline stage boxes */
@@ -179,15 +209,15 @@ h1, h2, h3 { color: #222222; font-family: serif; }
 }
 .stage-arrow {
     display: inline-block;
-    color: #999;
+    color: #666;
     font-size: 1.2rem;
     vertical-align: middle;
     margin: 0 2px;
 }
 /* Intervention banner */
 .intervention-banner {
-    background: #FFF8E1;
-    border: 2px solid #FFD700;
+    background: #3d3520;
+    border: 2px solid #B8860B;
     border-radius: 8px;
     padding: 16px 20px;
     margin: 12px 0;
@@ -195,13 +225,20 @@ h1, h2, h3 { color: #222222; font-family: serif; }
 .intervention-banner .title {
     font-size: 1.1rem;
     font-weight: 700;
-    color: #B8860B;
+    color: #FFD700;
 }
 .intervention-banner .detail {
     font-size: 0.9rem;
-    color: #555;
+    color: #b0b0b0;
     margin-top: 6px;
 }
+/* Expander styling */
+[data-testid="stExpander"] {
+    background-color: #2d2d2d;
+    border-color: #404040;
+}
+/* Divider / hr */
+hr { border-color: #404040; }
 /* Hide the auto-generated Streamlit page navigation */
 [data-testid="stSidebarNav"] { display: none; }
 </style>
@@ -319,7 +356,7 @@ def render_pipeline_stages(stages_done: list[str], current_stage: str | None,
             fg = '#fff'
         elif stage == current_stage and waiting:
             bg = COLOR_WAITING
-            fg = '#333'
+            fg = '#1e1e1e'
         elif stage == current_stage:
             bg = COLOR_ACTIVE
             fg = '#fff'
@@ -328,7 +365,7 @@ def render_pipeline_stages(stages_done: list[str], current_stage: str | None,
             fg = '#fff'
         else:
             bg = COLOR_PENDING
-            fg = '#666'
+            fg = '#ccc'
         label = stage.replace('_', ' ').title()
         html_parts.append(
             f'<span class="stage-box" style="background:{bg};color:{fg};">'
@@ -390,14 +427,14 @@ def render_sidebar(page_name: str = '') -> dict:
 
         # ── Navigation ───────────────────────────────────────────────────
         st.markdown('**Navigation**')
-        st.page_link('app.py',                       label='Dashboard')
-        st.page_link('pages/01_pipeline.py',         label='Pipeline Monitor')
-        st.page_link('pages/02_artifacts.py',        label='Artifacts')
-        st.page_link('pages/03_branches.py',         label='Branches')
-        st.page_link('pages/04_interventions.py',    label='Interventions')
-        st.page_link('pages/05_notes.py',            label='Agent Notes')
-        st.page_link('pages/06_settings.py',         label='Settings')
-        st.page_link('pages/07_log.py',              label='Log Viewer')
+        st.page_link('agent_app/app.py',                       label='Dashboard')
+        st.page_link('agent_app/pages/01_pipeline.py',         label='Pipeline Monitor')
+        st.page_link('agent_app/pages/02_artifacts.py',        label='Artifacts')
+        st.page_link('agent_app/pages/03_branches.py',         label='Branches')
+        st.page_link('agent_app/pages/04_interventions.py',    label='Interventions')
+        st.page_link('agent_app/pages/05_notes.py',            label='Agent Notes')
+        st.page_link('agent_app/pages/06_settings.py',         label='Settings')
+        st.page_link('agent_app/pages/07_log.py',              label='Log Viewer')
 
         st.markdown('---')
 

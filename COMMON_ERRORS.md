@@ -8,7 +8,7 @@ This file documents recurring bugs and deprecated patterns found in this project
 Combined grep pattern for all known bad patterns (copy-paste ready):
 
 ```bash
-grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.complex_\b|\.object_\b|\.str_\b|asyncio\.sleep|CLAUDECODE' --include='*.py' .
+grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.complex_\b|\.object_\b|\.str_\b|asyncio\.sleep|CLAUDECODE|allow_dangerously_skip_permissions|\.replace\(second=.*\.second\s*\+' --include='*.py' .
 ```
 
 ---
@@ -120,6 +120,66 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 | **Grep** | *(not greppable — requires manual attention)* |
 | **Why** | Breaking out of an `async for` loop does not automatically close the async generator in all Python versions. The generator may hold open connections (to Claude Code subprocess) that cause errors on garbage collection. Explicit `aclose()` ensures clean shutdown. |
 | **Found in** | `scripts/overnight_agent.py` (`run_task`) |
+
+---
+
+### E010 — `allow_dangerously_skip_permissions` not a valid kwarg
+
+| | |
+|---|---|
+| **Bad** | `ClaudeAgentOptions(allow_dangerously_skip_permissions=True, ...)` |
+| **Fix** | Just use `permission_mode='bypassPermissions'` — no extra flag needed |
+| **Grep** | `allow_dangerously_skip_permissions` |
+| **Why** | The `claude-agent-sdk` `ClaudeAgentOptions` does not accept this parameter. The `permission_mode='bypassPermissions'` alone is sufficient. |
+| **Found in** | `scripts/overnight_agent.py` |
+
+---
+
+### E011 — `--status` only detects daemon-mode agents
+
+| | |
+|---|---|
+| **Bad** | Checking only `.agent.pid` file for running agent detection |
+| **Fix** | Also check `.agent_state.json` recency (updated_at within last 5 min) |
+| **Grep** | *(not greppable)* |
+| **Why** | When the agent runs in foreground (not daemon), no PID file is created. The `--status` command returned "not running" even during active foreground runs. |
+| **Found in** | `scripts/overnight_agent.py` |
+
+---
+
+### E012 — Streamlit `st.page_link()` path resolution
+
+| | |
+|---|---|
+| **Bad** | `st.page_link('app.py', label='Dashboard')` in a subdir app |
+| **Fix** | `st.page_link('agent_app/app.py', label='Dashboard')` — full path from project root |
+| **Grep** | `st\.page_link\('[^/]` |
+| **Why** | When running `streamlit run agent_app/app.py` from the project root, `st.page_link()` resolves paths relative to CWD (project root), not the app's directory. A bare `'app.py'` resolves to the wrong file or fails with `StreamlitAPIException: Unable to create Page`. |
+| **Found in** | `agent_app/shared.py` (`render_sidebar`) |
+
+---
+
+### E013 — Agent branch file loss after branch switch
+
+| | |
+|---|---|
+| **Bad** | Creating new files only on agent feature branches, never committing to main |
+| **Fix** | Always commit shared infrastructure (webapp, settings, configs) to main first before running agents. Or recover with `git checkout <commit> -- <path>` |
+| **Grep** | *(not greppable — requires workflow awareness)* |
+| **Why** | The overnight agent creates feature branches for each task. When the supervisor switches between branches or back to main, files created on a feature branch disappear from the working tree. The `__pycache__/` dirs survive (they're in `.gitignore`) as ghost evidence the files once existed. |
+| **Found in** | `agent_app/` — all files lost after agent branch switches |
+
+---
+
+### E014 — Rate limit `resume_at` timestamp overflow
+
+| | |
+|---|---|
+| **Bad** | `datetime.now().replace(second=datetime.now().second + sleep_time)` |
+| **Fix** | `(datetime.now() + timedelta(seconds=sleep_time)).isoformat()` |
+| **Grep** | `\.replace\(second=.*\.second\s*\+` |
+| **Why** | `datetime.replace(second=N)` requires N in 0–59. When `second + sleep_time > 59`, it raises `ValueError`. Use `timedelta` addition instead. |
+| **Found in** | `scripts/overnight_agent.py` (`run_agent_with_retry`) |
 
 ---
 

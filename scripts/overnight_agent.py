@@ -33,7 +33,7 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -524,8 +524,8 @@ async def run_agent(role: str, user_prompt: str, timeout: int | None = None) -> 
             except (RuntimeError, Exception):
                 pass
     except Exception as e:
-        err_str = str(e)
-        if 'rate' in err_str.lower() or '429' in err_str:
+        err_str = str(e).lower()
+        if 'rate' in err_str or '429' in err_str or 'overloaded' in err_str or '529' in err_str:
             rate_limited = True
         else:
             raise
@@ -543,35 +543,51 @@ class RateLimitError(Exception):
 
 async def run_agent_with_retry(role: str, user_prompt: str,
                                 timeout: int | None = None) -> str:
-    """Run an agent with rate-limit retry logic."""
+    """Run an agent with rate-limit retry logic.
+
+    Retries indefinitely with exponential backoff (capped at 1 hour).
+    After 2 failures, aligns sleep to the next hour boundary (session reset).
+    Writes rate_limited state so the webapp can show a countdown.
+    """
     settings = _get_settings()
     rate_sleep = settings.get('rate_limit_sleep', RATE_LIMIT_SLEEP)
-    max_retries = 5
-    for attempt in range(max_retries):
+    attempt = 0
+    while True:
         try:
             return await run_agent(role, user_prompt, timeout)
         except RateLimitError:
-            sleep_time = rate_sleep * (attempt + 1)
-            resume_at = datetime.now().isoformat()
-            log(f'  Rate limited. Sleeping {sleep_time}s (attempt {attempt + 1}/{max_retries})...')
-            # Update state with rate limit info
+            attempt += 1
+            # Exponential backoff: base * 2^(attempt-1), capped at 1 hour
+            base_sleep = min(rate_sleep * (2 ** (attempt - 1)), 3600)
+
+            # After 2nd failure, align to next hour boundary (API session reset)
+            if attempt >= 2:
+                now = datetime.now()
+                next_hour = (now + timedelta(hours=1)).replace(
+                    minute=0, second=0, microsecond=0
+                )
+                sleep_time = max(base_sleep, (next_hour - now).total_seconds())
+            else:
+                sleep_time = base_sleep
+
+            resume_at = (datetime.now() + timedelta(seconds=sleep_time)).isoformat()
+            log(f'  Rate limited (attempt {attempt}). '
+                f'Sleeping {sleep_time:.0f}s until ~{resume_at}...')
+
+            # Update state so webapp shows countdown
             state = load_state() or {}
             state['rate_limited'] = True
-            state['rate_limit_resume_at'] = (
-                datetime.now().replace(
-                    second=datetime.now().second + sleep_time
-                ).isoformat()
-            )
+            state['rate_limit_resume_at'] = resume_at
             save_state(state)
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, time.sleep, sleep_time)
+
+            await asyncio.sleep(sleep_time)
+
             # Clear rate limit flag
             state = load_state() or {}
             state['rate_limited'] = False
             state['rate_limit_resume_at'] = None
             save_state(state)
             log('  Resuming after rate limit...')
-    raise RateLimitError(f'Rate limited {max_retries} times, giving up')
 
 
 # ── CLI flags (set from main, read by pipeline) ──────────────────────────────
