@@ -9,7 +9,6 @@
 | 20 | Switch to matplotlib-style Plotly theming | White backgrounds, scientific fonts, traditional academic plot styling via Plotly (not pure matplotlib) | critical | graphs, webapp | open | Claude | Guy | 2026-03-01 | Y | Y |
 | 2 | Duplicate Dsilva/Langer tabs | Add ability to duplicate parameter tabs for side-by-side exploration of different grid configurations | critical | bias-correction, webapp | open | Claude | Tomer | 2026-03-01 | Y | Y |
 | 4 | Langer 2020 period model | Implement pipeline/langer_grid.py for the Langer et al. (2020) period distribution model | critical | bias-correction, pipeline | open | Claude | Tomer | 2026-03-01 | Y | Y |
-| 25 | Remove duplicate page menu in sidebar | Top page menu is ugly but functional, bottom one looks great — remove the top duplicate. CSS hide applied via stSidebarNav | critical | GUI, webapp | to-test | Claude | Guy | 2026-03-01 | Y | Y |
 | 31 | Create project status dashboard page | Documentation of all plots and calculations, track implementation status (working, bugs, planned, not started) with interactive checklist. that would be very cool to do in the home page. | critical | webapp, global | open | Claude | Guy | 2026-03-01 | Y | Y |
 | 36 | TODO page bug fixes: compact edit, auto-priority, items in boxes | 3 fixes: single st.markdown for Eisenhower boxes, pencil edit button instead of expander, priority auto-derived from urgent/important flags | critical | webapp, GUI | to-test | Claude | Guy | 2026-03-01 | Y | Y |
 | 37 | To-test workflow + restore completed tasks | Added to-test status with green badge, confirm button, full metadata in Done table, restore button to uncheck completed tasks | critical | webapp, GUI | to-test | Claude | Guy | 2026-03-01 | Y | Y |
@@ -36,6 +35,7 @@
 
 | ID | Title | Description | Priority | Tags | Status | Added by | Suggested by | Date added | Urgent | Important | Date done |
 |----|-------|-------------|----------|------|--------|----------|-------------|------------|--------|-----------|-----------|
+| 25 | Remove duplicate page menu in sidebar | Top page menu is ugly but functional, bottom one looks great — remove the top duplicate. CSS hide applied via stSidebarNav | critical | GUI, webapp | done | Claude | Guy | 2026-03-01 | Y | Y | 2026-03-03 |
 | 38 | Fix agent webapp dark theme + page link paths + rate limit resilience |  | medium |  | done |  |  |  | N | N | 2026-03-03 |
 | 33 | Eisenhower matrix + inline editing in To-Do page |  | medium |  | done |  |  |  | N | N | 2026-03-01 |
 | 8 | Add marginalization + corner plot |  | medium |  | done |  |  |  | N | N | 2026-03-01 |
