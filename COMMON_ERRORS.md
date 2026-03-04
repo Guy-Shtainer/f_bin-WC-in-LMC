@@ -195,6 +195,21 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 ---
 
+## Plotly / Theme
+
+### E018 — `**PLOTLY_THEME` keyword collision in function calls
+
+| | |
+|---|---|
+| **Bad** | `fig.update_layout(title=dict(...), **PLOTLY_THEME)` or `dict(title=..., **PLOTLY_THEME)` |
+| **Fix** | `fig.update_layout(**{**PLOTLY_THEME, 'title': dict(...)})` (dict literal with override) |
+| **Grep** | *(not reliably greppable — requires manual attention)* |
+| **Why** | `PLOTLY_THEME` contains `title`, `legend`, `xaxis`, `yaxis`, `font` keys. Python raises `TypeError: got multiple values for keyword argument` when the same key appears both as an explicit kwarg AND inside `**dict_unpack` in any function call (`dict()`, `update_layout()`, etc.). Dict literal syntax `{**base, 'key': override}` allows later keys to override earlier ones. |
+| **Colliding keys** | `title`, `legend`, `yaxis`, `xaxis`, `font` |
+| **Found in** | `app/pages/05_bias_correction.py` (10 sites) |
+
+---
+
 ## Adding New Errors
 
 When you encounter a new recurring error, add it here with:

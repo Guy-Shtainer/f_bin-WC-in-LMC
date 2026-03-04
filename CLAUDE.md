@@ -199,6 +199,10 @@ short descriptions of preferred graph styles as patterns emerge.
 - Light scientific theme: white backgrounds, serif fonts, dark text (#333333)
 - Centralized via `PLOTLY_THEME` dict in `app/shared.py` — always use `**PLOTLY_THEME`
   in `update_layout()` calls, never hardcode plot colors
+- **CRITICAL (E018):** `PLOTLY_THEME` contains `title`, `legend`, `xaxis`, `yaxis`, `font`.
+  NEVER use these as keyword args alongside `**PLOTLY_THEME` in the same call — Python
+  raises `TypeError: got multiple values`. Use dict literal override instead:
+  `fig.update_layout(**{**PLOTLY_THEME, 'title': ..., 'legend': ...})`
 - Axes: outside ticks, thin black borders with mirror, light grey gridlines (#e0e0e0)
 - Gold star markers for best-fit points (use darker gold #DAA520 for readability on white)
 - Observed data: solid lines in steel blue (#4A90D9)

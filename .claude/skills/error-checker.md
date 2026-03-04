@@ -26,6 +26,8 @@ Before writing code, mentally review your planned changes against the known erro
 - Am I comparing `numpy.bool_` with `is True`? → Use `bool()` cast (E002)
 - Am I loading RV arrays? → Remember to filter zeros (E003)
 - Am I using `st.empty()` with keys? → Avoid duplicate keys in same run (E004)
+- Am I using `**PLOTLY_THEME` with `title=`, `legend=`, `yaxis=`, or `xaxis=`? → Use dict literal `{**PLOTLY_THEME, 'title': ...}` (E018)
+- Am I using `.applymap()`? → Use `.map()` instead (pandas 2.x removed it)
 
 ### Step 3: Post-Write Scan
 
