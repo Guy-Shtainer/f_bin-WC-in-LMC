@@ -1889,6 +1889,259 @@ with tab_dsilva:
                 })
             st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
 
+        # ── logP_max × σ_single Scan ─────────────────────────────────────────
+        st.markdown('---')
+        st.markdown('### logP_max × σ_single Scan')
+        st.caption(
+            'For each (logP_max, σ_single) pair, the full f_bin × π sub-grid is run '
+            'and the maximum K-S p-value is reported. This reveals which period upper '
+            'bound and intrinsic scatter best reproduce observations.'
+        )
+
+        with st.expander('⚙️ Scan parameters', expanded=True):
+            _lps_c1, _lps_c2, _lps_c3 = st.columns(3)
+            lps_logPmax_min = _lps_c1.number_input(
+                'logP_max min', 0.5, 10.0, 1.0, 0.1, key='lps_logPmax_min')
+            lps_logPmax_max = _lps_c2.number_input(
+                'logP_max max', 1.0, 10.0, 6.0, 0.1, key='lps_logPmax_max')
+            lps_logPmax_steps = _lps_c3.number_input(
+                'logP_max steps', 3, 100, 20, 1, key='lps_logPmax_steps')
+
+            _lps_c4, _lps_c5, _lps_c6 = st.columns(3)
+            lps_sigma_min = _lps_c4.number_input(
+                'σ_single min', 0.1, 100.0, 1.0, 0.1, key='lps_sigma_min')
+            lps_sigma_max = _lps_c5.number_input(
+                'σ_single max', 0.5, 100.0, 15.0, 0.1, key='lps_sigma_max')
+            lps_sigma_steps = _lps_c6.number_input(
+                'σ_single steps', 3, 100, 20, 1, key='lps_sigma_steps')
+
+            _lps_c7, _lps_c8 = st.columns(2)
+            lps_fbin_steps = _lps_c7.number_input(
+                'Sub-grid f_bin steps', 5, 200, 50, 5, key='lps_fbin_steps')
+            lps_pi_steps = _lps_c8.number_input(
+                'Sub-grid π steps', 5, 200, 25, 5, key='lps_pi_steps')
+
+        _lps_run_col, _lps_load_col, _ = st.columns([0.3, 0.3, 0.4])
+        lps_run_btn = _lps_run_col.button(
+            '▶️ Run logP_max × σ Scan', type='primary', key='lps_run')
+        lps_load_btn = _lps_load_col.button(
+            '📂 Load cached', key='lps_load')
+        lps_progress_slot = st.empty()
+        lps_status_slot   = st.empty()
+        lps_heatmap_slot  = st.empty()
+
+        _lps_result_path = os.path.join(_RESULT_DIR, 'dsilva_logPmax_sigma.npz')
+
+        if lps_load_btn:
+            if os.path.exists(_lps_result_path):
+                st.session_state['lps_result'] = dict(
+                    np.load(_lps_result_path, allow_pickle=True))
+                lps_status_slot.success('Loaded cached logP_max × σ result.')
+            else:
+                lps_status_slot.warning('No cached result found.')
+
+        if lps_run_btn:
+            sh_lps = settings_hash(settings)
+            try:
+                lps_obs_drv, _ = cached_load_observed_delta_rvs(sh_lps)
+                lps_cad, lps_cad_w = cached_load_cadence(sh_lps)
+            except Exception as e:
+                lps_status_slot.error(f'Failed to load observations: {e}')
+                st.stop()
+
+            from wr_bias_simulation import (
+                SimulationConfig, BinaryParameterConfig, _single_grid_task,
+            )
+
+            lps_logPmax_vals = np.linspace(
+                float(lps_logPmax_min), float(lps_logPmax_max), int(lps_logPmax_steps))
+            lps_sigma_vals = np.linspace(
+                max(0.1, float(lps_sigma_min)),
+                max(float(lps_sigma_min) + 0.1, float(lps_sigma_max)),
+                int(lps_sigma_steps))
+            lps_fbin_sub = np.linspace(float(fbin_min), float(fbin_max),
+                                       int(lps_fbin_steps))
+            lps_pi_sub = np.linspace(float(pi_min), float(pi_max),
+                                      int(lps_pi_steps))
+
+            n_outer = len(lps_logPmax_vals) * len(lps_sigma_vals)
+            n_inner = len(lps_fbin_sub) * len(lps_pi_sub)
+
+            lps_max_p  = np.full((len(lps_logPmax_vals), len(lps_sigma_vals)), np.nan)
+            lps_bf_arr = np.full_like(lps_max_p, np.nan)
+            lps_bp_arr = np.full_like(lps_max_p, np.nan)
+
+            lps_seed = 9999
+            lps_done = 0
+            lps_t0 = time.time()
+            lps_last_render = 0.0
+
+            with mp.Pool(processes=int(n_proc)) as pool:
+                for i_lp, logPmax_v in enumerate(lps_logPmax_vals):
+                    for i_s, sigma_v in enumerate(lps_sigma_vals):
+                        lps_bin_cfg = BinaryParameterConfig(
+                            logP_min=float(logP_min_val),
+                            logP_max=float(logPmax_v),
+                            period_model='powerlaw',
+                            e_model=str(e_model),
+                            e_max=float(e_max),
+                            mass_primary_model=str(mass_model),
+                            mass_primary_fixed=float(mass_fixed),
+                            mass_primary_range=tuple(mass_range),
+                            q_model=str(q_model),
+                            q_range=(float(q_min_v), float(q_max_v)),
+                            langer_q_mu=float(langer_q_mu),
+                            langer_q_sigma=float(langer_q_sig),
+                        )
+
+                        lps_sim_cfg = SimulationConfig(
+                            n_stars=int(n_stars_sim),
+                            sigma_single=float(sigma_v),
+                            sigma_measure=float(sigma_meas),
+                            cadence_library=lps_cad,
+                            cadence_weights=lps_cad_w,
+                        )
+
+                        tasks = []
+                        for fb in lps_fbin_sub:
+                            for pv in lps_pi_sub:
+                                tasks.append((
+                                    float(fb), float(pv), float(sigma_v),
+                                    lps_sim_cfg, lps_bin_cfg,
+                                    lps_obs_drv, 'powerlaw', lps_seed,
+                                ))
+                                lps_seed += 1
+
+                        best_p = -1.0
+                        best_fb_v = 0.0
+                        best_pi_v2 = 0.0
+                        for fb_r, pi_r, _sig_r, D_r, p_r in pool.imap_unordered(
+                                _single_grid_task, tasks,
+                                chunksize=max(1, n_inner // 8)):
+                            if p_r > best_p:
+                                best_p = p_r
+                                best_fb_v = fb_r
+                                best_pi_v2 = pi_r
+
+                        lps_max_p[i_lp, i_s] = best_p
+                        lps_bf_arr[i_lp, i_s] = best_fb_v
+                        lps_bp_arr[i_lp, i_s] = best_pi_v2
+
+                        lps_done += 1
+                        elapsed = time.time() - lps_t0
+                        eta_str = ''
+                        if lps_done > 1 and lps_done < n_outer:
+                            eta = elapsed / lps_done * (n_outer - lps_done)
+                            eta_str = f'  —  ETA {int(eta)}s'
+
+                        lps_progress_slot.progress(
+                            lps_done / n_outer,
+                            text=f'Outer cell {lps_done}/{n_outer}{eta_str}')
+
+                        now = time.time()
+                        if now - lps_last_render > 1.5 or lps_done == n_outer:
+                            lps_last_render = now
+                            cur_p = np.where(np.isnan(lps_max_p), 0.0, lps_max_p)
+                            lps_heatmap_slot.plotly_chart(
+                                _make_heatmap_fig(
+                                    cur_p, lps_logPmax_vals, lps_sigma_vals,
+                                    title='Max K-S p-value  (logP_max × σ_single)',
+                                    height=_ch, width=_cw,
+                                    x_label='σ_single (km/s)',
+                                    y_label='log₁₀(P_max / days)',
+                                    x_name='σ',
+                                    best_label_fmt='  logP_max={fbin:.2f}, σ={x:.1f}, p={p:.4f}',
+                                ),
+                                use_container_width=_use_cw,
+                            )
+
+            lps_elapsed = time.time() - lps_t0
+            lps_progress_slot.progress(1.0, text=f'Done in {lps_elapsed:.0f}s.')
+
+            # Save result
+            os.makedirs(_RESULT_DIR, exist_ok=True)
+            lps_cfg = {
+                **stable_cfg,
+                'logPmax_min': float(lps_logPmax_min),
+                'logPmax_max': float(lps_logPmax_max),
+                'logPmax_steps': int(lps_logPmax_steps),
+                'sigma_min': float(lps_sigma_min),
+                'sigma_max': float(lps_sigma_max),
+                'sigma_steps': int(lps_sigma_steps),
+                'sub_fbin_steps': int(lps_fbin_steps),
+                'sub_pi_steps': int(lps_pi_steps),
+            }
+            np.savez(
+                _lps_result_path,
+                logPmax_grid=lps_logPmax_vals,
+                sigma_grid=lps_sigma_vals,
+                max_ks_p=lps_max_p,
+                best_fbin=lps_bf_arr,
+                best_pi=lps_bp_arr,
+                config_hash=_stable_cfg_hash(lps_cfg),
+                settings=np.array(json.dumps(lps_cfg)),
+                timestamp=np.array(_dt.datetime.now().isoformat()),
+            )
+            st.session_state['lps_result'] = {
+                'logPmax_grid': lps_logPmax_vals,
+                'sigma_grid': lps_sigma_vals,
+                'max_ks_p': lps_max_p,
+                'best_fbin': lps_bf_arr,
+                'best_pi': lps_bp_arr,
+            }
+            _append_run_history({
+                'timestamp':   _dt.datetime.now().isoformat(),
+                'model':       'dsilva_logPmax_sigma_scan',
+                'config_hash': _stable_cfg_hash(lps_cfg),
+                'elapsed_s':   round(lps_elapsed, 1),
+                'result_file': _lps_result_path,
+            })
+            lps_status_slot.success(
+                f'Saved to results/dsilva_logPmax_sigma.npz  '
+                f'({n_outer} outer cells × {n_inner} sub-grid = '
+                f'{n_outer * n_inner:,} total sims in {lps_elapsed:.0f}s)')
+
+        # Display cached/just-computed result
+        lps_res = st.session_state.get('lps_result')
+        if lps_res is None and os.path.exists(_lps_result_path):
+            try:
+                lps_res = dict(np.load(_lps_result_path, allow_pickle=True))
+                st.session_state['lps_result'] = lps_res
+            except Exception:
+                pass
+
+        if lps_res is not None and not lps_run_btn:
+            _lps_lp_g = np.asarray(lps_res['logPmax_grid'])
+            _lps_sg_g = np.asarray(lps_res['sigma_grid'])
+            _lps_mp   = np.asarray(lps_res['max_ks_p'])
+            _lps_bfb  = np.asarray(lps_res['best_fbin'])
+            _lps_bpi  = np.asarray(lps_res['best_pi'])
+
+            lps_heatmap_slot.plotly_chart(
+                _make_heatmap_fig(
+                    _lps_mp, _lps_lp_g, _lps_sg_g,
+                    title='Max K-S p-value  (logP_max × σ_single)',
+                    height=_ch, width=_cw,
+                    x_label='σ_single (km/s)',
+                    y_label='log₁₀(P_max / days)',
+                    x_name='σ',
+                    best_label_fmt='  logP_max={fbin:.2f}, σ={x:.1f}, p={p:.4f}',
+                ),
+                use_container_width=_use_cw,
+            )
+
+            # Best point info
+            _lps_best_idx = int(np.argmax(_lps_mp))
+            _lps_bi = _lps_best_idx // _lps_mp.shape[1]
+            _lps_bj = _lps_best_idx % _lps_mp.shape[1]
+            lps_status_slot.markdown(
+                f'**Best:** logP_max = `{float(_lps_lp_g[_lps_bi]):.2f}`, '
+                f'σ_single = `{float(_lps_sg_g[_lps_bj]):.1f}` km/s, '
+                f'max K-S p = `{float(_lps_mp[_lps_bi, _lps_bj]):.6f}`  \n'
+                f'Achieved at f_bin = `{float(_lps_bfb[_lps_bi, _lps_bj]):.4f}`, '
+                f'π = `{float(_lps_bpi[_lps_bi, _lps_bj]):.3f}`'
+            )
+
         # ── Simulation Methodology & Equations ───────────────────────────────
         st.markdown('---')
         with st.expander('Simulation methodology & equations', expanded=False):
