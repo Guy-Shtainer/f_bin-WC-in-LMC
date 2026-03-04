@@ -152,14 +152,14 @@ def _make_heatmap_fig(
         ),
     ]
 
-    layout_kw: dict = dict(
-        title=dict(text=title, font=dict(size=14)),
-        xaxis_title='π  (period power-law index)',
-        yaxis_title='f_bin  (intrinsic binary fraction)',
+    layout_kw: dict = {
         **PLOTLY_THEME,
-        height=height,
-        margin=dict(l=60, r=20, t=50, b=50),
-    )
+        'title': dict(text=title, font=dict(size=14)),
+        'xaxis_title': 'π  (period power-law index)',
+        'yaxis_title': 'f_bin  (intrinsic binary fraction)',
+        'height': height,
+        'margin': dict(l=60, r=20, t=50, b=50),
+    }
     if width is not None:
         layout_kw['width'] = width
 
@@ -195,14 +195,14 @@ def _make_max_pval_fig(
         textfont=dict(color='gold', size=11),
         showlegend=False,
     ))
-    fig.update_layout(
-        title=dict(text='Max K-S p-value vs σ_single', font=dict(size=14)),
-        xaxis_title='σ_single (km/s)',
-        yaxis_title='Max K-S p-value',
+    fig.update_layout(**{
         **PLOTLY_THEME,
-        height=height,
-        margin=dict(l=60, r=20, t=50, b=50),
-    )
+        'title': dict(text='Max K-S p-value vs σ_single', font=dict(size=14)),
+        'xaxis_title': 'σ_single (km/s)',
+        'yaxis_title': 'Max K-S p-value',
+        'height': height,
+        'margin': dict(l=60, r=20, t=50, b=50),
+    })
     return fig
 
 
@@ -255,19 +255,19 @@ def _make_3d_stacked_fig(
             ),
         ))
 
-    layout_kw = dict(
-        title=dict(text='3D Stacked Heatmaps (f_bin x π x σ_single)',
-                   font=dict(size=14)),
-        scene=dict(
+    layout_kw = {
+        **PLOTLY_THEME,
+        'title': dict(text='3D Stacked Heatmaps (f_bin x π x σ_single)',
+                       font=dict(size=14)),
+        'scene': dict(
             xaxis_title='π  (period power-law index)',
             yaxis_title='f_bin  (binary fraction)',
             zaxis_title='σ_single (km/s)',
             bgcolor='white',
         ),
-        **PLOTLY_THEME,
-        height=height,
-        margin=dict(l=10, r=10, t=50, b=10),
-    )
+        'height': height,
+        'margin': dict(l=10, r=10, t=50, b=10),
+    }
     if width is not None:
         layout_kw['width'] = width
 
@@ -1150,17 +1150,17 @@ with tab_dsilva:
                                    annotation_text='logP_max',
                                    annotation_position='top right',
                                    annotation_font_color='#888')
-                fig_logP.update_layout(
-                    barmode='overlay',
-                    title=dict(text=f'Simulated Period Distribution  (π = {best_pi_v:.3f})',
-                               font=dict(size=14)),
-                    xaxis_title='log₁₀(P / days)',
-                    yaxis_title='Probability density',
+                fig_logP.update_layout(**{
                     **PLOTLY_THEME,
-                    height=400,
-                    margin=dict(l=60, r=20, t=50, b=50),
-                    legend=dict(x=0.65, y=0.95),
-                )
+                    'barmode': 'overlay',
+                    'title': dict(text=f'Simulated Period Distribution  (π = {best_pi_v:.3f})',
+                                  font=dict(size=14)),
+                    'xaxis_title': 'log₁₀(P / days)',
+                    'yaxis_title': 'Probability density',
+                    'height': 400,
+                    'margin': dict(l=60, r=20, t=50, b=50),
+                    'legend': dict(x=0.65, y=0.95),
+                })
                 st.plotly_chart(fig_logP, use_container_width=True, key='bc_logP_hist')
                 st.caption(
                     'Period distribution of simulated binaries at the best-fit model. '
@@ -1267,19 +1267,19 @@ with tab_dsilva:
                     arrowwidth=2, arrowcolor='#F5A623',
                 )
 
-                fig_gap.update_layout(
-                    title=dict(
+                fig_gap.update_layout(**{
+                    **PLOTLY_THEME,
+                    'title': dict(
                         text='Binary Fraction vs ΔRV Threshold',
                         font=dict(size=14)),
-                    xaxis_title='ΔRV threshold (km/s)',
-                    yaxis_title='Fraction of sample',
-                    **PLOTLY_THEME,
-                    height=400,
-                    margin=dict(l=60, r=80, t=50, b=50),
-                    showlegend=True,
-                    legend=dict(x=0.55, y=0.95, font=dict(size=10)),
-                    yaxis=dict(range=[0, min(1.0, intrinsic_fbin * 1.5)]),
-                )
+                    'xaxis_title': 'ΔRV threshold (km/s)',
+                    'yaxis_title': 'Fraction of sample',
+                    'height': 400,
+                    'margin': dict(l=60, r=80, t=50, b=50),
+                    'showlegend': True,
+                    'legend': dict(x=0.55, y=0.95, font=dict(size=10)),
+                    'yaxis': dict(range=[0, min(1.0, intrinsic_fbin * 1.5)]),
+                })
                 st.plotly_chart(fig_gap, use_container_width=True, key='bc_gap_chart')
                 st.caption(
                     f'Observed binary fraction as a function of ΔRV threshold. '
@@ -1415,16 +1415,16 @@ with tab_dsilva:
                         r, c = _pos(pi)
                         _add_hist(fig_mb, r, c, d, 'Missed', _CLR_MISSED, pi == 0)
 
-            fig_mb.update_layout(
-                barmode='overlay',
+            fig_mb.update_layout(**{
                 **PLOTLY_THEME,
-                height=850,
-                margin=dict(l=40, r=20, t=40, b=60),
-                legend=dict(
+                'barmode': 'overlay',
+                'height': 850,
+                'margin': dict(l=40, r=20, t=40, b=60),
+                'legend': dict(
                     orientation='h', yanchor='bottom', y=1.04,
                     xanchor='center', x=0.5,
                 ),
-            )
+            })
             for pi in range(_n_panels):
                 r, c = _pos(pi)
                 fig_mb.update_xaxes(title_text=_x_labels[pi],
@@ -1523,19 +1523,19 @@ with tab_dsilva:
                     line=dict(color='#E25A53', width=2.5, dash='dash'),
                     hovertemplate='ΔRV=%{x:.1f} km/s<br>CDF=%{y:.3f}<extra>Simulated</extra>',
                 ))
-                fig_cdf.update_layout(
-                    title=dict(
+                fig_cdf.update_layout(**{
+                    **PLOTLY_THEME,
+                    'title': dict(
                         text=(f'ΔRV CDF — Observed vs Model  '
                               f'(f_bin={ex_fb:.3f}, π={ex_pi:.2f}, '
                               f'σ={ex_sig:.1f})'),
                         font=dict(size=14),
                     ),
-                    xaxis_title='ΔRV (km/s)',
-                    yaxis_title='Cumulative fraction',
-                    **PLOTLY_THEME,
-                    height=420,
-                    legend=dict(x=0.65, y=0.15),
-                    annotations=[dict(
+                    'xaxis_title': 'ΔRV (km/s)',
+                    'yaxis_title': 'Cumulative fraction',
+                    'height': 420,
+                    'legend': dict(x=0.65, y=0.15),
+                    'annotations': [dict(
                         x=0.98, y=0.95, xref='paper', yref='paper',
                         text=f'K-S D = {D_val:.4f}<br>p = {p_val:.4f}',
                         showarrow=False,
@@ -1544,7 +1544,7 @@ with tab_dsilva:
                         borderpad=6,
                         xanchor='right',
                     )],
-                )
+                })
                 st.plotly_chart(fig_cdf, use_container_width=True, key='bc_cdf')
                 st.caption(
                     'Empirical cumulative distribution of peak-to-peak ΔRV. '
@@ -1633,15 +1633,15 @@ with tab_dsilva:
                                 marker_color='#F0A0A0', opacity=0.4,
                             ))
 
-                fig_rv.update_layout(
-                    barmode='overlay',
-                    title=dict(text='RV Distribution', font=dict(size=14)),
-                    xaxis_title='RV (km/s)',
-                    yaxis_title='Probability density',
+                fig_rv.update_layout(**{
                     **PLOTLY_THEME,
-                    height=420,
-                    legend=dict(x=0.01, y=0.99),
-                )
+                    'barmode': 'overlay',
+                    'title': dict(text='RV Distribution', font=dict(size=14)),
+                    'xaxis_title': 'RV (km/s)',
+                    'yaxis_title': 'Probability density',
+                    'height': 420,
+                    'legend': dict(x=0.01, y=0.99),
+                })
                 st.plotly_chart(fig_rv, use_container_width=True, key='bc_rv_dist')
                 st.caption(
                     'Distribution of individual RV measurements. Observed data '
@@ -1697,19 +1697,19 @@ with tab_dsilva:
                     textfont=dict(size=11),
                     showlegend=False,
                 ))
-                fig_frac.update_layout(
-                    title=dict(
+                fig_frac.update_layout(**{
+                    **PLOTLY_THEME,
+                    'title': dict(
                         text=(f'Detection Fraction vs ΔRV Threshold  '
                               f'(model: f_bin={ex_fb:.3f}, π={ex_pi:.2f})'),
                         font=dict(size=14),
                     ),
-                    xaxis_title='ΔRV threshold (km/s)',
-                    yaxis_title='Fraction above threshold',
-                    **PLOTLY_THEME,
-                    height=420,
-                    legend=dict(x=0.70, y=0.95),
-                    yaxis=dict(range=[0, 1.05]),
-                )
+                    'xaxis_title': 'ΔRV threshold (km/s)',
+                    'yaxis_title': 'Fraction above threshold',
+                    'height': 420,
+                    'legend': dict(x=0.70, y=0.95),
+                    'yaxis': dict(range=[0, 1.05]),
+                })
                 st.plotly_chart(fig_frac, use_container_width=True, key='bc_det_frac')
                 st.caption(
                     'Fraction of stars with ΔRV exceeding a given threshold. '
@@ -1757,11 +1757,12 @@ with tab_dsilva:
                     ),
                 ))
 
-            anim_layout: dict = dict(
-                title='Bias Correction — K-S p-value animated over σ_single',
-                xaxis_title='π  (period power-law index)',
-                yaxis_title='f_bin  (intrinsic binary fraction)',
-                updatemenus=[dict(
+            anim_layout: dict = {
+                **PLOTLY_THEME,
+                'title': 'Bias Correction — K-S p-value animated over σ_single',
+                'xaxis_title': 'π  (period power-law index)',
+                'yaxis_title': 'f_bin  (intrinsic binary fraction)',
+                'updatemenus': [dict(
                     type='buttons',
                     showactive=False,
                     y=1.18, x=0.5, xanchor='center',
@@ -1784,7 +1785,7 @@ with tab_dsilva:
                         ),
                     ],
                 )],
-                sliders=[dict(
+                'sliders': [dict(
                     active=0,
                     currentvalue=dict(
                         prefix='σ_single = ', suffix=' km/s', visible=True,
@@ -1803,10 +1804,9 @@ with tab_dsilva:
                         for i_s, sv in enumerate(sigma_g)
                     ],
                 )],
-                **PLOTLY_THEME,
-                height=_ch + 120,
-                margin=dict(l=60, r=20, t=80, b=80),
-            )
+                'height': _ch + 120,
+                'margin': dict(l=60, r=20, t=80, b=80),
+            }
             if _cw is not None:
                 anim_layout['width'] = _cw
 
