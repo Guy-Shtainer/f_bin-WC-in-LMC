@@ -8,9 +8,11 @@
   "checkpoint_tag": "pre-agent-20260303-1758",
   "quadrant": "eliminate",
   "branch": "agent/40-clear-add-new-task-after-adding-task",
-  "current_stage": "planner",
+  "current_stage": "reviewer",
   "started_at": "2026-03-03T18:35:51.427734",
-  "pipeline_stages_done": [],
+  "pipeline_stages_done": [
+    "planner"
+  ],
   "pipeline_stages_total": [
     "planner",
     "reviewer",
@@ -22,6 +24,7 @@
   "intervention_type": null,
   "rate_limited": false,
   "rate_limit_resume_at": null,
-  "stage_started_at": "2026-03-03T18:35:51.428665",
-  "updated_at": "2026-03-03T18:35:51.428786"
+  "stage_started_at": "2026-03-03T18:37:31.583012",
+  "updated_at": "2026-03-03T18:37:31.583129",
+  "rate_limit_attempt": 1
 }
