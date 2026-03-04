@@ -100,12 +100,16 @@ def _best_point(ks_p_2d: np.ndarray, fbin_vals: np.ndarray,
 def _make_heatmap_fig(
     ks_p_2d: np.ndarray,
     fbin_vals: np.ndarray,
-    pi_vals: np.ndarray,
+    x_vals: np.ndarray,
     title: str,
     show_d: bool = False,
     ks_d_2d: np.ndarray | None = None,
     height: int = 520,
     width: int | None = None,
+    x_label: str = 'π  (period power-law index)',
+    y_label: str = 'f_bin  (intrinsic binary fraction)',
+    x_name: str = 'π',
+    best_label_fmt: str = '  f={fbin:.3f}, {x_name}={x:.2f}, p={p:.3f}',
 ) -> go.Figure:
     """Plotly heatmap of K-S p-value (or D-stat)."""
     z = ks_d_2d if (show_d and ks_d_2d is not None) else ks_p_2d
@@ -115,20 +119,20 @@ def _make_heatmap_fig(
     z_max = float(np.percentile(valid, 98)) if valid.size > 0 else 1.0
     z_min = 0.0
 
-    best_fbin, best_pi, best_pval = _best_point(ks_p_2d, fbin_vals, pi_vals)
+    best_fbin, best_x, best_pval = _best_point(ks_p_2d, fbin_vals, x_vals)
 
     traces: list = [
         go.Heatmap(
-            z=z, x=pi_vals, y=fbin_vals,
+            z=z, x=x_vals, y=fbin_vals,
             colorscale='RdBu_r',
             zmin=z_min, zmax=z_max,
             zsmooth='best',
             colorbar=dict(title=colorbar_title, thickness=14, len=0.9),
-            hovertemplate='π=%{x:.3f}<br>f_bin=%{y:.4f}<br>' + colorbar_title +
+            hovertemplate=f'{x_name}=%{{x:.3f}}<br>f_bin=%{{y:.4f}}<br>' + colorbar_title +
                           '=%{z:.4f}<extra></extra>',
         ),
         go.Contour(
-            z=ks_p_2d, x=pi_vals, y=fbin_vals,
+            z=ks_p_2d, x=x_vals, y=fbin_vals,
             contours=dict(
                 coloring='none',
                 showlabels=True,
@@ -140,11 +144,12 @@ def _make_heatmap_fig(
             hoverinfo='skip',
         ),
         go.Scatter(
-            x=[best_pi], y=[best_fbin],
+            x=[best_x], y=[best_fbin],
             mode='markers+text',
             marker=dict(symbol='star', size=18, color='gold',
                         line=dict(color='black', width=1)),
-            text=[f'  f={best_fbin:.3f}, π={best_pi:.2f}, p={best_pval:.3f}'],
+            text=[best_label_fmt.format(fbin=best_fbin, x_name=x_name,
+                                        x=best_x, p=best_pval)],
             textposition='middle right',
             textfont=dict(color='gold', size=11),
             name='Best fit',
@@ -155,8 +160,8 @@ def _make_heatmap_fig(
     layout_kw: dict = {
         **PLOTLY_THEME,
         'title': dict(text=title, font=dict(size=14)),
-        'xaxis_title': 'π  (period power-law index)',
-        'yaxis_title': 'f_bin  (intrinsic binary fraction)',
+        'xaxis_title': x_label,
+        'yaxis_title': y_label,
         'height': height,
         'margin': dict(l=60, r=20, t=50, b=50),
     }
@@ -289,6 +294,35 @@ def _find_reusable_fbin(
     try:
         if not np.allclose(np.asarray(cached['pi_grid']), pi_new, atol=1e-6):
             return None
+        if not np.allclose(np.asarray(cached['sigma_grid']), sigma_new, atol=1e-6):
+            return None
+        cached_cfg = json.loads(str(cached.get('settings', '{}')))
+        for k in ('n_stars_sim', 'sigma_measure', 'logP_min', 'logP_max',
+                   'period_model', 'e_model', 'e_max',
+                   'mass_primary_model', 'mass_primary_fixed',
+                   'q_model', 'q_min', 'q_max'):
+            if str(cached_cfg.get(k)) != str(stable_cfg.get(k)):
+                return None
+        cached_fbin = np.asarray(cached['fbin_grid'])
+        new_idx, cache_idx = [], []
+        for i, fb in enumerate(fbin_new):
+            j = int(np.argmin(np.abs(cached_fbin - fb)))
+            if np.abs(cached_fbin[j] - fb) < 1e-6:
+                new_idx.append(i)
+                cache_idx.append(j)
+        return new_idx, cache_idx
+    except Exception:
+        return None
+
+
+def _find_reusable_fbin_langer(
+    cached: dict,
+    fbin_new: np.ndarray,
+    sigma_new: np.ndarray,
+    stable_cfg: dict,
+) -> tuple[list[int], list[int]] | None:
+    """Check if a cached Langer result shares the same sigma grid and config."""
+    try:
         if not np.allclose(np.asarray(cached['sigma_grid']), sigma_new, atol=1e-6):
             return None
         cached_cfg = json.loads(str(cached.get('settings', '{}')))
@@ -1935,27 +1969,1258 @@ with tab_dsilva:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Langer 2020 tab  (placeholder)
+# Langer 2020 tab
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_langer:
-    st.info(
-        'Langer 2020 period model — coming soon.  '
-        'Run `conda run -n guyenv python pipeline/langer_grid.py` from the terminal.'
-    )
-    langer_result = st.session_state.get('result_langer') or cached_load_grid_result('langer')
-    if langer_result is not None:
-        lg_fbin = np.asarray(langer_result['fbin_grid'])
-        lg_pi   = np.asarray(langer_result['pi_grid'])
-        lg_ks_p_raw = np.asarray(langer_result['ks_p'])
-        lg_ks_p = lg_ks_p_raw[0] if lg_ks_p_raw.ndim == 3 else lg_ks_p_raw
-        st.plotly_chart(
-            _make_heatmap_fig(lg_ks_p, lg_fbin, lg_pi,
-                              title='Langer 2020 — K-S p-value',
-                              height=_ch, width=_cw),
-            use_container_width=_use_cw,
-            key='bc_langer_heatmap',
+    lg_cfg   = settings.get('grid_langer', {})
+    lg_sim   = settings.get('simulation', {})
+    lg_cls   = settings.get('classification', {})
+    lg_pp    = lg_cfg.get('langer_period_params', {})
+
+    lg_col_left, lg_col_right = st.columns([0.30, 0.70])
+
+    # ── Left column: grid + orbital parameters ───────────────────────────────
+    with lg_col_left:
+        with st.expander('⚙️ Grid parameters', expanded=True):
+            lg_fbin_min = st.number_input(
+                'f_bin min', 0.0, 0.5, float(lg_cfg.get('fbin_min', 0.01)), 0.01,
+                key='lg_fbin_min',
+                on_change=lambda: sm.save(['grid_langer', 'fbin_min'],
+                                          value=st.session_state['lg_fbin_min']))
+            lg_fbin_max = st.number_input(
+                'f_bin max', 0.5, 1.0, float(lg_cfg.get('fbin_max', 0.99)), 0.01,
+                key='lg_fbin_max',
+                on_change=lambda: sm.save(['grid_langer', 'fbin_max'],
+                                          value=st.session_state['lg_fbin_max']))
+            lg_fbin_steps = st.number_input(
+                'f_bin steps', 10, 500, int(lg_cfg.get('fbin_steps', 100)), 1,
+                key='lg_fbin_steps',
+                on_change=lambda: sm.save(['grid_langer', 'fbin_steps'],
+                                          value=st.session_state['lg_fbin_steps']))
+
+            st.markdown('---')
+            lg_sigma_min = st.number_input(
+                'σ_single min (km/s)', 0.1, 100.0,
+                float(lg_cfg.get('sigma_min', 1.0)), 0.1,
+                key='lg_sigma_min',
+                on_change=lambda: sm.save(['grid_langer', 'sigma_min'],
+                                          value=st.session_state['lg_sigma_min']))
+            lg_sigma_max = st.number_input(
+                'σ_single max (km/s)', 0.5, 100.0,
+                float(lg_cfg.get('sigma_max', 15.0)), 0.1,
+                key='lg_sigma_max',
+                on_change=lambda: sm.save(['grid_langer', 'sigma_max'],
+                                          value=st.session_state['lg_sigma_max']))
+            lg_sigma_steps = st.number_input(
+                'σ_single steps', 5, 500, int(lg_cfg.get('sigma_steps', 30)), 1,
+                key='lg_sigma_steps',
+                on_change=lambda: sm.save(['grid_langer', 'sigma_steps'],
+                                          value=st.session_state['lg_sigma_steps']))
+
+            st.markdown('---')
+            lg_n_stars = st.number_input(
+                'N stars / point', 100, 50000, int(lg_cfg.get('n_stars_sim', 10000)), 100,
+                key='lg_n_stars',
+                on_change=lambda: sm.save(['grid_langer', 'n_stars_sim'],
+                                          value=st.session_state['lg_n_stars']))
+            lg_sigma_meas = st.number_input(
+                'σ_measure (km/s)', 0.001, 20.0,
+                float(lg_sim.get('sigma_measure', 1.622)), 0.001,
+                format='%.3f', key='lg_sigma_meas')
+
+        with st.expander('🔧 Orbital parameters (Langer 2020)', expanded=False):
+            st.caption('Period distribution: two-Gaussian mixture in log₁₀(P/days) '
+                       'approximating Langer+2020 Fig. 6 (Case B).')
+
+            # Period distribution parameters
+            lg_mu_A = st.number_input(
+                'μ_A (Case A peak)', 0.1, 5.0,
+                float(lg_pp.get('mu_A', 1.1)), 0.05, key='lg_mu_A',
+                on_change=lambda: sm.save(
+                    ['grid_langer', 'langer_period_params', 'mu_A'],
+                    value=st.session_state['lg_mu_A']))
+            lg_sigma_A = st.number_input(
+                'σ_A (Case A width)', 0.01, 2.0,
+                float(lg_pp.get('sigma_A', 0.15)), 0.01, key='lg_sigma_A',
+                on_change=lambda: sm.save(
+                    ['grid_langer', 'langer_period_params', 'sigma_A'],
+                    value=st.session_state['lg_sigma_A']))
+            lg_mu_B = st.number_input(
+                'μ_B (Case B peak)', 0.1, 5.0,
+                float(lg_pp.get('mu_B', 2.2)), 0.05, key='lg_mu_B',
+                on_change=lambda: sm.save(
+                    ['grid_langer', 'langer_period_params', 'mu_B'],
+                    value=st.session_state['lg_mu_B']))
+            lg_sigma_B = st.number_input(
+                'σ_B (Case B width)', 0.01, 2.0,
+                float(lg_pp.get('sigma_B', 0.35)), 0.01, key='lg_sigma_B',
+                on_change=lambda: sm.save(
+                    ['grid_langer', 'langer_period_params', 'sigma_B'],
+                    value=st.session_state['lg_sigma_B']))
+            lg_weight_A = st.slider(
+                'Weight of Case A', 0.0, 1.0,
+                float(lg_pp.get('weight_A', 0.3)), 0.01, key='lg_weight_A',
+                on_change=lambda: sm.save(
+                    ['grid_langer', 'langer_period_params', 'weight_A'],
+                    value=st.session_state['lg_weight_A']))
+
+            st.markdown('---')
+            # Period range (clipping bounds)
+            lg_logP_min = st.number_input(
+                'log₁₀(P/days) min', 0.01, 5.0,
+                float(lg_cfg.get('logP_min', 0.5)), 0.01, key='lg_logP_min',
+                on_change=lambda: sm.save(['grid_langer', 'logP_min'],
+                                          value=st.session_state['lg_logP_min']))
+            lg_logP_max = st.number_input(
+                'log₁₀(P/days) max', 0.1, 10.0,
+                float(lg_cfg.get('logP_max', 3.5)), 0.1, key='lg_logP_max',
+                on_change=lambda: sm.save(['grid_langer', 'logP_max'],
+                                          value=st.session_state['lg_logP_max']))
+
+            st.markdown('---')
+            # Eccentricity — fixed at 0 per Langer assumption
+            st.markdown('**Eccentricity:** fixed at e = 0 (Langer+2020 assumption)')
+
+            st.markdown('---')
+            # Primary mass
+            lg_mass_model = st.selectbox(
+                'Primary mass model', ['fixed', 'uniform'],
+                index=['fixed', 'uniform'].index(
+                    lg_cfg.get('mass_primary_model', 'fixed')),
+                key='lg_mass_model')
+            if lg_mass_model == 'fixed':
+                lg_mass_fixed = st.number_input(
+                    'M₁ (M☉)', 1.0, 200.0,
+                    float(lg_cfg.get('mass_primary_fixed', 10.0)), 1.0,
+                    key='lg_mass_fixed')
+                lg_mass_range = (float(lg_mass_fixed), float(lg_mass_fixed))
+            else:
+                lg_mass_fixed = 10.0
+                _lg_mr = lg_cfg.get('mass_primary_range', [10.0, 20.0])
+                _lgmc1, _lgmc2 = st.columns(2)
+                lg_mass_min_v = _lgmc1.number_input(
+                    'M₁ min', 1.0, 200.0, float(_lg_mr[0]), 1.0, key='lg_mass_min')
+                lg_mass_max_v = _lgmc2.number_input(
+                    'M₁ max', 1.0, 200.0, float(_lg_mr[1]), 1.0, key='lg_mass_max')
+                lg_mass_range = (float(lg_mass_min_v), float(lg_mass_max_v))
+
+            st.markdown('---')
+            # Mass ratio q — three presets
+            _q_preset_options = ['Dsilva (flat 0.1–2.0)',
+                                 'Langer flat (0.5–10.0)',
+                                 'Langer Fig.3 Case B (Gaussian)']
+            _q_preset_map = {
+                'Dsilva (flat 0.1–2.0)': 'dsilva',
+                'Langer flat (0.5–10.0)': 'langer_flat',
+                'Langer Fig.3 Case B (Gaussian)': 'langer_fig3',
+            }
+            _q_preset_inv = {v: k for k, v in _q_preset_map.items()}
+            _saved_q = lg_cfg.get('q_preset', 'langer_fig3')
+            lg_q_preset_label = st.selectbox(
+                'Mass ratio q model', _q_preset_options,
+                index=_q_preset_options.index(
+                    _q_preset_inv.get(_saved_q, _q_preset_options[2])),
+                key='lg_q_preset',
+                on_change=lambda: sm.save(
+                    ['grid_langer', 'q_preset'],
+                    value=_q_preset_map[st.session_state['lg_q_preset']]))
+            lg_q_preset = _q_preset_map[lg_q_preset_label]
+
+            if lg_q_preset == 'dsilva':
+                lg_q_model = 'flat'
+                lg_q_min, lg_q_max = 0.1, 2.0
+                lg_lq_mu, lg_lq_sig = 0.7, 0.2
+            elif lg_q_preset == 'langer_flat':
+                lg_q_model = 'flat'
+                lg_q_min, lg_q_max = 0.5, 10.0
+                lg_lq_mu, lg_lq_sig = 0.7, 0.2
+            else:  # langer_fig3
+                lg_q_model = 'langer'
+                lg_q_min, lg_q_max = 0.1, 2.0
+                lg_lq_mu = st.number_input(
+                    'Langer q mean', 0.01, 5.0,
+                    float(lg_cfg.get('langer_q_mu', 0.7)), 0.05,
+                    key='lg_lq_mu')
+                lg_lq_sig = st.number_input(
+                    'Langer q sigma', 0.01, 5.0,
+                    float(lg_cfg.get('langer_q_sigma', 0.2)), 0.05,
+                    key='lg_lq_sig')
+
+            st.caption(f'Active: q_model="{lg_q_model}", '
+                       f'range=[{lg_q_min}, {lg_q_max}]')
+
+    # ── Right column: actions + display ───────────────────────────────────────
+    with lg_col_right:
+        # Action row
+        lg_max_proc = max(1, (os.cpu_count() or 2) - 1)
+        _lg_ac1, _lg_ac2, _lg_ac3, _lg_ac4 = st.columns([0.15, 0.25, 0.30, 0.30])
+        lg_n_proc = _lg_ac1.number_input('Workers', 1, lg_max_proc, lg_max_proc,
+                                          key='lg_nproc')
+        lg_view_mode = _lg_ac2.radio('View', ['K-S p-value', 'K-S D-statistic'],
+                                      horizontal=True, key='lg_view_mode')
+        lg_show_d = lg_view_mode == 'K-S D-statistic'
+        lg_run_btn = _lg_ac3.button('▶️ Run Langer Grid', type='primary', key='lg_run')
+        lg_load_btn = _lg_ac4.button('📂 Load cached result', key='lg_load')
+
+        # Display slots
+        lg_progress_slot = st.empty()
+        lg_status_slot   = st.empty()
+        lg_heatmap_slot  = st.empty()
+        lg_result_slot   = st.empty()
+
+    # ── Stable config ─────────────────────────────────────────────────────────
+    lg_period_params = {
+        'mu_A': float(lg_mu_A), 'sigma_A': float(lg_sigma_A),
+        'mu_B': float(lg_mu_B), 'sigma_B': float(lg_sigma_B),
+        'weight_A': float(lg_weight_A),
+    }
+    lg_stable_cfg = {
+        'n_stars_sim':        int(lg_n_stars),
+        'sigma_measure':      float(lg_sigma_meas),
+        'logP_min':           float(lg_logP_min),
+        'logP_max':           float(lg_logP_max),
+        'period_model':       'langer2020',
+        'e_model':            'zero',
+        'e_max':              0.0,
+        'mass_primary_model': str(lg_mass_model),
+        'mass_primary_fixed': float(lg_mass_fixed),
+        'q_model':            str(lg_q_model),
+        'q_min':              float(lg_q_min),
+        'q_max':              float(lg_q_max),
+        'q_preset':           str(lg_q_preset),
+        'langer_period_params': lg_period_params,
+        'primary_line':       settings.get('primary_line', 'C IV 5808-5812'),
+        'threshold_dRV':      lg_cls.get('threshold_dRV', 45.5),
+        'sigma_factor':       lg_cls.get('sigma_factor', 4.0),
+    }
+
+    lg_fbin_vals  = np.linspace(float(lg_fbin_min), float(lg_fbin_max), int(lg_fbin_steps))
+    lg_sigma_vals = np.linspace(max(0.1, float(lg_sigma_min)),
+                                max(float(lg_sigma_min) + 0.1, float(lg_sigma_max)),
+                                int(lg_sigma_steps))
+
+    # ── Load cached result if requested ───────────────────────────────────────
+    if lg_load_btn:
+        cached_lg = cached_load_grid_result('langer')
+        if cached_lg is not None:
+            st.session_state['lg_result'] = cached_lg
+            lg_status_slot.success('Loaded cached result from results/langer_result.npz')
+        else:
+            lg_status_slot.warning('No cached result found at results/langer_result.npz')
+
+    # ── Run grid ──────────────────────────────────────────────────────────────
+    if lg_run_btn:
+        sh_lg = settings_hash(settings)
+        try:
+            lg_obs_drv, _ = cached_load_observed_delta_rvs(sh_lg)
+            lg_cad_list, lg_cad_weights = cached_load_cadence(sh_lg)
+        except Exception as e:
+            lg_status_slot.error(f'Failed to load observations: {e}')
+            st.stop()
+
+        from wr_bias_simulation import (
+            SimulationConfig, BinaryParameterConfig, _single_grid_task,
         )
-        bf_l, bp_l, bpv_l = _best_point(lg_ks_p, lg_fbin, lg_pi)
-        st.markdown(
-            f'**Best:** f_bin = `{bf_l:.4f}`,  π = `{bp_l:.4f}`,  p = `{bpv_l:.6f}`'
+
+        lg_bin_cfg = BinaryParameterConfig(
+            logP_min=float(lg_logP_min),
+            logP_max=float(lg_logP_max),
+            period_model='langer2020',
+            langer_period_params=lg_period_params,
+            e_model='zero',
+            e_max=0.0,
+            mass_primary_model=str(lg_mass_model),
+            mass_primary_fixed=float(lg_mass_fixed),
+            mass_primary_range=tuple(lg_mass_range),
+            q_model=str(lg_q_model),
+            q_range=(float(lg_q_min), float(lg_q_max)),
+            langer_q_mu=float(lg_lq_mu),
+            langer_q_sigma=float(lg_lq_sig),
         )
+
+        # ── Check for partial reuse ──────────────────────────────────────────
+        lg_cached_existing = None
+        lg_reuse_info = None
+        lg_existing_path = _result_path('langer')
+        if os.path.exists(lg_existing_path):
+            try:
+                lg_cached_existing = dict(np.load(lg_existing_path, allow_pickle=True))
+                lg_reuse_info = _find_reusable_fbin_langer(
+                    lg_cached_existing, lg_fbin_vals, lg_sigma_vals, lg_stable_cfg)
+            except Exception:
+                lg_cached_existing = None
+
+        if lg_reuse_info:
+            lg_reuse_new_idx, lg_reuse_cache_idx = lg_reuse_info
+            lg_n_reused = len(lg_reuse_new_idx)
+            lg_status_slot.info(
+                f'♻️ Reusing {lg_n_reused}/{len(lg_fbin_vals)} f_bin rows from cached result.')
+        else:
+            lg_reuse_new_idx, lg_reuse_cache_idx = [], []
+            lg_n_reused = 0
+
+        # Pre-allocate result arrays: shape [n_fbin, n_sigma]
+        lg_n_fbin  = len(lg_fbin_vals)
+        lg_n_sigma = len(lg_sigma_vals)
+        lg_acc_ks_p = np.full((lg_n_fbin, lg_n_sigma), np.nan)
+        lg_acc_ks_D = np.full_like(lg_acc_ks_p, np.nan)
+
+        # Fill in reused rows
+        if lg_reuse_info and lg_cached_existing is not None:
+            lg_c_ks_p = np.asarray(lg_cached_existing['ks_p'])
+            lg_c_ks_D = np.asarray(lg_cached_existing['ks_D'])
+            for new_i, cache_i in zip(lg_reuse_new_idx, lg_reuse_cache_idx):
+                lg_acc_ks_p[new_i, :] = lg_c_ks_p[cache_i, :]
+                lg_acc_ks_D[new_i, :] = lg_c_ks_D[cache_i, :]
+
+        lg_reuse_set = set(lg_reuse_new_idx)
+        lg_missing_fbin_idx = [i for i in range(lg_n_fbin) if i not in lg_reuse_set]
+
+        lg_n_cells_total = len(lg_missing_fbin_idx) * lg_n_sigma
+        lg_cells_done = 0
+        lg_t_start = time.time()
+
+        if lg_n_cells_total == 0:
+            lg_progress_slot.progress(1.0, text='All rows reused from cache.')
+            lg_status_slot.success('All f_bin rows already computed — no new work needed.')
+        else:
+            lg_fbin_to_global = {}
+            for gj in lg_missing_fbin_idx:
+                lg_fbin_to_global[round(float(lg_fbin_vals[gj]), 10)] = gj
+
+            lg_sigma_to_idx = {}
+            for i, sv in enumerate(lg_sigma_vals):
+                lg_sigma_to_idx[round(float(sv), 10)] = i
+
+            lg_seed_base = 5678
+            lg_last_render = 0.0
+
+            # Build all tasks
+            lg_tasks = []
+            for gj in lg_missing_fbin_idx:
+                for i_s, sv in enumerate(lg_sigma_vals):
+                    lg_sim_cfg_obj = SimulationConfig(
+                        n_stars=int(lg_n_stars),
+                        sigma_single=float(sv),
+                        sigma_measure=float(lg_sigma_meas),
+                        cadence_library=lg_cad_list,
+                        cadence_weights=lg_cad_weights,
+                    )
+                    lg_tasks.append((
+                        float(lg_fbin_vals[gj]),
+                        0.0,  # pi is unused for langer2020
+                        float(sv),
+                        lg_sim_cfg_obj,
+                        lg_bin_cfg,
+                        lg_obs_drv,
+                        'langer2020',
+                        lg_seed_base,
+                    ))
+                    lg_seed_base += 1
+
+            with mp.Pool(processes=int(lg_n_proc)) as pool:
+                for fb, _pi_ret, sigma_ret, D, p in pool.imap_unordered(
+                        _single_grid_task, lg_tasks,
+                        chunksize=max(1, lg_n_sigma // 4)):
+                    gj = lg_fbin_to_global[round(fb, 10)]
+                    i_s = lg_sigma_to_idx[round(sigma_ret, 10)]
+
+                    lg_acc_ks_p[gj, i_s] = p
+                    lg_acc_ks_D[gj, i_s] = D
+
+                    lg_cells_done += 1
+
+                    elapsed = time.time() - lg_t_start
+                    eta_str = ''
+                    if lg_cells_done > 1 and lg_cells_done < lg_n_cells_total:
+                        eta = elapsed / lg_cells_done * (lg_n_cells_total - lg_cells_done)
+                        eta_str = f'  —  ETA {int(eta)}s'
+
+                    lg_progress_slot.progress(
+                        lg_cells_done / lg_n_cells_total,
+                        text=(f'Cell {lg_cells_done}/{lg_n_cells_total}{eta_str}')
+                    )
+
+                    now = time.time()
+                    if now - lg_last_render > 1.0 or lg_cells_done == lg_n_cells_total:
+                        lg_last_render = now
+                        cur_p = np.where(np.isnan(lg_acc_ks_p), 0.0, lg_acc_ks_p)
+                        cur_D = np.where(np.isnan(lg_acc_ks_D), 0.0, lg_acc_ks_D)
+                        lg_heatmap_slot.plotly_chart(
+                            _make_heatmap_fig(
+                                cur_p, lg_fbin_vals, lg_sigma_vals,
+                                title='Langer 2020 — K-S p-value (live)',
+                                show_d=lg_show_d, ks_d_2d=cur_D,
+                                height=_ch, width=_cw,
+                                x_label='σ_single (km/s)',
+                                x_name='σ',
+                                best_label_fmt='  f={fbin:.3f}, σ={x:.1f}, p={p:.3f}',
+                            ),
+                            use_container_width=_use_cw,
+                        )
+
+                        bf, bsig, bpv = _best_point(cur_p, lg_fbin_vals, lg_sigma_vals)
+                        lg_status_slot.markdown(
+                            f'best f_bin = **{bf:.4f}**, σ_single = **{bsig:.1f}** km/s, '
+                            f'K-S p = **{bpv:.4f}**'
+                        )
+
+            # ── Checkpoint after each batch of fbin rows ──────────────────────
+            if lg_cells_done > 0:
+                os.makedirs(_RESULT_DIR, exist_ok=True)
+                np.savez(
+                    _result_path('langer') + '.partial',
+                    fbin_grid=lg_fbin_vals, sigma_grid=lg_sigma_vals,
+                    ks_p=lg_acc_ks_p, ks_D=lg_acc_ks_D,
+                    config_hash=_stable_cfg_hash(lg_stable_cfg),
+                    settings=np.array(json.dumps(lg_stable_cfg)),
+                    timestamp=np.array(_dt.datetime.now().isoformat()),
+                )
+
+        lg_elapsed_total = time.time() - lg_t_start
+        if lg_n_cells_total > 0:
+            lg_progress_slot.progress(1.0, text=f'Done in {lg_elapsed_total:.0f}s.')
+
+        # ── Save final result ─────────────────────────────────────────────────
+        os.makedirs(_RESULT_DIR, exist_ok=True)
+        lg_chash = _stable_cfg_hash({
+            **lg_stable_cfg,
+            'fbin_min': float(lg_fbin_min), 'fbin_max': float(lg_fbin_max),
+            'fbin_steps': int(lg_fbin_steps),
+            'sigma_min': float(lg_sigma_min), 'sigma_max': float(lg_sigma_max),
+            'sigma_steps': int(lg_sigma_steps),
+        })
+        lg_full_result = {
+            'fbin_grid':  lg_fbin_vals,
+            'sigma_grid': lg_sigma_vals,
+            'ks_p':       lg_acc_ks_p,
+            'ks_D':       lg_acc_ks_D,
+        }
+        np.savez(
+            _result_path('langer'),
+            **lg_full_result,
+            config_hash=lg_chash,
+            settings=np.array(json.dumps(lg_stable_cfg)),
+            obs_delta_rv=lg_obs_drv,
+            timestamp=np.array(_dt.datetime.now().isoformat()),
+        )
+        cached_load_grid_result.clear()
+        st.session_state['lg_result'] = lg_full_result
+        # Clean up partial checkpoint
+        _lg_partial = _result_path('langer') + '.partial.npz'
+        if os.path.exists(_lg_partial):
+            os.remove(_lg_partial)
+
+        _append_run_history({
+            'timestamp':     _dt.datetime.now().isoformat(),
+            'model':         'langer2020',
+            'config_hash':   lg_chash,
+            'config':        lg_stable_cfg,
+            'elapsed_s':     round(lg_elapsed_total, 1),
+            'result_file':   _result_path('langer'),
+            'n_reused_fbin': lg_n_reused,
+        })
+
+        lg_status_slot.success(
+            f'Saved to results/langer_result.npz  '
+            f'({lg_n_reused} f_bin rows reused, '
+            f'{len(lg_fbin_vals) - lg_n_reused} computed in {lg_elapsed_total:.0f}s)')
+
+    # ── Display result (always shown when result exists) ─────────────────────
+    lg_result = st.session_state.get('lg_result')
+    if lg_result is None:
+        lg_result = cached_load_grid_result('langer')
+        if lg_result is not None:
+            st.session_state['lg_result'] = lg_result
+
+    if lg_result is not None:
+        lg_fbin_g  = np.asarray(lg_result['fbin_grid'])
+        lg_sigma_g = np.asarray(lg_result['sigma_grid'])
+        lg_ks_p_2d = np.asarray(lg_result['ks_p'])
+        lg_ks_D_2d = np.asarray(lg_result['ks_D'])
+
+        # Show heatmap (skip if just ran — live heatmap already shown)
+        if not lg_run_btn:
+            lg_heatmap_slot.plotly_chart(
+                _make_heatmap_fig(
+                    lg_ks_p_2d, lg_fbin_g, lg_sigma_g,
+                    title='Langer 2020 — K-S p-value',
+                    show_d=lg_show_d, ks_d_2d=lg_ks_D_2d,
+                    height=_ch, width=_cw,
+                    x_label='σ_single (km/s)',
+                    x_name='σ',
+                    best_label_fmt='  f={fbin:.3f}, σ={x:.1f}, p={p:.3f}',
+                ),
+                use_container_width=_use_cw,
+            )
+
+        # Best-fit point
+        best_fbin_lg, best_sigma_lg, best_pval_lg = _best_point(
+            lg_ks_p_2d, lg_fbin_g, lg_sigma_g)
+
+        lg_bartzakos = lg_cls.get('bartzakos_binaries', 3)
+        lg_total_pop = lg_cls.get('total_population', 28)
+
+        sh_lg_curr = settings_hash(settings)
+        try:
+            lg_obs_drv_a, _ = cached_load_observed_delta_rvs(sh_lg_curr)
+            lg_n_det = int(np.sum(lg_obs_drv_a > lg_cls.get('threshold_dRV', 45.5)))
+        except Exception:
+            lg_n_det = 0
+
+        # ── Marginalization + HDI68 ───────────────────────────────────────────
+        from wr_bias_simulation import compute_hdi68
+
+        # 1D posterior for f_bin: sum over σ
+        lg_post_fbin = np.sum(lg_ks_p_2d, axis=1)
+        lg_mode_fbin, lg_lo_fbin, lg_hi_fbin = compute_hdi68(lg_fbin_g, lg_post_fbin)
+
+        # 1D posterior for σ_single: sum over f_bin
+        lg_post_sigma = np.sum(lg_ks_p_2d, axis=0)
+        lg_mode_sigma, lg_lo_sigma, lg_hi_sigma = compute_hdi68(lg_sigma_g, lg_post_sigma)
+
+        lg_result_slot.markdown(
+            f'**Best fit (HDI68):**  '
+            f'f_bin = `{lg_mode_fbin:.4f}` '
+            f'(+{lg_hi_fbin - lg_mode_fbin:.4f} / -{lg_mode_fbin - lg_lo_fbin:.4f}),  '
+            f'σ_single = `{lg_mode_sigma:.1f}` '
+            f'(+{lg_hi_sigma - lg_mode_sigma:.1f} / -{lg_mode_sigma - lg_lo_sigma:.1f}) km/s'
+            f'  \nK-S p = `{best_pval_lg:.6f}`  \n'
+            f'**Observed fraction:**  '
+            f'({lg_n_det}+{lg_bartzakos})/{lg_total_pop} = '
+            f'**{(lg_n_det + lg_bartzakos) / lg_total_pop * 100:.1f}%**'
+        )
+
+        # ── Corner Plot (2 params: f_bin × σ_single) ─────────────────────────
+        st.markdown('---')
+        st.markdown('### Marginalized Posteriors (Corner Plot)')
+
+        from plotly.subplots import make_subplots as _lg_corner_subplots
+
+        _lg_n_params = 2
+        _lg_param_names = ['f_bin', 'σ_single']
+        _lg_param_grids = [lg_fbin_g, lg_sigma_g]
+        _lg_param_posts = [lg_post_fbin, lg_post_sigma]
+        _lg_param_modes = [lg_mode_fbin, lg_mode_sigma]
+        _lg_param_los   = [lg_lo_fbin, lg_lo_sigma]
+        _lg_param_his   = [lg_hi_fbin, lg_hi_sigma]
+
+        fig_lg_corner = _lg_corner_subplots(
+            rows=_lg_n_params, cols=_lg_n_params,
+            horizontal_spacing=0.08, vertical_spacing=0.08,
+        )
+
+        for i in range(_lg_n_params):
+            # Diagonal: 1D posterior
+            _lg_area = float(np.trapezoid(_lg_param_posts[i], _lg_param_grids[i]))
+            _lg_pn = _lg_param_posts[i] / _lg_area if _lg_area > 0 else _lg_param_posts[i]
+
+            fig_lg_corner.add_trace(go.Scatter(
+                x=_lg_param_grids[i], y=_lg_pn,
+                mode='lines', line=dict(color='#4A90D9', width=2),
+                showlegend=False,
+            ), row=i + 1, col=i + 1)
+
+            # HDI68 shading
+            _lg_mask = ((_lg_param_grids[i] >= _lg_param_los[i]) &
+                        (_lg_param_grids[i] <= _lg_param_his[i]))
+            _lg_xh = _lg_param_grids[i][_lg_mask]
+            _lg_yh = _lg_pn[_lg_mask]
+            if len(_lg_xh) > 0:
+                fig_lg_corner.add_trace(go.Scatter(
+                    x=np.concatenate([_lg_xh, _lg_xh[::-1]]),
+                    y=np.concatenate([_lg_yh, np.zeros(len(_lg_yh))]),
+                    fill='toself', fillcolor='rgba(74,144,217,0.3)',
+                    line=dict(width=0), showlegend=False,
+                ), row=i + 1, col=i + 1)
+
+            # Mode line
+            fig_lg_corner.add_vline(
+                x=_lg_param_modes[i], line_dash='dash',
+                line_color='#E25A53', line_width=1.5,
+                row=i + 1, col=i + 1,
+            )
+
+            # Off-diagonal: 2D heatmap (lower triangle)
+            for j in range(i):
+                # For 2 params, axes are: param0=f_bin→axis0, param1=σ→axis1
+                # ks_p_2d shape is [n_fbin, n_sigma]
+                # For cell (i=1, j=0): x=f_bin (j=0), y=σ (i=1)
+                # z needs to be [n_y, n_x] = [n_sigma, n_fbin] = ks_p_2d.T
+                fig_lg_corner.add_trace(go.Heatmap(
+                    x=_lg_param_grids[j], y=_lg_param_grids[i],
+                    z=lg_ks_p_2d.T,
+                    colorscale='Viridis', showscale=False,
+                    hovertemplate=f'{_lg_param_names[j]}=%{{x:.4f}}<br>'
+                                 f'{_lg_param_names[i]}=%{{y:.4f}}<br>'
+                                 f'p=%{{z:.4f}}<extra></extra>',
+                ), row=i + 1, col=j + 1)
+
+                fig_lg_corner.add_trace(go.Scatter(
+                    x=[_lg_param_modes[j]], y=[_lg_param_modes[i]],
+                    mode='markers',
+                    marker=dict(symbol='star', size=10, color='gold',
+                                line=dict(color='black', width=1)),
+                    showlegend=False,
+                ), row=i + 1, col=j + 1)
+
+        # Axis labels
+        for i in range(_lg_n_params):
+            fig_lg_corner.update_xaxes(title_text=_lg_param_names[i],
+                                        row=_lg_n_params, col=i + 1)
+            if i > 0:
+                fig_lg_corner.update_yaxes(title_text=_lg_param_names[i],
+                                            row=i + 1, col=1)
+
+        # Hide upper triangle
+        for i in range(_lg_n_params):
+            for j in range(i + 1, _lg_n_params):
+                fig_lg_corner.update_xaxes(visible=False, row=i + 1, col=j + 1)
+                fig_lg_corner.update_yaxes(visible=False, row=i + 1, col=j + 1)
+
+        fig_lg_corner.update_layout(
+            **PLOTLY_THEME,
+            height=250 * _lg_n_params,
+            width=250 * _lg_n_params,
+            showlegend=False,
+            margin=dict(l=60, r=20, t=30, b=60),
+        )
+        st.plotly_chart(fig_lg_corner, use_container_width=True, key='lg_corner_plot')
+        st.caption(
+            f'Marginalized posteriors (Langer 2020 model). '
+            f'**Diagonal:** 1D posteriors with mode (dashed red) and '
+            f'68% HDI (blue shading). '
+            f'**Off-diagonal:** 2D K-S p-value with best-fit (gold star). '
+            f'f_bin = {lg_mode_fbin:.4f} '
+            f'(+{lg_hi_fbin - lg_mode_fbin:.4f}/-{lg_mode_fbin - lg_lo_fbin:.4f}), '
+            f'σ = {lg_mode_sigma:.1f} '
+            f'(+{lg_hi_sigma - lg_mode_sigma:.1f}/-{lg_mode_sigma - lg_lo_sigma:.1f}) km/s.'
+        )
+
+        # ── Analysis plots (period dist, binary fraction, orbital properties) ─
+        from wr_bias_simulation import (
+            SimulationConfig, BinaryParameterConfig,
+            simulate_delta_rv_sample, _simulate_rv_sample_full,
+            simulate_with_params, ks_two_sample,
+        )
+
+        sh_lg_a = settings_hash(settings)
+        try:
+            lg_obs_drv_analysis, lg_obs_detail = cached_load_observed_delta_rvs(sh_lg_a)
+            lg_cad_a, lg_cad_w_a = cached_load_cadence(sh_lg_a)
+            _lg_has_obs = True
+        except Exception:
+            _lg_has_obs = False
+
+        if _lg_has_obs:
+            lg_thresh_dRV = float(lg_cls.get('threshold_dRV', 45.5))
+
+            _lg_bin_cfg_ex = BinaryParameterConfig(
+                logP_min=float(lg_logP_min),
+                logP_max=float(lg_logP_max),
+                period_model='langer2020',
+                langer_period_params=lg_period_params,
+                e_model='zero', e_max=0.0,
+                mass_primary_model=str(lg_mass_model),
+                mass_primary_fixed=float(lg_mass_fixed),
+                mass_primary_range=tuple(lg_mass_range),
+                q_model=str(lg_q_model),
+                q_range=(float(lg_q_min), float(lg_q_max)),
+                langer_q_mu=float(lg_lq_mu),
+                langer_q_sigma=float(lg_lq_sig),
+            )
+
+            # Simulate at best-fit
+            _lg_sim_cfg_gap = SimulationConfig(
+                n_stars=int(lg_n_stars),
+                sigma_single=float(best_sigma_lg),
+                sigma_measure=float(lg_sigma_meas),
+                cadence_library=lg_cad_a,
+                cadence_weights=lg_cad_w_a,
+            )
+            if 'lg_gap_sim' not in st.session_state:
+                rng_lg_gap = np.random.default_rng(199)
+                st.session_state['lg_gap_sim'] = simulate_with_params(
+                    best_fbin_lg, 0.0,  # pi unused for langer
+                    _lg_sim_cfg_gap, _lg_bin_cfg_ex, rng_lg_gap,
+                )
+            lg_gap_sim = st.session_state['lg_gap_sim']
+
+            lg_gap_drv = lg_gap_sim['delta_rv']
+            lg_gap_is_bin = lg_gap_sim['is_binary']
+            lg_gap_idx_bin = lg_gap_sim['idx_bin']
+
+            lg_intrinsic_fbin = float(lg_gap_is_bin.mean())
+            lg_detected_mask = lg_gap_drv > lg_thresh_dRV
+            lg_observed_fbin = float(lg_detected_mask.mean())
+            lg_missed_count = int(np.sum(lg_gap_is_bin & ~lg_detected_mask))
+            lg_detected_bin_count = int(np.sum(lg_gap_is_bin & lg_detected_mask))
+            lg_total_bin = int(lg_gap_is_bin.sum())
+
+            _lg_bin_drv = lg_gap_drv[lg_gap_idx_bin] if lg_gap_idx_bin.size > 0 else np.array([])
+            _lg_bin_det_mask = _lg_bin_drv > lg_thresh_dRV
+            _lg_bin_mis_mask = ~_lg_bin_det_mask
+
+            # ── Period Distribution + Binary Fraction vs Threshold ────────────
+            st.markdown('---')
+            _lg_lp_col, _lg_bf_col = st.columns(2)
+
+            _CLR_DETECTED = '#E25A53'
+            _CLR_MISSED   = '#F5A623'
+
+            with _lg_lp_col:
+                st.markdown('### Period Distribution  (log P)')
+
+                fig_lg_logP = go.Figure()
+                if lg_gap_sim['P_days'].size > 0:
+                    _lg_logP_det = (np.log10(lg_gap_sim['P_days'][_lg_bin_det_mask])
+                                    if np.any(_lg_bin_det_mask) else np.array([]))
+                    _lg_logP_mis = (np.log10(lg_gap_sim['P_days'][_lg_bin_mis_mask])
+                                    if np.any(_lg_bin_mis_mask) else np.array([]))
+
+                    if _lg_logP_det.size > 0:
+                        fig_lg_logP.add_trace(go.Histogram(
+                            x=_lg_logP_det, nbinsx=35,
+                            histnorm='probability density',
+                            name=f'Detected ({_lg_logP_det.size})',
+                            marker_color=_CLR_DETECTED, opacity=0.6,
+                        ))
+                    if _lg_logP_mis.size > 0:
+                        fig_lg_logP.add_trace(go.Histogram(
+                            x=_lg_logP_mis, nbinsx=35,
+                            histnorm='probability density',
+                            name=f'Missed ({_lg_logP_mis.size})',
+                            marker_color=_CLR_MISSED, opacity=0.6,
+                        ))
+
+                fig_lg_logP.add_vline(x=float(lg_logP_min), line_dash='dash',
+                                      line_color='#888', line_width=1.5,
+                                      annotation_text='logP_min',
+                                      annotation_position='top left',
+                                      annotation_font_color='#888')
+                fig_lg_logP.add_vline(x=float(lg_logP_max), line_dash='dash',
+                                      line_color='#888', line_width=1.5,
+                                      annotation_text='logP_max',
+                                      annotation_position='top right',
+                                      annotation_font_color='#888')
+                fig_lg_logP.update_layout(**{
+                    **PLOTLY_THEME,
+                    'barmode': 'overlay',
+                    'title': dict(
+                        text='Simulated Period Distribution  (Langer 2020 mixture)',
+                        font=dict(size=14)),
+                    'xaxis_title': 'log₁₀(P / days)',
+                    'yaxis_title': 'Probability density',
+                    'height': 400,
+                    'margin': dict(l=60, r=20, t=50, b=50),
+                    'legend': dict(x=0.65, y=0.95),
+                })
+                st.plotly_chart(fig_lg_logP, use_container_width=True, key='lg_logP_hist')
+                st.caption(
+                    'Period distribution of simulated binaries using the Langer+2020 '
+                    'two-Gaussian mixture model. Red: detected. Amber: missed.'
+                )
+
+            with _lg_bf_col:
+                st.markdown('### Observed Binary Fraction vs Threshold')
+
+                _lg_n_sim = len(lg_gap_drv)
+                _lg_thresh_arr = np.linspace(0, float(np.max(lg_gap_drv) * 1.05), 200)
+                _lg_fbin_curve = np.array(
+                    [float(np.sum(lg_gap_drv > t)) / _lg_n_sim for t in _lg_thresh_arr])
+
+                _lg_bin_drv_all = lg_gap_drv[lg_gap_is_bin]
+                _lg_sin_drv_all = lg_gap_drv[~lg_gap_is_bin]
+                _lg_missed_curve = np.array(
+                    [float(np.sum(_lg_bin_drv_all <= t)) / _lg_n_sim for t in _lg_thresh_arr])
+                _lg_fp_curve = np.array(
+                    [float(np.sum(_lg_sin_drv_all > t)) / _lg_n_sim for t in _lg_thresh_arr])
+
+                fig_lg_gap = go.Figure()
+                fig_lg_gap.add_trace(go.Scatter(
+                    x=_lg_thresh_arr, y=_lg_missed_curve,
+                    fill='tozeroy', fillcolor='rgba(242,166,35,0.25)',
+                    line=dict(width=0), mode='lines',
+                    name='Missed binaries', showlegend=True,
+                ))
+                if np.any(_lg_fp_curve > 0):
+                    fig_lg_gap.add_trace(go.Scatter(
+                        x=_lg_thresh_arr, y=_lg_fp_curve,
+                        fill='tozeroy', fillcolor='rgba(74,144,217,0.25)',
+                        line=dict(width=0), mode='lines',
+                        name='Singles above threshold', showlegend=True,
+                    ))
+                fig_lg_gap.add_trace(go.Scatter(
+                    x=_lg_thresh_arr, y=_lg_fbin_curve,
+                    mode='lines', name='Observed f_bin(threshold)',
+                    line=dict(color='#4A90D9', width=2.5),
+                ))
+                fig_lg_gap.add_hline(
+                    y=lg_intrinsic_fbin, line_dash='dot',
+                    line_color='#E25A53', line_width=2,
+                    annotation_text=f'Intrinsic f_bin = {lg_intrinsic_fbin:.1%}',
+                    annotation_position='top left',
+                    annotation_font=dict(size=11, color='#E25A53'),
+                )
+                fig_lg_gap.add_vline(
+                    x=lg_thresh_dRV, line_dash='dash',
+                    line_color='#F5A623', line_width=2,
+                    annotation_text=f'Threshold = {lg_thresh_dRV} km/s',
+                    annotation_position='top right',
+                    annotation_font=dict(size=11, color='#F5A623'),
+                )
+                fig_lg_gap.add_trace(go.Scatter(
+                    x=[lg_thresh_dRV], y=[lg_observed_fbin],
+                    mode='markers+text',
+                    marker=dict(size=12, color='#FFD700', symbol='star',
+                                line=dict(width=1, color='#fff')),
+                    text=[f'{lg_observed_fbin:.1%}'],
+                    textposition='top left',
+                    textfont=dict(size=12, color='#FFD700'),
+                    name=f'Observed @ {lg_thresh_dRV} km/s',
+                    showlegend=True,
+                ))
+
+                lg_gap_pct = lg_intrinsic_fbin - lg_observed_fbin
+                fig_lg_gap.add_annotation(
+                    x=lg_thresh_dRV + 15,
+                    y=(lg_intrinsic_fbin + lg_observed_fbin) / 2,
+                    text=f'Gap: {lg_gap_pct:.1%}<br>({lg_missed_count} missed / {lg_total_bin} binaries)',
+                    showarrow=False,
+                    font=dict(size=11, color='#F5A623'),
+                    bgcolor='rgba(255,255,255,0.9)',
+                    bordercolor='#F5A623', borderwidth=1, borderpad=4,
+                )
+                fig_lg_gap.add_annotation(
+                    x=lg_thresh_dRV, y=lg_intrinsic_fbin,
+                    ax=lg_thresh_dRV, ay=lg_observed_fbin,
+                    xref='x', yref='y', axref='x', ayref='y',
+                    showarrow=True, arrowhead=3,
+                    arrowwidth=2, arrowcolor='#F5A623',
+                )
+                fig_lg_gap.update_layout(**{
+                    **PLOTLY_THEME,
+                    'title': dict(text='Binary Fraction vs ΔRV Threshold',
+                                  font=dict(size=14)),
+                    'xaxis_title': 'ΔRV threshold (km/s)',
+                    'yaxis_title': 'Fraction of sample',
+                    'height': 400,
+                    'margin': dict(l=60, r=80, t=50, b=50),
+                    'showlegend': True,
+                    'legend': dict(x=0.55, y=0.95, font=dict(size=10)),
+                    'yaxis': dict(range=[0, min(1.0, lg_intrinsic_fbin * 1.5)]),
+                })
+                st.plotly_chart(fig_lg_gap, use_container_width=True, key='lg_gap_chart')
+                st.caption(
+                    f'Binary fraction as a function of ΔRV threshold (Langer model). '
+                    f'At {lg_thresh_dRV} km/s: observed = {lg_observed_fbin:.1%}, '
+                    f'intrinsic = {lg_intrinsic_fbin:.1%}, '
+                    f'gap = {lg_gap_pct:.1%} ({lg_missed_count} missed).'
+                )
+
+            # ── Binary Orbital Parameter Histograms ───────────────────────────
+            st.markdown('---')
+            st.markdown('### Binary Orbital Properties')
+
+            _lg_mb_view = st.radio(
+                'Show populations',
+                ['Compare detected vs missed', 'Detected binaries only',
+                 'Missed binaries only', 'All binaries (combined)'],
+                horizontal=True, key='lg_mb_view',
+            )
+
+            def _lg_safe_mask(arr, mask):
+                return arr[mask] if arr.size > 0 else np.array([])
+
+            lg_P_det = _lg_safe_mask(lg_gap_sim['P_days'], _lg_bin_det_mask)
+            lg_P_mis = _lg_safe_mask(lg_gap_sim['P_days'], _lg_bin_mis_mask)
+            lg_e_det = _lg_safe_mask(lg_gap_sim['e'], _lg_bin_det_mask)
+            lg_e_mis = _lg_safe_mask(lg_gap_sim['e'], _lg_bin_mis_mask)
+            lg_q_det = _lg_safe_mask(lg_gap_sim['q'], _lg_bin_det_mask)
+            lg_q_mis = _lg_safe_mask(lg_gap_sim['q'], _lg_bin_mis_mask)
+            lg_K1_det = _lg_safe_mask(lg_gap_sim['K1'], _lg_bin_det_mask)
+            lg_K1_mis = _lg_safe_mask(lg_gap_sim['K1'], _lg_bin_mis_mask)
+            lg_M1_det = _lg_safe_mask(lg_gap_sim['M1'], _lg_bin_det_mask)
+            lg_M1_mis = _lg_safe_mask(lg_gap_sim['M1'], _lg_bin_mis_mask)
+            lg_i_det = np.degrees(_lg_safe_mask(lg_gap_sim['i_rad'], _lg_bin_det_mask))
+            lg_i_mis = np.degrees(_lg_safe_mask(lg_gap_sim['i_rad'], _lg_bin_mis_mask))
+
+            _lg_has_omega = 'omega' in lg_gap_sim
+            if _lg_has_omega:
+                lg_omega_det = np.degrees(_lg_safe_mask(lg_gap_sim['omega'], _lg_bin_det_mask))
+                lg_omega_mis = np.degrees(_lg_safe_mask(lg_gap_sim['omega'], _lg_bin_mis_mask))
+                lg_T0_det = _lg_safe_mask(lg_gap_sim['T0'], _lg_bin_det_mask)
+                lg_T0_mis = _lg_safe_mask(lg_gap_sim['T0'], _lg_bin_mis_mask)
+            else:
+                lg_omega_det = lg_omega_mis = lg_T0_det = lg_T0_mis = np.array([])
+
+            lg_M2_det = lg_q_det * lg_M1_det if lg_q_det.size > 0 and lg_M1_det.size > 0 else np.array([])
+            lg_M2_mis = lg_q_mis * lg_M1_mis if lg_q_mis.size > 0 and lg_M1_mis.size > 0 else np.array([])
+
+            lg_P_all = lg_gap_sim['P_days']
+            lg_e_all = lg_gap_sim['e']
+            lg_q_all = lg_gap_sim['q']
+            lg_K1_all = lg_gap_sim['K1']
+            lg_M1_all = lg_gap_sim['M1']
+            lg_i_all = np.degrees(lg_gap_sim['i_rad'])
+            lg_omega_all = np.degrees(lg_gap_sim['omega']) if _lg_has_omega else np.array([])
+            lg_T0_all = lg_gap_sim['T0'] if _lg_has_omega else np.array([])
+            lg_M2_all = lg_q_all * lg_M1_all if lg_q_all.size > 0 else np.array([])
+
+            from plotly.subplots import make_subplots as _lg_make_subplots
+
+            _lg_titles = [
+                'log₁₀(P / days)', 'Eccentricity', 'Mass ratio q',
+                'K₁ (km/s)', 'M₁ (M⊙)', 'M₂ (M⊙)',
+                'Inclination (°)', 'ω (°)', 'T₀ (rad)',
+            ]
+            _lg_x_labels = [
+                'log₁₀(P / days)', 'e', 'q = M₂/M₁',
+                'K₁ (km/s)', 'M₁ (M⊙)', 'M₂ (M⊙)',
+                'i (degrees)', 'ω (degrees)', 'T₀ (rad)',
+            ]
+            _lg_n_panels = 9
+            _lg_n_cols = 3
+            _lg_n_rows = 3
+            _lg_nbins = 30
+
+            fig_lg_mb = _lg_make_subplots(
+                rows=_lg_n_rows, cols=_lg_n_cols,
+                subplot_titles=_lg_titles,
+                horizontal_spacing=0.08, vertical_spacing=0.10)
+
+            _CLR_ALL = '#52B788'
+
+            def _lg_add_hist(fig, row, col, data, name, color, show_legend):
+                if data.size == 0:
+                    return
+                fig.add_trace(go.Histogram(
+                    x=data, nbinsx=_lg_nbins,
+                    histnorm='probability density',
+                    name=name, marker_color=color, opacity=0.6,
+                    legendgroup=name, showlegend=show_legend,
+                ), row=row, col=col)
+
+            def _lg_pos(idx):
+                return (idx // _lg_n_cols + 1, idx % _lg_n_cols + 1)
+
+            if _lg_mb_view == 'All binaries (combined)':
+                _lg_data_all = [
+                    np.log10(lg_P_all) if lg_P_all.size > 0 else lg_P_all,
+                    lg_e_all, lg_q_all, lg_K1_all, lg_M1_all, lg_M2_all,
+                    lg_i_all, lg_omega_all, lg_T0_all,
+                ]
+                for pi, d in enumerate(_lg_data_all):
+                    r, c = _lg_pos(pi)
+                    _lg_add_hist(fig_lg_mb, r, c, d, 'All binaries', _CLR_ALL, pi == 0)
+            else:
+                _lg_det_data = [
+                    np.log10(lg_P_det) if lg_P_det.size > 0 else lg_P_det,
+                    lg_e_det, lg_q_det, lg_K1_det, lg_M1_det, lg_M2_det,
+                    lg_i_det, lg_omega_det, lg_T0_det,
+                ]
+                _lg_mis_data = [
+                    np.log10(lg_P_mis) if lg_P_mis.size > 0 else lg_P_mis,
+                    lg_e_mis, lg_q_mis, lg_K1_mis, lg_M1_mis, lg_M2_mis,
+                    lg_i_mis, lg_omega_mis, lg_T0_mis,
+                ]
+                if _lg_mb_view in ('Compare detected vs missed', 'Detected binaries only'):
+                    for pi, d in enumerate(_lg_det_data):
+                        r, c = _lg_pos(pi)
+                        _lg_add_hist(fig_lg_mb, r, c, d, 'Detected', _CLR_DETECTED, pi == 0)
+                if _lg_mb_view in ('Compare detected vs missed', 'Missed binaries only'):
+                    for pi, d in enumerate(_lg_mis_data):
+                        r, c = _lg_pos(pi)
+                        _lg_add_hist(fig_lg_mb, r, c, d, 'Missed', _CLR_MISSED, pi == 0)
+
+            fig_lg_mb.update_layout(**{
+                **PLOTLY_THEME,
+                'barmode': 'overlay',
+                'height': 850,
+                'margin': dict(l=40, r=20, t=40, b=60),
+                'legend': dict(
+                    orientation='h', yanchor='bottom', y=1.04,
+                    xanchor='center', x=0.5,
+                ),
+            })
+            for pi in range(_lg_n_panels):
+                r, c = _lg_pos(pi)
+                fig_lg_mb.update_xaxes(title_text=_lg_x_labels[pi],
+                                        showgrid=False, row=r, col=c)
+                fig_lg_mb.update_yaxes(showgrid=False, row=r, col=c)
+            for row_i in range(1, _lg_n_rows + 1):
+                fig_lg_mb.update_yaxes(title_text='Prob. density', row=row_i, col=1)
+
+            st.plotly_chart(fig_lg_mb, use_container_width=True, key='lg_orb_props')
+            st.caption(
+                f'Orbital parameter distributions (Langer 2020 model, best-fit: '
+                f'f_bin={best_fbin_lg:.3f}, σ_single={best_sigma_lg:.1f} km/s). '
+                f'**Detected** (red): {lg_detected_bin_count} binaries. '
+                f'**Missed** (amber): {lg_missed_count} binaries.'
+            )
+
+            # ── Model Explorer ────────────────────────────────────────────────
+            st.markdown('---')
+            st.markdown('## Model Explorer')
+
+            _lg_me1, _lg_me2, _lg_me3 = st.columns([0.35, 0.35, 0.30])
+            lg_ex_fbin = _lg_me1.number_input(
+                'f_bin', 0.0, 1.0, best_fbin_lg, 0.001, format='%.4f',
+                key='lg_explore_fbin')
+            lg_ex_sigma = _lg_me2.number_input(
+                'σ_single (km/s)', 0.1, 500.0, best_sigma_lg, 0.1,
+                key='lg_explore_sigma')
+            lg_sim_btn = _lg_me3.button('Simulate model', type='primary',
+                                         key='lg_sim_model')
+            st.caption('Pre-filled with best-fit values. Adjust to explore any model point.')
+
+            _lg_sim_cfg_ex = SimulationConfig(
+                n_stars=int(lg_n_stars),
+                sigma_single=float(lg_ex_sigma),
+                sigma_measure=float(lg_sigma_meas),
+                cadence_library=lg_cad_a,
+                cadence_weights=lg_cad_w_a,
+            )
+
+            _lg_need_sim = lg_sim_btn or 'lg_sim_drv' not in st.session_state
+            if _lg_need_sim:
+                rng_lg_ex = np.random.default_rng(142)
+                st.session_state['lg_sim_drv'] = simulate_delta_rv_sample(
+                    float(lg_ex_fbin), 0.0,
+                    _lg_sim_cfg_ex, _lg_bin_cfg_ex, rng_lg_ex,
+                )
+                rng_lg_ex2 = np.random.default_rng(142)
+                lg_rv_s, lg_rv_b = _simulate_rv_sample_full(
+                    float(lg_ex_fbin), 0.0,
+                    _lg_sim_cfg_ex, _lg_bin_cfg_ex, rng_lg_ex2,
+                )
+                st.session_state['lg_sim_rv_single'] = lg_rv_s
+                st.session_state['lg_sim_rv_binary'] = lg_rv_b
+                st.session_state['lg_explore_vals'] = (
+                    float(lg_ex_fbin), float(lg_ex_sigma))
+
+            lg_sim_drv = st.session_state.get('lg_sim_drv')
+            lg_sim_rv_single = st.session_state.get('lg_sim_rv_single')
+            lg_sim_rv_binary = st.session_state.get('lg_sim_rv_binary')
+            lg_ex_fb_v, lg_ex_sig_v = st.session_state.get(
+                'lg_explore_vals', (best_fbin_lg, best_sigma_lg))
+
+            if lg_sim_drv is not None:
+                # ── CDF Comparison ────────────────────────────────────────────
+                st.markdown('### CDF Comparison  (ΔRV)')
+
+                lg_obs_sorted = np.sort(lg_obs_drv_analysis)
+                lg_obs_cdf = np.arange(1, len(lg_obs_sorted) + 1) / len(lg_obs_sorted)
+                lg_sim_sorted = np.sort(lg_sim_drv)
+                lg_sim_cdf = np.arange(1, len(lg_sim_sorted) + 1) / len(lg_sim_sorted)
+
+                lg_D_val, lg_p_val = ks_two_sample(lg_sim_drv, lg_obs_drv_analysis)
+
+                fig_lg_cdf = go.Figure()
+                fig_lg_cdf.add_trace(go.Scatter(
+                    x=lg_obs_sorted, y=lg_obs_cdf,
+                    mode='lines', name='Observed',
+                    line=dict(color='#4A90D9', width=2.5),
+                ))
+                fig_lg_cdf.add_trace(go.Scatter(
+                    x=lg_sim_sorted, y=lg_sim_cdf,
+                    mode='lines', name='Simulated',
+                    line=dict(color='#E25A53', width=2.5, dash='dash'),
+                ))
+                fig_lg_cdf.update_layout(**{
+                    **PLOTLY_THEME,
+                    'title': dict(
+                        text=(f'ΔRV CDF — Observed vs Langer Model  '
+                              f'(f_bin={lg_ex_fb_v:.3f}, σ={lg_ex_sig_v:.1f})'),
+                        font=dict(size=14)),
+                    'xaxis_title': 'ΔRV (km/s)',
+                    'yaxis_title': 'Cumulative fraction',
+                    'height': 420,
+                    'legend': dict(x=0.65, y=0.15),
+                    'annotations': [dict(
+                        x=0.98, y=0.95, xref='paper', yref='paper',
+                        text=f'K-S D = {lg_D_val:.4f}<br>p = {lg_p_val:.4f}',
+                        showarrow=False,
+                        font=dict(size=12, color='#333333'),
+                        bgcolor='rgba(255,255,255,0.9)',
+                        borderpad=6, xanchor='right',
+                    )],
+                })
+                st.plotly_chart(fig_lg_cdf, use_container_width=True, key='lg_cdf')
+                st.caption(
+                    'CDF of peak-to-peak ΔRV (Langer 2020 model). Higher p-value '
+                    'indicates a better match between model and observations.'
+                )
+
+                # ── RV Distribution ───────────────────────────────────────────
+                st.markdown('### RV Distribution')
+
+                lg_obs_rv_all_list = []
+                lg_obs_rv_bin_list = []
+                lg_obs_rv_sin_list = []
+                for star_name, info in lg_obs_detail.items():
+                    rv_arr = info.get('rv')
+                    if rv_arr is None or len(rv_arr) == 0:
+                        continue
+                    lg_obs_rv_all_list.append(rv_arr)
+                    if bool(info.get('is_binary', False)):
+                        lg_obs_rv_bin_list.append(rv_arr)
+                    else:
+                        lg_obs_rv_sin_list.append(rv_arr)
+
+                lg_obs_rv_all = np.concatenate(lg_obs_rv_all_list) if lg_obs_rv_all_list else np.array([])
+                lg_obs_rv_sin = np.concatenate(lg_obs_rv_sin_list) if lg_obs_rv_sin_list else np.array([])
+                lg_obs_rv_bin = np.concatenate(lg_obs_rv_bin_list) if lg_obs_rv_bin_list else np.array([])
+
+                _lg_rv_c1, _lg_rv_c2 = st.columns([0.4, 0.6])
+                lg_rv_split = _lg_rv_c1.radio(
+                    'Observed RVs', ['All combined', 'Split by classification'],
+                    horizontal=True, key='lg_rv_split')
+                lg_show_sim_rv = _lg_rv_c2.checkbox(
+                    'Overlay simulated RVs', value=True, key='lg_show_sim_rv')
+
+                fig_lg_rv = go.Figure()
+                lg_nbins_rv = 40
+
+                if lg_rv_split == 'All combined':
+                    if lg_obs_rv_all.size > 0:
+                        fig_lg_rv.add_trace(go.Histogram(
+                            x=lg_obs_rv_all, nbinsx=lg_nbins_rv,
+                            histnorm='probability density',
+                            name='Observed (all)',
+                            marker_color='#4A90D9', opacity=0.6,
+                        ))
+                else:
+                    if lg_obs_rv_sin.size > 0:
+                        fig_lg_rv.add_trace(go.Histogram(
+                            x=lg_obs_rv_sin, nbinsx=lg_nbins_rv,
+                            histnorm='probability density',
+                            name='Observed — single',
+                            marker_color='#4A90D9', opacity=0.5,
+                        ))
+                    if lg_obs_rv_bin.size > 0:
+                        fig_lg_rv.add_trace(go.Histogram(
+                            x=lg_obs_rv_bin, nbinsx=lg_nbins_rv,
+                            histnorm='probability density',
+                            name='Observed — binary',
+                            marker_color='#E25A53', opacity=0.5,
+                        ))
+
+                if lg_show_sim_rv and lg_sim_rv_single is not None:
+                    if lg_rv_split == 'All combined':
+                        _lg_sim_rv_comb = np.concatenate([lg_sim_rv_single, lg_sim_rv_binary])
+                        if _lg_sim_rv_comb.size > 0:
+                            fig_lg_rv.add_trace(go.Histogram(
+                                x=_lg_sim_rv_comb, nbinsx=lg_nbins_rv,
+                                histnorm='probability density',
+                                name='Simulated (all)',
+                                marker_color='#8C8C8C', opacity=0.4,
+                            ))
+                    else:
+                        if lg_sim_rv_single.size > 0:
+                            fig_lg_rv.add_trace(go.Histogram(
+                                x=lg_sim_rv_single, nbinsx=lg_nbins_rv,
+                                histnorm='probability density',
+                                name='Simulated — single',
+                                marker_color='#7EC8E3', opacity=0.4,
+                            ))
+                        if lg_sim_rv_binary.size > 0:
+                            fig_lg_rv.add_trace(go.Histogram(
+                                x=lg_sim_rv_binary, nbinsx=lg_nbins_rv,
+                                histnorm='probability density',
+                                name='Simulated — binary',
+                                marker_color='#F0A0A0', opacity=0.4,
+                            ))
+
+                fig_lg_rv.update_layout(**{
+                    **PLOTLY_THEME,
+                    'barmode': 'overlay',
+                    'title': dict(text='RV Distribution (Langer)', font=dict(size=14)),
+                    'xaxis_title': 'RV (km/s)',
+                    'yaxis_title': 'Probability density',
+                    'height': 420,
+                    'legend': dict(x=0.01, y=0.99),
+                })
+                st.plotly_chart(fig_lg_rv, use_container_width=True, key='lg_rv_dist')
+                st.caption(
+                    'RV distribution: observed vs simulated (Langer 2020 model).'
+                )
+
+                # ── Detection Fraction vs Threshold ───────────────────────────
+                st.markdown('### Detection Fraction vs Threshold')
+
+                lg_max_drv = max(float(np.max(lg_obs_drv_analysis)),
+                                 float(np.max(lg_sim_drv)))
+                lg_thresholds = np.linspace(0, lg_max_drv * 1.1, 150)
+                lg_frac_obs = np.array(
+                    [(lg_obs_drv_analysis > T).mean() for T in lg_thresholds])
+                lg_frac_sim = np.array(
+                    [(lg_sim_drv > T).mean() for T in lg_thresholds])
+
+                lg_frac_obs_t = float((lg_obs_drv_analysis > lg_thresh_dRV).mean())
+                lg_frac_sim_t = float((lg_sim_drv > lg_thresh_dRV).mean())
+
+                fig_lg_frac = go.Figure()
+                fig_lg_frac.add_trace(go.Scatter(
+                    x=lg_thresholds, y=lg_frac_obs,
+                    mode='lines', name='Observed',
+                    line=dict(color='#4A90D9', width=2.5),
+                ))
+                fig_lg_frac.add_trace(go.Scatter(
+                    x=lg_thresholds, y=lg_frac_sim,
+                    mode='lines', name='Simulated',
+                    line=dict(color='#E25A53', width=2.5, dash='dash'),
+                ))
+                fig_lg_frac.add_vline(
+                    x=lg_thresh_dRV, line_dash='dot',
+                    line_color='#DAA520', line_width=1.5,
+                    annotation_text=f'Threshold = {lg_thresh_dRV} km/s',
+                    annotation_position='top right',
+                    annotation_font_color='#DAA520',
+                )
+                fig_lg_frac.add_trace(go.Scatter(
+                    x=[lg_thresh_dRV, lg_thresh_dRV],
+                    y=[lg_frac_obs_t, lg_frac_sim_t],
+                    mode='markers+text',
+                    marker=dict(size=10, color=['#4A90D9', '#E25A53'],
+                                symbol='circle',
+                                line=dict(color='white', width=1)),
+                    text=[f'  {lg_frac_obs_t:.2%}', f'  {lg_frac_sim_t:.2%}'],
+                    textposition='middle right',
+                    textfont=dict(size=11),
+                    showlegend=False,
+                ))
+                fig_lg_frac.update_layout(**{
+                    **PLOTLY_THEME,
+                    'title': dict(
+                        text=(f'Detection Fraction vs ΔRV Threshold  '
+                              f'(Langer: f_bin={lg_ex_fb_v:.3f}, σ={lg_ex_sig_v:.1f})'),
+                        font=dict(size=14)),
+                    'xaxis_title': 'ΔRV threshold (km/s)',
+                    'yaxis_title': 'Fraction above threshold',
+                    'height': 420,
+                    'legend': dict(x=0.70, y=0.95),
+                    'yaxis': dict(range=[0, 1.05]),
+                })
+                st.plotly_chart(fig_lg_frac, use_container_width=True, key='lg_det_frac')
+                st.caption(
+                    'Detection fraction as a function of threshold (Langer 2020 model).'
+                )
+
+        # ── Summary table ─────────────────────────────────────────────────────
+        st.markdown('---')
+        lg_summary_rows = []
+        for i_f in range(len(lg_fbin_g)):
+            bf_v = float(lg_fbin_g[i_f])
+            for i_s in range(len(lg_sigma_g)):
+                sv = float(lg_sigma_g[i_s])
+                pv = float(lg_ks_p_2d[i_f, i_s])
+                if pv == float(np.nanmax(lg_ks_p_2d)):
+                    lg_summary_rows.append({
+                        'f_bin': round(bf_v, 4),
+                        'σ_single (km/s)': round(sv, 2),
+                        'K-S p': round(pv, 5),
+                    })
+        if lg_summary_rows:
+            st.markdown('### Best Grid Point')
+            st.dataframe(pd.DataFrame(lg_summary_rows), use_container_width=True)
