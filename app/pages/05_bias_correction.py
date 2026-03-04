@@ -732,6 +732,19 @@ with tab_dsilva:
                                     f'K-S p = **{bpv:.4f}**'
                                 )
 
+                    # ── Checkpoint: save partial result after each sigma slice ──
+                    if rows_done == n_rows_total or (rows_done > 0 and rows_done % max(1, len(missing_fbin_idx)) == 0):
+                        os.makedirs(_RESULT_DIR, exist_ok=True)
+                        np.savez(
+                            _result_path('dsilva') + '.partial',
+                            fbin_grid=fbin_vals, pi_grid=pi_vals,
+                            sigma_grid=sigma_vals,
+                            ks_p=accumulated_ks_p, ks_D=accumulated_ks_D,
+                            config_hash=_stable_cfg_hash(stable_cfg),
+                            settings=np.array(json.dumps(stable_cfg)),
+                            timestamp=np.array(_dt.datetime.now().isoformat()),
+                        )
+
         elapsed_total = time.time() - t_start
         if n_rows_total > 0:
             progress_slot.progress(1.0, text=f'Done in {elapsed_total:.0f}s.')
@@ -764,6 +777,10 @@ with tab_dsilva:
         cached_load_grid_result.clear()
         st.session_state['bc_result'] = full_result
         st.session_state['result_dsilva'] = full_result
+        # Clean up partial checkpoint
+        _partial = _result_path('dsilva') + '.partial.npz'
+        if os.path.exists(_partial):
+            os.remove(_partial)
 
         _append_run_history({
             'timestamp':     _dt.datetime.now().isoformat(),
