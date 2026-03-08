@@ -699,7 +699,8 @@ with tab_dsilva:
             st.stop()
 
         from wr_bias_simulation import (
-            SimulationConfig, BinaryParameterConfig, _single_grid_task,
+            SimulationConfig, BinaryParameterConfig,
+            _single_grid_task_lite, _init_worker,
         )
 
         _scan_logPmax = len(logPmax_scan_vals) > 1
@@ -751,19 +752,16 @@ with tab_dsilva:
             # Live outer heatmap for logP_max × σ (max p over fbin×pi)
             outer_max_p = np.full((n_logPmax, n_sigma), np.nan)
 
-            with mp.Pool(processes=int(n_proc)) as pool:
+            with mp.Pool(
+                processes=int(n_proc),
+                initializer=_init_worker,
+                initargs=(cadence_list, cadence_weights, obs_delta_rv,
+                          int(n_stars_sim), float(sigma_meas)),
+            ) as pool:
                 for i_lp, logPmax_v in enumerate(logPmax_scan_vals):
                     cur_bin_cfg = _make_bin_cfg(logPmax_v)
 
                     for i_sigma, sigma in enumerate(sigma_vals):
-                        sim_cfg_obj = SimulationConfig(
-                            n_stars=int(n_stars_sim),
-                            sigma_single=float(sigma),
-                            sigma_measure=float(sigma_meas),
-                            cadence_library=cadence_list,
-                            cadence_weights=cadence_weights,
-                        )
-
                         tasks = []
                         for gj in range(n_fbin):
                             for i_pi, pv in enumerate(pi_vals):
@@ -771,9 +769,7 @@ with tab_dsilva:
                                     float(fbin_vals[gj]),
                                     float(pv),
                                     float(sigma),
-                                    sim_cfg_obj,
                                     cur_bin_cfg,
-                                    obs_delta_rv,
                                     'powerlaw',
                                     seed_base,
                                 ))
@@ -782,7 +778,7 @@ with tab_dsilva:
                         completed_per_fbin = {gj: 0 for gj in range(n_fbin)}
 
                         for fb, pi_ret, sigma_ret, D, p in pool.imap_unordered(
-                                _single_grid_task, tasks,
+                                _single_grid_task_lite, tasks,
                                 chunksize=max(1, n_pi // 4)):
                             gj   = fbin_to_global[round(fb, 10)]
                             i_pi = pi_to_idx[round(pi_ret, 10)]
@@ -2563,7 +2559,8 @@ with tab_langer:
             st.stop()
 
         from wr_bias_simulation import (
-            SimulationConfig, BinaryParameterConfig, _single_grid_task,
+            SimulationConfig, BinaryParameterConfig,
+            _single_grid_task_lite, _init_worker,
         )
 
         lg_bin_cfg = BinaryParameterConfig(
@@ -2639,32 +2636,28 @@ with tab_langer:
             lg_seed_base = 5678
             lg_last_render = 0.0
 
-            # Build all tasks
+            # Build all tasks (lightweight — shared data via pool initializer)
             lg_tasks = []
             for gj in lg_missing_fbin_idx:
                 for i_s, sv in enumerate(lg_sigma_vals):
-                    lg_sim_cfg_obj = SimulationConfig(
-                        n_stars=int(lg_n_stars),
-                        sigma_single=float(sv),
-                        sigma_measure=float(lg_sigma_meas),
-                        cadence_library=lg_cad_list,
-                        cadence_weights=lg_cad_weights,
-                    )
                     lg_tasks.append((
                         float(lg_fbin_vals[gj]),
                         0.0,  # pi is unused for langer2020
                         float(sv),
-                        lg_sim_cfg_obj,
                         lg_bin_cfg,
-                        lg_obs_drv,
                         'langer2020',
                         lg_seed_base,
                     ))
                     lg_seed_base += 1
 
-            with mp.Pool(processes=int(lg_n_proc)) as pool:
+            with mp.Pool(
+                processes=int(lg_n_proc),
+                initializer=_init_worker,
+                initargs=(lg_cad_list, lg_cad_weights, lg_obs_drv,
+                          int(lg_n_stars), float(lg_sigma_meas)),
+            ) as pool:
                 for fb, _pi_ret, sigma_ret, D, p in pool.imap_unordered(
-                        _single_grid_task, lg_tasks,
+                        _single_grid_task_lite, lg_tasks,
                         chunksize=max(1, lg_n_sigma // 4)):
                     gj = lg_fbin_to_global[round(fb, 10)]
                     i_s = lg_sigma_to_idx[round(sigma_ret, 10)]
