@@ -1378,6 +1378,54 @@ with tab_dsilva:
             f'K-S p = {best_pval_v:.6f}.'
         )
 
+        # ── Marginalized heatmaps: f_bin × σ and π × σ (Task #19) ───────
+        if _has_sigma_scan:
+            st.markdown('---')
+            st.markdown('### Marginalized Heatmaps vs σ_single')
+            _marg_col1, _marg_col2 = st.columns(2)
+
+            # f_bin × σ: sum over logPmax (axis 0) and π (axis 3)
+            _marg_fbin_sigma = np.nansum(ks_p_4d, axis=(0, 3)).T  # [n_fbin, n_sigma]
+            with _marg_col1:
+                st.plotly_chart(
+                    _make_heatmap_fig(
+                        _marg_fbin_sigma, fbin_g, sigma_g,
+                        title='f_bin × σ_single',
+                        height=_ch, width=_cw,
+                        x_label='σ_single (km/s)',
+                        y_label='f_bin',
+                        x_name='σ',
+                        best_label_fmt='  f={fbin:.3f}, σ={x:.1f}, p-sum={p:.2f}',
+                    ),
+                    use_container_width=True,
+                    key='bc_marg_fbin_sigma',
+                )
+                st.caption(
+                    'K-S p-value summed over logP_max and π. '
+                    'Shows the joint constraint on f_bin and σ_single.'
+                )
+
+            # π × σ: sum over logPmax (axis 0) and f_bin (axis 2)
+            _marg_pi_sigma = np.nansum(ks_p_4d, axis=(0, 2)).T  # [n_pi, n_sigma]
+            with _marg_col2:
+                st.plotly_chart(
+                    _make_heatmap_fig(
+                        _marg_pi_sigma, pi_g, sigma_g,
+                        title='π × σ_single',
+                        height=_ch, width=_cw,
+                        x_label='σ_single (km/s)',
+                        y_label='π',
+                        x_name='σ',
+                        best_label_fmt='  π={fbin:.3f}, σ={x:.1f}, p-sum={p:.2f}',
+                    ),
+                    use_container_width=True,
+                    key='bc_marg_pi_sigma',
+                )
+                st.caption(
+                    'K-S p-value summed over logP_max and f_bin. '
+                    'Shows the joint constraint on π and σ_single.'
+                )
+
         # ── Import simulation functions for analysis plots ─────────────────
         from wr_bias_simulation import (
             SimulationConfig, BinaryParameterConfig,
