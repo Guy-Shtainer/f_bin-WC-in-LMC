@@ -280,6 +280,7 @@ if open_tasks:
                                  help=f'Jump to edit #{tq["id"]}',
                                  use_container_width=True):
                         st.session_state[f'todo_editing_{tq["id"]}'] = True
+                        st.session_state['_scroll_to_task'] = tq['id']
                         st.rerun()
             else:
                 st.caption('No tasks')
@@ -488,10 +489,10 @@ for task in filtered:
     elif is_important:
         flags = '<span style="color:#4A90D9;font-size:0.75em">📌 IMPORTANT</span>'
 
-    _edit_width = 1.0 if _task_status == 'to-test' else 0.4
+    _edit_width = 1.2 if _task_status == 'to-test' else 0.6
     (col_check, col_id, col_pri, col_title, col_flags,
      col_tags, col_date, col_by, col_del, col_edit) = st.columns(
-        [0.3, 0.4, 0.5, 3, 1, 1.5, 1.0, 0.8, 0.3, _edit_width])
+        [0.3, 0.4, 0.5, 3, 1, 1.5, 1.2, 0.8, 0.5, _edit_width])
 
     with col_check:
         if st.checkbox('', key=f'todo_done_{task["id"]}',
@@ -528,7 +529,7 @@ for task in filtered:
     with col_date:
         _da = task.get('date_added', '')
         if _da:
-            st.caption(_da[:10], help=_da)
+            st.caption(_da.replace('T', ' '))
     with col_by:
         st.caption(task.get('suggested_by', ''))
     with col_del:
@@ -559,7 +560,16 @@ for task in filtered:
                 st.rerun()
 
     # ── Inline edit form (toggled by pencil button) ──────────────────────
+    # Anchor for scroll-to-task from Eisenhower matrix
+    st.markdown(f'<div id="task-{task["id"]}"></div>', unsafe_allow_html=True)
     if st.session_state.get(f'todo_editing_{task["id"]}', False):
+        # Scroll here if triggered from Eisenhower matrix
+        if st.session_state.pop('_scroll_to_task', None) == task['id']:
+            st.markdown(
+                f'<script>document.getElementById("task-{task["id"]}")'
+                f'.scrollIntoView({{behavior:"smooth",block:"center"}})'
+                f'</script>',
+                unsafe_allow_html=True)
         _ec1, _ec2 = st.columns([3, 1])
         edit_title = _ec1.text_area(
             'Title', value=task['title'],
