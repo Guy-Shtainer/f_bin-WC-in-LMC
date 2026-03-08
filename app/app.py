@@ -103,9 +103,15 @@ grid_result = cached_load_grid_result('dsilva')
 best_pval = None
 if grid_result is not None:
     try:
-        ks_p_2d = grid_result['ks_p_values']
-        fbin_vals = grid_result['fbin_values']
-        pi_vals = grid_result['pi_values']
+        ks_p_raw = np.asarray(grid_result['ks_p'])
+        # ks_p may be 3D+ (logPmax, sigma, fbin, pi) or (sigma, fbin, pi) — take best slice
+        while ks_p_raw.ndim > 2:
+            # Pick the slice with highest max p-value
+            best_idx = int(np.nanmax(ks_p_raw.reshape(ks_p_raw.shape[0], -1), axis=1).argmax())
+            ks_p_raw = ks_p_raw[best_idx]
+        ks_p_2d = ks_p_raw
+        fbin_vals = np.asarray(grid_result['fbin_grid'])
+        pi_vals = np.asarray(grid_result['pi_grid'])
         _, _, best_pval = find_best_grid_point(ks_p_2d, fbin_vals, pi_vals)
     except (KeyError, Exception):
         best_pval = None
