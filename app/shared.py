@@ -380,6 +380,125 @@ def preload_all_data(settings: dict) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Shared analysis utilities (used by home page + bias correction)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def find_best_grid_point(
+    ks_p_2d: np.ndarray,
+    fbin_vals: np.ndarray,
+    x_vals: np.ndarray,
+) -> tuple[float, float, float]:
+    """Return (best_fbin, best_x, best_pval) from a 2-D K-S p-value grid."""
+    idx = int(np.argmax(ks_p_2d))
+    fi = idx // ks_p_2d.shape[1]
+    pi = idx % ks_p_2d.shape[1]
+    return float(fbin_vals[fi]), float(x_vals[pi]), float(ks_p_2d[fi, pi])
+
+
+def make_heatmap_fig(
+    ks_p_2d: np.ndarray,
+    fbin_vals: np.ndarray,
+    x_vals: np.ndarray,
+    title: str,
+    show_d: bool = False,
+    ks_d_2d: np.ndarray | None = None,
+    height: int = 520,
+    width: int | None = None,
+    x_label: str = 'π  (period power-law index)',
+    y_label: str = 'f_bin  (intrinsic binary fraction)',
+    x_name: str = 'π',
+    best_label_fmt: str = '  f={fbin:.3f}, {x_name}={x:.2f}, p={p:.3f}',
+    live: bool = False,
+) -> 'go.Figure':
+    """Plotly heatmap of K-S p-value (or D-stat) with contour lines and best-fit star."""
+    import plotly.graph_objects as go
+
+    z = ks_d_2d if (show_d and ks_d_2d is not None) else ks_p_2d
+    colorbar_title = 'K-S D' if show_d else 'K-S p-value'
+
+    valid = z[~np.isnan(z)]
+    z_max = float(np.percentile(valid, 98)) if valid.size > 0 else 1.0
+    z_min = 0.0
+
+    best_fbin, best_x, best_pval = find_best_grid_point(ks_p_2d, fbin_vals, x_vals)
+
+    traces: list = [
+        go.Heatmap(
+            z=z, x=x_vals, y=fbin_vals,
+            colorscale='RdBu_r',
+            zmin=z_min, zmax=z_max,
+            zsmooth=False if live else 'best',
+            colorbar=dict(title=colorbar_title, thickness=14, len=0.9),
+            hovertemplate=f'{x_name}=%{{x:.3f}}<br>f_bin=%{{y:.4f}}<br>' + colorbar_title +
+                          '=%{z:.4f}<extra></extra>',
+        ),
+    ]
+
+    if not live:
+        traces.append(go.Contour(
+            z=ks_p_2d, x=x_vals, y=fbin_vals,
+            contours=dict(
+                coloring='none',
+                showlabels=True,
+                labelfont=dict(size=10, color='white'),
+                start=0.05, end=0.30, size=0.05,
+            ),
+            line=dict(color='white', width=1, dash='dot'),
+            showscale=False,
+            hoverinfo='skip',
+        ))
+        traces.append(go.Scatter(
+            x=[best_x], y=[best_fbin],
+            mode='markers+text',
+            marker=dict(symbol='star', size=18, color='gold',
+                        line=dict(color='black', width=1)),
+            text=[best_label_fmt.format(fbin=best_fbin, x_name=x_name,
+                                        x=best_x, p=best_pval)],
+            textposition='middle right',
+            textfont=dict(color='gold', size=11),
+            name='Best fit',
+            showlegend=False,
+        ))
+
+    layout_kw: dict = {
+        **PLOTLY_THEME,
+        'title': dict(text=title, font=dict(size=14)),
+        'xaxis_title': x_label,
+        'yaxis_title': y_label,
+        'height': height,
+        'margin': dict(l=60, r=20, t=50, b=50),
+    }
+    if width is not None:
+        layout_kw['width'] = width
+
+    fig = go.Figure(traces)
+    fig.update_layout(**layout_kw)
+    return fig
+
+
+@st.cache_data
+def cached_load_nres_rvs() -> dict:
+    """Load NRES star RVs. Returns empty dict if no NRES data available."""
+    nres_dir = os.path.join(_ROOT, 'Data')
+    result: dict = {}
+    if not os.path.isdir(nres_dir):
+        return result
+    try:
+        from NRESClass import NRES
+        om = get_obs_manager()
+        for star_name in specs.star_names:
+            try:
+                obs = om.load_observation(star_name)
+                if hasattr(obs, 'nres_epochs') and obs.nres_epochs:
+                    result[star_name] = {'n_epochs': len(obs.nres_epochs)}
+            except Exception:
+                continue
+    except ImportError:
+        pass
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Sidebar
 # ─────────────────────────────────────────────────────────────────────────────
 
