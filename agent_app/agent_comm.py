@@ -60,12 +60,16 @@ def _parse_table_rows(lines: list[str]) -> list[list[str]]:
     return rows
 
 
-def load_todos() -> list[dict]:
-    """Parse TODO.md and return open tasks as dicts."""
+def load_todos(status_filter: str | None = None) -> list[dict]:
+    """Parse TODO.md Open Tasks table and return tasks as dicts.
+
+    Args:
+        status_filter: 'open', 'to-test', 'in-progress', or None for all.
+    """
     if not TODO_PATH.exists():
         return []
     content = TODO_PATH.read_text(encoding='utf-8')
-    open_tasks: list[dict] = []
+    all_tasks: list[dict] = []
 
     sections = re.split(r'^## ', content, flags=re.MULTILINE)
     for section in sections:
@@ -73,7 +77,7 @@ def load_todos() -> list[dict]:
             rows = _parse_table_rows(section.split('\n'))
             for cells in rows[1:] if len(rows) > 1 else []:
                 if len(cells) >= 9:
-                    open_tasks.append({
+                    all_tasks.append({
                         'id': int(cells[0]) if cells[0].isdigit() else 0,
                         'title': cells[1],
                         'description': cells[2],
@@ -86,7 +90,10 @@ def load_todos() -> list[dict]:
                         'urgent': _parse_bool(cells[9]) if len(cells) > 9 else False,
                         'important': _parse_bool(cells[10]) if len(cells) > 10 else False,
                     })
-    return open_tasks
+
+    if status_filter:
+        return [t for t in all_tasks if t.get('status', 'open') == status_filter]
+    return all_tasks
 
 
 def get_quadrant(task: dict) -> str:
