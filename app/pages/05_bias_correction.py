@@ -34,8 +34,12 @@ from shared import (
     inject_theme, render_sidebar, get_settings_manager,
     cached_load_observed_delta_rvs, cached_load_cadence,
     cached_load_grid_result, settings_hash,
+    find_best_grid_point, make_heatmap_fig,
     PLOTLY_THEME,
 )
+
+_best_point = find_best_grid_point
+_make_heatmap_fig = make_heatmap_fig
 
 st.set_page_config(
     page_title='Bias Correction — WR Binary',
@@ -102,100 +106,6 @@ def _stable_cfg_hash(cfg: dict) -> str:
     return hashlib.sha256(
         json.dumps(cfg, sort_keys=True, default=str).encode()
     ).hexdigest()[:16]
-
-
-def _best_point(ks_p_2d: np.ndarray, fbin_vals: np.ndarray,
-                pi_vals: np.ndarray) -> tuple[float, float, float]:
-    idx = int(np.argmax(ks_p_2d))
-    fi  = idx // ks_p_2d.shape[1]
-    pi  = idx  % ks_p_2d.shape[1]
-    return float(fbin_vals[fi]), float(pi_vals[pi]), float(ks_p_2d[fi, pi])
-
-
-def _make_heatmap_fig(
-    ks_p_2d: np.ndarray,
-    fbin_vals: np.ndarray,
-    x_vals: np.ndarray,
-    title: str,
-    show_d: bool = False,
-    ks_d_2d: np.ndarray | None = None,
-    height: int = 520,
-    width: int | None = None,
-    x_label: str = 'π  (period power-law index)',
-    y_label: str = 'f_bin  (intrinsic binary fraction)',
-    x_name: str = 'π',
-    best_label_fmt: str = '  f={fbin:.3f}, {x_name}={x:.2f}, p={p:.3f}',
-    live: bool = False,
-) -> go.Figure:
-    """Plotly heatmap of K-S p-value (or D-stat).
-
-    Parameters
-    ----------
-    live : bool
-        If True, skip contour lines, star marker, and zsmooth for faster
-        rendering during live updates (reduces flicker).
-    """
-    z = ks_d_2d if (show_d and ks_d_2d is not None) else ks_p_2d
-    colorbar_title = 'K-S D' if show_d else 'K-S p-value'
-
-    valid = z[~np.isnan(z)]
-    z_max = float(np.percentile(valid, 98)) if valid.size > 0 else 1.0
-    z_min = 0.0
-
-    best_fbin, best_x, best_pval = _best_point(ks_p_2d, fbin_vals, x_vals)
-
-    traces: list = [
-        go.Heatmap(
-            z=z, x=x_vals, y=fbin_vals,
-            colorscale='RdBu_r',
-            zmin=z_min, zmax=z_max,
-            zsmooth=False if live else 'best',
-            colorbar=dict(title=colorbar_title, thickness=14, len=0.9),
-            hovertemplate=f'{x_name}=%{{x:.3f}}<br>f_bin=%{{y:.4f}}<br>' + colorbar_title +
-                          '=%{z:.4f}<extra></extra>',
-        ),
-    ]
-
-    if not live:
-        traces.append(go.Contour(
-            z=ks_p_2d, x=x_vals, y=fbin_vals,
-            contours=dict(
-                coloring='none',
-                showlabels=True,
-                labelfont=dict(size=10, color='white'),
-                start=0.05, end=0.30, size=0.05,
-            ),
-            line=dict(color='white', width=1, dash='dot'),
-            showscale=False,
-            hoverinfo='skip',
-        ))
-        traces.append(go.Scatter(
-            x=[best_x], y=[best_fbin],
-            mode='markers+text',
-            marker=dict(symbol='star', size=18, color='gold',
-                        line=dict(color='black', width=1)),
-            text=[best_label_fmt.format(fbin=best_fbin, x_name=x_name,
-                                        x=best_x, p=best_pval)],
-            textposition='middle right',
-            textfont=dict(color='gold', size=11),
-            name='Best fit',
-            showlegend=False,
-        ))
-
-    layout_kw: dict = {
-        **PLOTLY_THEME,
-        'title': dict(text=title, font=dict(size=14)),
-        'xaxis_title': x_label,
-        'yaxis_title': y_label,
-        'height': height,
-        'margin': dict(l=60, r=20, t=50, b=50),
-    }
-    if width is not None:
-        layout_kw['width'] = width
-
-    fig = go.Figure(traces)
-    fig.update_layout(**layout_kw)
-    return fig
 
 
 def _make_max_pval_fig(
