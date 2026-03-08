@@ -1,0 +1,77 @@
+\section{Sample and observations}
+\label{sec:obs}
+
+\subsection{Target sample}
+\label{sec:sample}
+
+Our sample consists of \Ntotal WC- and WO-type Wolf-Rayet stars in the
+Large Magellanic Cloud, drawn from the catalogue of
+\citet{Breysacher1999} and the survey of \citet{Bartzakos2001}. Of these,
+\Nknown were previously identified as spectroscopic binaries by
+\citet{Bartzakos2001}; the remaining \Nstars stars were classified as
+apparently single and form the primary targets of our survey.
+Table~\ref{tab:sample} lists the target stars with their designations,
+spectral types, and number of observed epochs.
+
+% TODO: Add table reference once star_sample.tex is populated.
+
+\subsection{VLT/X-SHOOTER spectroscopy}
+\label{sec:xshooter}
+
+Multi-epoch spectroscopy was obtained with the X-SHOOTER spectrograph
+\citep{Vernet2011} mounted on the ESO Very Large Telescope (VLT) at Cerro
+Paranal, Chile. X-SHOOTER provides simultaneous coverage across three
+spectral arms: UVB ($\sim 300$--$560$\,nm), VIS ($\sim 560$--$1020$\,nm),
+and NIR ($\sim 1020$--$2480$\,nm), at intermediate spectral resolution
+($R \sim 10\,000$). Each target was observed in \Nepochs epochs spanning
+three semesters, aiming for a signal-to-noise ratio $\mathrm{S/N} \geq 70$
+per epoch.
+
+% TODO: Add ESO programme ID and observation dates.
+
+\subsection{Data reduction}
+\label{sec:reduction}
+
+The raw data were reduced using the ESO X-SHOOTER pipeline, producing
+wavelength-calibrated, flux-calibrated one-dimensional spectra for each
+arm. We describe the subsequent post-processing steps below.
+
+\subsubsection{Spectral combination}
+\label{sec:stitching}
+
+The three spectral arms were combined into a single spectrum per epoch
+using signal-to-noise-squared weighting. In the overlap regions between
+adjacent arms, we computed the mean flux in the last $5\%$ of the overlap
+for the redder arm and the corresponding region of the bluer arm, deriving
+an alignment factor $A = \bar{F}_\mathrm{red} / \bar{F}_\mathrm{blue}$.
+The spectra were considered consistent if
+\begin{equation}
+|\bar{F}_\mathrm{red} - \bar{F}_\mathrm{blue}| <
+\frac{\sqrt{\sigma_\mathrm{red}^2 + \sigma_\mathrm{blue}^2}}{\sqrt{N}}.
+\end{equation}
+Where the spectral sampling differed (e.g.\ NIR at 0.04\,nm vs.\ VIS at
+0.02\,nm), the lower-resolution spectrum was linearly interpolated to the
+finer grid before combination. The combined flux was computed as
+$F_\mathrm{comb} = \sum w_i f_i$ with weights
+$w_i = \mathrm{SNR}_i^2 / \sum \mathrm{SNR}_i^2$.
+
+\subsubsection{Continuum normalisation}
+\label{sec:normalisation}
+
+Continuum normalisation was performed interactively using a custom tool.
+Anchor points were placed on featureless continuum regions (avoiding
+emission and absorption lines). The flux at each anchor point was computed
+as the robust mean (iterative $3\sigma$ clipping) of the flux in a narrow
+window. A piecewise linear interpolation between anchor points defined the
+pseudo-continuum, and the observed spectrum was divided by this
+interpolation. The same anchor wavelengths were used for all epochs of a
+given star to ensure consistency.
+
+\subsubsection{Spatial contamination removal}
+\label{sec:contamination}
+
+% TODO: Describe 2D cleaning procedure from IC2D.py.
+For stars with significant contamination from nearby sources in the slit,
+we examined the two-dimensional spectral images to identify and subtract
+the contaminating spatial profile before extracting the cleaned
+one-dimensional spectrum.

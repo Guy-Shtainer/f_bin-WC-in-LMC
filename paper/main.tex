@@ -1,0 +1,136 @@
+% The multiplicity properties of carbon-rich Wolf-Rayet stars in the LMC
+% Guy Shtainer & Tomer Shenar — Tel Aviv University
+% A&A journal format
+
+\documentclass{aa}
+
+% ============================================================
+% Packages (only those NOT already loaded by aa.cls)
+% ============================================================
+% inputenc, amsmath, amssymb, natbib, xspace already loaded by aa.cls
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+
+% ============================================================
+% Key number macros — single source of truth
+% ============================================================
+% Sample
+\newcommand{\Nstars}{25\xspace}          % apparently single stars analyzed
+\newcommand{\Nknown}{3\xspace}           % known binaries from Bartzakos (2001)
+\newcommand{\Ntotal}{28\xspace}          % total sample
+\newcommand{\Nepochs}{6\xspace}          % typical epochs per star
+
+% Binary detection
+\newcommand{\Ndetected}{10\xspace}       % newly detected binaries
+\newcommand{\Nbin}{13\xspace}            % total binaries (detected + known)
+\newcommand{\fbinobs}{46\%\xspace}       % observed binary fraction
+\newcommand{\drvthresh}{45.5\xspace}     % delta-RV threshold [km/s]
+\newcommand{\sigthresh}{4\xspace}        % significance threshold [sigma]
+\newcommand{\primaryline}{C\,{\sc iv}\,$\lambda\lambda$5808--5812\xspace}
+
+% Bias correction (placeholders — update when errors computed)
+\newcommand{\fbincorr}{TBD\xspace}       % corrected binary fraction
+\newcommand{\fbinerrup}{TBD\xspace}      % +error
+\newcommand{\fbinerrdn}{TBD\xspace}      % -error
+\newcommand{\pibestfit}{TBD\xspace}      % best-fit period exponent
+\newcommand{\pierrup}{TBD\xspace}        % +error
+\newcommand{\pierrdn}{TBD\xspace}        % -error
+
+% Simulation
+\newcommand{\Nsim}{10\,000\xspace}       % Monte-Carlo draws per grid point
+\newcommand{\sigmasingle}{15\xspace}     % intrinsic RV scatter [km/s]
+\newcommand{\sigmameas}{5\xspace}        % measurement uncertainty [km/s]
+
+% Physical
+\newcommand{\kms}{km\,s$^{-1}$\xspace}
+\newcommand{\Msun}{M$_\odot$\xspace}
+\newcommand{\Lsun}{L$_\odot$\xspace}
+\newcommand{\Zsun}{Z$_\odot$\xspace}
+\newcommand{\Mdot}{\dot{M}\xspace}
+
+% ============================================================
+% Title and authors
+% ============================================================
+\title{The multiplicity properties of carbon-rich Wolf-Rayet stars
+       in the Large Magellanic Cloud}
+
+\author{G.\,Shtainer\inst{1}
+  \and T.\,Shenar\inst{1}
+}
+
+\institute{School of Physics and Astronomy, Tel Aviv University,
+           Tel Aviv 6997801, Israel\\
+           \email{guyshtainer@mail.tau.ac.il}
+}
+
+\date{Received ???; accepted ???}
+
+% ============================================================
+% Abstract — A&A structured format: 5 positional arguments
+% \abstract{Context}{Aims}{Methods}{Results}{Conclusions}
+% ============================================================
+\abstract
+{Wolf-Rayet (WR) stars of the carbon sequence (WC/WO) represent the final
+stripped stages of massive stellar evolution, yet the role of binary
+interactions in their formation remains debated. The Large Magellanic Cloud
+(LMC), at $Z \approx 0.3$--$0.5\,\Zsun$, provides a critical low-metallicity
+environment to test theoretical predictions of the WR binary fraction.}
+%
+{We aim to determine the spectroscopic binary fraction of LMC WC/WO stars
+and constrain the intrinsic binary fraction and orbital period distribution
+through Monte-Carlo bias correction.}
+%
+{We analyse multi-epoch VLT/X-SHOOTER spectroscopy of \Nstars apparently
+single WC/WO stars in the LMC across \Nepochs epochs. Radial velocities are
+measured via cross-correlation of the \primaryline emission line. Binary
+classification requires $\Delta\mathrm{RV} > \drvthresh$\,\kms and a
+$\sigthresh\sigma$ significance threshold. The intrinsic binary fraction and
+period-distribution exponent are constrained by comparing the observed
+$\Delta\mathrm{RV}$ distribution to Monte-Carlo simulations via a
+Kolmogorov--Smirnov test.}
+%
+{We detect \Ndetected new spectroscopic binaries, yielding a total of
+\Nbin/\Ntotal ($\fbinobs$) when combined with \Nknown previously known
+binaries. The bias-corrected intrinsic binary fraction is
+$f_\mathrm{bin} = \fbincorr^{+\fbinerrup}_{-\fbinerrdn}$, with a
+period-distribution exponent $\pi = \pibestfit^{+\pierrup}_{-\pierrdn}$.}
+%
+{} % Conclusions — TODO: fill in after bias correction errors are finalized
+
+\keywords{stars: Wolf-Rayet -- binaries: spectroscopic -- stars: massive -- Magellanic Clouds}
+
+% ============================================================
+\begin{document}
+
+\maketitle
+
+% ============================================================
+% Main body
+% ============================================================
+\input{sections/introduction}
+\input{sections/observations}
+\input{sections/methods}
+\input{sections/results}
+\input{sections/bias_correction}
+\input{sections/discussion}
+\input{sections/conclusions}
+
+% ============================================================
+% Acknowledgements
+% ============================================================
+\input{sections/acknowledgements}
+
+% ============================================================
+% References
+% ============================================================
+\bibliographystyle{aa}
+\bibliography{references}
+
+% ============================================================
+% Appendix (online material)
+% ============================================================
+\input{sections/appendix}
+
+\end{document}

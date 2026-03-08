@@ -1,0 +1,78 @@
+\section{Radial-velocity measurement and binary classification}
+\label{sec:methods}
+
+\subsection{Cross-correlation function}
+\label{sec:ccf}
+
+Radial velocities were measured using the one-dimensional
+cross-correlation function (CCF) technique of \citet{Zucker1994}. For each
+star, a high signal-to-noise template spectrum was constructed by first
+computing the CCF of all epochs against an arbitrary reference epoch to
+determine relative velocity shifts, correcting each epoch to a common rest
+frame, and then co-adding the corrected spectra with signal-to-noise
+squared weighting. This iterative procedure removes the dependence on the
+choice of reference epoch.
+
+The CCF was computed separately for each of the 11 emission lines listed
+in Table~\ref{tab:emission_lines}, spanning the full X-SHOOTER wavelength
+range from the ultraviolet (\ion{O}{v}\,$\lambda\lambda 3100$--$3175$) to
+the near-infrared (\ion{C}{iv}\,$\lambda 20842$). The radial velocity for
+each epoch was determined from the position of the CCF peak, and its
+formal uncertainty $\sigma_\mathrm{RV}$ from the curvature of the peak
+\citep{Zucker2003}.
+
+% Emission line table
+\begin{table}
+\caption{Emission lines used for cross-correlation analysis.}
+\label{tab:emission_lines}
+\centering
+\begin{tabular}{lcc}
+\hline\hline
+Line ID & $\lambda_\mathrm{min}$ [nm] & $\lambda_\mathrm{max}$ [nm] \\
+\hline
+\ion{O}{v}\,$\lambda\lambda 3100$--$3175$   & 310.0 & 317.5 \\
+\ion{O}{iv}\,$\lambda\lambda 3350$--$3480$  & 335.0 & 348.0 \\
+\ion{C}{iv}\,$\lambda\lambda 3650$--$3900$  & 365.0 & 390.0 \\
+\ion{He}{ii}\,$\lambda 4686$                & 456.0 & 480.0 \\
+\ion{O}{vi}\,$\lambda\lambda 5210$--$5340$  & 521.0 & 533.5 \\
+\ion{He}{ii}\,$\lambda 5412$ \& \ion{C}{iv}\,$\lambda 5471$ & 535.0 & 554.0 \\
+\ion{C}{iv}\,$\lambda\lambda 5808$--$5812$  & 570.0 & 588.0 \\
+\ion{C}{iii}\,$\lambda\lambda 6700$--$6800$ & 666.5 & 684.0 \\
+\ion{C}{iv}\,$\lambda 7063$                 & 697.0 & 714.0 \\
+\ion{C}{iv}\,$\lambda 17396$                & 1710.0 & 1763.0 \\
+\ion{C}{iv}\,$\lambda 20842$                & 2050.0 & 2100.0 \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Binary classification criteria}
+\label{sec:criteria}
+
+A star is classified as a spectroscopic binary if \emph{both} of the
+following criteria are satisfied \citep[following][]{Bartzakos2001,
+Dsilva2023}:
+
+\begin{enumerate}
+\item The peak-to-peak radial-velocity difference between any pair of
+  epochs exceeds $\Delta\mathrm{RV}_\mathrm{max} > \drvthresh$\,\kms.
+\item The detection is statistically significant:
+  $\Delta\mathrm{RV} - \sigthresh\sigma > 0$, where
+  $\sigma = \sqrt{\sigma_1^2 + \sigma_2^2}$ is the combined formal
+  uncertainty of the epoch pair.
+\end{enumerate}
+
+The classification is performed in two stages. First, the epoch pair with
+the maximum radial-velocity separation is evaluated. If this pair does not
+satisfy both criteria, all remaining epoch pairs are scanned. The binary
+decision is based exclusively on the \primaryline emission line, the
+strongest and most isolated WC spectral feature.
+
+\subsection{Signal-to-noise requirements}
+\label{sec:snr}
+
+To ensure reliable radial-velocity measurements, we established minimum
+signal-to-noise requirements per emission line through simulations. We
+generated 30 synthetic single-lined binary (SB1) spectra using a WC4
+template with varying S/N levels, measured the radial-velocity scatter for
+each line, and required $\sigma_\mathrm{RV} < 3$\,\kms as the acceptance
+threshold.

@@ -1,0 +1,22 @@
+\begin{table*}
+\caption{Binary classification results for the \Nstars target stars.}
+\label{tab:classification}
+\centering
+\begin{tabular}{lccccc}
+\hline\hline
+Star & $\Delta\mathrm{RV}_\mathrm{max}$ [\kms] &
+  $\sigma_\mathrm{comb}$ [\kms] &
+  $\Delta\mathrm{RV} - \sigthresh\sigma$ [\kms] &
+  Epoch pair & Classification \\
+\hline
+% TODO: Populate from pipeline results.
+% Format: Star & deltaRV & sigma_comb & significance & (i,j) & SB1/Single \\
+\hline
+\end{tabular}
+\tablefoot{
+  Radial velocities measured from the \primaryline emission line.
+  A star is classified as a spectroscopic binary (SB1) if
+  $\Delta\mathrm{RV}_\mathrm{max} > \drvthresh$\,\kms \emph{and}
+  $\Delta\mathrm{RV} - \sigthresh\sigma > 0$.
+}
+\end{table*}
