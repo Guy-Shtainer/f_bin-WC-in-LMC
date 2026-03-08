@@ -287,28 +287,26 @@ def git_checkpoint() -> str:
 
 
 def git_create_branch(task: dict) -> str:
-    """Create or switch to a task branch from main."""
+    """Create or switch to a task branch from current HEAD.
+
+    Branches from whatever branch we're on (preserving current state),
+    NOT from main. Auto-commits uncommitted work before switching.
+    Returns (branch_name).
+    """
     slug = re.sub(r'[^a-z0-9]+', '-', task['title'].lower())[:40].strip('-')
     branch = f'agent/{task["id"]}-{slug}'
 
-    # Ensure we're on main first
-    current = git('branch', '--show-current')
-    if current != 'main':
-        git_safe_checkout('main')
+    # Save the current branch so callers can return to it
+    source = git('branch', '--show-current')
+
+    # Commit any uncommitted work before switching — prevents stash/pop conflicts
+    git_commit_all(f'[AGENT] Auto-save before switching to task #{task["id"]}')
 
     try:
         git('checkout', '-b', branch)
     except RuntimeError:
-        # Branch exists — check if it has commits ahead of main
-        try:
-            ahead = git('rev-list', '--count', f'main..{branch}')
-            if int(ahead.strip()) == 0:
-                git('branch', '-D', branch)
-                git('checkout', '-b', branch)
-            else:
-                git('checkout', branch)
-        except RuntimeError:
-            git('checkout', branch)
+        # Branch already exists — just switch to it
+        git_safe_checkout(branch)
 
     return branch
 
@@ -323,12 +321,13 @@ def git_commit_all(message: str) -> bool:
     return True
 
 
-def git_back_to_main() -> None:
-    """Safely return to main branch."""
+def git_back_to_main(target: str = 'main') -> None:
+    """Safely return to a branch (defaults to main for backward compat)."""
     current = git('branch', '--show-current')
-    if current == 'main':
+    if current == target:
         return
-    git_safe_checkout('main')
+    git_commit_all('[AGENT] Auto-save before switching back')
+    git_safe_checkout(target)
 
 
 def git_list_agent_branches() -> list[str]:
@@ -1113,20 +1112,22 @@ async def run_freeform_task(task_prompt: str, dry_run: bool) -> None:
     task = {'id': 0, 'title': 'Free-form task', 'description': task_prompt, 'tags': ''}
     branch = f'agent/freeform-{datetime.now().strftime("%Y%m%d-%H%M")}'
 
-    git_safe_checkout('main')
+    # Save source branch so we can return to it
+    source_branch = git('branch', '--show-current')
+    git_commit_all('[AGENT] Auto-save before free-form task')
     try:
         git('checkout', '-b', branch)
     except RuntimeError:
-        git('checkout', branch)
+        git_safe_checkout(branch)
 
-    log(f'Working on branch: {branch}')
+    log(f'Working on branch: {branch} (will return to {source_branch})')
     status, summary = await run_pipeline(task)
 
     log_task_result(task, branch, status, summary)
     log(f'Free-form task finished: {status}')
 
-    # Return to main (do NOT merge — user reviews via --stop)
-    git_back_to_main()
+    # Return to source branch (do NOT merge — user reviews via --stop)
+    git_back_to_main(source_branch)
     log('Agent session complete.')
 
 
@@ -1168,9 +1169,10 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
             tasks_done += 1
             continue
 
-        # Create branch
+        # Create branch (preserving current branch as return target)
+        source_branch = git('branch', '--show-current')
         branch = git_create_branch(task)
-        log(f'Working on branch: {branch}')
+        log(f'Working on branch: {branch} (will return to {source_branch})')
 
         save_state({
             'current_task_id': task['id'],
@@ -1217,8 +1219,8 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
             save_todos(open_tasks, done_tasks)
             git_commit_all(f'[AGENT] Mark #{task["id"]} as to-test')
 
-        # Return to main (do NOT merge — user reviews via --stop)
-        git_back_to_main()
+        # Return to source branch (do NOT merge — user reviews via --stop)
+        git_back_to_main(source_branch)
 
         completed_ids.append(task['id'])
         tasks_done += 1
