@@ -738,7 +738,6 @@ with tab_dsilva:
                                             live=not _is_final,
                                         ),
                                         use_container_width=_use_cw,
-                                        key='bc_live_heatmap',
                                     )
 
                                     bf, bp, bpv = _best_point(
