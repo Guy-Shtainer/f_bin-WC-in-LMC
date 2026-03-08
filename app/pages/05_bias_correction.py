@@ -812,7 +812,7 @@ with tab_dsilva:
 
                                 now = time.time()
                                 _is_final = (rows_done == n_rows_total)
-                                if now - last_render_time > 0.4 or _is_final:
+                                if now - last_render_time > 1.0 or _is_final:
                                     last_render_time = now
                                     cur_p = accumulated_ks_p[i_lp, i_sigma]
                                     cur_p_disp = np.where(np.isnan(cur_p), 0.0, cur_p)
@@ -832,6 +832,7 @@ with tab_dsilva:
                                             live=not _is_final,
                                         ),
                                         use_container_width=_use_cw,
+                                        key='bc_live_heatmap',
                                     )
 
                                     bf, bp, bpv = _best_point(
@@ -1295,10 +1296,13 @@ with tab_dsilva:
                 else:
                     _z = _2d.T      # need to transpose
 
+                _z_valid = _z[~np.isnan(_z)]
+                _z_max = float(np.percentile(_z_valid, 98)) if _z_valid.size > 0 else 1.0
                 fig_corner.add_trace(go.Heatmap(
                     x=_param_grids[j], y=_param_grids[i],
                     z=_z,
-                    colorscale='Viridis', showscale=False,
+                    colorscale='RdBu_r', zmin=0.0, zmax=_z_max,
+                    zsmooth='best', showscale=False,
                     hovertemplate=f'{_param_names[j]}=%{{x:.4f}}<br>'
                                  f'{_param_names[i]}=%{{y:.4f}}<br>'
                                  f'p-sum=%{{z:.4f}}<extra></extra>',
@@ -2649,6 +2653,7 @@ with tab_langer:
                                 best_label_fmt='  f={fbin:.3f}, σ={x:.1f}, p={p:.3f}',
                             ),
                             use_container_width=_use_cw,
+                            key='lg_live_heatmap',
                         )
 
                         bf, bsig, bpv = _best_point(cur_p, lg_fbin_vals, lg_sigma_vals)
@@ -2848,19 +2853,48 @@ with tab_langer:
                 # ks_p_2d shape is [n_fbin, n_sigma]
                 # For cell (i=1, j=0): x=f_bin (j=0), y=σ (i=1)
                 # z needs to be [n_y, n_x] = [n_sigma, n_fbin] = ks_p_2d.T
+                _lg_z = lg_ks_p_2d.T
+                _lg_z_valid = _lg_z[~np.isnan(_lg_z)]
+                _lg_z_max = float(np.percentile(_lg_z_valid, 98)) if _lg_z_valid.size > 0 else 1.0
                 fig_lg_corner.add_trace(go.Heatmap(
                     x=_lg_param_grids[j], y=_lg_param_grids[i],
-                    z=lg_ks_p_2d.T,
-                    colorscale='Viridis', showscale=False,
+                    z=_lg_z,
+                    colorscale='RdBu_r', zmin=0.0, zmax=_lg_z_max,
+                    zsmooth='best', showscale=False,
                     hovertemplate=f'{_lg_param_names[j]}=%{{x:.4f}}<br>'
                                  f'{_lg_param_names[i]}=%{{y:.4f}}<br>'
                                  f'p=%{{z:.4f}}<extra></extra>',
                 ), row=i + 1, col=j + 1)
 
+                # Contour lines for 68% and 95% credible regions
+                _lg_z_flat = _lg_z.ravel()
+                _lg_z_pos = _lg_z_flat[_lg_z_flat > 0]
+                if len(_lg_z_pos) > 2:
+                    _lg_z_sorted = np.sort(_lg_z_pos)[::-1]
+                    _lg_z_cumsum = np.cumsum(_lg_z_sorted)
+                    _lg_z_cumsum = _lg_z_cumsum / _lg_z_cumsum[-1]
+                    _lg_idx_68 = np.searchsorted(_lg_z_cumsum, 0.68)
+                    _lg_idx_95 = np.searchsorted(_lg_z_cumsum, 0.95)
+                    _lg_lvl_68 = float(_lg_z_sorted[min(_lg_idx_68, len(_lg_z_sorted) - 1)])
+                    _lg_lvl_95 = float(_lg_z_sorted[min(_lg_idx_95, len(_lg_z_sorted) - 1)])
+                    fig_lg_corner.add_trace(go.Contour(
+                        x=_lg_param_grids[j], y=_lg_param_grids[i],
+                        z=_lg_z,
+                        contours=dict(
+                            coloring='none', showlabels=True,
+                            labelfont=dict(size=8, color='white'),
+                        ),
+                        ncontours=2,
+                        contours_start=_lg_lvl_95,
+                        contours_end=_lg_lvl_68,
+                        line=dict(color='white', width=1.5, dash='dot'),
+                        showscale=False, hoverinfo='skip',
+                    ), row=i + 1, col=j + 1)
+
                 fig_lg_corner.add_trace(go.Scatter(
                     x=[_lg_param_modes[j]], y=[_lg_param_modes[i]],
                     mode='markers',
-                    marker=dict(symbol='star', size=10, color='gold',
+                    marker=dict(symbol='star', size=10, color='#DAA520',
                                 line=dict(color='black', width=1)),
                     showlegend=False,
                 ), row=i + 1, col=j + 1)
