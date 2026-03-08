@@ -1,6 +1,6 @@
 {
   "default_quadrant": "eliminate",
-  "max_tasks": null,
+  "max_tasks": 2,
   "include_critical": false,
   "rate_limit_sleep": 300,
   "max_fix_attempts": 2,
@@ -14,11 +14,11 @@
     "fix_implementer": 600
   },
   "intervention": {
-    "wait_on_reject": true,
-    "wait_on_fail": true,
-    "timeout_seconds": 1800,
+    "wait_on_reject": false,
+    "wait_on_fail": false,
+    "timeout_seconds": 0,
     "auto_replan_max": 3,
-    "auto_skip_test_max": 4
+    "auto_skip_test_max": 2
   },
   "auto_learn": true
 }
