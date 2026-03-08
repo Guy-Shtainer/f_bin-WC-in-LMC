@@ -210,6 +210,18 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 ---
 
+### E019 — Data symlink destroyed by git operations
+
+| | |
+|---|---|
+| **Bad** | `Data/` symlink missing after git checkout/stash/branch switch |
+| **Fix** | `ln -s ../Data Data` from project root |
+| **Grep** | *(not greppable — check after git operations)* |
+| **Why** | Git does not preserve symlinks reliably across branch switches and stash operations. The `Data/` symlink points to `../Data` and must be restored manually when missing. |
+| **Found in** | Project root — causes "Could not load star data" on home page |
+
+---
+
 ## Adding New Errors
 
 When you encounter a new recurring error, add it here with:

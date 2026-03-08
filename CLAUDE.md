@@ -123,6 +123,11 @@ ObservationManager (ObservationClass.py)
 
 ## Key Conventions
 
+**Data symlink:** `Data/` in the project root is a symlink to `../Data`.
+Git operations (checkout, stash, branch switch) can destroy symlinks.
+After ANY git operation, verify `Data/` exists: `ls -la Data`.
+If missing, restore with: `ln -s ../Data Data`. NEVER delete this symlink.
+
 **Property persistence:** All computed results (RVs, normalized flux, EWs, SNR bounds) stored as `.npz` files using `star.save_property(name, data, epoch, band)`. Load with `star.load_property(name, epoch, band)`.
 
 **Binary detection:** Two criteria must both be met: (1) ΔRV > 45.5 km/s, and (2) significance: ΔRV − 4σ > 0 (where σ is combined epoch-pair error). Applied to the max-separation epoch pair first; if not satisfied, all pairs are scanned. Single emission line used: `C IV 5808-5812`. Result: 10/25 detected + 3 Bartzakos (2001) = **13/28 ≈ 46%** total binary fraction.
