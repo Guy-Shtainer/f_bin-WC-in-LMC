@@ -492,7 +492,7 @@ for task in filtered:
     _edit_width = 1.2 if _task_status == 'to-test' else 0.6
     (col_check, col_id, col_pri, col_title, col_flags,
      col_tags, col_date, col_by, col_del, col_edit) = st.columns(
-        [0.3, 0.4, 0.5, 3, 1, 1.5, 1.2, 0.8, 0.5, _edit_width])
+        [0.3, 0.4, 0.5, 3, 1, 1.5, 1.8, 0.8, 0.5, _edit_width])
 
     with col_check:
         if st.checkbox('', key=f'todo_done_{task["id"]}',
@@ -529,7 +529,10 @@ for task in filtered:
     with col_date:
         _da = task.get('date_added', '')
         if _da:
-            st.caption(_da.replace('T', ' '))
+            st.markdown(
+                f'<span style="color:#888;font-size:0.75em">'
+                f'{_da.replace("T", " ")}</span>',
+                unsafe_allow_html=True)
     with col_by:
         st.caption(task.get('suggested_by', ''))
     with col_del:
@@ -565,11 +568,13 @@ for task in filtered:
     if st.session_state.get(f'todo_editing_{task["id"]}', False):
         # Scroll here if triggered from Eisenhower matrix
         if st.session_state.pop('_scroll_to_task', None) == task['id']:
-            st.markdown(
-                f'<script>document.getElementById("task-{task["id"]}")'
+            import streamlit.components.v1 as _stc
+            _stc.html(
+                f'<script>setTimeout(function(){{'
+                f'parent.document.getElementById("task-{task["id"]}")'
                 f'.scrollIntoView({{behavior:"smooth",block:"center"}})'
-                f'</script>',
-                unsafe_allow_html=True)
+                f'}}, 200)</script>',
+                height=0)
         _ec1, _ec2 = st.columns([3, 1])
         edit_title = _ec1.text_area(
             'Title', value=task['title'],
