@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import re
-from datetime import date
+from datetime import date, datetime
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
@@ -118,6 +118,7 @@ def load_todos() -> tuple[list[dict], list[dict]]:
                         'date_added': cells[8],
                         'urgent': _parse_bool(cells[9]) if len(cells) > 9 else False,
                         'important': _parse_bool(cells[10]) if len(cells) > 10 else False,
+                        'notes': cells[11] if len(cells) > 11 else '',
                     }
                     open_tasks.append(task)
         elif section.startswith('Done'):
@@ -125,7 +126,7 @@ def load_todos() -> tuple[list[dict], list[dict]]:
             rows = _parse_table_rows(lines)
             for cells in rows[1:] if len(rows) > 1 else []:
                 if len(cells) >= 12:
-                    # Full metadata format (12 columns)
+                    # Full metadata format (12+ columns)
                     done_tasks.append({
                         'id': int(cells[0]) if cells[0].isdigit() else 0,
                         'title': cells[1],
@@ -138,6 +139,7 @@ def load_todos() -> tuple[list[dict], list[dict]]:
                         'urgent': _parse_bool(cells[9]),
                         'important': _parse_bool(cells[10]),
                         'date_done': cells[11],
+                        'notes': cells[12] if len(cells) > 12 else '',
                     })
                 elif len(cells) >= 3:
                     # Legacy 3-column format (backwards compatible)
@@ -152,17 +154,17 @@ def load_todos() -> tuple[list[dict], list[dict]]:
 
 def save_todos(open_tasks: list[dict], done_tasks: list[dict]) -> None:
     """Write open_tasks + done_tasks back to TODO.md."""
-    open_tasks.sort(key=lambda t: PRIORITY_ORDER.get(t.get('priority', 'low'), 3))
+    # Preserve insertion order — UI sort handles display ordering
 
     lines = ['# Project To-Do List\n']
     lines.append('\n## Open Tasks\n')
     lines.append(
         '| ID | Title | Description | Priority | Tags | Status '
-        '| Added by | Suggested by | Date added | Urgent | Important |'
+        '| Added by | Suggested by | Date added | Urgent | Important | Notes |'
     )
     lines.append(
         '|----|-------|-------------|----------|------|--------'
-        '|----------|-------------|------------|--------|-----------|'
+        '|----------|-------------|------------|--------|-----------|-------|'
     )
     for t in open_tasks:
         lines.append(
@@ -171,17 +173,20 @@ def save_todos(open_tasks: list[dict], done_tasks: list[dict]) -> None:
             f"| {t.get('status', 'open')} | {t.get('added_by', '')} "
             f"| {t.get('suggested_by', '')} | {t.get('date_added', '')} "
             f"| {_bool_str(t.get('urgent', False))} "
-            f"| {_bool_str(t.get('important', False))} |"
+            f"| {_bool_str(t.get('important', False))} "
+            f"| {t.get('notes', '')} |"
         )
 
     lines.append('\n## Done\n')
     lines.append(
         '| ID | Title | Description | Priority | Tags | Status '
-        '| Added by | Suggested by | Date added | Urgent | Important | Date done |'
+        '| Added by | Suggested by | Date added | Urgent | Important '
+        '| Date done | Notes |'
     )
     lines.append(
         '|----|-------|-------------|----------|------|--------'
-        '|----------|-------------|------------|--------|-----------|-----------|'
+        '|----------|-------------|------------|--------|-----------|'
+        '-----------|-------|'
     )
     for t in done_tasks:
         lines.append(
@@ -191,12 +196,25 @@ def save_todos(open_tasks: list[dict], done_tasks: list[dict]) -> None:
             f"| {t.get('suggested_by', '')} | {t.get('date_added', '')} "
             f"| {_bool_str(t.get('urgent', False))} "
             f"| {_bool_str(t.get('important', False))} "
-            f"| {t.get('date_done', '')} |"
+            f"| {t.get('date_done', '')} "
+            f"| {t.get('notes', '')} |"
         )
 
     lines.append('')
     with open(TODO_PATH, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
+
+
+def _all_tags_by_frequency(open_tasks: list[dict], done_tasks: list[dict]) -> list[str]:
+    """Return all unique tags sorted by frequency (most common first)."""
+    from collections import Counter
+    counter: Counter = Counter()
+    for t in open_tasks + done_tasks:
+        for tag in t.get('tags', '').split(','):
+            tag = tag.strip()
+            if tag:
+                counter[tag] += 1
+    return [tag for tag, _ in counter.most_common()]
 
 
 def _next_id(open_tasks: list[dict], done_tasks: list[dict]) -> int:
@@ -281,11 +299,23 @@ with st.expander('➕ Add new task', expanded=False):
     new_added_by = _cols[1].selectbox('Added by', ['Guy', 'Claude', 'Tomer'],
                                       key='todo_new_added_by')
 
-    _cols2 = st.columns([3, 1, 1])
+    _existing_tags = _all_tags_by_frequency(open_tasks, done_tasks)
+    _cols2 = st.columns([3, 2, 1])
     new_desc = _cols2[0].text_area('Description', key='todo_new_desc',
                                     placeholder='What needs to be done', height=68)
-    new_tags = _cols2[1].text_input('Tags', key='todo_new_tags',
-                                    placeholder='e.g. bias-correction')
+    _selected_tags = _cols2[1].multiselect(
+        'Tags', _existing_tags, key='todo_new_tags_multi',
+        placeholder='Select existing tags...')
+    _extra_tags = _cols2[1].text_input(
+        'New tags', key='todo_new_tags',
+        placeholder='Add new tags (comma-separated)')
+    # Merge selected + extra
+    _all_new_tags = list(_selected_tags)
+    for _t in _extra_tags.split(','):
+        _t = _t.strip()
+        if _t and _t not in _all_new_tags:
+            _all_new_tags.append(_t)
+    new_tags = ', '.join(_all_new_tags)
     new_suggested = _cols2[2].selectbox('Suggested by',
                                         ['Guy', 'Tomer', 'Claude'],
                                         key='todo_new_suggested')
@@ -306,13 +336,18 @@ with st.expander('➕ Add new task', expanded=False):
                 'status': 'open',
                 'added_by': new_added_by,
                 'suggested_by': new_suggested,
-                'date_added': date.today().isoformat(),
+                'date_added': datetime.now().isoformat(timespec='seconds'),
                 'urgent': new_urgent,
                 'important': new_important,
             }
             open_tasks.append(new_task)
             save_todos(open_tasks, done_tasks)
             st.success(f'Added: {title_clean}')
+            # Clear form fields before rerun
+            for _k in ('todo_new_title', 'todo_new_desc', 'todo_new_tags',
+                        'todo_new_tags_multi', 'todo_new_urgent',
+                        'todo_new_important'):
+                st.session_state.pop(_k, None)
             st.rerun()
         else:
             st.warning('Enter a title first.')
@@ -417,7 +452,7 @@ for task in filtered:
     elif is_important:
         flags = '<span style="color:#4A90D9;font-size:0.75em">📌 IMPORTANT</span>'
 
-    _edit_width = 0.7 if _task_status == 'to-test' else 0.4
+    _edit_width = 1.0 if _task_status == 'to-test' else 0.4
     col_check, col_pri, col_title, col_flags, col_tags, col_by, col_edit = st.columns(
         [0.3, 0.5, 3, 1, 1.5, 0.8, _edit_width])
 
@@ -453,11 +488,15 @@ for task in filtered:
     with col_edit:
         _edit_key = f'todo_editing_{task["id"]}'
         if _task_status == 'to-test':
-            _bc1, _bc2 = st.columns(2)
+            _bc1, _bc2, _bc3 = st.columns(3)
             if _bc1.button('✅', key=f'confirm_btn_{task["id"]}',
                            help=f'Confirm #{task["id"]} works'):
                 _tasks_to_complete.append(task)
-            if _bc2.button('✏️', key=f'edit_btn2_{task["id"]}',
+            if _bc2.button('❌', key=f'decline_btn_{task["id"]}',
+                           help=f'Decline #{task["id"]}'):
+                st.session_state[f'todo_declining_{task["id"]}'] = True
+                st.rerun()
+            if _bc3.button('✏️', key=f'edit_btn2_{task["id"]}',
                            help=f'Edit task #{task["id"]}'):
                 st.session_state[_edit_key] = not st.session_state.get(
                     _edit_key, False)
@@ -500,10 +539,26 @@ for task in filtered:
             if task.get('suggested_by', 'Guy') in ['Guy', 'Tomer', 'Claude'] else 0,
             key=f'edit_suggested_{task["id"]}')
 
-        _ec7, _ec8, _ec9, _ec10, _ec11 = st.columns([2, 1, 1, 0.7, 0.7])
-        edit_tags = _ec7.text_input(
-            'Tags', value=tags_str,
-            key=f'edit_tags_{task["id"]}')
+        _ec7, _ec7b, _ec8, _ec9, _ec10, _ec11 = st.columns(
+            [2, 2, 1, 1, 0.7, 0.7])
+        # Parse current tags for default selection
+        _cur_tag_list = [t.strip() for t in tags_str.split(',') if t.strip()]
+        _edit_existing = _all_tags_by_frequency(open_tasks, done_tasks)
+        _edit_sel_tags = _ec7.multiselect(
+            'Tags', _edit_existing,
+            default=[t for t in _cur_tag_list if t in _edit_existing],
+            key=f'edit_tags_multi_{task["id"]}',
+            placeholder='Select tags...')
+        _edit_extra = _ec7b.text_input(
+            'New tags', key=f'edit_tags_{task["id"]}',
+            value=', '.join(t for t in _cur_tag_list if t not in _edit_existing),
+            placeholder='New tags...')
+        _edit_all = list(_edit_sel_tags)
+        for _et in _edit_extra.split(','):
+            _et = _et.strip()
+            if _et and _et not in _edit_all:
+                _edit_all.append(_et)
+        edit_tags = ', '.join(_edit_all)
         edit_urgent = _ec8.checkbox(
             'Urgent', value=is_urgent,
             key=f'edit_urgent_{task["id"]}')
@@ -522,6 +577,12 @@ for task in filtered:
             task['suggested_by'] = edit_suggested
             task['urgent'] = edit_urgent
             task['important'] = edit_important
+            # Track modification timestamp in notes
+            _mod_ts = datetime.now().isoformat(timespec='seconds')
+            _existing_notes = task.get('notes', '')
+            _mod_note = f'[Modified {_mod_ts}]'
+            task['notes'] = (f'{_existing_notes}; {_mod_note}'
+                             if _existing_notes else _mod_note)
             save_todos(open_tasks, done_tasks)
             st.session_state[f'todo_editing_{task["id"]}'] = False
             st.success(f'Updated #{task["id"]}')
@@ -531,12 +592,43 @@ for task in filtered:
             st.session_state[f'todo_editing_{task["id"]}'] = False
             st.rerun()
 
+    # ── Decline feedback form (toggled by ❌ button) ─────────────────────
+    if st.session_state.get(f'todo_declining_{task["id"]}', False):
+        st.warning(f'Declining task #{task["id"]}: **{task["title"]}**')
+        _decline_reason = st.text_area(
+            'What went wrong / what needs to change?',
+            key=f'decline_reason_{task["id"]}',
+            placeholder='Describe why this task is being declined...',
+            height=100,
+        )
+        _dc_col1, _dc_col2 = st.columns([1, 1])
+        if _dc_col1.button('Submit decline', key=f'decline_submit_{task["id"]}',
+                           type='primary'):
+            _decline_ts = datetime.now().isoformat(timespec='seconds')
+            _reason_text = _decline_reason.strip() or 'No reason given'
+            _decline_note = f'[DECLINED {_decline_ts}] {_reason_text}'
+            _prev_notes = task.get('notes', '')
+            task['notes'] = (f'{_prev_notes}; {_decline_note}'
+                             if _prev_notes else _decline_note)
+            task['status'] = 'open'
+            # Add 'declined' tag if not already present
+            _cur_tags = task.get('tags', '')
+            if 'declined' not in _cur_tags:
+                task['tags'] = f'{_cur_tags}, declined' if _cur_tags else 'declined'
+            save_todos(open_tasks, done_tasks)
+            st.session_state.pop(f'todo_declining_{task["id"]}', None)
+            st.success(f'Task #{task["id"]} declined and returned to open.')
+            st.rerun()
+        if _dc_col2.button('Cancel', key=f'decline_cancel_{task["id"]}'):
+            st.session_state.pop(f'todo_declining_{task["id"]}', None)
+            st.rerun()
+
 # Handle completions
 if _tasks_to_complete:
     for task in _tasks_to_complete:
         open_tasks = [t for t in open_tasks if t['id'] != task['id']]
         done_entry = dict(task)
-        done_entry['date_done'] = date.today().isoformat()
+        done_entry['date_done'] = datetime.now().isoformat(timespec='seconds')
         done_entry['status'] = 'done'
         done_tasks.insert(0, done_entry)
     save_todos(open_tasks, done_tasks)
