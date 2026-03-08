@@ -762,7 +762,69 @@ async def run_pipeline(task: dict) -> tuple[str, str]:
                 # Timeout — fall through to default rejection behavior
                 return 'rejected', f'Reviewer rejected the plan: {review_text[-200:]}'
         else:
-            return 'rejected', f'Reviewer rejected the plan: {review_text[-200:]}'
+            # Autonomous auto-replan loop (no human needed)
+            auto_replan_max = int_cfg.get('auto_replan_max', 0)
+            if auto_replan_max > 0:
+                log(f'  [AUTO-REPLAN] Plan rejected — starting auto-replan loop (max {auto_replan_max} rounds)...')
+                for replan_round in range(1, auto_replan_max + 1):
+                    # Save each review round for user inspection
+                    review_round_path = work_dir / f'review_round_{replan_round}.md'
+                    review_round_path.write_text(review_text, encoding='utf-8')
+
+                    # Send structured feedback to planner
+                    replan_prompt = (
+                        f'{task_desc}\n\n'
+                        f'This is REPLAN ROUND {replan_round} of {auto_replan_max}.\n'
+                        f'Your previous plan was REJECTED by the reviewer.\n\n'
+                        f'--- REVIEWER FEEDBACK ---\n'
+                        f'{review_text}\n'
+                        f'--- END FEEDBACK ---\n\n'
+                        f'Fix what the reviewer flagged in "What Needs Fixing" and '
+                        f'"Corrections Required". Do NOT change parts the reviewer '
+                        f'marked as correct in "What\'s Correct".\n\n'
+                        f'Write your improved plan to: {plan_path}\n'
+                    )
+                    try:
+                        await run_agent_with_retry('planner', replan_prompt)
+                    except Exception as e:
+                        log(f'  [AUTO-REPLAN] Planner failed on round {replan_round}: {e}')
+                        break
+                    git_commit_all(f'[AGENT] Auto-replan round {replan_round} for #{task["id"]}')
+
+                    # Re-review the revised plan
+                    reviewer_prompt_retry = (
+                        f'{task_desc}\n\n'
+                        f'This is review round {replan_round + 1}.\n'
+                        f'Read the REVISED plan at: {plan_path}\n'
+                        f'The previous review is at: {review_round_path}\n\n'
+                        f'Check whether the previous issues were corrected and '
+                        f'the correct parts were preserved. Look for any new issues.\n\n'
+                        f'Write your review to: {review_path}\n'
+                        f'End with APPROVED, APPROVED WITH NOTES, or REJECTED.\n'
+                    )
+                    try:
+                        await run_agent_with_retry('reviewer', reviewer_prompt_retry)
+                    except Exception as e:
+                        log(f'  [AUTO-REPLAN] Reviewer failed on round {replan_round}: {e}')
+                        break
+                    review_text = review_path.read_text(encoding='utf-8')
+                    git_commit_all(f'[AGENT] Auto-review round {replan_round + 1} for #{task["id"]}')
+
+                    if 'REJECTED' not in review_text.upper():
+                        log(f'  [AUTO-REPLAN] Plan approved on round {replan_round + 1}!')
+                        break
+                else:
+                    # Exhausted all replan rounds — auto-approve and proceed anyway
+                    log(f'  [AUTO-REPLAN] Exhausted {auto_replan_max} rounds. Auto-approving and proceeding.')
+                    # Save final review for user inspection
+                    final_review_path = work_dir / f'review_round_final.md'
+                    final_review_path.write_text(
+                        f'AUTO-APPROVED after {auto_replan_max} replan rounds.\n\n'
+                        f'Last review:\n{review_text}',
+                        encoding='utf-8'
+                    )
+            else:
+                return 'rejected', f'Reviewer rejected the plan: {review_text[-200:]}'
 
     # ── Stage 3: Implement ───────────────────────────────────────────────
     log(f'  [IMPLEMENTER] Starting...')

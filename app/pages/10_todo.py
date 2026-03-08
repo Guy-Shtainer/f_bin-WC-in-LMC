@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import re
-from datetime import date
+from datetime import date, datetime
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
@@ -88,16 +88,17 @@ def _parse_table_rows(lines: list[str]) -> list[list[str]]:
     return rows
 
 
-def load_todos() -> tuple[list[dict], list[dict]]:
-    """Load TODO.md → (open_tasks, done_tasks)."""
+def load_todos() -> tuple[list[dict], list[dict], list[dict]]:
+    """Load TODO.md → (open_tasks, done_tasks, deleted_tasks)."""
     if not os.path.exists(TODO_PATH):
-        return [], []
+        return [], [], []
 
     with open(TODO_PATH, 'r', encoding='utf-8') as f:
         content = f.read()
 
     open_tasks = []
     done_tasks = []
+    deleted_tasks = []
 
     sections = re.split(r'^## ', content, flags=re.MULTILINE)
     for section in sections:
@@ -118,6 +119,7 @@ def load_todos() -> tuple[list[dict], list[dict]]:
                         'date_added': cells[8],
                         'urgent': _parse_bool(cells[9]) if len(cells) > 9 else False,
                         'important': _parse_bool(cells[10]) if len(cells) > 10 else False,
+                        'notes': cells[11] if len(cells) > 11 else '',
                     }
                     open_tasks.append(task)
         elif section.startswith('Done'):
@@ -125,7 +127,6 @@ def load_todos() -> tuple[list[dict], list[dict]]:
             rows = _parse_table_rows(lines)
             for cells in rows[1:] if len(rows) > 1 else []:
                 if len(cells) >= 12:
-                    # Full metadata format (12 columns)
                     done_tasks.append({
                         'id': int(cells[0]) if cells[0].isdigit() else 0,
                         'title': cells[1],
@@ -138,31 +139,44 @@ def load_todos() -> tuple[list[dict], list[dict]]:
                         'urgent': _parse_bool(cells[9]),
                         'important': _parse_bool(cells[10]),
                         'date_done': cells[11],
+                        'notes': cells[12] if len(cells) > 12 else '',
                     })
                 elif len(cells) >= 3:
-                    # Legacy 3-column format (backwards compatible)
                     done_tasks.append({
                         'id': int(cells[0]) if cells[0].isdigit() else 0,
                         'title': cells[1],
                         'date_done': cells[2],
                     })
+        elif section.startswith('Deleted'):
+            lines = section.split('\n')
+            rows = _parse_table_rows(lines)
+            for cells in rows[1:] if len(rows) > 1 else []:
+                if len(cells) >= 4:
+                    deleted_tasks.append({
+                        'id': int(cells[0]) if cells[0].isdigit() else 0,
+                        'title': cells[1],
+                        'date_deleted': cells[2],
+                        'notes': cells[3] if len(cells) > 3 else '',
+                    })
 
-    return open_tasks, done_tasks
+    return open_tasks, done_tasks, deleted_tasks
 
 
-def save_todos(open_tasks: list[dict], done_tasks: list[dict]) -> None:
-    """Write open_tasks + done_tasks back to TODO.md."""
-    open_tasks.sort(key=lambda t: PRIORITY_ORDER.get(t.get('priority', 'low'), 3))
+def save_todos(open_tasks: list[dict], done_tasks: list[dict],
+               deleted_tasks: list[dict] | None = None) -> None:
+    """Write open_tasks + done_tasks + deleted_tasks back to TODO.md."""
+    if deleted_tasks is None:
+        deleted_tasks = []
 
     lines = ['# Project To-Do List\n']
     lines.append('\n## Open Tasks\n')
     lines.append(
         '| ID | Title | Description | Priority | Tags | Status '
-        '| Added by | Suggested by | Date added | Urgent | Important |'
+        '| Added by | Suggested by | Date added | Urgent | Important | Notes |'
     )
     lines.append(
         '|----|-------|-------------|----------|------|--------'
-        '|----------|-------------|------------|--------|-----------|'
+        '|----------|-------------|------------|--------|-----------|-------|'
     )
     for t in open_tasks:
         lines.append(
@@ -171,17 +185,20 @@ def save_todos(open_tasks: list[dict], done_tasks: list[dict]) -> None:
             f"| {t.get('status', 'open')} | {t.get('added_by', '')} "
             f"| {t.get('suggested_by', '')} | {t.get('date_added', '')} "
             f"| {_bool_str(t.get('urgent', False))} "
-            f"| {_bool_str(t.get('important', False))} |"
+            f"| {_bool_str(t.get('important', False))} "
+            f"| {t.get('notes', '')} |"
         )
 
     lines.append('\n## Done\n')
     lines.append(
         '| ID | Title | Description | Priority | Tags | Status '
-        '| Added by | Suggested by | Date added | Urgent | Important | Date done |'
+        '| Added by | Suggested by | Date added | Urgent | Important '
+        '| Date done | Notes |'
     )
     lines.append(
         '|----|-------|-------------|----------|------|--------'
-        '|----------|-------------|------------|--------|-----------|-----------|'
+        '|----------|-------------|------------|--------|-----------|'
+        '-----------|-------|'
     )
     for t in done_tasks:
         lines.append(
@@ -191,23 +208,49 @@ def save_todos(open_tasks: list[dict], done_tasks: list[dict]) -> None:
             f"| {t.get('suggested_by', '')} | {t.get('date_added', '')} "
             f"| {_bool_str(t.get('urgent', False))} "
             f"| {_bool_str(t.get('important', False))} "
-            f"| {t.get('date_done', '')} |"
+            f"| {t.get('date_done', '')} "
+            f"| {t.get('notes', '')} |"
         )
+
+    if deleted_tasks:
+        lines.append('\n## Deleted\n')
+        lines.append('| ID | Title | Date deleted | Notes |')
+        lines.append('|----|-------|-------------|-------|')
+        for t in deleted_tasks:
+            lines.append(
+                f"| {t['id']} | {t['title']} "
+                f"| {t.get('date_deleted', '')} "
+                f"| {t.get('notes', '')} |"
+            )
 
     lines.append('')
     with open(TODO_PATH, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
 
 
-def _next_id(open_tasks: list[dict], done_tasks: list[dict]) -> int:
-    all_ids = [t['id'] for t in open_tasks] + [t['id'] for t in done_tasks]
+def _all_tags_by_frequency(open_tasks: list[dict], done_tasks: list[dict]) -> list[str]:
+    """Return all unique tags sorted by frequency (most common first)."""
+    from collections import Counter
+    counter: Counter = Counter()
+    for t in open_tasks + done_tasks:
+        for tag in t.get('tags', '').split(','):
+            tag = tag.strip()
+            if tag:
+                counter[tag] += 1
+    return [tag for tag, _ in counter.most_common()]
+
+
+def _next_id(open_tasks: list[dict], done_tasks: list[dict],
+             deleted_tasks: list[dict] | None = None) -> int:
+    all_ids = ([t['id'] for t in open_tasks] + [t['id'] for t in done_tasks]
+               + [t['id'] for t in (deleted_tasks or [])])
     return max(all_ids, default=0) + 1
 
 
 # ── Page content ─────────────────────────────────────────────────────────────
 st.markdown('# 📝 To-Do List')
 
-open_tasks, done_tasks = load_todos()
+open_tasks, done_tasks, deleted_tasks = load_todos()
 
 n_open = len(open_tasks)
 n_critical = sum(1 for t in open_tasks if t.get('priority') == 'critical')
@@ -222,26 +265,25 @@ if open_tasks:
         q_nn = [t for t in open_tasks if not t.get('urgent') and not t.get('important')]
 
         def _render_quadrant(title, color, label, tasks_q):
-            parts = [
+            st.markdown(
                 f'<div style="background:{color}22;border:1px solid {color};'
-                f'border-radius:8px;padding:10px;min-height:100px">',
+                f'border-radius:8px;padding:10px;min-height:60px">'
                 f'<b style="color:{color}">{title}</b> '
-                f'<span style="color:#888;font-size:0.8em">({label})</span><br>',
-            ]
+                f'<span style="color:#888;font-size:0.8em">({label})</span>'
+                f'</div>',
+                unsafe_allow_html=True)
             if tasks_q:
                 for tq in tasks_q:
                     pri_e = PRIORITY_EMOJIS.get(tq.get('priority', 'medium'), '⚪')
-                    parts.append(
-                        f'<span style="font-size:0.85em">{pri_e} {tq["title"]}'
-                        f'</span><br>'
-                    )
+                    if st.button(f'{pri_e} {tq["title"]}',
+                                 key=f'eis_btn_{tq["id"]}',
+                                 help=f'Jump to edit #{tq["id"]}',
+                                 use_container_width=True):
+                        st.session_state[f'todo_editing_{tq["id"]}'] = True
+                        st.session_state['_scroll_to_task'] = tq['id']
+                        st.rerun()
             else:
-                parts.append(
-                    '<span style="color:#666;font-size:0.8em;font-style:italic">'
-                    'No tasks</span>'
-                )
-            parts.append('</div>')
-            st.markdown(''.join(parts), unsafe_allow_html=True)
+                st.caption('No tasks')
 
         # Header row
         _h1, _h2 = st.columns(2)
@@ -274,31 +316,46 @@ if open_tasks:
         )
 
 # ── Add new task ─────────────────────────────────────────────────────────────
+# Form version counter — incrementing creates fresh widget keys to clear fields
+_fv = st.session_state.get('todo_form_ver', 0)
+
 with st.expander('➕ Add new task', expanded=False):
     _cols = st.columns([3, 1])
-    new_title = _cols[0].text_area('Title', key='todo_new_title',
+    new_title = _cols[0].text_area('Title', key=f'todo_new_title_v{_fv}',
                                     placeholder='Short task name', height=68)
     new_added_by = _cols[1].selectbox('Added by', ['Guy', 'Claude', 'Tomer'],
-                                      key='todo_new_added_by')
+                                      key=f'todo_new_added_by_v{_fv}')
 
-    _cols2 = st.columns([3, 1, 1])
-    new_desc = _cols2[0].text_area('Description', key='todo_new_desc',
+    _existing_tags = _all_tags_by_frequency(open_tasks, done_tasks)
+    _cols2 = st.columns([3, 2, 1])
+    new_desc = _cols2[0].text_area('Description', key=f'todo_new_desc_v{_fv}',
                                     placeholder='What needs to be done', height=68)
-    new_tags = _cols2[1].text_input('Tags', key='todo_new_tags',
-                                    placeholder='e.g. bias-correction')
+    _selected_tags = _cols2[1].multiselect(
+        'Tags', _existing_tags, key=f'todo_new_tags_multi_v{_fv}',
+        placeholder='Select existing tags...')
+    _extra_tags = _cols2[1].text_input(
+        'New tags', key=f'todo_new_tags_v{_fv}',
+        placeholder='Add new tags (comma-separated)')
+    # Merge selected + extra
+    _all_new_tags = list(_selected_tags)
+    for _t in _extra_tags.split(','):
+        _t = _t.strip()
+        if _t and _t not in _all_new_tags:
+            _all_new_tags.append(_t)
+    new_tags = ', '.join(_all_new_tags)
     new_suggested = _cols2[2].selectbox('Suggested by',
                                         ['Guy', 'Tomer', 'Claude'],
-                                        key='todo_new_suggested')
+                                        key=f'todo_new_suggested_v{_fv}')
 
     _cols3 = st.columns([1, 1, 2])
-    new_urgent = _cols3[0].checkbox('Urgent', key='todo_new_urgent')
-    new_important = _cols3[1].checkbox('Important', key='todo_new_important')
+    new_urgent = _cols3[0].checkbox('Urgent', key=f'todo_new_urgent_v{_fv}')
+    new_important = _cols3[1].checkbox('Important', key=f'todo_new_important_v{_fv}')
 
     if _cols3[2].button('Add task', key='todo_add_btn', type='primary'):
         title_clean = new_title.strip().replace('\n', ' ')
         if title_clean:
             new_task = {
-                'id': _next_id(open_tasks, done_tasks),
+                'id': _next_id(open_tasks, done_tasks, deleted_tasks),
                 'title': title_clean,
                 'description': new_desc.strip().replace('\n', ' '),
                 'priority': _derive_priority(new_urgent, new_important),
@@ -306,20 +363,22 @@ with st.expander('➕ Add new task', expanded=False):
                 'status': 'open',
                 'added_by': new_added_by,
                 'suggested_by': new_suggested,
-                'date_added': date.today().isoformat(),
+                'date_added': datetime.now().isoformat(timespec='seconds'),
                 'urgent': new_urgent,
                 'important': new_important,
             }
             open_tasks.append(new_task)
-            save_todos(open_tasks, done_tasks)
+            save_todos(open_tasks, done_tasks, deleted_tasks)
             st.success(f'Added: {title_clean}')
+            # Increment form version to get fresh empty widgets
+            st.session_state['todo_form_ver'] = _fv + 1
             st.rerun()
         else:
             st.warning('Enter a title first.')
 
 # ── Filters ──────────────────────────────────────────────────────────────────
 if open_tasks:
-    _filter_cols = st.columns([1, 1, 1, 1, 1])
+    _filter_cols = st.columns([1, 1, 1, 1, 1, 1])
     all_priorities = sorted(
         set(t.get('priority', 'medium') for t in open_tasks),
         key=lambda p: PRIORITY_ORDER.get(p, 3),
@@ -340,10 +399,13 @@ if open_tasks:
         'Tags', all_tags, default=all_tags, key='todo_filter_tags')
     filter_author = _filter_cols[2].multiselect(
         'Author', all_authors, default=all_authors, key='todo_filter_author')
-    sort_by = _filter_cols[3].selectbox(
+    filter_status = _filter_cols[3].selectbox(
+        'Status', ['All', 'Open', 'To Test', 'In Progress'],
+        key='todo_filter_status')
+    sort_by = _filter_cols[4].selectbox(
         'Sort by', ['Priority', 'Date added', 'ID', 'Urgent first'],
         key='todo_sort_by')
-    filter_quadrant = _filter_cols[4].selectbox(
+    filter_quadrant = _filter_cols[5].selectbox(
         'Quadrant', ['All', 'Urgent + Important', 'Important',
                       'Urgent', 'Neither'],
         key='todo_filter_quadrant')
@@ -359,6 +421,15 @@ if open_tasks:
             if tag.strip()
         ) or not t.get('tags', '').strip())
     ]
+
+    # Status filter
+    if filter_status == 'Open':
+        filtered = [t for t in filtered if t.get('status', 'open') == 'open']
+    elif filter_status == 'To Test':
+        filtered = [t for t in filtered if t.get('status', 'open') == 'to-test']
+    elif filter_status == 'In Progress':
+        filtered = [t for t in filtered
+                     if t.get('status', 'open') == 'in-progress']
 
     # Quadrant filter
     if filter_quadrant == 'Urgent + Important':
@@ -394,6 +465,7 @@ if not filtered:
     st.info('No open tasks. Use the form above to add one.')
 
 _tasks_to_complete = []
+_tasks_to_delete = []
 _tasks_modified = False
 
 for task in filtered:
@@ -417,14 +489,20 @@ for task in filtered:
     elif is_important:
         flags = '<span style="color:#4A90D9;font-size:0.75em">📌 IMPORTANT</span>'
 
-    _edit_width = 0.7 if _task_status == 'to-test' else 0.4
-    col_check, col_pri, col_title, col_flags, col_tags, col_by, col_edit = st.columns(
-        [0.3, 0.5, 3, 1, 1.5, 0.8, _edit_width])
+    _edit_width = 1.2 if _task_status == 'to-test' else 0.6
+    (col_check, col_id, col_pri, col_title, col_flags,
+     col_tags, col_date, col_by, col_del, col_edit) = st.columns(
+        [0.3, 0.4, 0.5, 3, 1, 1.5, 1.8, 0.8, 0.5, _edit_width])
 
     with col_check:
         if st.checkbox('', key=f'todo_done_{task["id"]}',
                         label_visibility='collapsed'):
             _tasks_to_complete.append(task)
+    with col_id:
+        st.markdown(
+            f'<span style="color:#888;font-size:0.85em;font-weight:600">'
+            f'#{task["id"]}</span>',
+            unsafe_allow_html=True)
     with col_pri:
         st.markdown(
             f'<span style="color:{pri_color};font-weight:600">'
@@ -448,16 +526,31 @@ for task in filtered:
                 for t in tags_str.split(',') if t.strip()
             )
             st.markdown(badges, unsafe_allow_html=True)
+    with col_date:
+        _da = task.get('date_added', '')
+        if _da:
+            st.markdown(
+                f'<span style="color:#888;font-size:0.75em">'
+                f'{_da.replace("T", " ")}</span>',
+                unsafe_allow_html=True)
     with col_by:
         st.caption(task.get('suggested_by', ''))
+    with col_del:
+        if st.button('🗑️', key=f'del_btn_{task["id"]}',
+                     help=f'Delete #{task["id"]}'):
+            _tasks_to_delete.append(task)
     with col_edit:
         _edit_key = f'todo_editing_{task["id"]}'
         if _task_status == 'to-test':
-            _bc1, _bc2 = st.columns(2)
+            _bc1, _bc2, _bc3 = st.columns(3)
             if _bc1.button('✅', key=f'confirm_btn_{task["id"]}',
                            help=f'Confirm #{task["id"]} works'):
                 _tasks_to_complete.append(task)
-            if _bc2.button('✏️', key=f'edit_btn2_{task["id"]}',
+            if _bc2.button('❌', key=f'decline_btn_{task["id"]}',
+                           help=f'Decline #{task["id"]}'):
+                st.session_state[f'todo_declining_{task["id"]}'] = True
+                st.rerun()
+            if _bc3.button('✏️', key=f'edit_btn2_{task["id"]}',
                            help=f'Edit task #{task["id"]}'):
                 st.session_state[_edit_key] = not st.session_state.get(
                     _edit_key, False)
@@ -470,7 +563,18 @@ for task in filtered:
                 st.rerun()
 
     # ── Inline edit form (toggled by pencil button) ──────────────────────
+    # Anchor for scroll-to-task from Eisenhower matrix
+    st.markdown(f'<div id="task-{task["id"]}"></div>', unsafe_allow_html=True)
     if st.session_state.get(f'todo_editing_{task["id"]}', False):
+        # Scroll here if triggered from Eisenhower matrix
+        if st.session_state.pop('_scroll_to_task', None) == task['id']:
+            import streamlit.components.v1 as _stc
+            _stc.html(
+                f'<script>setTimeout(function(){{'
+                f'parent.document.getElementById("task-{task["id"]}")'
+                f'.scrollIntoView({{behavior:"smooth",block:"center"}})'
+                f'}}, 200)</script>',
+                height=0)
         _ec1, _ec2 = st.columns([3, 1])
         edit_title = _ec1.text_area(
             'Title', value=task['title'],
@@ -500,10 +604,26 @@ for task in filtered:
             if task.get('suggested_by', 'Guy') in ['Guy', 'Tomer', 'Claude'] else 0,
             key=f'edit_suggested_{task["id"]}')
 
-        _ec7, _ec8, _ec9, _ec10, _ec11 = st.columns([2, 1, 1, 0.7, 0.7])
-        edit_tags = _ec7.text_input(
-            'Tags', value=tags_str,
-            key=f'edit_tags_{task["id"]}')
+        _ec7, _ec7b, _ec8, _ec9, _ec10, _ec11 = st.columns(
+            [2, 2, 1, 1, 0.7, 0.7])
+        # Parse current tags for default selection
+        _cur_tag_list = [t.strip() for t in tags_str.split(',') if t.strip()]
+        _edit_existing = _all_tags_by_frequency(open_tasks, done_tasks)
+        _edit_sel_tags = _ec7.multiselect(
+            'Tags', _edit_existing,
+            default=[t for t in _cur_tag_list if t in _edit_existing],
+            key=f'edit_tags_multi_{task["id"]}',
+            placeholder='Select tags...')
+        _edit_extra = _ec7b.text_input(
+            'New tags', key=f'edit_tags_{task["id"]}',
+            value=', '.join(t for t in _cur_tag_list if t not in _edit_existing),
+            placeholder='New tags...')
+        _edit_all = list(_edit_sel_tags)
+        for _et in _edit_extra.split(','):
+            _et = _et.strip()
+            if _et and _et not in _edit_all:
+                _edit_all.append(_et)
+        edit_tags = ', '.join(_edit_all)
         edit_urgent = _ec8.checkbox(
             'Urgent', value=is_urgent,
             key=f'edit_urgent_{task["id"]}')
@@ -522,7 +642,13 @@ for task in filtered:
             task['suggested_by'] = edit_suggested
             task['urgent'] = edit_urgent
             task['important'] = edit_important
-            save_todos(open_tasks, done_tasks)
+            # Track modification timestamp in notes
+            _mod_ts = datetime.now().isoformat(timespec='seconds')
+            _existing_notes = task.get('notes', '')
+            _mod_note = f'[Modified {_mod_ts}]'
+            task['notes'] = (f'{_existing_notes}; {_mod_note}'
+                             if _existing_notes else _mod_note)
+            save_todos(open_tasks, done_tasks, deleted_tasks)
             st.session_state[f'todo_editing_{task["id"]}'] = False
             st.success(f'Updated #{task["id"]}')
             st.rerun()
@@ -531,15 +657,59 @@ for task in filtered:
             st.session_state[f'todo_editing_{task["id"]}'] = False
             st.rerun()
 
+    # ── Decline feedback form (toggled by ❌ button) ─────────────────────
+    if st.session_state.get(f'todo_declining_{task["id"]}', False):
+        st.warning(f'Declining task #{task["id"]}: **{task["title"]}**')
+        _decline_reason = st.text_area(
+            'What went wrong / what needs to change?',
+            key=f'decline_reason_{task["id"]}',
+            placeholder='Describe why this task is being declined...',
+            height=100,
+        )
+        _dc_col1, _dc_col2 = st.columns([1, 1])
+        if _dc_col1.button('Submit decline', key=f'decline_submit_{task["id"]}',
+                           type='primary'):
+            _decline_ts = datetime.now().isoformat(timespec='seconds')
+            _reason_text = _decline_reason.strip() or 'No reason given'
+            _decline_note = f'[DECLINED {_decline_ts}] {_reason_text}'
+            _prev_notes = task.get('notes', '')
+            task['notes'] = (f'{_prev_notes}; {_decline_note}'
+                             if _prev_notes else _decline_note)
+            task['status'] = 'open'
+            # Add 'declined' tag if not already present
+            _cur_tags = task.get('tags', '')
+            if 'declined' not in _cur_tags:
+                task['tags'] = f'{_cur_tags}, declined' if _cur_tags else 'declined'
+            save_todos(open_tasks, done_tasks, deleted_tasks)
+            st.session_state.pop(f'todo_declining_{task["id"]}', None)
+            st.success(f'Task #{task["id"]} declined and returned to open.')
+            st.rerun()
+        if _dc_col2.button('Cancel', key=f'decline_cancel_{task["id"]}'):
+            st.session_state.pop(f'todo_declining_{task["id"]}', None)
+            st.rerun()
+
 # Handle completions
 if _tasks_to_complete:
     for task in _tasks_to_complete:
         open_tasks = [t for t in open_tasks if t['id'] != task['id']]
         done_entry = dict(task)
-        done_entry['date_done'] = date.today().isoformat()
+        done_entry['date_done'] = datetime.now().isoformat(timespec='seconds')
         done_entry['status'] = 'done'
         done_tasks.insert(0, done_entry)
-    save_todos(open_tasks, done_tasks)
+    save_todos(open_tasks, done_tasks, deleted_tasks)
+    st.rerun()
+
+# Handle deletions
+if _tasks_to_delete:
+    for task in _tasks_to_delete:
+        open_tasks = [t for t in open_tasks if t['id'] != task['id']]
+        deleted_tasks.append({
+            'id': task['id'],
+            'title': task['title'],
+            'date_deleted': datetime.now().isoformat(timespec='seconds'),
+            'notes': task.get('notes', ''),
+        })
+    save_todos(open_tasks, done_tasks, deleted_tasks)
     st.rerun()
 
 # ── Done tasks ───────────────────────────────────────────────────────────────
@@ -567,7 +737,57 @@ if done_tasks:
                 restored.pop('date_done', None)
                 restored['status'] = 'open'
                 open_tasks.append(restored)
-            save_todos(open_tasks, done_tasks)
+            save_todos(open_tasks, done_tasks, deleted_tasks)
+            st.rerun()
+
+# ── Deleted tasks ─────────────────────────────────────────────────────────────
+if deleted_tasks:
+    with st.expander(f'Deleted ({len(deleted_tasks)})', expanded=False):
+        _del_restore = []
+        _del_permanent = []
+        for task in deleted_tasks:
+            _dl1, _dl2, _dl3 = st.columns([6, 0.4, 0.4])
+            with _dl1:
+                st.markdown(
+                    f'<span style="color:#666;text-decoration:line-through">'
+                    f'#{task["id"]} — {task["title"]}</span>'
+                    f'&nbsp;&nbsp;<span style="color:#555;font-size:0.8em">'
+                    f'{task.get("date_deleted", "")}</span>',
+                    unsafe_allow_html=True,
+                )
+            with _dl2:
+                if st.button('↩️', key=f'undelete_btn_{task["id"]}',
+                             help=f'Restore #{task["id"]} to open'):
+                    _del_restore.append(task)
+            with _dl3:
+                if st.button('🗑️', key=f'permdel_btn_{task["id"]}',
+                             help=f'Permanently delete #{task["id"]}'):
+                    _del_permanent.append(task)
+        if _del_restore:
+            for task in _del_restore:
+                deleted_tasks = [t for t in deleted_tasks
+                                 if t['id'] != task['id']]
+                open_tasks.append({
+                    'id': task['id'],
+                    'title': task['title'],
+                    'description': '',
+                    'priority': 'medium',
+                    'tags': '',
+                    'status': 'open',
+                    'added_by': '',
+                    'suggested_by': '',
+                    'date_added': task.get('date_deleted', ''),
+                    'urgent': False,
+                    'important': False,
+                    'notes': task.get('notes', ''),
+                })
+            save_todos(open_tasks, done_tasks, deleted_tasks)
+            st.rerun()
+        if _del_permanent:
+            for task in _del_permanent:
+                deleted_tasks = [t for t in deleted_tasks
+                                 if t['id'] != task['id']]
+            save_todos(open_tasks, done_tasks, deleted_tasks)
             st.rerun()
 
 st.caption(

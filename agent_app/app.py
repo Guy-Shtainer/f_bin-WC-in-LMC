@@ -138,22 +138,99 @@ else:
     if mode == 'Pick from TODO.md':
         st.markdown('### Select Tasks')
 
-        # Load and display TODO tasks
-        all_tasks = load_todos()
-        open_tasks = [t for t in all_tasks if t.get('status', 'open') == 'open']
+        PRIORITY_ORDER = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+        STATUS_COLORS = {
+            'open': '#4A90D9', 'to-test': '#DAA520', 'in-progress': '#F5A623',
+        }
 
-        if not open_tasks:
-            st.warning('No open tasks in TODO.md.')
+        # Load ALL tasks from Open Tasks table
+        all_tasks = load_todos()
+
+        if not all_tasks:
+            st.warning('No tasks in TODO.md.')
         else:
-            # Quadrant filter
-            filter_q = st.selectbox(
-                'Filter by quadrant',
-                ['all', 'do_first', 'schedule', 'delegate', 'eliminate'],
-                format_func=lambda q: 'All quadrants' if q == 'all' else QUADRANT_LABELS.get(q, q),
-                key='todo_quadrant_filter',
+            # ── Filters row ──────────────────────────────────────────
+            fc1, fc2, fc3, fc4, fc5 = st.columns(5)
+
+            # Status filter
+            filter_status = fc1.selectbox(
+                'Status', ['All', 'Open', 'To Test', 'In Progress'],
+                key='agent_filter_status',
             )
+
+            # Priority filter
+            all_priorities = sorted(
+                {t.get('priority', 'medium') for t in all_tasks},
+                key=lambda p: PRIORITY_ORDER.get(p, 3),
+            )
+            filter_priority = fc2.multiselect(
+                'Priority', all_priorities, default=all_priorities,
+                key='agent_filter_priority',
+            )
+
+            # Quadrant filter
+            filter_q = fc3.selectbox(
+                'Quadrant',
+                ['all', 'do_first', 'schedule', 'delegate', 'eliminate'],
+                format_func=lambda q: 'All' if q == 'all' else QUADRANT_LABELS.get(q, q),
+                key='agent_filter_quadrant',
+            )
+
+            # Tags filter
+            all_tags = sorted({
+                tag.strip()
+                for t in all_tasks
+                for tag in t.get('tags', '').split(',')
+                if tag.strip()
+            })
+            filter_tags = fc4.multiselect(
+                'Tags', all_tags, default=all_tags,
+                key='agent_filter_tags',
+            )
+
+            # Sort
+            sort_by = fc5.selectbox(
+                'Sort by', ['Priority', 'ID', 'Date added', 'Urgent first'],
+                key='agent_sort_by',
+            )
+
+            # ── Apply filters ────────────────────────────────────────
+            filtered = all_tasks
+
+            if filter_status == 'Open':
+                filtered = [t for t in filtered if t.get('status', 'open') == 'open']
+            elif filter_status == 'To Test':
+                filtered = [t for t in filtered if t.get('status', 'open') == 'to-test']
+            elif filter_status == 'In Progress':
+                filtered = [t for t in filtered if t.get('status', 'open') == 'in-progress']
+
+            if filter_priority:
+                filtered = [t for t in filtered if t.get('priority', 'medium') in filter_priority]
+
             if filter_q != 'all':
-                open_tasks = [t for t in open_tasks if get_quadrant(t) == filter_q]
+                filtered = [t for t in filtered if get_quadrant(t) == filter_q]
+
+            if filter_tags:
+                filtered = [
+                    t for t in filtered
+                    if any(tag.strip() in filter_tags
+                           for tag in t.get('tags', '').split(',') if tag.strip())
+                    or not t.get('tags', '').strip()
+                ]
+
+            # ── Apply sort ───────────────────────────────────────────
+            if sort_by == 'Priority':
+                filtered.sort(key=lambda t: PRIORITY_ORDER.get(t.get('priority', 'low'), 3))
+            elif sort_by == 'Date added':
+                filtered.sort(key=lambda t: t.get('date_added', ''), reverse=True)
+            elif sort_by == 'Urgent first':
+                filtered.sort(key=lambda t: (
+                    0 if t.get('urgent') and t.get('important') else
+                    1 if t.get('urgent') else
+                    2 if t.get('important') else 3
+                ))
+            else:  # ID
+                filtered.sort(key=lambda t: t.get('id', 0))
 
             # Initialize selected IDs in session state
             if '_selected_task_ids' not in st.session_state:
@@ -162,19 +239,21 @@ else:
             # Quick select buttons
             qc1, qc2, qc3 = st.columns(3)
             if qc1.button('Select All', key='sel_all'):
-                st.session_state['_selected_task_ids'] = {t['id'] for t in open_tasks}
+                st.session_state['_selected_task_ids'] = {t['id'] for t in filtered}
                 st.rerun()
             if qc2.button('Clear All', key='sel_none'):
                 st.session_state['_selected_task_ids'] = set()
                 st.rerun()
             if qc3.button('Select Critical', key='sel_crit'):
                 st.session_state['_selected_task_ids'] = {
-                    t['id'] for t in open_tasks if t.get('priority') == 'critical'
+                    t['id'] for t in filtered if t.get('priority') == 'critical'
                 }
                 st.rerun()
 
+            st.caption(f'Showing {len(filtered)} of {len(all_tasks)} tasks')
+
             # Task list with checkboxes
-            for task in open_tasks:
+            for task in filtered:
                 q = get_quadrant(task)
                 q_color = QUADRANT_COLORS.get(q, '#888')
                 q_label = QUADRANT_LABELS.get(q, q)
@@ -182,6 +261,8 @@ else:
                 tid = task['id']
                 checked = tid in st.session_state['_selected_task_ids']
                 priority = task.get('priority', 'medium')
+                status = task.get('status', 'open')
+                status_color = STATUS_COLORS.get(status, '#888')
 
                 col_cb, col_info = st.columns([0.05, 0.95])
                 with col_cb:
@@ -195,7 +276,15 @@ else:
                         st.session_state['_selected_task_ids'].discard(tid)
 
                 with col_info:
+                    status_badge = ''
+                    if status != 'open':
+                        status_badge = (
+                            f'<span style="background:{status_color};color:#fff;'
+                            f'padding:1px 6px;border-radius:3px;font-size:0.7em;'
+                            f'margin-right:4px;">{status.upper()}</span> '
+                        )
                     badges = (
+                        f'{status_badge}'
                         f'<span style="color:{q_color};font-weight:600;">[{q_label}]</span> '
                         f'<span style="color:#9a9a9a;">#{tid}</span> '
                         f'<span style="color:#d4d4d4;font-weight:500;">{task["title"]}</span> '

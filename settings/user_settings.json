@@ -69,18 +69,31 @@
     "fbin_steps": 100,
     "pi_min": -3.0,
     "pi_max": 3.0,
-    "pi_steps": 30,
+    "pi_steps": 50,
     "logP_min": 0.15,
     "logP_max": 5.0,
     "n_stars_sim": 10000,
     "n_processes": null
   },
   "grid_langer": {
-    "fbin_min": 0.1,
-    "fbin_max": 0.9,
-    "fbin_steps": 17,
-    "n_stars_sim": 3000,
-    "n_processes": null
+    "fbin_min": 0.01,
+    "fbin_max": 0.99,
+    "fbin_steps": 100,
+    "sigma_min": 1.0,
+    "sigma_max": 15.0,
+    "sigma_steps": 30,
+    "n_stars_sim": 10000,
+    "n_processes": null,
+    "logP_min": 0.5,
+    "logP_max": 3.5,
+    "q_preset": "langer_fig3",
+    "langer_period_params": {
+      "mu_A": 1.1,
+      "sigma_A": 0.15,
+      "mu_B": 2.2,
+      "sigma_B": 0.35,
+      "weight_A": 0.3
+    }
   },
   "ui": {
     "last_star": "MNM2014 LMC195-1",

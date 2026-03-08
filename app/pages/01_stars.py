@@ -114,7 +114,7 @@ def _style_status(val):
 
 styled = (
     display_df.style
-    .applymap(_style_status, subset=['Status'])
+    .map(_style_status, subset=['Status'])
     .format({'ΔRV (km/s)': '{:.1f}', 'Σ (km/s)': lambda x: f'{x:.1f}' if not (isinstance(x, float) and np.isnan(x)) else '—',
              'Sig. (σ)': lambda x: f'{x:.1f}' if not (isinstance(x, float) and np.isnan(x)) else '—'})
 )

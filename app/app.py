@@ -167,7 +167,7 @@ if data_loaded and detail:
     display_df = df.drop(columns=['_color'])
     styled = (
         display_df.style
-        .applymap(_style_status, subset=['Status'])
+        .map(_style_status, subset=['Status'])
         .format({'ΔRV (km/s)': '{:.1f}', 'Significance (σ)': lambda x: f'{x:.1f}' if isinstance(x, float) else x})
         .set_properties(**{'text-align': 'left'})
     )

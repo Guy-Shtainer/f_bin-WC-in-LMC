@@ -84,7 +84,16 @@ if search.strip():
         st.warning(f'No lines matching "{search}"')
         display_text = ''
 else:
-    display_text = full_log
+    # Reverse session order so newest appears first
+    import re as _re
+    _parts = _re.split(r'(?=^## Agent Session —)', full_log, flags=_re.MULTILINE)
+    if len(_parts) > 1:
+        _preamble = _parts[0]
+        _sessions = _parts[1:]
+        _sessions.reverse()
+        display_text = _preamble + ''.join(_sessions)
+    else:
+        display_text = full_log
 
 if display_text:
     # Color-code certain keywords with markdown

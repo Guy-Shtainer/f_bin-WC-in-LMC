@@ -169,10 +169,15 @@ Always verify the backup compiles before overwriting it with a newer version.
 the commit hashes, summaries, and a brief description. This is the human-readable
 changelog for easy revert communication between sessions.
 
-**To-Do list:** Maintain `TODO.md` at the project root. After completing tasks,
-move them from Open to Done with the completion date. When new tasks arise from
-user/Tomer conversations, add them with proper attribution. The webapp page
-`app/pages/10_todo.py` reads and writes this same file.
+**To-Do list:** Maintain `TODO.md` at the project root. Format: 12-column Open
+Tasks table (ID, Title, Description, Priority, Tags, Status, Added by,
+Suggested by, Date added, Urgent, Important, Notes), 13-column Done table
+(adds Date done), and 4-column Deleted table (ID, Title, Date deleted, Notes).
+When new tasks arise from user/Tomer conversations, add them with status `open`,
+proper attribution, and full datetime (`datetime.now().isoformat(timespec='seconds')`).
+**CRITICAL:** After completing tasks, set their status to `to-test` — NEVER to
+`done`. Only the user can confirm and move tasks to the Done section. The webapp
+page `app/pages/10_todo.py` reads and writes this same file.
 
 **Documentation for paper:** At the end of each working session, update
 `DOCUMENTATION.md` Section 7 (Work Log) with a dated entry summarizing what was
@@ -199,6 +204,10 @@ short descriptions of preferred graph styles as patterns emerge.
 - Light scientific theme: white backgrounds, serif fonts, dark text (#333333)
 - Centralized via `PLOTLY_THEME` dict in `app/shared.py` — always use `**PLOTLY_THEME`
   in `update_layout()` calls, never hardcode plot colors
+- **CRITICAL (E018):** `PLOTLY_THEME` contains `title`, `legend`, `xaxis`, `yaxis`, `font`.
+  NEVER use these as keyword args alongside `**PLOTLY_THEME` in the same call — Python
+  raises `TypeError: got multiple values`. Use dict literal override instead:
+  `fig.update_layout(**{**PLOTLY_THEME, 'title': ..., 'legend': ...})`
 - Axes: outside ticks, thin black borders with mirror, light grey gridlines (#e0e0e0)
 - Gold star markers for best-fit points (use darker gold #DAA520 for readability on white)
 - Observed data: solid lines in steel blue (#4A90D9)

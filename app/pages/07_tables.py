@@ -91,7 +91,7 @@ with tab_drv:
 
         # Apply styling to all line columns
         line_cols = [c for c in df.columns if c != 'Star']
-        styled = df.style.applymap(_color_cell, subset=line_cols)
+        styled = df.style.map(_color_cell, subset=line_cols)
 
         # Format: show — for None
         fmt = {c: lambda x: f'{x:.1f}' if isinstance(x, (int, float)) and not math.isnan(x) else '—'

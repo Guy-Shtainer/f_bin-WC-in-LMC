@@ -868,6 +868,50 @@ def _single_grid_task(args):
     return f_bin, pi, sigma_single, D, p
 
 
+# ── Pool initializer pattern (avoids pickle overhead per task) ────────────
+_WORKER_GLOBALS: dict = {}
+
+
+def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
+                 n_stars, sigma_measure):
+    """Pool initializer: store shared data as process-level globals."""
+    global _WORKER_GLOBALS
+    _WORKER_GLOBALS = {
+        'cadence_library': cadence_library,
+        'cadence_weights': cadence_weights,
+        'obs_delta_rv': obs_delta_rv,
+        'n_stars': n_stars,
+        'sigma_measure': sigma_measure,
+    }
+
+
+def _single_grid_task_lite(args):
+    """Lightweight worker: shared data comes from _WORKER_GLOBALS (set by pool initializer).
+
+    args = (f_bin, pi, sigma_single, bin_cfg, period_model, seed)
+    """
+    f_bin, pi, sigma_single, bin_cfg, period_model, seed = args
+    g = _WORKER_GLOBALS
+
+    sim_cfg_local = SimulationConfig(
+        n_stars=g['n_stars'],
+        sigma_single=sigma_single,
+        sigma_measure=g['sigma_measure'],
+        cadence_library=g['cadence_library'],
+        cadence_weights=g['cadence_weights'],
+    )
+    bin_cfg_local = BinaryParameterConfig(**vars(bin_cfg))
+    bin_cfg_local.period_model = period_model
+
+    rng = np.random.default_rng(seed)
+    delta_sim = simulate_delta_rv_sample(
+        f_bin=f_bin, pi=pi,
+        sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng,
+    )
+    D, p = ks_two_sample(delta_sim, g['obs_delta_rv'])
+    return f_bin, pi, sigma_single, D, p
+
+
 def run_bias_grid(
     fbin_values: Iterable[float],
     pi_values: Iterable[float],
