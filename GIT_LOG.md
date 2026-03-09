@@ -6,6 +6,21 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-09 — Dynamic tabs for bias correction page
+
+| Hash | Summary |
+|------|---------|
+| `aa49dd5` | Refactor bias correction page: dynamic tabs with parameterized session keys |
+
+Major refactor of `app/pages/05_bias_correction.py`: extracted Dsilva and Langer
+tab bodies into parameterized `_render_dsilva_tab(p)` and `_render_langer_tab(p)`
+functions (114 session state keys parameterized). Added `_render_compare_tab(p)`
+for side-by-side and overlay comparison of saved results. Added dynamic tab
+management with a "+" popover to create new Dsilva, Langer, or Compare tabs
+at runtime, each with full independent run capability.
+
+---
+
 ## 2026-03-01 — To-Do page improvements + full roadmap population
 
 | Hash | Summary |
