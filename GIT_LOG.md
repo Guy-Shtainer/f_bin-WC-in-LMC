@@ -10,6 +10,9 @@ To see what a commit changed: `git show <hash>`
 
 | Hash | Summary |
 |------|---------|
+| `50f3d77` | Fix compare tab: missing title arg + run parameter display |
+| `f6d57d4` | Update user settings and run history |
+| `ee97c8f` | Add bias correction simulation results (Dsilva + Langer) |
 | `aa49dd5` | Refactor bias correction page: dynamic tabs with parameterized session keys |
 | `bb299da` | Fix dynamic tabs: save button, compare tab bugs, heatmap resolution |
 
