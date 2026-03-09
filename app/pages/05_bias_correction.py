@@ -13,6 +13,7 @@ Features:
 from __future__ import annotations
 
 import datetime as _dt
+import glob as _glob
 import hashlib
 import json
 import multiprocessing as mp
@@ -107,6 +108,66 @@ def _stable_cfg_hash(cfg: dict) -> str:
     return hashlib.sha256(
         json.dumps(cfg, sort_keys=True, default=str).encode()
     ).hexdigest()[:16]
+
+
+# ── Descriptive filename helpers for saved results ────────────────────────
+
+def _build_descriptive_filename(
+    model: str,
+    fbin_min: float, fbin_max: float, fbin_steps: int,
+    x_min: float, x_max: float, x_steps: int,
+    n_stars: int,
+    sigma_vals: np.ndarray,
+    logP_min: float, logP_max: float,
+    x_label: str = 'pi',
+) -> str:
+    """Build a descriptive .npz filename encoding key run parameters.
+
+    Format (Dsilva): dsilva_fb0.0-1.0x200_pi-3.0-3.0x100_N10000_sig5.5_logP0.15-5.0_260309-1200.npz
+    Format (Langer): langer_fb0.01-0.99x100_sig1.0-15.0x30_N10000_logP0.5-3.5_260309-1200.npz
+    """
+    ts = _dt.datetime.now().strftime('%y%m%d-%H%M')
+    sig = sigma_vals
+    if sig.size == 1:
+        sig_part = f'sig{sig[0]:.1f}'
+    else:
+        sig_part = f'sig{sig[0]:.1f}-{sig[-1]:.1f}x{sig.size}'
+
+    name = (
+        f'{model}'
+        f'_fb{fbin_min:.2f}-{fbin_max:.2f}x{fbin_steps}'
+        f'_{x_label}{x_min:.1f}-{x_max:.1f}x{x_steps}'
+        f'_N{n_stars}'
+        f'_{sig_part}'
+        f'_logP{logP_min:.2f}-{logP_max:.2f}'
+        f'_{ts}.npz'
+    )
+    return name
+
+
+_FILENAME_FORMAT_HELP = (
+    '**Filename format:** '
+    '`{model}_fb{min}-{max}x{steps}_{axis}{min}-{max}x{steps}'
+    '_N{n_stars}_sig{value_or_range}_logP{min}-{max}_{YYMMDD-HHMM}`'
+)
+
+
+def _list_saved_results(model: str) -> list[tuple[str, str]]:
+    """List saved .npz result files for a model, newest first.
+
+    Returns list of (display_name, full_path) tuples.
+    """
+    pattern = os.path.join(_RESULT_DIR, f'{model}_*.npz')
+    files = _glob.glob(pattern)
+    # Also include the legacy file if it exists
+    legacy = _result_path(model)
+    if os.path.exists(legacy) and legacy not in files:
+        files.append(legacy)
+    # Exclude partial checkpoints
+    files = [f for f in files if not f.endswith('.partial.npz')]
+    # Sort by modification time, newest first
+    files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+    return [(os.path.basename(f).replace('.npz', ''), f) for f in files]
 
 
 def _make_max_pval_fig(
@@ -547,13 +608,46 @@ with tab_dsilva:
 
         # Action row
         max_proc = max(1, (os.cpu_count() or 2) - 1)
-        _ac1, _ac2, _ac3, _ac4 = st.columns([0.15, 0.25, 0.30, 0.30])
+        _ac1, _ac2, _ac3 = st.columns([0.15, 0.25, 0.60])
         n_proc = _ac1.number_input('Workers', 1, max_proc, max_proc, key='bc_nproc')
         view_mode = _ac2.radio('View', ['K-S p-value', 'K-S D-statistic'],
                                horizontal=True, key='bc_view_mode')
         show_d = view_mode == 'K-S D-statistic'
-        run_btn  = _ac3.button('▶️ Run Bias Correction', type='primary', key='bc_run')
-        load_btn = _ac4.button('📂 Load cached result', key='bc_load')
+        _run_col, _load_col = _ac3.columns(2)
+        run_btn  = _run_col.button('▶️ Run Bias Correction', type='primary', key='bc_run')
+
+        # Load saved results dropdown
+        _saved_dsilva = _list_saved_results('dsilva')
+        load_btn = False
+        if _saved_dsilva:
+            with _load_col.popover('📂 Load saved result'):
+                st.caption(_FILENAME_FORMAT_HELP)
+                _load_options = [name for name, _ in _saved_dsilva]
+                _load_idx = st.selectbox(
+                    'Select result file', range(len(_load_options)),
+                    format_func=lambda i: _load_options[i],
+                    key='bc_load_select',
+                )
+                _sel_path = _saved_dsilva[_load_idx][1]
+                # Show timestamp if available
+                try:
+                    _preview = np.load(_sel_path, allow_pickle=True)
+                    if 'timestamp' in _preview:
+                        st.caption(f"Saved: {str(_preview['timestamp'])}")
+                    if 'settings' in _preview:
+                        with st.expander('View settings'):
+                            st.json(json.loads(str(_preview['settings'])))
+                    _preview.close()
+                except Exception:
+                    pass
+                if st.button('Load selected', key='bc_load_sel_btn'):
+                    _loaded = dict(np.load(_sel_path, allow_pickle=True))
+                    st.session_state['bc_result'] = _loaded
+                    st.session_state['result_dsilva'] = _loaded
+                    st.toast(f'Loaded: {os.path.basename(_sel_path)}')
+                    load_btn = True
+        else:
+            _load_col.caption('No saved results yet.')
 
         # Display slots
         progress_slot       = st.empty()
@@ -586,15 +680,6 @@ with tab_dsilva:
 
     fbin_vals = np.linspace(float(fbin_min), float(fbin_max), int(fbin_steps))
     pi_vals   = np.linspace(float(pi_min),   float(pi_max),   int(pi_steps))
-
-    # ── Load cached result if requested ──────────────────────────────────────
-    if load_btn:
-        cached = cached_load_grid_result('dsilva')
-        if cached is not None:
-            st.session_state['bc_result'] = cached
-            status_slot.success('Loaded cached result from results/dsilva_result.npz')
-        else:
-            status_slot.warning('No cached result found at results/dsilva_result.npz')
 
     # ── Detect partial checkpoint (interrupted run) ───────────────────────────
     _partial_path = _result_path('dsilva') + '.partial.npz'
@@ -836,14 +921,26 @@ with tab_dsilva:
             'ks_p':         accumulated_ks_p,
             'ks_D':         accumulated_ks_D,
         }
-        np.savez(
-            _result_path('dsilva'),
+        _save_kwargs = dict(
             **full_result,
             config_hash=chash,
             settings=np.array(json.dumps(stable_cfg)),
             obs_delta_rv=obs_delta_rv,
             timestamp=np.array(_dt.datetime.now().isoformat()),
         )
+        # Save legacy file (backward compat)
+        np.savez(_result_path('dsilva'), **_save_kwargs)
+        # Save with descriptive filename
+        _desc_name = _build_descriptive_filename(
+            'dsilva',
+            float(fbin_min), float(fbin_max), int(fbin_steps),
+            float(pi_min), float(pi_max), int(pi_steps),
+            int(n_stars_sim), sigma_vals,
+            float(logP_min_val), float(logP_max_val),
+            x_label='pi',
+        )
+        _desc_path = os.path.join(_RESULT_DIR, _desc_name)
+        np.savez(_desc_path, **_save_kwargs)
         cached_load_grid_result.clear()
         st.session_state['bc_result'] = full_result
         st.session_state['result_dsilva'] = full_result
@@ -859,6 +956,7 @@ with tab_dsilva:
             'config':        stable_cfg,
             'elapsed_s':     round(elapsed_total, 1),
             'result_file':   _result_path('dsilva'),
+            'descriptive_file': _desc_path,
         })
 
         # Show best heatmap immediately after run completes
@@ -2467,14 +2565,45 @@ with tab_langer:
     with lg_col_right:
         # Action row
         lg_max_proc = max(1, (os.cpu_count() or 2) - 1)
-        _lg_ac1, _lg_ac2, _lg_ac3, _lg_ac4 = st.columns([0.15, 0.25, 0.30, 0.30])
+        _lg_ac1, _lg_ac2, _lg_ac3 = st.columns([0.15, 0.25, 0.60])
         lg_n_proc = _lg_ac1.number_input('Workers', 1, lg_max_proc, lg_max_proc,
                                           key='lg_nproc')
         lg_view_mode = _lg_ac2.radio('View', ['K-S p-value', 'K-S D-statistic'],
                                       horizontal=True, key='lg_view_mode')
         lg_show_d = lg_view_mode == 'K-S D-statistic'
-        lg_run_btn = _lg_ac3.button('▶️ Run Langer Grid', type='primary', key='lg_run')
-        lg_load_btn = _lg_ac4.button('📂 Load cached result', key='lg_load')
+        _lg_run_col, _lg_load_col = _lg_ac3.columns(2)
+        lg_run_btn = _lg_run_col.button('▶️ Run Langer Grid', type='primary', key='lg_run')
+
+        # Load saved results dropdown (Langer)
+        _saved_langer = _list_saved_results('langer')
+        lg_load_btn = False
+        if _saved_langer:
+            with _lg_load_col.popover('📂 Load saved result'):
+                st.caption(_FILENAME_FORMAT_HELP)
+                _lg_load_options = [name for name, _ in _saved_langer]
+                _lg_load_idx = st.selectbox(
+                    'Select result file', range(len(_lg_load_options)),
+                    format_func=lambda i: _lg_load_options[i],
+                    key='lg_load_select',
+                )
+                _lg_sel_path = _saved_langer[_lg_load_idx][1]
+                try:
+                    _lg_preview = np.load(_lg_sel_path, allow_pickle=True)
+                    if 'timestamp' in _lg_preview:
+                        st.caption(f"Saved: {str(_lg_preview['timestamp'])}")
+                    if 'settings' in _lg_preview:
+                        with st.expander('View settings'):
+                            st.json(json.loads(str(_lg_preview['settings'])))
+                    _lg_preview.close()
+                except Exception:
+                    pass
+                if st.button('Load selected', key='lg_load_sel_btn'):
+                    _lg_loaded = dict(np.load(_lg_sel_path, allow_pickle=True))
+                    st.session_state['lg_result'] = _lg_loaded
+                    st.toast(f'Loaded: {os.path.basename(_lg_sel_path)}')
+                    lg_load_btn = True
+        else:
+            _lg_load_col.caption('No saved results yet.')
 
         # Display slots
         lg_progress_slot = st.empty()
@@ -2512,15 +2641,6 @@ with tab_langer:
     lg_sigma_vals = np.linspace(max(0.1, float(lg_sigma_min)),
                                 max(float(lg_sigma_min) + 0.1, float(lg_sigma_max)),
                                 int(lg_sigma_steps))
-
-    # ── Load cached result if requested ───────────────────────────────────────
-    if lg_load_btn:
-        cached_lg = cached_load_grid_result('langer')
-        if cached_lg is not None:
-            st.session_state['lg_result'] = cached_lg
-            lg_status_slot.success('Loaded cached result from results/langer_result.npz')
-        else:
-            lg_status_slot.warning('No cached result found at results/langer_result.npz')
 
     # ── Run grid ──────────────────────────────────────────────────────────────
     if lg_run_btn:
@@ -2708,14 +2828,26 @@ with tab_langer:
             'ks_p':       lg_acc_ks_p,
             'ks_D':       lg_acc_ks_D,
         }
-        np.savez(
-            _result_path('langer'),
+        _lg_save_kwargs = dict(
             **lg_full_result,
             config_hash=lg_chash,
             settings=np.array(json.dumps(lg_stable_cfg)),
             obs_delta_rv=lg_obs_drv,
             timestamp=np.array(_dt.datetime.now().isoformat()),
         )
+        # Save legacy file (backward compat)
+        np.savez(_result_path('langer'), **_lg_save_kwargs)
+        # Save with descriptive filename
+        _lg_desc_name = _build_descriptive_filename(
+            'langer',
+            float(lg_fbin_min), float(lg_fbin_max), int(lg_fbin_steps),
+            float(lg_sigma_min), float(lg_sigma_max), int(lg_sigma_steps),
+            int(lg_n_stars), lg_sigma_vals,
+            float(lg_logP_min), float(lg_logP_max),
+            x_label='sig',
+        )
+        _lg_desc_path = os.path.join(_RESULT_DIR, _lg_desc_name)
+        np.savez(_lg_desc_path, **_lg_save_kwargs)
         cached_load_grid_result.clear()
         st.session_state['lg_result'] = lg_full_result
         # Clean up partial checkpoint
@@ -2730,6 +2862,7 @@ with tab_langer:
             'config':        lg_stable_cfg,
             'elapsed_s':     round(lg_elapsed_total, 1),
             'result_file':   _result_path('langer'),
+            'descriptive_file': _lg_desc_path,
             'n_reused_fbin': lg_n_reused,
         })
 

@@ -48,26 +48,66 @@ COLOR_UNKNOWN  = '#8C8C8C'   # grey
 COLOR_CLEANED  = '#52B788'   # green
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Plotly scientific theme (matplotlib-inspired: white bg, serif font, grid)
+# Theme palettes (light / dark)
 # ─────────────────────────────────────────────────────────────────────────────
-_AXIS_DEFAULTS = dict(
-    showgrid=True, gridcolor='#e0e0e0', gridwidth=1,
-    linecolor='#333333', linewidth=1, mirror=True,
-    ticks='outside', tickcolor='#333333',
+_LIGHT_PALETTE = dict(
+    plot_bg='white', paper_bg='white', font_color='#333333', title_color='#222222',
+    grid_color='#e0e0e0', line_color='#333333', tick_color='#333333',
+    legend_bg='rgba(255,255,255,0.85)', legend_border='#cccccc',
+    app_bg='#ffffff', sidebar_bg='#f5f5f5', heading_color='#222222',
+    card_bg='#ffffff', card_border='#d0d0d0', card_shadow='rgba(0,0,0,0.08)',
+    label_color='#666666', value_color='#222222', sub_color='#888888',
+    muted_color='#888888',          # muted/secondary text
+    annotation_bg='rgba(255,255,255,0.9)', annotation_border='#cccccc',
+    annotation_font='#333333',
+    tag_bg='#e8f0fe', tag_fg='#1a4a80',
+    contour_color='#555555',        # contour lines on heatmaps
+    contour_label='#333333',
 )
 
-PLOTLY_THEME: dict = dict(
-    plot_bgcolor='white',
-    paper_bgcolor='white',
-    font=dict(family='serif', size=13, color='#333333'),
-    xaxis=dict(**_AXIS_DEFAULTS),
-    yaxis=dict(**_AXIS_DEFAULTS),
-    title=dict(font=dict(size=15, family='serif', color='#222222')),
-    legend=dict(
-        bgcolor='rgba(255,255,255,0.85)',
-        bordercolor='#cccccc', borderwidth=1,
-    ),
+_DARK_PALETTE = dict(
+    plot_bg='#1e1e2e', paper_bg='#1e1e2e', font_color='#e0e0e0', title_color='#f0f0f0',
+    grid_color='#3a3a4a', line_color='#aaaaaa', tick_color='#aaaaaa',
+    legend_bg='rgba(30,30,46,0.9)', legend_border='#555555',
+    app_bg='#181825', sidebar_bg='#1e1e2e', heading_color='#f0f0f0',
+    card_bg='#2a2a3c', card_border='#444466', card_shadow='rgba(0,0,0,0.3)',
+    label_color='#aaaaaa', value_color='#f0f0f0', sub_color='#999999',
+    muted_color='#bbbbbb',
+    annotation_bg='rgba(42,42,60,0.9)', annotation_border='#555555',
+    annotation_font='#e0e0e0',
+    tag_bg='#2a3a5c', tag_fg='#9ec5fe',
+    contour_color='#cccccc',
+    contour_label='#e0e0e0',
 )
+
+
+def _build_axis(palette: dict) -> dict:
+    return dict(
+        showgrid=True, gridcolor=palette['grid_color'], gridwidth=1,
+        linecolor=palette['line_color'], linewidth=1, mirror=True,
+        ticks='outside', tickcolor=palette['tick_color'],
+    )
+
+
+def _build_plotly_theme(palette: dict) -> dict:
+    ax = _build_axis(palette)
+    return dict(
+        plot_bgcolor=palette['plot_bg'],
+        paper_bgcolor=palette['paper_bg'],
+        font=dict(family='serif', size=13, color=palette['font_color']),
+        xaxis=dict(**ax),
+        yaxis=dict(**ax),
+        title=dict(font=dict(size=15, family='serif', color=palette['title_color'])),
+        legend=dict(
+            bgcolor=palette['legend_bg'],
+            bordercolor=palette['legend_border'], borderwidth=1,
+        ),
+    )
+
+
+# Module-level dict — mutated in-place by inject_theme() so all importers
+# automatically get the active theme via **PLOTLY_THEME spreads.
+PLOTLY_THEME: dict = _build_plotly_theme(_DARK_PALETTE)
 
 
 def apply_theme(fig, **overrides):
@@ -80,52 +120,67 @@ def apply_theme(fig, **overrides):
 # ─────────────────────────────────────────────────────────────────────────────
 # CSS theme
 # ─────────────────────────────────────────────────────────────────────────────
-_THEME_CSS = """
+
+def _build_css(palette: dict) -> str:
+    """CSS for custom HTML elements only — Streamlit native elements are
+    handled by .streamlit/config.toml [theme] base = "dark"."""
+    return f"""
 <style>
-/* Light scientific theme */
-[data-testid="stAppViewContainer"] {
-    background-color: #ffffff;
-}
-[data-testid="stSidebar"] {
-    background-color: #f5f5f5;
-}
-h1, h2, h3 { color: #222222; font-family: serif; }
-.metric-card {
-    background: #ffffff;
+/* Headings: serif font (Streamlit handles color) */
+h1, h2, h3 {{ font-family: serif; }}
+/* Metric cards (custom HTML) */
+.metric-card {{
+    background: {palette['card_bg']};
     border-radius: 10px;
     padding: 16px 20px;
     text-align: center;
-    border: 1px solid #d0d0d0;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-}
-.metric-card .label {
+    border: 1px solid {palette['card_border']};
+    box-shadow: 0 1px 3px {palette['card_shadow']};
+}}
+.metric-card .label {{
     font-size: 0.82rem;
-    color: #666666;
+    color: {palette['label_color']};
     text-transform: uppercase;
     letter-spacing: 0.05em;
-}
-.metric-card .value {
+}}
+.metric-card .value {{
     font-size: 2rem;
     font-weight: 700;
-    color: #222222;
+    color: {palette['value_color']};
     margin-top: 4px;
-}
-.metric-card .sub {
+}}
+.metric-card .sub {{
     font-size: 0.78rem;
-    color: #888888;
+    color: {palette['sub_color']};
     margin-top: 2px;
-}
-.status-chip-binary { color: #E25A53; font-weight: 600; }
-.status-chip-single { color: #4A90D9; }
-.status-chip-unknown { color: #8C8C8C; }
+}}
+.status-chip-binary {{ color: #E25A53; font-weight: 600; }}
+.status-chip-single {{ color: #4A90D9; }}
+.status-chip-unknown {{ color: #8C8C8C; }}
 /* Hide the auto-generated Streamlit page navigation (keep custom render_sidebar) */
-[data-testid="stSidebarNav"] { display: none; }
+[data-testid="stSidebarNav"] {{ display: none; }}
 </style>
 """
 
 
 def inject_theme() -> None:
-    st.markdown(_THEME_CSS, unsafe_allow_html=True)
+    """Mutate PLOTLY_THEME in-place for dark mode, inject minimal CSS.
+    Streamlit native elements are handled by .streamlit/config.toml."""
+    # Always dark — config.toml sets base = "dark"
+    palette = _DARK_PALETTE
+    st.session_state['_dark_mode'] = True
+
+    # Mutate PLOTLY_THEME in-place so all **PLOTLY_THEME spreads pick it up
+    PLOTLY_THEME.clear()
+    PLOTLY_THEME.update(_build_plotly_theme(palette))
+
+    st.markdown(_build_css(palette), unsafe_allow_html=True)
+
+
+def get_palette() -> dict:
+    """Return the active color palette dict for use in page code."""
+    dark = bool(st.session_state.get('_dark_mode', False))
+    return _DARK_PALETTE if dark else _LIGHT_PALETTE
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -334,9 +389,14 @@ def cached_load_cadence(_hash: str) -> tuple[list, np.ndarray]:
 
 
 @st.cache_data
-def cached_load_grid_result(model: str) -> dict | None:
-    """Load an existing grid .npz result. Returns None if file doesn't exist."""
-    path = os.path.join(_ROOT, 'results', f'{model}_result.npz')
+def cached_load_grid_result(model: str, path: str | None = None) -> dict | None:
+    """Load an existing grid .npz result. Returns None if file doesn't exist.
+
+    If *path* is given, load from that file; otherwise use the legacy
+    ``results/{model}_result.npz``.
+    """
+    if path is None:
+        path = os.path.join(_ROOT, 'results', f'{model}_result.npz')
     if not os.path.exists(path):
         return None
     try:
@@ -435,15 +495,16 @@ def make_heatmap_fig(
     ]
 
     if not live:
+        pal = get_palette()
         traces.append(go.Contour(
             z=ks_p_2d, x=x_vals, y=fbin_vals,
             contours=dict(
                 coloring='none',
                 showlabels=True,
-                labelfont=dict(size=10, color='white'),
+                labelfont=dict(size=10, color=pal['contour_label']),
                 start=0.05, end=0.30, size=0.05,
             ),
-            line=dict(color='white', width=1, dash='dot'),
+            line=dict(color=pal['contour_color'], width=1, dash='dot'),
             showscale=False,
             hoverinfo='skip',
         ))
@@ -451,11 +512,11 @@ def make_heatmap_fig(
             x=[best_x], y=[best_fbin],
             mode='markers+text',
             marker=dict(symbol='star', size=18, color='gold',
-                        line=dict(color='black', width=1)),
+                        line=dict(color=pal['plot_bg'], width=1)),
             text=[best_label_fmt.format(fbin=best_fbin, x_name=x_name,
                                         x=best_x, p=best_pval)],
             textposition='middle right',
-            textfont=dict(color='gold', size=11),
+            textfont=dict(color='#DAA520', size=11),
             name='Best fit',
             showlegend=False,
         ))
@@ -524,8 +585,9 @@ def render_sidebar(page_name: str = '') -> dict:
         bartzakos = cls.get('bartzakos_binaries', 3)
         total_pop = cls.get('total_population', 28)
 
+        _pal = get_palette()
         st.markdown(f"""
-        <div style="font-size:0.78rem; color:#9ec5fe;">
+        <div style="font-size:0.78rem; color:{_pal['muted_color']};">
         🔭 <b>Line:</b> {line}<br>
         📐 <b>Threshold:</b> {threshold:.1f} km/s<br>
         ⭐ <b>Bartzakos binaries:</b> {bartzakos}/{total_pop}
@@ -547,6 +609,8 @@ def render_sidebar(page_name: str = '') -> dict:
         st.page_link('pages/08_results.py', label='📈 Results')
         st.page_link('pages/09_settings.py', label='⚙️ Settings')
         st.page_link('pages/10_todo.py', label='📝 To-Do')
+
+        st.markdown('---')
 
         st.markdown('---')
 
