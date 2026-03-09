@@ -873,7 +873,9 @@ _WORKER_GLOBALS: dict = {}
 
 
 def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
-                 n_stars, sigma_measure):
+                 n_stars, sigma_measure,
+                 n_epochs=6, time_span=3650.0,
+                 observation_times=None, v_sys=0.0):
     """Pool initializer: store shared data as process-level globals."""
     global _WORKER_GLOBALS
     _WORKER_GLOBALS = {
@@ -882,6 +884,10 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
         'obs_delta_rv': obs_delta_rv,
         'n_stars': n_stars,
         'sigma_measure': sigma_measure,
+        'n_epochs': n_epochs,
+        'time_span': time_span,
+        'observation_times': observation_times,
+        'v_sys': v_sys,
     }
 
 
@@ -895,8 +901,12 @@ def _single_grid_task_lite(args):
 
     sim_cfg_local = SimulationConfig(
         n_stars=g['n_stars'],
+        n_epochs=g.get('n_epochs', 6),
+        time_span=g.get('time_span', 3650.0),
         sigma_single=sigma_single,
         sigma_measure=g['sigma_measure'],
+        v_sys=g.get('v_sys', 0.0),
+        observation_times=g.get('observation_times'),
         cadence_library=g['cadence_library'],
         cadence_weights=g['cadence_weights'],
     )
@@ -972,6 +982,7 @@ def run_bias_grid(
 
     obs_delta_rv = np.asarray(obs_delta_rv, dtype=float)
 
+    # Build lightweight task tuples (shared data via pool initializer)
     tasks = []
     idx = 0
     for sigma in sigma_grid:
@@ -981,9 +992,7 @@ def run_bias_grid(
                     float(fb),
                     float(pi),
                     float(sigma),
-                    sim_cfg,
                     bin_cfg,
-                    obs_delta_rv,
                     period_model,
                     seed_base + idx,
                 ))
@@ -992,22 +1001,38 @@ def run_bias_grid(
     n_tasks = len(tasks)
     desc = f"Bias grid ({period_model}, {len(sigma_grid)} σ slice(s))"
 
+    _initargs = (
+        sim_cfg.cadence_library,
+        getattr(sim_cfg, 'cadence_weights', None),
+        obs_delta_rv,
+        sim_cfg.n_stars,
+        sim_cfg.sigma_measure,
+        sim_cfg.n_epochs,
+        sim_cfg.time_span,
+        sim_cfg.observation_times,
+        sim_cfg.v_sys,
+    )
+
     if use_multiprocessing and n_tasks > 1:
-        with mp.Pool(processes=n_processes) as pool:
+        with mp.Pool(processes=n_processes,
+                     initializer=_init_worker,
+                     initargs=_initargs) as pool:
             if tqdm is not None:
                 results = list(tqdm(
-                    pool.imap(_single_grid_task, tasks),
+                    pool.imap(_single_grid_task_lite, tasks),
                     total=n_tasks,
                     desc=desc,
                 ))
             else:
-                results = pool.map(_single_grid_task, tasks)
+                results = pool.map(_single_grid_task_lite, tasks)
     else:
+        # Serial fallback: manually init worker globals
+        _init_worker(*_initargs)
         if tqdm is not None:
             tasks_iter = tqdm(tasks, total=n_tasks, desc=desc)
         else:
             tasks_iter = tasks
-        results = [_single_grid_task(t) for t in tasks_iter]
+        results = [_single_grid_task_lite(t) for t in tasks_iter]
 
     # Pack results into 3D arrays: [n_sigma, n_fbin, n_pi]
     n_sig = sigma_grid.size
