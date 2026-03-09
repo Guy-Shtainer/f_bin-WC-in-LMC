@@ -126,8 +126,23 @@ For each grid point in (f_bin, π) parameter space:
 8. Compare the simulated ΔRV cumulative distribution to the observed one
    via the Kolmogorov-Smirnov test.
 
-The best-fit (f_bin, π) is the grid point with the minimum K-S D statistic.
-The K-S p-value provides a goodness-of-fit assessment.
+The best-fit (f_bin, π) is the grid point with the maximum K-S p-value
+(equivalently, the minimum K-S D statistic).
+
+**Error estimation:** 1D posteriors are obtained by marginalizing the K-S p-value
+grid over all other dimensions. The mode of each marginalized posterior is the
+reported best-fit value. Uncertainties are given as the 68% highest density
+interval (HDI68), which is the shortest interval enclosing 68% of the posterior
+probability — analogous to ±1σ for Gaussian distributions but correct for
+asymmetric posteriors. Results are reported as: mode +Δ_upper −Δ_lower.
+
+**Two period distribution models are tested:**
+1. **Dsilva (power-law):** p(log P) ∝ (log P)^π, where π is a free parameter
+   searched over the grid. This is the standard assumption from Dsilva et al. (2023).
+2. **Langer+2020 (bimodal Gaussian):** p(log P) = w_A · N(μ_A, σ_A) + w_B · N(μ_B, σ_B),
+   a mixture of two Gaussians representing Case A (short-period) and Case B
+   (long-period) mass transfer channels. Default parameters from Langer et al. (2020):
+   μ_A=1.1, σ_A=0.15, μ_B=2.2, σ_B=0.35, w_A=0.3.
 
 ### Cadence Library
 
@@ -351,4 +366,57 @@ work.
 
 ---
 
-*Last updated: 2026-03-01*
+### 2026-03-09 — Bias correction improvements: descriptive filenames, summary errors, dynamic tabs
+
+**What was done:**
+- **Descriptive result filenames (Task 89):** Saved `.npz` result files now use
+  parameter-encoding filenames instead of generic `dsilva_result.npz`. Format:
+  `{model}_fb{min}-{max}x{steps}_{axis}{min}-{max}x{steps}_N{n_stars}_sig{value_or_range}_logP{min}-{max}_{YYMMDD-HHMM}.npz`.
+  A load dropdown (popover with file preview) replaces the single-button load.
+  Multiple results can coexist in `results/` for comparison.
+
+- **Summary table with ±1σ errors (Task 90):** Rewrote the best-fit summary
+  tables for both Dsilva and Langer models. Each row now shows the parameter name,
+  best-fit value (argmax of K-S p), and the posterior mode ± 1σ (HDI68: highest
+  density interval enclosing 68% of the marginalized 1D posterior). Parameters
+  reported: f_bin, π (or σ_single for Langer), σ_measure (if scanned), logP_max
+  (if scanned), and K-S p-value at the best-fit point. This is the standard
+  reporting format following Dsilva et al. (2023).
+
+- **Dynamic tab system:** Major refactoring of the bias correction page
+  (`app/pages/05_bias_correction.py`, 4103 lines). Extracted Dsilva and Langer
+  tab bodies into parameterized functions `_render_dsilva_tab(prefix)` and
+  `_render_langer_tab(prefix)`, with all 114 session state keys parameterized
+  by a unique prefix string. This allows multiple independent instances of the
+  same model to run simultaneously with different settings. A "+" button adds
+  new Dsilva, Langer, or Compare tabs at runtime.
+
+- **Compare tab:** New `_render_compare_tab(prefix)` loads any two saved result
+  files (from either model) and provides:
+  - Parameter comparison table (side-by-side settings with match indicators)
+  - K-S p-value heatmaps: side-by-side or contour overlay (Result A as heatmap,
+    Result B as red contour lines)
+  - 1D f_bin posteriors: side-by-side or overlaid on same axes
+  - CDF comparison: observed distribution overlaid with both best-fit simulated CDFs
+
+**Methodology notes for paper:**
+- The HDI68 interval is computed by binary-searching for the horizontal threshold
+  level h such that the set {x : posterior(x) ≥ h} has integrated probability = 0.68.
+  This gives the shortest credible interval and handles asymmetric posteriors correctly.
+  For symmetric, Gaussian-like posteriors, HDI68 ≈ mode ± 1σ.
+- The comparison infrastructure enables systematic exploration of how results depend
+  on model choices (Dsilva vs Langer period distributions), grid resolution, N_stars,
+  and σ_single range. This is essential for the discussion section of the paper.
+- Result files embed the full settings JSON, enabling reproducibility: any saved
+  result can be traced back to the exact parameter configuration that produced it.
+
+**Decisions:**
+- Settings save to `user_settings.json` only from the primary tabs (prefix `bc`
+  for Dsilva, `lg` for Langer). Duplicate tabs created via "+" are session-only
+  and do not persist settings across restarts.
+- The compare tab auto-discovers all `.npz` files in `results/` matching either
+  model prefix, sorted by modification time (newest first).
+
+---
+
+*Last updated: 2026-03-09*
