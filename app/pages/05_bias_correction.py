@@ -633,7 +633,7 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
         view_mode = _ac2.radio('View', ['K-S p-value', 'K-S D-statistic'],
                                horizontal=True, key=f'{p}_view_mode')
         show_d = view_mode == 'K-S D-statistic'
-        _run_col, _load_col = _ac3.columns(2)
+        _run_col, _load_col, _save_col = _ac3.columns(3)
         run_btn  = _run_col.button('▶️ Run Bias Correction', type='primary', key=f'{p}_run')
 
         # Load saved results dropdown
@@ -668,6 +668,40 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                     load_btn = True
         else:
             _load_col.caption('No saved results yet.')
+
+        # Manual save button
+        if _save_col.button('💾 Save result', key=f'{p}_save_btn'):
+            _cur_res = st.session_state.get(f'{p}_result')
+            if _cur_res is not None:
+                _save_kwargs_manual = dict(
+                    **{k: v for k, v in _cur_res.items()},
+                    config_hash=np.array('manual_save'),
+                    settings=np.array(json.dumps(
+                        {**gcfg, 'simulation': simcfg, 'orbital': orb},
+                        default=str)),
+                    obs_delta_rv=cached_load_observed_delta_rvs(),
+                    timestamp=np.array(_dt.datetime.now().isoformat()),
+                )
+                _desc = _build_descriptive_filename(
+                    'dsilva',
+                    float(st.session_state.get(f'{p}_fbin_min', 0.01)),
+                    float(st.session_state.get(f'{p}_fbin_max', 0.99)),
+                    int(st.session_state.get(f'{p}_fbin_steps', 100)),
+                    float(st.session_state.get(f'{p}_pi_min', -3.0)),
+                    float(st.session_state.get(f'{p}_pi_max', 3.0)),
+                    int(st.session_state.get(f'{p}_pi_steps', 100)),
+                    int(st.session_state.get(f'{p}_n_stars', 3000)),
+                    np.array([float(st.session_state.get(f'{p}_sigma_meas', 5.0))]),
+                    float(st.session_state.get(f'{p}_logP_min', 0.15)),
+                    float(st.session_state.get(f'{p}_logP_max', 5.0)),
+                    x_label='pi',
+                )
+                _save_path = os.path.join(_RESULT_DIR, _desc)
+                np.savez(_save_path, **_save_kwargs_manual)
+                cached_load_grid_result.clear()
+                st.toast(f'Saved: {_desc}')
+            else:
+                _save_col.warning('No result to save. Run a simulation first.')
 
         # Display slots
         progress_slot       = st.empty()
@@ -2612,7 +2646,7 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         lg_view_mode = _lg_ac2.radio('View', ['K-S p-value', 'K-S D-statistic'],
                                       horizontal=True, key=f'{p}_view_mode')
         lg_show_d = lg_view_mode == 'K-S D-statistic'
-        _lg_run_col, _lg_load_col = _lg_ac3.columns(2)
+        _lg_run_col, _lg_load_col, _lg_save_col = _lg_ac3.columns(3)
         lg_run_btn = _lg_run_col.button('▶️ Run Langer Grid', type='primary', key=f'{p}_run')
 
         # Load saved results dropdown (Langer)
@@ -2645,6 +2679,40 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                     lg_load_btn = True
         else:
             _lg_load_col.caption('No saved results yet.')
+
+        # Manual save button (Langer)
+        if _lg_save_col.button('💾 Save result', key=f'{p}_save_btn'):
+            _lg_cur_res = st.session_state.get(f'{p}_result')
+            if _lg_cur_res is not None:
+                _lg_save_kw = dict(
+                    **{k: v for k, v in _lg_cur_res.items()},
+                    config_hash=np.array('manual_save'),
+                    settings=np.array(json.dumps(
+                        {**lg_cfg, 'simulation': lg_sim, 'langer_period_params': lg_pp},
+                        default=str)),
+                    obs_delta_rv=cached_load_observed_delta_rvs(),
+                    timestamp=np.array(_dt.datetime.now().isoformat()),
+                )
+                _lg_desc = _build_descriptive_filename(
+                    'langer',
+                    float(st.session_state.get(f'{p}_fbin_min', 0.01)),
+                    float(st.session_state.get(f'{p}_fbin_max', 0.99)),
+                    int(st.session_state.get(f'{p}_fbin_steps', 100)),
+                    float(st.session_state.get(f'{p}_sigma_min', 1.0)),
+                    float(st.session_state.get(f'{p}_sigma_max', 15.0)),
+                    int(st.session_state.get(f'{p}_sigma_steps', 30)),
+                    int(st.session_state.get(f'{p}_n_stars', 10000)),
+                    np.array([float(st.session_state.get(f'{p}_sigma_meas', 1.622))]),
+                    float(st.session_state.get(f'{p}_logP_min', 0.5)),
+                    float(st.session_state.get(f'{p}_logP_max', 3.5)),
+                    x_label='sig',
+                )
+                _lg_save_path = os.path.join(_RESULT_DIR, _lg_desc)
+                np.savez(_lg_save_path, **_lg_save_kw)
+                cached_load_grid_result.clear()
+                st.toast(f'Saved: {_lg_desc}')
+            else:
+                _lg_save_col.warning('No result to save. Run first.')
 
         # Display slots
         lg_progress_slot = st.empty()
@@ -3785,7 +3853,7 @@ def _render_compare_tab(p: str) -> None:
         return
 
     names = [n for n, _ in all_results]
-    paths = {n: p for n, p in all_results}
+    paths = {n: fp for n, fp in all_results}
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -3816,52 +3884,136 @@ def _render_compare_tab(p: str) -> None:
 
     # ── Extract common arrays ────────────────────────────────────────────
     def _get_arrays(res, label):
-        """Extract heatmap arrays and axis values from a result dict."""
-        info = {}
-        if 'ks_p_3d' in res:
-            # Dsilva-style: 3D array [sigma, fbin, pi]
-            ks_3d = res['ks_p_3d']
-            if ks_3d.ndim == 3:
-                # Find best sigma slice
-                max_per_slice = [float(np.nanmax(ks_3d[i])) for i in range(ks_3d.shape[0])]
-                best_slice = int(np.argmax(max_per_slice))
-                info['heatmap'] = ks_3d[best_slice]
-                info['type'] = 'dsilva'
-            else:
-                info['heatmap'] = ks_3d
-                info['type'] = 'dsilva'
-            info['fbin_vals'] = res.get('fbin_vals', np.array([]))
-            info['x_vals'] = res.get('pi_vals', np.array([]))
+        """Extract heatmap arrays and axis values from a result dict.
+
+        Handles both stored key naming conventions:
+          Dsilva: ks_p shape (logPmax, sigma, fbin, pi) or (sigma, fbin, pi)
+          Langer: ks_p shape (fbin, sigma)
+        """
+        info = {'label': label, 'settings': {}, 'heatmap': None, 'type': 'unknown'}
+        ks_p = res.get('ks_p', None)
+        if ks_p is None:
+            return info
+
+        fbin_vals = res.get('fbin_grid', np.array([]))
+        sigma_vals = res.get('sigma_grid', np.array([]))
+        pi_vals = res.get('pi_grid', np.array([]))
+        logPmax_vals = res.get('logPmax_grid', np.array([]))
+
+        if pi_vals.size > 0:
+            # Dsilva-style: has pi dimension
+            info['type'] = 'dsilva'
+            info['fbin_vals'] = fbin_vals
+            info['pi_vals'] = pi_vals
+            info['sigma_vals'] = sigma_vals
+            info['logPmax_vals'] = logPmax_vals
+            info['ks_p_full'] = ks_p
+
+            # Collapse to best 2D slice (fbin × pi) for heatmap display
+            if ks_p.ndim == 4:
+                # shape: (logPmax, sigma, fbin, pi) — find global best
+                flat_idx = int(np.nanargmax(ks_p))
+                idx = np.unravel_index(flat_idx, ks_p.shape)
+                info['best_logPmax_idx'] = idx[0]
+                info['best_sigma_idx'] = idx[1]
+                info['heatmap'] = ks_p[idx[0], idx[1]]  # (fbin, pi)
+                info['best_fbin'] = float(fbin_vals[idx[2]])
+                info['best_pi'] = float(pi_vals[idx[3]])
+                info['best_sigma'] = float(sigma_vals[idx[1]]) if sigma_vals.size > 0 else None
+                info['best_logPmax'] = float(logPmax_vals[idx[0]]) if logPmax_vals.size > 0 else None
+                info['best_pval'] = float(ks_p[idx])
+            elif ks_p.ndim == 3:
+                # shape: (sigma, fbin, pi)
+                flat_idx = int(np.nanargmax(ks_p))
+                idx = np.unravel_index(flat_idx, ks_p.shape)
+                info['best_sigma_idx'] = idx[0]
+                info['heatmap'] = ks_p[idx[0]]
+                info['best_fbin'] = float(fbin_vals[idx[1]])
+                info['best_pi'] = float(pi_vals[idx[2]])
+                info['best_sigma'] = float(sigma_vals[idx[0]]) if sigma_vals.size > 0 else None
+                info['best_pval'] = float(ks_p[idx])
+            elif ks_p.ndim == 2:
+                info['heatmap'] = ks_p
+                flat_idx = int(np.nanargmax(ks_p))
+                idx = np.unravel_index(flat_idx, ks_p.shape)
+                info['best_fbin'] = float(fbin_vals[idx[0]])
+                info['best_pi'] = float(pi_vals[idx[1]])
+                info['best_pval'] = float(ks_p[idx])
+            info['x_vals'] = pi_vals
             info['x_label'] = 'π'
-            info['sigma_vals'] = res.get('sigma_vals', np.array([]))
-        elif 'ks_p_2d' in res:
-            # Langer-style: 2D array [fbin, sigma]
-            info['heatmap'] = res['ks_p_2d']
-            info['type'] = 'langer'
-            info['fbin_vals'] = res.get('fbin_vals', np.array([]))
-            info['x_vals'] = res.get('sigma_vals', np.array([]))
-            info['x_label'] = 'σ_single'
-            info['sigma_vals'] = res.get('sigma_vals', np.array([]))
         else:
-            info['heatmap'] = None
-            info['type'] = 'unknown'
-        info['label'] = label
+            # Langer-style: 2D (fbin × sigma)
+            info['type'] = 'langer'
+            info['fbin_vals'] = fbin_vals
+            info['sigma_vals'] = sigma_vals
+            info['x_vals'] = sigma_vals
+            info['x_label'] = 'σ_single'
+            info['ks_p_full'] = ks_p
+            if ks_p.ndim == 2:
+                info['heatmap'] = ks_p
+                flat_idx = int(np.nanargmax(ks_p))
+                idx = np.unravel_index(flat_idx, ks_p.shape)
+                info['best_fbin'] = float(fbin_vals[idx[0]])
+                info['best_sigma'] = float(sigma_vals[idx[1]])
+                info['best_pval'] = float(ks_p[idx])
 
         # Settings JSON
-        if 'settings_json' in res:
+        if 'settings' in res:
             try:
-                info['settings'] = json.loads(str(res['settings_json']))
+                info['settings'] = json.loads(str(res['settings']))
             except Exception:
                 info['settings'] = {}
-        else:
-            info['settings'] = {}
         return info
 
     info_a = _get_arrays(res_a, sel_a)
     info_b = _get_arrays(res_b, sel_b)
 
+    # ── Summary: best-fit values side-by-side ────────────────────────────
+    st.markdown('### Best-fit comparison')
+    _summary_rows = []
+    # f_bin
+    _summary_rows.append({
+        'Parameter': 'f_bin',
+        'Result A': f"{info_a.get('best_fbin', '—'):.4f}" if 'best_fbin' in info_a else '—',
+        'Result B': f"{info_b.get('best_fbin', '—'):.4f}" if 'best_fbin' in info_b else '—',
+    })
+    # π (Dsilva only)
+    if 'best_pi' in info_a or 'best_pi' in info_b:
+        _summary_rows.append({
+            'Parameter': 'π',
+            'Result A': f"{info_a['best_pi']:.4f}" if 'best_pi' in info_a else '—',
+            'Result B': f"{info_b['best_pi']:.4f}" if 'best_pi' in info_b else '—',
+        })
+    # σ_single
+    if 'best_sigma' in info_a or 'best_sigma' in info_b:
+        _summary_rows.append({
+            'Parameter': 'σ_single',
+            'Result A': f"{info_a['best_sigma']:.2f}" if info_a.get('best_sigma') is not None else '—',
+            'Result B': f"{info_b['best_sigma']:.2f}" if info_b.get('best_sigma') is not None else '—',
+        })
+    # logP_max
+    if 'best_logPmax' in info_a or 'best_logPmax' in info_b:
+        _summary_rows.append({
+            'Parameter': 'logP_max',
+            'Result A': f"{info_a['best_logPmax']:.2f}" if info_a.get('best_logPmax') is not None else '—',
+            'Result B': f"{info_b['best_logPmax']:.2f}" if info_b.get('best_logPmax') is not None else '—',
+        })
+    # K-S p
+    _summary_rows.append({
+        'Parameter': 'K-S p-value',
+        'Result A': f"{info_a.get('best_pval', 0):.5f}" if 'best_pval' in info_a else '—',
+        'Result B': f"{info_b.get('best_pval', 0):.5f}" if 'best_pval' in info_b else '—',
+    })
+    # Model type
+    _summary_rows.append({
+        'Parameter': 'Model',
+        'Result A': info_a['type'],
+        'Result B': info_b['type'],
+    })
+    st.dataframe(pd.DataFrame(_summary_rows), use_container_width=True, hide_index=True)
+
     # ── Parameter comparison table ───────────────────────────────────────
-    with st.expander('📊 Parameter comparison', expanded=True):
+    with st.expander('📊 Settings comparison', expanded=False):
         rows = []
         all_keys = sorted(set(list(info_a['settings'].keys()) + list(info_b['settings'].keys())))
         for k in all_keys:
@@ -3879,7 +4031,7 @@ def _render_compare_tab(p: str) -> None:
         if view_mode == 'Side-by-side':
             hc1, hc2 = st.columns(2)
             with hc1:
-                st.markdown(f'**{info_a["label"]}**')
+                st.markdown(f'**A: {info_a["label"][:40]}**')
                 fig_a = _make_heatmap_fig(
                     info_a['heatmap'],
                     info_a['fbin_vals'], info_a['x_vals'],
@@ -3888,7 +4040,7 @@ def _render_compare_tab(p: str) -> None:
                 )
                 st.plotly_chart(fig_a, use_container_width=True, key=f'{p}_hm_a')
             with hc2:
-                st.markdown(f'**{info_b["label"]}**')
+                st.markdown(f'**B: {info_b["label"][:40]}**')
                 fig_b = _make_heatmap_fig(
                     info_b['heatmap'],
                     info_b['fbin_vals'], info_b['x_vals'],
@@ -3901,7 +4053,6 @@ def _render_compare_tab(p: str) -> None:
             if (info_a['type'] == info_b['type']
                     and info_a['heatmap'].shape == info_b['heatmap'].shape):
                 fig = go.Figure()
-                # Result A as filled heatmap
                 fig.add_trace(go.Heatmap(
                     z=info_a['heatmap'],
                     x=info_a['x_vals'], y=info_a['fbin_vals'],
@@ -3909,7 +4060,6 @@ def _render_compare_tab(p: str) -> None:
                     name=info_a['label'],
                     colorbar=dict(title='A p-val', x=1.0),
                 ))
-                # Result B as contour overlay
                 fig.add_trace(go.Contour(
                     z=info_b['heatmap'],
                     x=info_b['x_vals'], y=info_b['fbin_vals'],
@@ -3931,7 +4081,7 @@ def _render_compare_tab(p: str) -> None:
                 st.info('Overlay requires same model type and grid dimensions. Showing side-by-side.')
                 hc1, hc2 = st.columns(2)
                 with hc1:
-                    st.markdown(f'**{info_a["label"]}**')
+                    st.markdown(f'**A: {info_a["label"][:40]}**')
                     fig_a = _make_heatmap_fig(
                         info_a['heatmap'],
                         info_a['fbin_vals'], info_a['x_vals'],
@@ -3939,7 +4089,7 @@ def _render_compare_tab(p: str) -> None:
                     )
                     st.plotly_chart(fig_a, use_container_width=True, key=f'{p}_hm_a2')
                 with hc2:
-                    st.markdown(f'**{info_b["label"]}**')
+                    st.markdown(f'**B: {info_b["label"][:40]}**')
                     fig_b = _make_heatmap_fig(
                         info_b['heatmap'],
                         info_b['fbin_vals'], info_b['x_vals'],
@@ -3947,49 +4097,72 @@ def _render_compare_tab(p: str) -> None:
                     )
                     st.plotly_chart(fig_b, use_container_width=True, key=f'{p}_hm_b2')
 
-    # ── 1D Posteriors ────────────────────────────────────────────────────
-    st.markdown('### 1D Posteriors (f_bin)')
+    # ── 1D Posteriors (f_bin) ────────────────────────────────────────────
     if info_a['heatmap'] is not None and info_b['heatmap'] is not None:
-        # Marginalize over second axis
-        post_a = np.nanmean(info_a['heatmap'], axis=1)
-        post_b = np.nanmean(info_b['heatmap'], axis=1)
-        # Normalize
-        if post_a.sum() > 0:
-            post_a = post_a / np.trapezoid(post_a, info_a['fbin_vals']) if len(info_a['fbin_vals']) == len(post_a) else post_a / post_a.sum()
-        if post_b.sum() > 0:
-            post_b = post_b / np.trapezoid(post_b, info_b['fbin_vals']) if len(info_b['fbin_vals']) == len(post_b) else post_b / post_b.sum()
+        st.markdown('### 1D Posteriors')
+
+        def _marginalize_1d(heatmap_2d, axis_vals, axis=1):
+            """Marginalize 2D heatmap along given axis to get 1D posterior."""
+            post = np.nansum(heatmap_2d, axis=axis)
+            if post.sum() > 0 and len(axis_vals) == len(post):
+                area = np.trapezoid(post, axis_vals)
+                if area > 0:
+                    post = post / area
+            return post
+
+        # f_bin posterior (marginalize over x axis)
+        post_fbin_a = _marginalize_1d(info_a['heatmap'], info_a['x_vals'], axis=1)
+        post_fbin_b = _marginalize_1d(info_b['heatmap'], info_b['x_vals'], axis=1)
+
+        # Second axis posterior (π or σ — marginalize over fbin)
+        post_x_a = _marginalize_1d(info_a['heatmap'], info_a['fbin_vals'], axis=0)
+        post_x_b = _marginalize_1d(info_b['heatmap'], info_b['fbin_vals'], axis=0)
 
         if view_mode == 'Side-by-side':
             pc1, pc2 = st.columns(2)
             with pc1:
+                st.markdown('**f_bin**')
                 fig_pa = go.Figure()
                 fig_pa.add_trace(go.Scatter(
-                    x=info_a['fbin_vals'], y=post_a,
-                    mode='lines', line=dict(color=pal['observed'], width=2),
-                    name=info_a['label'],
+                    x=info_a['fbin_vals'], y=post_fbin_a,
+                    mode='lines', line=dict(color='#4A90D9', width=2),
+                    name='A',
                 ))
-                fig_pa.update_layout(**{**PLOTLY_THEME, 'title': dict(text=f'f_bin posterior — A'), 'height': 350})
-                st.plotly_chart(fig_pa, use_container_width=True, key=f'{p}_post_a')
+                fig_pa.add_trace(go.Scatter(
+                    x=info_b['fbin_vals'], y=post_fbin_b,
+                    mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
+                    name='B',
+                ))
+                fig_pa.update_layout(**{**PLOTLY_THEME, 'title': dict(text='f_bin posterior'), 'height': 350,
+                                        'xaxis_title': 'f_bin', 'yaxis_title': 'Posterior density'})
+                st.plotly_chart(fig_pa, use_container_width=True, key=f'{p}_post_fbin')
             with pc2:
+                st.markdown(f'**{info_a["x_label"]} / {info_b["x_label"]}**')
                 fig_pb = go.Figure()
                 fig_pb.add_trace(go.Scatter(
-                    x=info_b['fbin_vals'], y=post_b,
-                    mode='lines', line=dict(color=pal['simulated'], width=2),
-                    name=info_b['label'],
+                    x=info_a['x_vals'], y=post_x_a,
+                    mode='lines', line=dict(color='#4A90D9', width=2),
+                    name='A',
                 ))
-                fig_pb.update_layout(**{**PLOTLY_THEME, 'title': dict(text=f'f_bin posterior — B'), 'height': 350})
-                st.plotly_chart(fig_pb, use_container_width=True, key=f'{p}_post_b')
-        else:  # Overlay
+                fig_pb.add_trace(go.Scatter(
+                    x=info_b['x_vals'], y=post_x_b,
+                    mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
+                    name='B',
+                ))
+                fig_pb.update_layout(**{**PLOTLY_THEME, 'title': dict(text=f'{info_a["x_label"]} posterior'), 'height': 350,
+                                        'xaxis_title': info_a['x_label'], 'yaxis_title': 'Posterior density'})
+                st.plotly_chart(fig_pb, use_container_width=True, key=f'{p}_post_x')
+        else:  # Overlay — both posteriors on single plots
             fig_po = go.Figure()
             fig_po.add_trace(go.Scatter(
-                x=info_a['fbin_vals'], y=post_a,
-                mode='lines', line=dict(color=pal['observed'], width=2),
-                name=info_a['label'],
+                x=info_a['fbin_vals'], y=post_fbin_a,
+                mode='lines', line=dict(color='#4A90D9', width=2),
+                name=f'A: f_bin',
             ))
             fig_po.add_trace(go.Scatter(
-                x=info_b['fbin_vals'], y=post_b,
-                mode='lines', line=dict(color=pal['simulated'], width=2, dash='dash'),
-                name=info_b['label'],
+                x=info_b['fbin_vals'], y=post_fbin_b,
+                mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
+                name=f'B: f_bin',
             ))
             fig_po.update_layout(**{
                 **PLOTLY_THEME,
@@ -4000,53 +4173,54 @@ def _render_compare_tab(p: str) -> None:
             })
             st.plotly_chart(fig_po, use_container_width=True, key=f'{p}_post_overlay')
 
-    # ── CDF comparison ───────────────────────────────────────────────────
-    st.markdown('### CDF comparison')
-    st.caption('Observed CDF overlaid with best-fit simulated CDFs from each result.')
+            # Second-axis overlay
+            if info_a['x_label'] == info_b['x_label']:
+                fig_xo = go.Figure()
+                fig_xo.add_trace(go.Scatter(
+                    x=info_a['x_vals'], y=post_x_a,
+                    mode='lines', line=dict(color='#4A90D9', width=2),
+                    name='A',
+                ))
+                fig_xo.add_trace(go.Scatter(
+                    x=info_b['x_vals'], y=post_x_b,
+                    mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
+                    name='B',
+                ))
+                fig_xo.update_layout(**{
+                    **PLOTLY_THEME,
+                    'title': dict(text=f'{info_a["x_label"]} posterior comparison'),
+                    'xaxis_title': info_a['x_label'],
+                    'yaxis_title': 'Posterior density',
+                    'height': 400,
+                })
+                st.plotly_chart(fig_xo, use_container_width=True, key=f'{p}_post_x_overlay')
 
-    def _extract_cdf(res, info):
-        """Try to get observed + simulated CDFs from result."""
-        obs = res.get('observed_cdf_x', None)
-        obs_y = res.get('observed_cdf_y', None)
-        sim = res.get('best_sim_cdf_x', None)
-        sim_y = res.get('best_sim_cdf_y', None)
-        return obs, obs_y, sim, sim_y
-
-    obs_a_x, obs_a_y, sim_a_x, sim_a_y = _extract_cdf(res_a, info_a)
-    obs_b_x, obs_b_y, sim_b_x, sim_b_y = _extract_cdf(res_b, info_b)
-
-    has_cdf = any(x is not None for x in [sim_a_x, sim_b_x])
-    if has_cdf:
+    # ── Observed ΔRV CDF comparison ──────────────────────────────────────
+    st.markdown('### Observed ΔRV CDF')
+    st.caption('The observed ΔRV distribution is the same for both results (same dataset).')
+    obs_drv_a = res_a.get('obs_delta_rv', None)
+    obs_drv_b = res_b.get('obs_delta_rv', None)
+    _has_obs = obs_drv_a is not None
+    if _has_obs:
+        obs_sorted = np.sort(obs_drv_a)
+        obs_cdf_y = np.arange(1, len(obs_sorted) + 1) / len(obs_sorted)
         fig_cdf = go.Figure()
-        # Observed (from A — should be the same for both if same dataset)
-        if obs_a_x is not None and obs_a_y is not None:
-            fig_cdf.add_trace(go.Scatter(
-                x=obs_a_x, y=obs_a_y,
-                mode='lines', line=dict(color='black', width=2),
-                name='Observed',
-            ))
-        if sim_a_x is not None and sim_a_y is not None:
-            fig_cdf.add_trace(go.Scatter(
-                x=sim_a_x, y=sim_a_y,
-                mode='lines', line=dict(color=pal['observed'], width=2, dash='dash'),
-                name=f'Sim A ({info_a["label"][:30]})',
-            ))
-        if sim_b_x is not None and sim_b_y is not None:
-            fig_cdf.add_trace(go.Scatter(
-                x=sim_b_x, y=sim_b_y,
-                mode='lines', line=dict(color=pal['simulated'], width=2, dash='dot'),
-                name=f'Sim B ({info_b["label"][:30]})',
-            ))
+        fig_cdf.add_trace(go.Scatter(
+            x=obs_sorted, y=obs_cdf_y,
+            mode='lines+markers', line=dict(color='black', width=2),
+            marker=dict(size=5),
+            name='Observed ΔRV',
+        ))
         fig_cdf.update_layout(**{
             **PLOTLY_THEME,
-            'title': dict(text='CDF comparison'),
+            'title': dict(text='Observed ΔRV CDF'),
             'xaxis_title': 'ΔRV (km/s)',
             'yaxis_title': 'Cumulative fraction',
             'height': 400,
         })
-        st.plotly_chart(fig_cdf, use_container_width=True, key=f'{p}_cdf_cmp')
+        st.plotly_chart(fig_cdf, use_container_width=True, key=f'{p}_cdf_obs')
     else:
-        st.info('No CDF data found in the selected results.')
+        st.info('No observed ΔRV data found in results.')
 
 
 
