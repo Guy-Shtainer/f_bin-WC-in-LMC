@@ -78,13 +78,51 @@ The best-fit parameters are $f_\mathrm{bin} =
 68\% highest-density intervals from the marginalised K-S $p$-value
 distribution.
 
-\subsection{Alternative period distribution}
+\subsection{Alternative period distribution: Langer+2020}
 \label{sec:langer_model}
 
-As a consistency check, we also consider the two-Gaussian period
-distribution of \citet{Langer2020}, motivated by theoretical predictions
-for OB+black hole systems. This model assumes circular orbits ($e = 0$)
-and a Gaussian mass-ratio distribution ($\mu_q = 0.7$, $\sigma_q = 0.2$,
-clipped to $[0.25, 1.75]$).
+As a consistency check, we also consider the theoretically motivated
+period distribution of \citet{Langer2020}, derived from binary population
+synthesis of OB+black hole systems using MESA. Unlike the empirical
+power-law model of Sect.~\ref{sec:sim_framework}, this distribution is
+physically motivated by the two dominant mass-transfer channels that
+produce post-interaction binaries.
 
-% TODO: Report Langer model results and comparison.
+The period distribution is modelled as a two-component mixture:
+\begin{equation}
+p(\log P) = w_\mathrm{A}\,\mathcal{N}(\log P \mid \mu_\mathrm{A},
+\sigma_\mathrm{A}) + (1 - w_\mathrm{A})\,
+\mathrm{LogNorm}(\log P \mid \mu_\mathrm{B}, \sigma_\mathrm{B}),
+\label{eq:langer_period}
+\end{equation}
+where:
+\begin{itemize}
+\item \textbf{Case~A} (short-period Roche-lobe overflow): a Gaussian in
+  $\log P$ with $\mu_\mathrm{A} = 0.80$ and $\sigma_\mathrm{A} = 0.15$,
+  corresponding to orbital periods of $\sim$\,3--10\,days;
+\item \textbf{Case~B} (wide-orbit mass transfer): a log-normal
+  distribution in $\log P$ space with mode $\mu_\mathrm{B} = 2.0$ and
+  shape parameter $\sigma_\mathrm{B} = 0.2$, producing a right-skewed
+  tail toward longer periods ($P \sim 30$--3000\,days), as seen in
+  Fig.~6 of \citet{Langer2020};
+\item $w_\mathrm{A} = 0.2$, reflecting the theoretical prediction that
+  Case~B dominates (${\sim}\,80$\% of post-interaction systems).
+\end{itemize}
+
+The remaining orbital parameters differ from the power-law model in two
+respects. First, all orbits are assumed circular ($e = 0$), appropriate
+for post-Roche-lobe-overflow systems whose orbits have been tidally
+circularised. Second, the mass ratio follows a Gaussian distribution
+$q \sim \mathcal{N}(0.7, 0.2)$, clipped to $[0.25, 1.75]$, motivated
+by the BH mass distribution in Fig.~4 of \citet{Langer2020} where
+$M_\mathrm{BH}/M_\mathrm{OB}$ peaks at ${\sim}\,0.5$--$0.7$.
+
+With the period distribution fixed by theory, the grid search reduces to
+a two-dimensional scan over $(f_\mathrm{bin},\,\sigma_\mathrm{single})$,
+where $\sigma_\mathrm{single}$ is the intrinsic single-star RV scatter
+(treated as a nuisance parameter). The same K-S comparison methodology
+(Sect.~\ref{sec:ks_test}) is applied.
+
+% TODO: Report best-fit f_bin from Langer model with HDI68 errors.
+% TODO: Compare Langer vs Dsilva corrected binary fractions.
+% TODO: Insert figure showing Langer K-S heatmap over (f_bin, sigma_single).
