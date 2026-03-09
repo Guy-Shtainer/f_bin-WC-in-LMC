@@ -212,7 +212,12 @@ def launch_agent(
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        return True, f'Agent launched (PID {proc.pid}), quadrant={quadrant}'
+        if freeform_task:
+            return True, f'Agent launched (PID {proc.pid}), mode=free-form'
+        elif task_ids:
+            return True, f'Agent launched (PID {proc.pid}), tasks={task_ids}'
+        else:
+            return True, f'Agent launched (PID {proc.pid}), quadrant={quadrant}'
     except Exception as e:
         return False, f'Failed to launch: {e}'
 
@@ -420,19 +425,31 @@ def get_branch_diff(branch: str) -> str:
 
 
 def merge_branch(branch: str) -> tuple[bool, str]:
-    """Merge a branch into main. Returns (success, message)."""
+    """Rebase a branch onto main, then fast-forward merge. Returns (success, message).
+
+    Falls back to regular merge if rebase fails. Updates verified-good tag on success.
+    """
     try:
+        # Rebase agent work onto latest main for clean history
+        _git('checkout', branch)
+        _git('rebase', 'main')
+        # Fast-forward merge into main
         _git('checkout', 'main')
-        _git('merge', branch, '--no-edit')
-        return True, f'Merged {branch} into main.'
-    except RuntimeError as e:
-        # Try to return to main on error
+        _git('merge', branch, '--ff-only')
+        _git('tag', '-f', 'verified-good', 'HEAD')
+        return True, f'Rebased and merged {branch} into main.'
+    except RuntimeError:
+        # Rebase failed — abort and try regular merge
+        _git('rebase', '--abort', check=False)
+        _git('checkout', 'main', check=False)
         try:
+            _git('merge', branch, '--no-edit')
+            _git('tag', '-f', 'verified-good', 'HEAD')
+            return True, f'Merged {branch} into main (merge commit).'
+        except RuntimeError as e:
             _git('merge', '--abort', check=False)
             _git('checkout', 'main', check=False)
-        except RuntimeError:
-            pass
-        return False, f'Merge failed: {e}'
+            return False, f'Merge failed: {e}'
 
 
 def discard_branch(branch: str) -> tuple[bool, str]:

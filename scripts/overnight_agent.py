@@ -287,20 +287,24 @@ def git_checkpoint() -> str:
 
 
 def git_create_branch(task: dict) -> str:
-    """Create or switch to a task branch from current HEAD.
+    """Create or switch to a task branch from verified-good tag (or current HEAD).
 
-    Branches from whatever branch we're on (preserving current state),
-    NOT from main. Auto-commits uncommitted work before switching.
-    Returns (branch_name).
+    Branches from the 'verified-good' tag if it exists, otherwise current HEAD.
+    Auto-commits uncommitted work before switching.
     """
     slug = re.sub(r'[^a-z0-9]+', '-', task['title'].lower())[:40].strip('-')
     branch = f'agent/{task["id"]}-{slug}'
 
-    # Save the current branch so callers can return to it
-    source = git('branch', '--show-current')
-
     # Commit any uncommitted work before switching — prevents stash/pop conflicts
     git_commit_all(f'[AGENT] Auto-save before switching to task #{task["id"]}')
+
+    # Branch from verified-good tag if it exists, otherwise current HEAD
+    try:
+        git('rev-parse', 'verified-good')
+        git('checkout', 'verified-good')
+        log(f'  Branching from verified-good tag')
+    except RuntimeError:
+        pass  # No tag — stay on current HEAD
 
     try:
         git('checkout', '-b', branch)
@@ -575,10 +579,8 @@ async def run_agent_with_retry(role: str, user_prompt: str,
 
     Uses time.sleep (NOT asyncio.sleep) to survive SDK cancel scope leaks (E016).
 
-    Retry strategy:
-      Attempts 1-5: sleep until the next hour boundary, then retry.
-                    (API sessions are 5h; usage typically exhausted at ~1h.)
-      Attempt 6+:  assume weekly limit hit — sleep until Sunday 11:00 AM.
+    Retry strategy: sleep until the next hour boundary, then retry.
+    Repeats indefinitely — the session WILL renew eventually.
     """
     attempt = 0
     while True:
@@ -588,23 +590,12 @@ async def run_agent_with_retry(role: str, user_prompt: str,
             attempt += 1
             now = datetime.now()
 
-            if attempt >= 6:
-                # Weekly limit — sleep until next Sunday 11:00 AM
-                days_until_sunday = (6 - now.weekday()) % 7
-                if days_until_sunday == 0 and now.hour >= 11:
-                    days_until_sunday = 7
-                next_sunday = (now + timedelta(days=days_until_sunday)).replace(
-                    hour=11, minute=0, second=0, microsecond=0)
-                sleep_time = (next_sunday - now).total_seconds()
-                log(f'  Weekly limit hit (attempt {attempt}). '
-                    f'Sleeping until Sunday 11:00 AM ({sleep_time / 3600:.1f}h)...')
-            else:
-                # Hourly retry — align to next hour boundary
-                next_hour = (now + timedelta(hours=1)).replace(
-                    minute=0, second=0, microsecond=0)
-                sleep_time = (next_hour - now).total_seconds()
-                log(f'  Rate limited (attempt {attempt}/5). '
-                    f'Sleeping {sleep_time:.0f}s until {next_hour.strftime("%H:%M")}...')
+            # Sleep until the next hour boundary, then retry
+            next_hour = (now + timedelta(hours=1)).replace(
+                minute=0, second=0, microsecond=0)
+            sleep_time = (next_hour - now).total_seconds()
+            log(f'  Rate limited (attempt {attempt}). '
+                f'Sleeping {sleep_time:.0f}s until {next_hour.strftime("%H:%M")}...')
 
             resume_at = (now + timedelta(seconds=sleep_time)).isoformat()
 
@@ -1109,7 +1100,8 @@ async def run_freeform_task(task_prompt: str, dry_run: bool) -> None:
         log('Agent session complete.')
         return
 
-    task = {'id': 0, 'title': 'Free-form task', 'description': task_prompt, 'tags': ''}
+    freeform_id = int(datetime.now().strftime('%y%m%d%H%M'))
+    task = {'id': freeform_id, 'title': 'Free-form task', 'description': task_prompt, 'tags': ''}
     branch = f'agent/freeform-{datetime.now().strftime("%Y%m%d-%H%M")}'
 
     # Save source branch so we can return to it
@@ -1305,12 +1297,25 @@ def stop_daemon() -> None:
                 break
             elif choice in ('m', 'merge'):
                 try:
+                    # Rebase onto main for clean history, then fast-forward
+                    git('checkout', branch)
+                    git('rebase', 'main')
                     git_safe_checkout('main')
-                    git('merge', branch, '--no-edit')
-                    print(f'  Merged {branch} into main.')
-                except RuntimeError as e:
-                    print(f'  Merge failed: {e}')
-                    print(f'  Branch preserved for manual merge.')
+                    git('merge', branch, '--ff-only')
+                    git('tag', '-f', 'verified-good', 'HEAD')
+                    print(f'  Rebased and merged {branch} into main. Updated verified-good tag.')
+                except RuntimeError:
+                    # Rebase failed — abort and try regular merge
+                    git('rebase', '--abort', check=False)
+                    git_safe_checkout('main')
+                    try:
+                        git('merge', branch, '--no-edit')
+                        git('tag', '-f', 'verified-good', 'HEAD')
+                        print(f'  Merged {branch} into main (merge commit). Updated verified-good tag.')
+                    except RuntimeError as e:
+                        git('merge', '--abort', check=False)
+                        print(f'  Merge failed: {e}')
+                        print(f'  Branch preserved for manual merge.')
                 break
             elif choice in ('d', 'discard'):
                 try:
@@ -1450,24 +1455,14 @@ def main() -> None:
         os.environ['_CAFFEINATE_ACTIVE'] = '1'
         os.execvp('caffeinate', ['caffeinate', '-i', sys.executable] + sys.argv)
 
-    # Auto-resume: if previous run was rate-limited and process crashed, wait it out
+    # Clear stale rate-limit state from previous runs — don't block a fresh launch.
+    # The retry loop inside run_agent_with_retry() handles rate limits properly.
     prev_state = load_state()
     if prev_state and prev_state.get('rate_limited'):
-        try:
-            resume_at = datetime.fromisoformat(prev_state['rate_limit_resume_at'])
-            now = datetime.now()
-            if resume_at > now:
-                wait = (resume_at - now).total_seconds()
-                print(f'Resuming previous rate-limited session in {wait:.0f}s '
-                      f'(until {resume_at.strftime("%Y-%m-%d %H:%M")})...')
-                _blocking_sleep(wait)
-            # Clear the flag — agent_loop will pick up from completed_tasks
-            prev_state['rate_limited'] = False
-            prev_state['rate_limit_resume_at'] = None
-            save_state(prev_state)
-            print('Rate limit window passed. Resuming agent...')
-        except (ValueError, KeyError):
-            pass  # Malformed state — ignore and start fresh
+        print('Clearing stale rate-limit state from previous run.')
+        prev_state['rate_limited'] = False
+        prev_state['rate_limit_resume_at'] = None
+        save_state(prev_state)
 
     # Parse --task-ids if provided
     task_ids = None
