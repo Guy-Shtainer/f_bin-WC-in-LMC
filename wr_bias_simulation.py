@@ -228,6 +228,7 @@ class BinaryParameterConfig:
     q_range: Tuple[float, float] = (0.1, 2.0)
     langer_q_mu: float = 0.7
     langer_q_sigma: float = 0.2
+    q_flipped: bool = False  # if True, M2 = M1/q instead of M1*q
 
 
 # ---------------------------------------------------------------------------
@@ -271,22 +272,25 @@ def sample_logP_powerlaw(
 def sample_logP_langer2020(
     size: int,
     rng: np.random.Generator,
-    mu_A: float = 1.1,
-    sigma_A: float = 0.15,
-    mu_B: float = 2.2,
-    sigma_B: float = 0.35,
-    weight_A: float = 0.3,
+    mu_A: float = 0.80,
+    sigma_A: float = 0.35,
+    mu_B: float = 2.0,
+    sigma_B: float = 0.45,
+    weight_A: float = 0.20,
     logP_min: float = 0.5,
     logP_max: float = 3.5,
-) -> np.ndarray:
+    return_components: bool = False,
+) -> "np.ndarray | tuple":
     """
-    Crude approximation to the OB+BH logP distribution in Langer+2020.
+    Approximation to the OB+BH logP distribution in Langer+2020 (Fig. 6).
 
-    We approximate the distribution as a mixture of two Gaussians in log10 P:
-    - "Case A" peak around ~10-20 d (mu_A, sigma_A).
-    - "Case B" peak around ~150 d (mu_B, sigma_B).
+    Two-component mixture in logP space:
+    - "Case A" Gaussian: short-period RLOF systems, peak ~6 d (mu_A, sigma_A).
+    - "Case B" Log-normal in logP: wide-orbit systems with right-skewed tail,
+      mode at ~100 d (mu_B sets the mode; sigma_B controls width and skew).
 
-    Parameters can be tuned by passing a dict as BinaryParameterConfig.langer_period_params.
+    Default parameters are tuned to visually match Langer+2020 Fig. 6.
+    Can be overridden via BinaryParameterConfig.langer_period_params.
     """
     u = rng.random(size)
     logP = np.empty(size, dtype=float)
@@ -300,9 +304,15 @@ def sample_logP_langer2020(
     if n_A > 0:
         logP[mask_A] = rng.normal(loc=mu_A, scale=sigma_A, size=n_A)
     if n_B > 0:
-        logP[mask_B] = rng.normal(loc=mu_B, scale=sigma_B, size=n_B)
+        # Log-normal in logP space: mode = mu_B, right-skewed tail toward higher P.
+        # Internal parameterization: ln(logP) ~ Normal(mu_ln, sigma_B)
+        # where mu_ln = ln(mu_B) + sigma_B^2  ensures mode = mu_B.
+        mu_ln = np.log(mu_B) + sigma_B ** 2
+        logP[mask_B] = rng.lognormal(mean=mu_ln, sigma=sigma_B, size=n_B)
 
     logP = np.clip(logP, logP_min, logP_max)
+    if return_components:
+        return logP, mask_A
     return logP
 
 
@@ -354,16 +364,26 @@ def sample_logP(
     rng: np.random.Generator,
     pi: float,
     cfg: BinaryParameterConfig,
-) -> np.ndarray:
-    """Dispatch to the requested period model."""
+    return_components: bool = False,
+) -> "np.ndarray | tuple":
+    """Dispatch to the requested period model.
+
+    When *return_components* is True, returns ``(logP, case_A_mask)`` where
+    *case_A_mask* is a boolean array (True = Case A origin) for Langer, or
+    None for other models.
+    """
     model = cfg.period_model.lower()
     if model == "powerlaw":
-        return sample_logP_powerlaw(pi, size, cfg.logP_min, cfg.logP_max, rng)
+        logP = sample_logP_powerlaw(pi, size, cfg.logP_min, cfg.logP_max, rng)
+        return (logP, None) if return_components else logP
     elif model == "langer2020":
         params = dict(cfg.langer_period_params)  # copy
         # allow overriding logP_min/max via params, but fall back to cfg if absent
         params.setdefault("logP_min", cfg.logP_min)
         params.setdefault("logP_max", cfg.logP_max)
+        if return_components:
+            return sample_logP_langer2020(size=size, rng=rng,
+                                          return_components=True, **params)
         return sample_logP_langer2020(size=size, rng=rng, **params)
     else:
         raise ValueError(f"Unknown period_model: {cfg.period_model}")
@@ -515,7 +535,7 @@ def simulate_delta_rv_sample(
         e    = sample_eccentricity(bin_cfg, n_bin, rng)
         M1   = sample_primary_mass(bin_cfg, n_bin, rng)
         q    = sample_mass_ratio(bin_cfg, n_bin, rng)
-        M2   = M1 * q
+        M2   = M1 / q if bin_cfg.q_flipped else M1 * q
         i    = sample_inclination(n_bin, rng)
         omega = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
         T0    = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
@@ -617,15 +637,18 @@ def simulate_with_params(
     out_i = np.array([])
     out_K1 = np.array([])
     out_M1 = np.array([])
+    out_case_A = None
 
     if n_bin > 0:
-        logP = sample_logP(size=n_bin, rng=rng, pi=pi, cfg=bin_cfg)
+        logP, case_A_mask = sample_logP(size=n_bin, rng=rng, pi=pi, cfg=bin_cfg,
+                                         return_components=True)
+        out_case_A = case_A_mask
         P_days = 10.0 ** logP
 
         e    = sample_eccentricity(bin_cfg, n_bin, rng)
         M1   = sample_primary_mass(bin_cfg, n_bin, rng)
         q    = sample_mass_ratio(bin_cfg, n_bin, rng)
-        M2   = M1 * q
+        M2   = M1 / q if bin_cfg.q_flipped else M1 * q
         i    = sample_inclination(n_bin, rng)
         omega = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
         T0    = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
@@ -675,6 +698,7 @@ def simulate_with_params(
         'omega': omega,   # argument of periapsis (rad)
         'T0': T0,         # periastron phase (rad)
         'idx_bin': idx_bin,
+        'case_A_mask': out_case_A,  # bool array (n_bin,) or None
     }
 
 
@@ -1388,7 +1412,7 @@ def _simulate_rv_sample_full(
         e = sample_eccentricity(bin_cfg, n_bin, rng)
         M1 = sample_primary_mass(bin_cfg, n_bin, rng)
         q = sample_mass_ratio(bin_cfg, n_bin, rng)
-        M2 = M1 * q
+        M2 = M1 / q if bin_cfg.q_flipped else M1 * q
         i = sample_inclination(n_bin, rng)
         omega = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
         M0 = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)

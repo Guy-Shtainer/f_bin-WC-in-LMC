@@ -73,15 +73,18 @@
     "logP_min": 0.15,
     "logP_max": 5.0,
     "n_stars_sim": 10000,
-    "n_processes": null
+    "n_processes": null,
+    "orbital": {
+      "logP_max": 4.0
+    }
   },
   "grid_langer": {
     "fbin_min": 0.0,
     "fbin_max": 1.0,
-    "fbin_steps": 50,
+    "fbin_steps": 100,
     "sigma_min": 1.0,
     "sigma_max": 9.0,
-    "sigma_steps": 50,
+    "sigma_steps": 100,
     "n_stars_sim": 10000,
     "n_processes": null,
     "logP_min": 0.5,
@@ -90,8 +93,8 @@
     "langer_period_params": {
       "mu_A": 1.1,
       "sigma_A": 0.15,
-      "mu_B": 2.2,
-      "sigma_B": 0.35,
+      "mu_B": 2.0,
+      "sigma_B": 0.2,
       "weight_A": 0.3
     }
   },

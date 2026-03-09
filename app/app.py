@@ -436,20 +436,26 @@ with st.expander('📋 Pipeline Workflow Status', expanded=False):
     )
     has_dsilva_grid = cached_load_grid_result('dsilva') is not None
     has_langer_grid = cached_load_grid_result('langer') is not None
-    has_plots = os.path.isdir(os.path.join(_ROOT, 'plots')) and len(
-        [f for f in os.listdir(os.path.join(_ROOT, 'plots')) if f.endswith('.png')]
-    ) > 0 if os.path.isdir(os.path.join(_ROOT, 'plots')) else False
+    _paper_dir = os.path.join(_ROOT, 'paper')
+    has_paper = os.path.isdir(_paper_dir) and any(
+        f.endswith('.tex') for f in os.listdir(_paper_dir)
+    ) if os.path.isdir(_paper_dir) else False
+    has_model_iteration = has_dsilva_grid and has_langer_grid
 
     def _status_icon(done: bool) -> str:
         return '✅' if done else '⬜'
 
     workflow_items = [
-        ('Raw FITS data loaded', has_data),
-        ('RVs computed (CCF)', has_rvs),
-        ('Binary classification applied', has_classification),
-        ('Dsilva grid search complete', has_dsilva_grid),
-        ('Langer grid search complete', has_langer_grid),
-        ('Publication plots exported', has_plots),
+        ('Stitch spectra', has_data),
+        ('Normalize spectra', has_data),
+        ('Clean spectra', has_data),
+        ('Run CCF for RVs', has_rvs),
+        ('Determine RV threshold (NRES + model fitting)', has_classification),
+        ('Get observed binary fraction', has_classification),
+        ('Bias correction — Dsilva', has_dsilva_grid),
+        ('Bias correction — Langer', has_langer_grid),
+        ('Improve model fitting', has_model_iteration),
+        ('Write paper', has_paper),
     ]
 
     for label, done in workflow_items:
@@ -484,16 +490,31 @@ with st.expander('🕐 Recent Grid Runs', expanded=False):
 # ─────────────────────────────────────────────────────────────────────────────
 # Quick start
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown('## Quick Start')
-st.markdown("""
-| Step | Where | What |
-|------|-------|------|
-| 1 | **Stars** page | Review star classifications and ΔRV values |
-| 2 | **Spectrum** page | Browse spectra and RV per epoch |
-| 3 | **CCF** page | Run cross-correlation to compute RVs |
-| 4 | **Classification** page | Adjust threshold and sigma_factor live |
-| 5 | **Grid Search** page | Run Dsilva grid and find best (f_bin, π) |
-| 6 | **Results** page | Compare CDF, export tables and plots |
+st.markdown('## Pipeline Overview')
 
-Use **⚙️ Settings** to edit all parameters. Use **💾 Save current state** (sidebar) to snapshot the analysis at any point.
-""")
+_pipeline_steps = [
+    ('1', 'Stitch spectra', 'Combine UVB/VIS/NIR arms into a single spectrum per epoch', 'pages/02_spectrum.py'),
+    ('2', 'Normalize spectra', 'Continuum-normalize each stitched spectrum', 'pages/02_spectrum.py'),
+    ('3', 'Clean spectra', 'Remove cosmic rays, bad pixels, and artifacts', 'pages/02_spectrum.py'),
+    ('4', 'Run CCF for RVs', 'Cross-correlate against templates to measure radial velocities', 'pages/03_ccf.py'),
+    ('5', 'Determine RV threshold', '(a) NRES multi-epoch validation, (b) model fitting to f_bin vs threshold', 'pages/04_classification.py'),
+    ('6', 'Observed binary fraction', 'Apply threshold + significance criteria to classify binaries', 'pages/04_classification.py'),
+    ('7', 'Bias correction — Dsilva', 'Monte-Carlo grid search with power-law period model', 'pages/05_bias_correction.py'),
+    ('8', 'Bias correction — Langer', 'Monte-Carlo grid search with Langer 2020 period model', 'pages/05_bias_correction.py'),
+    ('9', 'Improve model fitting', 'Iterate on both models, compare results, refine parameters', 'pages/05_bias_correction.py'),
+    ('10', 'Write paper', 'Publish results in A&A format thesis', None),
+]
+
+for step_num, task, desc, page in _pipeline_steps:
+    col_num, col_link, col_desc = st.columns([0.5, 2.5, 7])
+    col_num.markdown(f'**{step_num}.**')
+    if page is not None:
+        col_link.page_link(page, label=task)
+    else:
+        col_link.markdown(f'**{task}**')
+    col_desc.markdown(desc)
+
+st.markdown(
+    'Use **⚙️ Settings** to edit all parameters. '
+    'Use **💾 Save current state** (sidebar) to snapshot the analysis at any point.'
+)

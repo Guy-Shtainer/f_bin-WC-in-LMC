@@ -396,17 +396,21 @@ class NRES:
         np.savez_compressed(output_file_path, result=result, params=params)
 
     def save_property(self, property_name, property_data, epoch_num, spectra_num, data_type='1D',
-                      overwrite=False, backup=True):
+                      overwrite=False, backup=True, create_dirs=False):
         """
         Save a property as .npz under:
-        
+
         star_name/epoch{epoch_num}/{spectra_num}/{data_type}/output/property_name.npz
 
         Defaults to data_type='1D' if not specified.
+        If create_dirs=True, creates the directory tree instead of raising FileNotFoundError.
         """
         base_dir = self._data_type_path(epoch_num, spectra_num, data_type)
         if not os.path.isdir(base_dir):
-            raise FileNotFoundError(f"No folder found for epoch={epoch_num}, spectra={spectra_num}, data_type={data_type}")
+            if create_dirs:
+                os.makedirs(base_dir, exist_ok=True)
+            else:
+                raise FileNotFoundError(f"No folder found for epoch={epoch_num}, spectra={spectra_num}, data_type={data_type}")
 
         output_dir = os.path.join(base_dir, "output")
         os.makedirs(output_dir, exist_ok=True)

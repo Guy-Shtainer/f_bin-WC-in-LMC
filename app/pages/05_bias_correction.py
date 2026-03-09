@@ -19,7 +19,9 @@ import json
 import multiprocessing as mp
 import os
 import sys
+import threading
 import time
+import traceback as _tb
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
@@ -133,13 +135,14 @@ def _build_descriptive_filename(
     else:
         sig_part = f'sig{sig[0]:.1f}-{sig[-1]:.1f}x{sig.size}'
 
+    # Skip sig_part when x_label is already 'sig' (avoids duplication for Langer)
     name = (
         f'{model}'
         f'_fb{fbin_min:.2f}-{fbin_max:.2f}x{fbin_steps}'
         f'_{x_label}{x_min:.1f}-{x_max:.1f}x{x_steps}'
         f'_N{n_stars}'
-        f'_{sig_part}'
-        f'_logP{logP_min:.2f}-{logP_max:.2f}'
+        + (f'_{sig_part}' if x_label != 'sig' else '')
+        + f'_logP{logP_min:.2f}-{logP_max:.2f}'
         f'_{ts}.npz'
     )
     return name
@@ -328,7 +331,8 @@ def _find_reusable_fbin_langer(
         for k in ('n_stars_sim', 'sigma_measure', 'logP_min', 'logP_max',
                    'period_model', 'e_model', 'e_max',
                    'mass_primary_model', 'mass_primary_fixed',
-                   'q_model', 'q_min', 'q_max'):
+                   'q_model', 'q_min', 'q_max',
+                   'q_preset', 'q_flipped', 'langer_period_params'):
             if str(cached_cfg.get(k)) != str(stable_cfg.get(k)):
                 return None
         cached_fbin = np.asarray(cached['fbin_grid'])
@@ -354,6 +358,449 @@ def _append_run_history(entry: dict) -> None:
     history.append(entry)
     with open(_HISTORY_PATH, 'w') as f:
         json.dump(history, f, indent=2, default=str)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Background simulation runners (execute in daemon threads)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _run_dsilva_bg(job: dict, params: dict) -> None:
+    """Run Dsilva grid search in a background thread.
+
+    Writes progress to *job* dict (shared with main Streamlit thread).
+    On completion sets ``job['status'] = 'done'`` and ``job['result']``.
+    """
+    try:
+        from wr_bias_simulation import (
+            BinaryParameterConfig, _single_grid_task_lite, _init_worker,
+        )
+        cadence_list     = params['cadence_list']
+        cadence_weights  = params['cadence_weights']
+        obs_delta_rv     = params['obs_delta_rv']
+        n_stars_sim      = params['n_stars_sim']
+        sigma_meas       = params['sigma_meas']
+        n_proc           = params['n_proc']
+        fbin_vals        = params['fbin_vals']
+        pi_vals          = params['pi_vals']
+        sigma_vals       = params['sigma_vals']
+        logPmax_scan_vals = params['logPmax_scan_vals']
+        stable_cfg       = params['stable_cfg']
+        save_params      = params['save_params']
+        bcfg             = params['bin_cfg_params']
+
+        _scan_logPmax = len(logPmax_scan_vals) > 1
+
+        def _make_bin_cfg(logPmax_v):
+            return BinaryParameterConfig(
+                logP_min=bcfg['logP_min'], logP_max=float(logPmax_v),
+                period_model='powerlaw',
+                e_model=bcfg['e_model'], e_max=bcfg['e_max'],
+                mass_primary_model=bcfg['mass_model'],
+                mass_primary_fixed=bcfg['mass_fixed'],
+                mass_primary_range=bcfg['mass_range'],
+                q_model=bcfg['q_model'], q_range=bcfg['q_range'],
+                langer_q_mu=bcfg['langer_q_mu'],
+                langer_q_sigma=bcfg['langer_q_sig'],
+            )
+
+        n_logPmax = len(logPmax_scan_vals)
+        n_sigma   = len(sigma_vals)
+        n_fbin    = len(fbin_vals)
+        n_pi      = len(pi_vals)
+        accumulated_ks_p = np.full((n_logPmax, n_sigma, n_fbin, n_pi), np.nan)
+        accumulated_ks_D = np.full_like(accumulated_ks_p, np.nan)
+
+        n_rows_total = n_logPmax * n_sigma * n_fbin
+        rows_done    = 0
+        t_start      = time.time()
+
+        if n_rows_total == 0:
+            job['progress_pct']  = 1.0
+            job['progress_text'] = 'Nothing to compute.'
+        else:
+            pi_to_idx = {round(float(pv), 10): i for i, pv in enumerate(pi_vals)}
+            fbin_to_global = {round(float(fbin_vals[gj]), 10): gj
+                              for gj in range(n_fbin)}
+            seed_base        = 1234
+            last_render_time = 0.0
+            outer_last_render = 0.0
+            outer_max_p = np.full((n_logPmax, n_sigma), np.nan)
+
+            with mp.Pool(
+                processes=int(n_proc),
+                initializer=_init_worker,
+                initargs=(cadence_list, cadence_weights, obs_delta_rv,
+                          int(n_stars_sim), float(sigma_meas)),
+            ) as pool:
+                for i_lp, logPmax_v in enumerate(logPmax_scan_vals):
+                    if job.get('cancel'):
+                        job['status'] = 'cancelled'
+                        return
+                    cur_bin_cfg = _make_bin_cfg(logPmax_v)
+
+                    for i_sigma, sigma in enumerate(sigma_vals):
+                        if job.get('cancel'):
+                            job['status'] = 'cancelled'
+                            return
+                        tasks = []
+                        for gj in range(n_fbin):
+                            for i_pi, pv in enumerate(pi_vals):
+                                tasks.append((
+                                    float(fbin_vals[gj]), float(pv),
+                                    float(sigma), cur_bin_cfg,
+                                    'powerlaw', seed_base,
+                                ))
+                                seed_base += 1
+
+                        completed_per_fbin = {gj: 0 for gj in range(n_fbin)}
+
+                        for fb, pi_ret, sigma_ret, D, p_val in pool.imap_unordered(
+                                _single_grid_task_lite, tasks,
+                                chunksize=max(1, n_pi // 4)):
+                            gj   = fbin_to_global[round(fb, 10)]
+                            i_pi = pi_to_idx[round(pi_ret, 10)]
+                            accumulated_ks_p[i_lp, i_sigma, gj, i_pi] = p_val
+                            accumulated_ks_D[i_lp, i_sigma, gj, i_pi] = D
+                            completed_per_fbin[gj] += 1
+
+                            if completed_per_fbin[gj] == n_pi:
+                                rows_done += 1
+                                elapsed = time.time() - t_start
+                                eta_str = ''
+                                if 1 < rows_done < n_rows_total:
+                                    eta = elapsed / rows_done * (n_rows_total - rows_done)
+                                    eta_str = f'  —  ETA {_fmt_eta(eta)}'
+                                _lp_label = (f'logP_max={logPmax_v:.2f}, '
+                                             if _scan_logPmax else '')
+                                job['progress_pct']  = rows_done / n_rows_total
+                                job['progress_text'] = (
+                                    f'{_lp_label}σ={sigma:.1f} km/s, '
+                                    f'row {rows_done}/{n_rows_total}{eta_str}')
+
+                                now = time.time()
+                                _is_final = (rows_done == n_rows_total)
+                                if now - last_render_time > 1.0 or _is_final:
+                                    last_render_time = now
+                                    cur_p = accumulated_ks_p[i_lp, i_sigma]
+                                    cur_p_disp = np.where(np.isnan(cur_p), 0.0, cur_p)
+                                    cur_D_disp = np.where(
+                                        np.isnan(accumulated_ks_D[i_lp, i_sigma]),
+                                        0.0, accumulated_ks_D[i_lp, i_sigma])
+                                    _lp_title = (f', logP_max={logPmax_v:.2f}'
+                                                 if _scan_logPmax else '')
+                                    job['live_heatmap'] = {
+                                        'p': cur_p_disp.copy(),
+                                        'd': cur_D_disp.copy(),
+                                        'fbin': fbin_vals.copy(),
+                                        'x': pi_vals.copy(),
+                                        'title': (f'K-S p-value  '
+                                                  f'(σ={sigma:.1f} km/s{_lp_title})'),
+                                        'is_final': _is_final,
+                                    }
+                                    bf, bp, bpv = _best_point(
+                                        cur_p_disp, fbin_vals, pi_vals)
+                                    job['live_status'] = (
+                                        f'{_lp_label}σ = **{sigma:.1f}** km/s  →  '
+                                        f'best f_bin = **{bf:.4f}**, '
+                                        f'π = **{bp:.3f}**, '
+                                        f'K-S p = **{bpv:.4f}**')
+
+                        # Update outer max-p
+                        _slice_p = accumulated_ks_p[i_lp, i_sigma]
+                        outer_max_p[i_lp, i_sigma] = float(np.nanmax(_slice_p))
+                        if _scan_logPmax:
+                            now2 = time.time()
+                            _outer_final = (rows_done == n_rows_total)
+                            if now2 - outer_last_render > 0.8 or _outer_final:
+                                outer_last_render = now2
+                                _omp = np.where(np.isnan(outer_max_p), 0.0,
+                                                outer_max_p)
+                                job['live_outer_heatmap'] = {
+                                    'p': _omp.copy(),
+                                    'y': logPmax_scan_vals.copy(),
+                                    'x': sigma_vals.copy(),
+                                    'is_final': _outer_final,
+                                }
+
+                    # Checkpoint after each logP_max slice
+                    if rows_done > 0:
+                        os.makedirs(_RESULT_DIR, exist_ok=True)
+                        np.savez(
+                            _result_path('dsilva') + '.partial',
+                            fbin_grid=fbin_vals, pi_grid=pi_vals,
+                            sigma_grid=sigma_vals,
+                            logPmax_grid=logPmax_scan_vals,
+                            ks_p=accumulated_ks_p, ks_D=accumulated_ks_D,
+                            config_hash=_stable_cfg_hash(stable_cfg),
+                            settings=np.array(json.dumps(stable_cfg)),
+                            timestamp=np.array(_dt.datetime.now().isoformat()),
+                        )
+
+        elapsed_total = time.time() - t_start
+        job['elapsed_total'] = elapsed_total
+
+        # ── Save combined result ─────────────────────────────────────────
+        os.makedirs(_RESULT_DIR, exist_ok=True)
+        sp = save_params
+        chash = _stable_cfg_hash({
+            **stable_cfg,
+            'fbin_min': sp['fbin_min'], 'fbin_max': sp['fbin_max'],
+            'fbin_steps': sp['fbin_steps'],
+            'pi_min': sp['pi_min'], 'pi_max': sp['pi_max'],
+            'pi_steps': sp['pi_steps'],
+            'sigma_vals': sigma_vals.tolist(),
+            'logPmax_vals': logPmax_scan_vals.tolist(),
+        })
+        full_result = {
+            'fbin_grid': fbin_vals, 'pi_grid': pi_vals,
+            'sigma_grid': sigma_vals, 'logPmax_grid': logPmax_scan_vals,
+            'ks_p': accumulated_ks_p, 'ks_D': accumulated_ks_D,
+        }
+
+        # ── Compute HDI68 posterior errors and save alongside ────────────
+        from wr_bias_simulation import compute_hdi68 as _hdi68
+        _ks4 = accumulated_ks_p  # [logPmax, sigma, fbin, pi]
+        _ks3 = np.sum(_ks4, axis=0)  # [sigma, fbin, pi]
+        _post_fbin = np.sum(_ks3, axis=(0, 2))
+        _post_pi   = np.sum(_ks3, axis=(0, 1))
+        _m_fb, _lo_fb, _hi_fb = _hdi68(fbin_vals, _post_fbin)
+        _m_pi, _lo_pi, _hi_pi = _hdi68(pi_vals, _post_pi)
+        if sigma_vals.size > 1:
+            _post_sig = np.sum(_ks3, axis=(1, 2))
+            _m_sig, _lo_sig, _hi_sig = _hdi68(sigma_vals, _post_sig)
+        else:
+            _m_sig = float(sigma_vals[0]); _lo_sig = _hi_sig = _m_sig
+        if logPmax_scan_vals.size > 1:
+            _post_lp = np.sum(_ks4, axis=(1, 2, 3))
+            _m_lp, _lo_lp, _hi_lp = _hdi68(logPmax_scan_vals, _post_lp)
+        else:
+            _m_lp = float(logPmax_scan_vals[0]); _lo_lp = _hi_lp = _m_lp
+        _hdi_arrays = dict(
+            mode_fbin=_m_fb, lo_fbin=_lo_fb, hi_fbin=_hi_fb,
+            mode_pi=_m_pi, lo_pi=_lo_pi, hi_pi=_hi_pi,
+            mode_sigma=_m_sig, lo_sigma=_lo_sig, hi_sigma=_hi_sig,
+            mode_logPmax=_m_lp, lo_logPmax=_lo_lp, hi_logPmax=_hi_lp,
+        )
+        full_result.update(_hdi_arrays)
+
+        _save_kwargs = dict(
+            **full_result,
+            config_hash=chash,
+            settings=np.array(json.dumps(stable_cfg)),
+            obs_delta_rv=obs_delta_rv,
+            timestamp=np.array(_dt.datetime.now().isoformat()),
+        )
+        np.savez(_result_path('dsilva'), **_save_kwargs)
+        _desc_name = _build_descriptive_filename(
+            'dsilva',
+            sp['fbin_min'], sp['fbin_max'], sp['fbin_steps'],
+            sp['pi_min'], sp['pi_max'], sp['pi_steps'],
+            int(n_stars_sim), sigma_vals,
+            bcfg['logP_min'], sp['logP_max'],
+            x_label='pi',
+        )
+        _desc_path = os.path.join(_RESULT_DIR, _desc_name)
+        np.savez(_desc_path, **_save_kwargs)
+        _partial = _result_path('dsilva') + '.partial.npz'
+        if os.path.exists(_partial):
+            os.remove(_partial)
+        _append_run_history({
+            'timestamp': _dt.datetime.now().isoformat(),
+            'model': 'dsilva_powerlaw', 'config_hash': chash,
+            'config': stable_cfg, 'elapsed_s': round(elapsed_total, 1),
+            'result_file': _result_path('dsilva'),
+            'descriptive_file': _desc_path,
+        })
+
+        job['result']       = full_result
+        job['desc_name']    = _desc_name
+        job['n_rows_total'] = n_rows_total
+        job['status']       = 'done'
+
+    except Exception:
+        job['error']  = _tb.format_exc()
+        job['status'] = 'error'
+
+
+def _run_langer_bg(job: dict, params: dict) -> None:
+    """Run Langer 2020 grid search in a background thread."""
+    try:
+        from wr_bias_simulation import (
+            BinaryParameterConfig, _single_grid_task_lite, _init_worker,
+        )
+        cadence_list    = params['cadence_list']
+        cadence_weights = params['cadence_weights']
+        obs_delta_rv    = params['obs_delta_rv']
+        n_stars         = params['n_stars']
+        sigma_meas      = params['sigma_meas']
+        n_proc          = params['n_proc']
+        fbin_vals       = params['fbin_vals']
+        sigma_vals      = params['sigma_vals']
+        bin_cfg         = params['bin_cfg']
+        stable_cfg      = params['stable_cfg']
+        save_params     = params['save_params']
+        # Pre-filled arrays (from partial cache reuse)
+        acc_ks_p        = params['acc_ks_p']
+        acc_ks_D        = params['acc_ks_D']
+        missing_fbin_idx = params['missing_fbin_idx']
+
+        n_fbin  = len(fbin_vals)
+        n_sigma = len(sigma_vals)
+        n_cells_total = len(missing_fbin_idx) * n_sigma
+        cells_done = 0
+        t_start = time.time()
+
+        if n_cells_total == 0:
+            job['progress_pct']  = 1.0
+            job['progress_text'] = 'All rows reused from cache.'
+        else:
+            fbin_to_global = {round(float(fbin_vals[gj]), 10): gj
+                              for gj in missing_fbin_idx}
+            sigma_to_idx = {round(float(sv), 10): i
+                            for i, sv in enumerate(sigma_vals)}
+            seed_base    = 5678
+            last_render  = 0.0
+
+            tasks = []
+            for gj in missing_fbin_idx:
+                for i_s, sv in enumerate(sigma_vals):
+                    tasks.append((
+                        float(fbin_vals[gj]), 0.0, float(sv),
+                        bin_cfg, 'langer2020', seed_base,
+                    ))
+                    seed_base += 1
+
+            with mp.Pool(
+                processes=int(n_proc),
+                initializer=_init_worker,
+                initargs=(cadence_list, cadence_weights, obs_delta_rv,
+                          int(n_stars), float(sigma_meas)),
+            ) as pool:
+                for fb, _pi_ret, sigma_ret, D, p_val in pool.imap_unordered(
+                        _single_grid_task_lite, tasks,
+                        chunksize=max(1, n_sigma // 4)):
+                    if job.get('cancel'):
+                        job['status'] = 'cancelled'
+                        return
+                    gj  = fbin_to_global[round(fb, 10)]
+                    i_s = sigma_to_idx[round(sigma_ret, 10)]
+                    acc_ks_p[gj, i_s] = p_val
+                    acc_ks_D[gj, i_s] = D
+                    cells_done += 1
+
+                    elapsed = time.time() - t_start
+                    eta_str = ''
+                    if 1 < cells_done < n_cells_total:
+                        eta = elapsed / cells_done * (n_cells_total - cells_done)
+                        eta_str = f'  —  ETA {_fmt_eta(eta)}'
+                    job['progress_pct']  = cells_done / n_cells_total
+                    job['progress_text'] = (
+                        f'Cell {cells_done}/{n_cells_total}{eta_str}')
+
+                    now = time.time()
+                    if now - last_render > 1.0 or cells_done == n_cells_total:
+                        last_render = now
+                        cur_p = np.where(np.isnan(acc_ks_p), 0.0, acc_ks_p)
+                        cur_D = np.where(np.isnan(acc_ks_D), 0.0, acc_ks_D)
+                        job['live_heatmap'] = {
+                            'p': cur_p.copy(), 'd': cur_D.copy(),
+                            'fbin': fbin_vals.copy(),
+                            'x': sigma_vals.copy(),
+                            'is_final': (cells_done == n_cells_total),
+                        }
+                        bf, bsig, bpv = _best_point(
+                            cur_p, fbin_vals, sigma_vals)
+                        job['live_status'] = (
+                            f'best f_bin = **{bf:.4f}**, '
+                            f'σ_single = **{bsig:.1f}** km/s, '
+                            f'K-S p = **{bpv:.4f}**')
+
+            # Checkpoint
+            if cells_done > 0:
+                os.makedirs(_RESULT_DIR, exist_ok=True)
+                np.savez(
+                    _result_path('langer') + '.partial',
+                    fbin_grid=fbin_vals, sigma_grid=sigma_vals,
+                    ks_p=acc_ks_p, ks_D=acc_ks_D,
+                    config_hash=_stable_cfg_hash(stable_cfg),
+                    settings=np.array(json.dumps(stable_cfg)),
+                    timestamp=np.array(_dt.datetime.now().isoformat()),
+                )
+
+        elapsed_total = time.time() - t_start
+        job['elapsed_total'] = elapsed_total
+
+        # ── Save final result ────────────────────────────────────────────
+        os.makedirs(_RESULT_DIR, exist_ok=True)
+        sp = save_params
+        lg_chash = _stable_cfg_hash({
+            **stable_cfg,
+            'fbin_min': sp['fbin_min'], 'fbin_max': sp['fbin_max'],
+            'fbin_steps': sp['fbin_steps'],
+            'sigma_min': sp['sigma_min'], 'sigma_max': sp['sigma_max'],
+            'sigma_steps': sp['sigma_steps'],
+        })
+        full_result = {
+            'fbin_grid': fbin_vals, 'sigma_grid': sigma_vals,
+            'ks_p': acc_ks_p, 'ks_D': acc_ks_D,
+        }
+
+        # ── Compute HDI68 posterior errors and save alongside ────────────
+        from wr_bias_simulation import compute_hdi68 as _hdi68
+        _lg_post_fbin = np.sum(acc_ks_p, axis=1)
+        _lg_post_sigma = np.sum(acc_ks_p, axis=0)
+        _lg_m_fb, _lg_lo_fb, _lg_hi_fb = _hdi68(fbin_vals, _lg_post_fbin)
+        _lg_m_sig, _lg_lo_sig, _lg_hi_sig = _hdi68(sigma_vals, _lg_post_sigma)
+        _lg_hdi = dict(
+            mode_fbin=_lg_m_fb, lo_fbin=_lg_lo_fb, hi_fbin=_lg_hi_fb,
+            mode_sigma=_lg_m_sig, lo_sigma=_lg_lo_sig, hi_sigma=_lg_hi_sig,
+        )
+        full_result.update(_lg_hdi)
+
+        _save_kwargs = dict(
+            **full_result,
+            config_hash=lg_chash,
+            settings=np.array(json.dumps(stable_cfg)),
+            obs_delta_rv=obs_delta_rv,
+            timestamp=np.array(_dt.datetime.now().isoformat()),
+        )
+        np.savez(_result_path('langer'), **_save_kwargs)
+        _desc_name = _build_descriptive_filename(
+            'langer',
+            sp['fbin_min'], sp['fbin_max'], sp['fbin_steps'],
+            sp['sigma_min'], sp['sigma_max'], sp['sigma_steps'],
+            int(n_stars), sigma_vals,
+            sp['logP_min'], sp['logP_max'],
+            x_label='sig',
+        )
+        _wA = sp.get('weight_A', 0.3)
+        if _wA == 1.0:
+            _desc_name = _desc_name.replace('.npz', '_caseA.npz')
+        elif _wA == 0.0:
+            _desc_name = _desc_name.replace('.npz', '_caseB.npz')
+        else:
+            _desc_name = _desc_name.replace('.npz', f'_wA{_wA:.2f}.npz')
+        _desc_path = os.path.join(_RESULT_DIR, _desc_name)
+        np.savez(_desc_path, **_save_kwargs)
+        _partial = _result_path('langer') + '.partial.npz'
+        if os.path.exists(_partial):
+            os.remove(_partial)
+        _append_run_history({
+            'timestamp': _dt.datetime.now().isoformat(),
+            'model': 'langer2020', 'config_hash': lg_chash,
+            'config': stable_cfg, 'elapsed_s': round(elapsed_total, 1),
+            'result_file': _result_path('langer'),
+            'descriptive_file': _desc_path,
+        })
+
+        job['result']       = full_result
+        job['desc_name']    = _desc_name
+        job['n_cells_total'] = n_cells_total
+        job['status']       = 'done'
+
+    except Exception:
+        job['error']  = _tb.format_exc()
+        job['status'] = 'error'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -634,7 +1081,15 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                                horizontal=True, key=f'{p}_view_mode')
         show_d = view_mode == 'K-S D-statistic'
         _run_col, _load_col, _save_col = _ac3.columns(3)
-        run_btn  = _run_col.button('▶️ Run Bias Correction', type='primary', key=f'{p}_run')
+        _job_running = bool(
+            st.session_state.get(f'{p}_job', {}).get('status') == 'running')
+        run_btn  = _run_col.button(
+            '▶️ Run Bias Correction', type='primary', key=f'{p}_run',
+            disabled=_job_running)
+        if _job_running:
+            if _run_col.button('⏹ Cancel', key=f'{p}_cancel'):
+                st.session_state[f'{p}_job']['cancel'] = True
+                st.rerun()
 
         # Load saved results dropdown
         _saved_dsilva = _list_saved_results('dsilva')
@@ -762,8 +1217,8 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
         except Exception:
             pass  # corrupt partial — ignore
 
-    # ── Run grid ──────────────────────────────────────────────────────────────
-    if run_btn:
+    # ── Run grid (background thread) ─────────────────────────────────────────
+    if run_btn and not _job_running:
         sh = settings_hash(settings)
         try:
             obs_delta_rv, _ = cached_load_observed_delta_rvs(sh)
@@ -772,272 +1227,98 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             status_slot.error(f'Failed to load observations: {e}')
             st.stop()
 
-        from wr_bias_simulation import (
-            SimulationConfig, BinaryParameterConfig,
-            _single_grid_task_lite, _init_worker,
-        )
-
-        _scan_logPmax = len(logPmax_scan_vals) > 1
-
-        def _make_bin_cfg(logPmax_v):
-            return BinaryParameterConfig(
-                logP_min=float(logP_min_val),
-                logP_max=float(logPmax_v),
-                period_model='powerlaw',
-                e_model=str(e_model),
-                e_max=float(e_max),
-                mass_primary_model=str(mass_model),
-                mass_primary_fixed=float(mass_fixed),
-                mass_primary_range=tuple(mass_range),
-                q_model=str(q_model),
-                q_range=(float(q_min_v), float(q_max_v)),
-                langer_q_mu=float(langer_q_mu),
-                langer_q_sigma=float(langer_q_sig),
-            )
-
-        # Pre-allocate full result arrays: 4D [n_logPmax, n_sigma, n_fbin, n_pi]
-        n_logPmax = len(logPmax_scan_vals)
-        n_sigma   = len(sigma_vals)
-        n_fbin    = len(fbin_vals)
-        n_pi      = len(pi_vals)
-        accumulated_ks_p = np.full((n_logPmax, n_sigma, n_fbin, n_pi), np.nan)
-        accumulated_ks_D = np.full_like(accumulated_ks_p, np.nan)
-        n_reused = 0
-
-        # Total rows to compute (for progress bar)
-        n_rows_total = n_logPmax * n_sigma * n_fbin
-        rows_done    = 0
-        t_start      = time.time()
-
-        if n_rows_total == 0:
-            progress_slot.progress(1.0, text='Nothing to compute.')
-        else:
-            pi_to_idx = {}
-            for i, pv in enumerate(pi_vals):
-                pi_to_idx[round(float(pv), 10)] = i
-
-            fbin_to_global = {round(float(fbin_vals[gj]), 10): gj
-                              for gj in range(n_fbin)}
-
-            seed_base = 1234
-            last_render_time = 0.0
-            outer_last_render = 0.0
-
-            # Live outer heatmap for logP_max × σ (max p over fbin×pi)
-            outer_max_p = np.full((n_logPmax, n_sigma), np.nan)
-
-            with mp.Pool(
-                processes=int(n_proc),
-                initializer=_init_worker,
-                initargs=(cadence_list, cadence_weights, obs_delta_rv,
-                          int(n_stars_sim), float(sigma_meas)),
-            ) as pool:
-                for i_lp, logPmax_v in enumerate(logPmax_scan_vals):
-                    cur_bin_cfg = _make_bin_cfg(logPmax_v)
-
-                    for i_sigma, sigma in enumerate(sigma_vals):
-                        tasks = []
-                        for gj in range(n_fbin):
-                            for i_pi, pv in enumerate(pi_vals):
-                                tasks.append((
-                                    float(fbin_vals[gj]),
-                                    float(pv),
-                                    float(sigma),
-                                    cur_bin_cfg,
-                                    'powerlaw',
-                                    seed_base,
-                                ))
-                                seed_base += 1
-
-                        completed_per_fbin = {gj: 0 for gj in range(n_fbin)}
-
-                        for fb, pi_ret, sigma_ret, D, p in pool.imap_unordered(
-                                _single_grid_task_lite, tasks,
-                                chunksize=max(1, n_pi // 4)):
-                            gj   = fbin_to_global[round(fb, 10)]
-                            i_pi = pi_to_idx[round(pi_ret, 10)]
-
-                            accumulated_ks_p[i_lp, i_sigma, gj, i_pi] = p
-                            accumulated_ks_D[i_lp, i_sigma, gj, i_pi] = D
-
-                            completed_per_fbin[gj] += 1
-
-                            if completed_per_fbin[gj] == n_pi:
-                                rows_done += 1
-
-                                elapsed = time.time() - t_start
-                                eta_str = ''
-                                if rows_done > 1 and rows_done < n_rows_total:
-                                    eta = elapsed / rows_done * (n_rows_total - rows_done)
-                                    eta_str = f'  —  ETA {_fmt_eta(eta)}'
-
-                                _lp_label = (f'logP_max={logPmax_v:.2f}, '
-                                             if _scan_logPmax else '')
-                                progress_slot.progress(
-                                    rows_done / n_rows_total,
-                                    text=(f'{_lp_label}'
-                                          f'σ={sigma:.1f} km/s, '
-                                          f'row {rows_done}/{n_rows_total}{eta_str}')
-                                )
-
-                                now = time.time()
-                                _is_final = (rows_done == n_rows_total)
-                                if now - last_render_time > 1.0 or _is_final:
-                                    last_render_time = now
-                                    cur_p = accumulated_ks_p[i_lp, i_sigma]
-                                    cur_p_disp = np.where(np.isnan(cur_p), 0.0, cur_p)
-                                    cur_D_disp = np.where(
-                                        np.isnan(accumulated_ks_D[i_lp, i_sigma]),
-                                        0.0, accumulated_ks_D[i_lp, i_sigma])
-                                    _lp_title = (f', logP_max={logPmax_v:.2f}'
-                                                 if _scan_logPmax else '')
-                                    heatmap_slot.plotly_chart(
-                                        _make_heatmap_fig(
-                                            cur_p_disp, fbin_vals, pi_vals,
-                                            title=(f'K-S p-value  '
-                                                   f'(σ={sigma:.1f} km/s{_lp_title})'),
-                                            show_d=show_d,
-                                            ks_d_2d=cur_D_disp,
-                                            height=_ch, width=_cw,
-                                            live=not _is_final,
-                                        ),
-                                        use_container_width=_use_cw,
-                                    )
-
-                                    bf, bp, bpv = _best_point(
-                                        cur_p_disp, fbin_vals, pi_vals)
-                                    status_slot.markdown(
-                                        f'{_lp_label}σ = **{sigma:.1f}** km/s  →  '
-                                        f'best f_bin = **{bf:.4f}**, '
-                                        f'π = **{bp:.3f}**, '
-                                        f'K-S p = **{bpv:.4f}**'
-                                    )
-
-                        # Update outer max-p after each (logPmax, sigma) slice
-                        _slice_p = accumulated_ks_p[i_lp, i_sigma]
-                        outer_max_p[i_lp, i_sigma] = float(np.nanmax(_slice_p))
-
-                        # Live outer heatmap (only when scanning logPmax)
-                        if _scan_logPmax:
-                            now2 = time.time()
-                            _outer_final = (rows_done == n_rows_total)
-                            if now2 - outer_last_render > 0.8 or _outer_final:
-                                outer_last_render = now2
-                                _omp = np.where(np.isnan(outer_max_p), 0.0, outer_max_p)
-                                outer_heatmap_slot.plotly_chart(
-                                    _make_heatmap_fig(
-                                        _omp, logPmax_scan_vals, sigma_vals,
-                                        title='Max K-S p  (logP_max × σ_single)',
-                                        height=_ch, width=_cw,
-                                        x_label='σ_single (km/s)',
-                                        y_label='log₁₀(P_max / days)',
-                                        x_name='σ',
-                                        best_label_fmt='  logP_max={fbin:.2f}, σ={x:.1f}, p={p:.4f}',
-                                        live=not _outer_final,
-                                    ),
-                                    use_container_width=_use_cw,
-                                )
-
-                    # ── Checkpoint after each logP_max slice ──
-                    if rows_done > 0:
-                        os.makedirs(_RESULT_DIR, exist_ok=True)
-                        np.savez(
-                            _result_path('dsilva') + '.partial',
-                            fbin_grid=fbin_vals, pi_grid=pi_vals,
-                            sigma_grid=sigma_vals,
-                            logPmax_grid=logPmax_scan_vals,
-                            ks_p=accumulated_ks_p, ks_D=accumulated_ks_D,
-                            config_hash=_stable_cfg_hash(stable_cfg),
-                            settings=np.array(json.dumps(stable_cfg)),
-                            timestamp=np.array(_dt.datetime.now().isoformat()),
-                        )
-
-        elapsed_total = time.time() - t_start
-        if n_rows_total > 0:
-            progress_slot.progress(1.0, text=f'Done in {_fmt_eta(elapsed_total)}.')
-
-        # ── Save combined result ───────────────────────────────────────────
-        os.makedirs(_RESULT_DIR, exist_ok=True)
-        chash = _stable_cfg_hash({**stable_cfg,
-                                   'fbin_min': float(fbin_min),
-                                   'fbin_max': float(fbin_max),
-                                   'fbin_steps': int(fbin_steps),
-                                   'pi_min': float(pi_min),
-                                   'pi_max': float(pi_max),
-                                   'pi_steps': int(pi_steps),
-                                   'sigma_vals': sigma_vals.tolist(),
-                                   'logPmax_vals': logPmax_scan_vals.tolist()})
-        full_result = {
-            'fbin_grid':    fbin_vals,
-            'pi_grid':      pi_vals,
-            'sigma_grid':   sigma_vals,
-            'logPmax_grid': logPmax_scan_vals,
-            'ks_p':         accumulated_ks_p,
-            'ks_D':         accumulated_ks_D,
+        _job = {
+            'status': 'running', 'progress_pct': 0.0,
+            'progress_text': 'Starting...', 'live_heatmap': None,
+            'live_status': '', 'live_outer_heatmap': None,
+            'result': None, 'error': None, 'cancel': False,
         }
-        _save_kwargs = dict(
-            **full_result,
-            config_hash=chash,
-            settings=np.array(json.dumps(stable_cfg)),
-            obs_delta_rv=obs_delta_rv,
-            timestamp=np.array(_dt.datetime.now().isoformat()),
-        )
-        # Save legacy file (backward compat)
-        np.savez(_result_path('dsilva'), **_save_kwargs)
-        # Save with descriptive filename
-        _desc_name = _build_descriptive_filename(
-            'dsilva',
-            float(fbin_min), float(fbin_max), int(fbin_steps),
-            float(pi_min), float(pi_max), int(pi_steps),
-            int(n_stars_sim), sigma_vals,
-            float(logP_min_val), float(logP_max_val),
-            x_label='pi',
-        )
-        _desc_path = os.path.join(_RESULT_DIR, _desc_name)
-        np.savez(_desc_path, **_save_kwargs)
-        cached_load_grid_result.clear()
-        st.session_state[f'{p}_result'] = full_result
-        st.session_state['result_dsilva'] = full_result
-        # Clean up partial checkpoint
-        _partial = _result_path('dsilva') + '.partial.npz'
-        if os.path.exists(_partial):
-            os.remove(_partial)
+        _params = {
+            'cadence_list': cadence_list, 'cadence_weights': cadence_weights,
+            'obs_delta_rv': obs_delta_rv,
+            'n_stars_sim': int(n_stars_sim), 'sigma_meas': float(sigma_meas),
+            'n_proc': int(n_proc),
+            'fbin_vals': fbin_vals, 'pi_vals': pi_vals,
+            'sigma_vals': sigma_vals, 'logPmax_scan_vals': logPmax_scan_vals,
+            'stable_cfg': stable_cfg,
+            'bin_cfg_params': {
+                'logP_min': float(logP_min_val), 'logP_max': float(logP_max_val),
+                'e_model': str(e_model), 'e_max': float(e_max),
+                'mass_model': str(mass_model), 'mass_fixed': float(mass_fixed),
+                'mass_range': tuple(mass_range),
+                'q_model': str(q_model),
+                'q_range': (float(q_min_v), float(q_max_v)),
+                'langer_q_mu': float(langer_q_mu),
+                'langer_q_sig': float(langer_q_sig),
+            },
+            'save_params': {
+                'fbin_min': float(fbin_min), 'fbin_max': float(fbin_max),
+                'fbin_steps': int(fbin_steps),
+                'pi_min': float(pi_min), 'pi_max': float(pi_max),
+                'pi_steps': int(pi_steps),
+                'logP_max': float(logP_max_val),
+            },
+        }
+        _t = threading.Thread(target=_run_dsilva_bg, args=(_job, _params),
+                              daemon=True)
+        _t.start()
+        st.session_state[f'{p}_job'] = _job
+        st.rerun()
 
-        _append_run_history({
-            'timestamp':     _dt.datetime.now().isoformat(),
-            'model':         'dsilva_powerlaw',
-            'config_hash':   chash,
-            'config':        stable_cfg,
-            'elapsed_s':     round(elapsed_total, 1),
-            'result_file':   _result_path('dsilva'),
-            'descriptive_file': _desc_path,
-        })
+    # ── Poll running / completed job ─────────────────────────────────────────
+    _job = st.session_state.get(f'{p}_job')
+    if _job is not None:
+        if _job['status'] == 'running':
+            progress_slot.progress(
+                _job['progress_pct'], text=_job['progress_text'])
+            if _job.get('live_heatmap'):
+                hd = _job['live_heatmap']
+                heatmap_slot.plotly_chart(
+                    _make_heatmap_fig(
+                        hd['p'], hd['fbin'], hd['x'],
+                        title=hd['title'], show_d=show_d,
+                        ks_d_2d=hd['d'], height=_ch, width=_cw,
+                        live=not hd['is_final'],
+                    ), use_container_width=_use_cw)
+            if _job.get('live_outer_heatmap'):
+                ohd = _job['live_outer_heatmap']
+                outer_heatmap_slot.plotly_chart(
+                    _make_heatmap_fig(
+                        ohd['p'], ohd['y'], ohd['x'],
+                        title='Max K-S p  (logP_max × σ_single)',
+                        height=_ch, width=_cw,
+                        x_label='σ_single (km/s)',
+                        y_label='log₁₀(P_max / days)',
+                        x_name='σ',
+                        best_label_fmt='  logP_max={fbin:.2f}, σ={x:.1f}, p={p:.4f}',
+                        live=not ohd['is_final'],
+                    ), use_container_width=_use_cw)
+            if _job.get('live_status'):
+                status_slot.markdown(_job['live_status'])
 
-        # Show best heatmap immediately after run completes
-        # Find global best across all logP_max and sigma
-        _flat = accumulated_ks_p.ravel()
-        _flat_best = int(np.nanargmax(_flat))
-        _bi_lp  = _flat_best // (n_sigma * n_fbin * n_pi)
-        _bi_sig = (_flat_best // (n_fbin * n_pi)) % n_sigma
-        heatmap_slot.plotly_chart(
-            _make_heatmap_fig(
-                accumulated_ks_p[_bi_lp, _bi_sig], fbin_vals, pi_vals,
-                title=(f'K-S p-value  '
-                       f'(σ={float(sigma_vals[_bi_sig]):.1f} km/s'
-                       + (f', logP_max={float(logPmax_scan_vals[_bi_lp]):.2f}'
-                          if _scan_logPmax else '')
-                       + f')  ★ best'),
-                show_d=show_d,
-                ks_d_2d=accumulated_ks_D[_bi_lp, _bi_sig],
-                height=_ch, width=_cw,
-            ),
-            use_container_width=_use_cw,
-        )
+        elif _job['status'] == 'done':
+            _res = _job['result']
+            st.session_state[f'{p}_result'] = _res
+            st.session_state['result_dsilva'] = _res
+            cached_load_grid_result.clear()
+            _elapsed = _job.get('elapsed_total', 0)
+            _desc = _job.get('desc_name', '')
+            _nrows = _job.get('n_rows_total', 0)
+            progress_slot.progress(
+                1.0, text=f'Done in {_fmt_eta(_elapsed)}.')
+            status_slot.success(
+                f'Saved to results/{_desc}  '
+                f'({_nrows} rows computed in {_fmt_eta(_elapsed)})')
+            del st.session_state[f'{p}_job']
 
-        status_slot.success(
-            f'Saved to results/dsilva_result.npz  '
-            f'({n_rows_total} rows computed in {_fmt_eta(elapsed_total)})'
-        )
+        elif _job['status'] == 'error':
+            status_slot.error(
+                f"Simulation failed:\n```\n{_job['error']}\n```")
+            del st.session_state[f'{p}_job']
+
+        elif _job['status'] == 'cancelled':
+            status_slot.warning('Simulation cancelled.')
+            del st.session_state[f'{p}_job']
 
     # ── Display result (always shown when result exists) ─────────────────────
     result = st.session_state.get(f'{p}_result') or st.session_state.get('result_dsilva')
@@ -1220,34 +1501,43 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             n_det = 0
 
         # ── Marginalization + HDI68 (Dsilva 2023 style) ─────────────────
-        from wr_bias_simulation import compute_hdi68
-
-        # For marginalization, collapse to 3D [sigma, fbin, pi] by summing over logPmax
-        ks_p_3d = np.sum(ks_p_4d, axis=0)  # [n_sigma, n_fbin, n_pi]
-
-        # 1D posterior for f_bin: sum over σ and π
+        # Always compute posteriors (needed for corner plot); HDI from .npz if available
+        ks_p_3d = np.sum(ks_p_4d, axis=0)  # [sigma, fbin, pi]
         post_fbin = np.sum(ks_p_3d, axis=(0, 2))
-        mode_fbin, lo_fbin, hi_fbin = compute_hdi68(fbin_g, post_fbin)
-
-        # 1D posterior for π: sum over σ and f_bin
-        post_pi = np.sum(ks_p_3d, axis=(0, 1))
-        mode_pi, lo_pi, hi_pi = compute_hdi68(pi_g, post_pi)
-
-        # 1D posterior for σ_single
+        post_pi   = np.sum(ks_p_3d, axis=(0, 1))
         if _has_sigma_scan:
             post_sigma = np.sum(ks_p_3d, axis=(1, 2))
-            mode_sigma, lo_sigma, hi_sigma = compute_hdi68(sigma_g, post_sigma)
-        else:
-            mode_sigma = float(sigma_g[0])
-            lo_sigma = hi_sigma = mode_sigma
-
-        # 1D posterior for logP_max
         if _has_logPmax_scan:
             post_logPmax = np.sum(ks_p_4d, axis=(1, 2, 3))
-            mode_logPmax, lo_logPmax, hi_logPmax = compute_hdi68(logPmax_g, post_logPmax)
+
+        _res = st.session_state.get(f'{p}_result', {})
+        if 'mode_fbin' in _res:
+            mode_fbin = float(_res['mode_fbin'])
+            lo_fbin   = float(_res['lo_fbin'])
+            hi_fbin   = float(_res['hi_fbin'])
+            mode_pi   = float(_res['mode_pi'])
+            lo_pi     = float(_res['lo_pi'])
+            hi_pi     = float(_res['hi_pi'])
+            mode_sigma   = float(_res['mode_sigma'])
+            lo_sigma     = float(_res['lo_sigma'])
+            hi_sigma     = float(_res['hi_sigma'])
+            mode_logPmax = float(_res['mode_logPmax'])
+            lo_logPmax   = float(_res['lo_logPmax'])
+            hi_logPmax   = float(_res['hi_logPmax'])
         else:
-            mode_logPmax = float(logPmax_g[0])
-            lo_logPmax = hi_logPmax = mode_logPmax
+            from wr_bias_simulation import compute_hdi68
+            mode_fbin, lo_fbin, hi_fbin = compute_hdi68(fbin_g, post_fbin)
+            mode_pi, lo_pi, hi_pi = compute_hdi68(pi_g, post_pi)
+            if _has_sigma_scan:
+                mode_sigma, lo_sigma, hi_sigma = compute_hdi68(sigma_g, post_sigma)
+            else:
+                mode_sigma = float(sigma_g[0])
+                lo_sigma = hi_sigma = mode_sigma
+            if _has_logPmax_scan:
+                mode_logPmax, lo_logPmax, hi_logPmax = compute_hdi68(logPmax_g, post_logPmax)
+            else:
+                mode_logPmax = float(logPmax_g[0])
+                lo_logPmax = hi_logPmax = mode_logPmax
 
         # Compute p-value at posterior mode (nearest grid point)
         _mode_fb_idx = int(np.argmin(np.abs(fbin_g - mode_fbin)))
@@ -2451,11 +2741,11 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         f'{p}_sigma_steps': int(lg_cfg.get('sigma_steps', 30)),
         f'{p}_n_stars':    int(lg_cfg.get('n_stars_sim', 10000)),
         f'{p}_sigma_meas': float(lg_sim.get('sigma_measure', 1.622)),
-        f'{p}_mu_A':       float(lg_pp.get('mu_A', 1.1)),
-        f'{p}_sigma_A':    float(lg_pp.get('sigma_A', 0.15)),
-        f'{p}_mu_B':       float(lg_pp.get('mu_B', 2.2)),
-        f'{p}_sigma_B':    float(lg_pp.get('sigma_B', 0.35)),
-        f'{p}_weight_A':   float(lg_pp.get('weight_A', 0.3)),
+        f'{p}_mu_A':       float(lg_pp.get('mu_A', 0.80)),
+        f'{p}_sigma_A':    float(lg_pp.get('sigma_A', 0.35)),
+        f'{p}_mu_B':       float(lg_pp.get('mu_B', 2.0)),
+        f'{p}_sigma_B':    float(lg_pp.get('sigma_B', 0.45)),
+        f'{p}_weight_A':   float(lg_pp.get('weight_A', 0.20)),
         f'{p}_logP_min':   float(lg_cfg.get('logP_min', 0.5)),
         f'{p}_logP_max':   float(lg_cfg.get('logP_max', 3.5)),
         f'{p}_mass_fixed': float(lg_cfg.get('mass_primary_fixed', 10.0)),
@@ -2516,37 +2806,51 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 format='%.3f', key=f'{p}_sigma_meas')
 
         with st.expander('🔧 Orbital parameters (Langer 2020)', expanded=False):
-            st.caption('Period distribution: two-Gaussian mixture in log₁₀(P/days) '
-                       'approximating Langer+2020 Fig. 6 (Case B).')
+            st.caption('Period distribution: Case A (Gaussian) + Case B (log-normal) '
+                       'mixture in log₁₀(P/days) approximating Langer+2020 Fig. 6.')
 
             # Period distribution parameters
             lg_mu_A = st.number_input(
                 'μ_A (Case A peak)', 0.1, 5.0,
-                float(lg_pp.get('mu_A', 1.1)), 0.05, key=f'{p}_mu_A',
+                float(lg_pp.get('mu_A', 0.80)), 0.05, key=f'{p}_mu_A',
                 on_change=lambda: sm.save(
                     ['grid_langer', 'langer_period_params', 'mu_A'],
                     value=st.session_state[f'{p}_mu_A']))
             lg_sigma_A = st.number_input(
                 'σ_A (Case A width)', 0.01, 2.0,
-                float(lg_pp.get('sigma_A', 0.15)), 0.01, key=f'{p}_sigma_A',
+                float(lg_pp.get('sigma_A', 0.35)), 0.01, key=f'{p}_sigma_A',
                 on_change=lambda: sm.save(
                     ['grid_langer', 'langer_period_params', 'sigma_A'],
                     value=st.session_state[f'{p}_sigma_A']))
             lg_mu_B = st.number_input(
-                'μ_B (Case B peak)', 0.1, 5.0,
-                float(lg_pp.get('mu_B', 2.2)), 0.05, key=f'{p}_mu_B',
+                'μ_B (Case B mode, log-normal)', 0.1, 5.0,
+                float(lg_pp.get('mu_B', 2.0)), 0.05, key=f'{p}_mu_B',
                 on_change=lambda: sm.save(
                     ['grid_langer', 'langer_period_params', 'mu_B'],
                     value=st.session_state[f'{p}_mu_B']))
             lg_sigma_B = st.number_input(
-                'σ_B (Case B width)', 0.01, 2.0,
-                float(lg_pp.get('sigma_B', 0.35)), 0.01, key=f'{p}_sigma_B',
+                'σ_B (Case B skew/width)', 0.01, 2.0,
+                float(lg_pp.get('sigma_B', 0.45)), 0.01, key=f'{p}_sigma_B',
                 on_change=lambda: sm.save(
                     ['grid_langer', 'langer_period_params', 'sigma_B'],
                     value=st.session_state[f'{p}_sigma_B']))
+            # Case A / Case B presets
+            _prc1, _prc2, _prc3 = st.columns(3)
+            if _prc1.button('Case A only', key=f'{p}_preset_A'):
+                st.session_state[f'{p}_weight_A'] = 1.0
+                sm.save(['grid_langer', 'langer_period_params', 'weight_A'], value=1.0)
+                st.rerun()
+            if _prc2.button('Case B only', key=f'{p}_preset_B'):
+                st.session_state[f'{p}_weight_A'] = 0.0
+                sm.save(['grid_langer', 'langer_period_params', 'weight_A'], value=0.0)
+                st.rerun()
+            if _prc3.button('Both (Langer)', key=f'{p}_preset_AB'):
+                st.session_state[f'{p}_weight_A'] = 0.20
+                sm.save(['grid_langer', 'langer_period_params', 'weight_A'], value=0.20)
+                st.rerun()
             lg_weight_A = st.slider(
                 'Weight of Case A', 0.0, 1.0,
-                float(lg_pp.get('weight_A', 0.3)), 0.01, key=f'{p}_weight_A',
+                float(lg_pp.get('weight_A', 0.20)), 0.01, key=f'{p}_weight_A',
                 on_change=lambda: sm.save(
                     ['grid_langer', 'langer_period_params', 'weight_A'],
                     value=st.session_state[f'{p}_weight_A']))
@@ -2633,6 +2937,17 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                     float(lg_cfg.get('langer_q_sigma', 0.2)), 0.05,
                     key=f'{p}_lq_sig')
 
+            # q convention note and flip toggle
+            lg_q_flipped = st.checkbox(
+                'Flip q (M_primary / M_companion)',
+                value=False, key=f'{p}_q_flipped')
+            if lg_q_flipped:
+                st.caption('q = M_primary / M_companion (BH as primary). '
+                           'M₂ = M₁ / q.')
+            else:
+                st.caption('q = M_companion / M_primary (BH as companion, '
+                           'typically lighter). Langer Fig. 4: M_BH/M_OB '
+                           'peaks at ~0.5–0.7. M₂ = M₁ × q.')
             st.caption(f'Active: q_model="{lg_q_model}", '
                        f'range=[{lg_q_min}, {lg_q_max}]')
 
@@ -2647,7 +2962,15 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                                       horizontal=True, key=f'{p}_view_mode')
         lg_show_d = lg_view_mode == 'K-S D-statistic'
         _lg_run_col, _lg_load_col, _lg_save_col = _lg_ac3.columns(3)
-        lg_run_btn = _lg_run_col.button('▶️ Run Langer Grid', type='primary', key=f'{p}_run')
+        _lg_job_running = bool(
+            st.session_state.get(f'{p}_job', {}).get('status') == 'running')
+        lg_run_btn = _lg_run_col.button(
+            '▶️ Run Langer Grid', type='primary', key=f'{p}_run',
+            disabled=_lg_job_running)
+        if _lg_job_running:
+            if _lg_run_col.button('⏹ Cancel', key=f'{p}_cancel'):
+                st.session_state[f'{p}_job']['cancel'] = True
+                st.rerun()
 
         # Load saved results dropdown (Langer)
         _saved_langer = _list_saved_results('langer')
@@ -2707,6 +3030,15 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                     float(st.session_state.get(f'{p}_logP_max', 3.5)),
                     x_label='sig',
                 )
+                # Append case indicator to filename
+                _wA = float(st.session_state.get(f'{p}_weight_A', 0.3))
+                if _wA == 1.0:
+                    _case_tag = '_caseA'
+                elif _wA == 0.0:
+                    _case_tag = '_caseB'
+                else:
+                    _case_tag = f'_wA{_wA:.2f}'
+                _lg_desc = _lg_desc.replace('.npz', f'{_case_tag}.npz')
                 _lg_save_path = os.path.join(_RESULT_DIR, _lg_desc)
                 np.savez(_lg_save_path, **_lg_save_kw)
                 cached_load_grid_result.clear()
@@ -2740,6 +3072,7 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         'q_min':              float(lg_q_min),
         'q_max':              float(lg_q_max),
         'q_preset':           str(lg_q_preset),
+        'q_flipped':          bool(lg_q_flipped),
         'langer_period_params': lg_period_params,
         'primary_line':       settings.get('primary_line', 'C IV 5808-5812'),
         'threshold_dRV':      lg_cls.get('threshold_dRV', 45.5),
@@ -2751,8 +3084,8 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                                 max(float(lg_sigma_min) + 0.1, float(lg_sigma_max)),
                                 int(lg_sigma_steps))
 
-    # ── Run grid ──────────────────────────────────────────────────────────────
-    if lg_run_btn:
+    # ── Run grid (background thread) ─────────────────────────────────────────
+    if lg_run_btn and not _lg_job_running:
         sh_lg = settings_hash(settings)
         try:
             lg_obs_drv, _ = cached_load_observed_delta_rvs(sh_lg)
@@ -2761,18 +3094,14 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             lg_status_slot.error(f'Failed to load observations: {e}')
             st.stop()
 
-        from wr_bias_simulation import (
-            SimulationConfig, BinaryParameterConfig,
-            _single_grid_task_lite, _init_worker,
-        )
+        from wr_bias_simulation import BinaryParameterConfig
 
         lg_bin_cfg = BinaryParameterConfig(
             logP_min=float(lg_logP_min),
             logP_max=float(lg_logP_max),
             period_model='langer2020',
             langer_period_params=lg_period_params,
-            e_model='zero',
-            e_max=0.0,
+            e_model='zero', e_max=0.0,
             mass_primary_model=str(lg_mass_model),
             mass_primary_fixed=float(lg_mass_fixed),
             mass_primary_range=tuple(lg_mass_range),
@@ -2780,9 +3109,10 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             q_range=(float(lg_q_min), float(lg_q_max)),
             langer_q_mu=float(lg_lq_mu),
             langer_q_sigma=float(lg_lq_sig),
+            q_flipped=bool(lg_q_flipped),
         )
 
-        # ── Check for partial reuse ──────────────────────────────────────────
+        # ── Check for partial reuse (main thread, needs UI) ──────────────────
         lg_cached_existing = None
         lg_reuse_info = None
         lg_existing_path = _result_path('langer')
@@ -2803,13 +3133,11 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             lg_reuse_new_idx, lg_reuse_cache_idx = [], []
             lg_n_reused = 0
 
-        # Pre-allocate result arrays: shape [n_fbin, n_sigma]
+        # Pre-allocate and fill reused rows
         lg_n_fbin  = len(lg_fbin_vals)
         lg_n_sigma = len(lg_sigma_vals)
         lg_acc_ks_p = np.full((lg_n_fbin, lg_n_sigma), np.nan)
         lg_acc_ks_D = np.full_like(lg_acc_ks_p, np.nan)
-
-        # Fill in reused rows
         if lg_reuse_info and lg_cached_existing is not None:
             lg_c_ks_p = np.asarray(lg_cached_existing['ks_p'])
             lg_c_ks_D = np.asarray(lg_cached_existing['ks_D'])
@@ -2820,165 +3148,77 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         lg_reuse_set = set(lg_reuse_new_idx)
         lg_missing_fbin_idx = [i for i in range(lg_n_fbin) if i not in lg_reuse_set]
 
-        lg_n_cells_total = len(lg_missing_fbin_idx) * lg_n_sigma
-        lg_cells_done = 0
-        lg_t_start = time.time()
-
-        if lg_n_cells_total == 0:
-            lg_progress_slot.progress(1.0, text='All rows reused from cache.')
-            lg_status_slot.success('All f_bin rows already computed — no new work needed.')
-        else:
-            lg_fbin_to_global = {}
-            for gj in lg_missing_fbin_idx:
-                lg_fbin_to_global[round(float(lg_fbin_vals[gj]), 10)] = gj
-
-            lg_sigma_to_idx = {}
-            for i, sv in enumerate(lg_sigma_vals):
-                lg_sigma_to_idx[round(float(sv), 10)] = i
-
-            lg_seed_base = 5678
-            lg_last_render = 0.0
-
-            # Build all tasks (lightweight — shared data via pool initializer)
-            lg_tasks = []
-            for gj in lg_missing_fbin_idx:
-                for i_s, sv in enumerate(lg_sigma_vals):
-                    lg_tasks.append((
-                        float(lg_fbin_vals[gj]),
-                        0.0,  # pi is unused for langer2020
-                        float(sv),
-                        lg_bin_cfg,
-                        'langer2020',
-                        lg_seed_base,
-                    ))
-                    lg_seed_base += 1
-
-            with mp.Pool(
-                processes=int(lg_n_proc),
-                initializer=_init_worker,
-                initargs=(lg_cad_list, lg_cad_weights, lg_obs_drv,
-                          int(lg_n_stars), float(lg_sigma_meas)),
-            ) as pool:
-                for fb, _pi_ret, sigma_ret, D, p in pool.imap_unordered(
-                        _single_grid_task_lite, lg_tasks,
-                        chunksize=max(1, lg_n_sigma // 4)):
-                    gj = lg_fbin_to_global[round(fb, 10)]
-                    i_s = lg_sigma_to_idx[round(sigma_ret, 10)]
-
-                    lg_acc_ks_p[gj, i_s] = p
-                    lg_acc_ks_D[gj, i_s] = D
-
-                    lg_cells_done += 1
-
-                    elapsed = time.time() - lg_t_start
-                    eta_str = ''
-                    if lg_cells_done > 1 and lg_cells_done < lg_n_cells_total:
-                        eta = elapsed / lg_cells_done * (lg_n_cells_total - lg_cells_done)
-                        eta_str = f'  —  ETA {_fmt_eta(eta)}'
-
-                    lg_progress_slot.progress(
-                        lg_cells_done / lg_n_cells_total,
-                        text=(f'Cell {lg_cells_done}/{lg_n_cells_total}{eta_str}')
-                    )
-
-                    now = time.time()
-                    if now - lg_last_render > 1.0 or lg_cells_done == lg_n_cells_total:
-                        lg_last_render = now
-                        cur_p = np.where(np.isnan(lg_acc_ks_p), 0.0, lg_acc_ks_p)
-                        cur_D = np.where(np.isnan(lg_acc_ks_D), 0.0, lg_acc_ks_D)
-                        lg_heatmap_slot.plotly_chart(
-                            _make_heatmap_fig(
-                                cur_p, lg_fbin_vals, lg_sigma_vals,
-                                title='Langer 2020 — K-S p-value (live)',
-                                show_d=lg_show_d, ks_d_2d=cur_D,
-                                height=_ch, width=_cw,
-                                x_label='σ_single (km/s)',
-                                x_name='σ',
-                                best_label_fmt='  f={fbin:.3f}, σ={x:.1f}, p={p:.3f}',
-                            ),
-                            use_container_width=_use_cw,
-                            key=f'{p}_live_heatmap',
-                        )
-
-                        bf, bsig, bpv = _best_point(cur_p, lg_fbin_vals, lg_sigma_vals)
-                        lg_status_slot.markdown(
-                            f'best f_bin = **{bf:.4f}**, σ_single = **{bsig:.1f}** km/s, '
-                            f'K-S p = **{bpv:.4f}**'
-                        )
-
-            # ── Checkpoint after each batch of fbin rows ──────────────────────
-            if lg_cells_done > 0:
-                os.makedirs(_RESULT_DIR, exist_ok=True)
-                np.savez(
-                    _result_path('langer') + '.partial',
-                    fbin_grid=lg_fbin_vals, sigma_grid=lg_sigma_vals,
-                    ks_p=lg_acc_ks_p, ks_D=lg_acc_ks_D,
-                    config_hash=_stable_cfg_hash(lg_stable_cfg),
-                    settings=np.array(json.dumps(lg_stable_cfg)),
-                    timestamp=np.array(_dt.datetime.now().isoformat()),
-                )
-
-        lg_elapsed_total = time.time() - lg_t_start
-        if lg_n_cells_total > 0:
-            lg_progress_slot.progress(1.0, text=f'Done in {_fmt_eta(lg_elapsed_total)}.')
-
-        # ── Save final result ─────────────────────────────────────────────────
-        os.makedirs(_RESULT_DIR, exist_ok=True)
-        lg_chash = _stable_cfg_hash({
-            **lg_stable_cfg,
-            'fbin_min': float(lg_fbin_min), 'fbin_max': float(lg_fbin_max),
-            'fbin_steps': int(lg_fbin_steps),
-            'sigma_min': float(lg_sigma_min), 'sigma_max': float(lg_sigma_max),
-            'sigma_steps': int(lg_sigma_steps),
-        })
-        lg_full_result = {
-            'fbin_grid':  lg_fbin_vals,
-            'sigma_grid': lg_sigma_vals,
-            'ks_p':       lg_acc_ks_p,
-            'ks_D':       lg_acc_ks_D,
+        _lg_job = {
+            'status': 'running', 'progress_pct': 0.0,
+            'progress_text': 'Starting...', 'live_heatmap': None,
+            'live_status': '', 'result': None, 'error': None, 'cancel': False,
         }
-        _lg_save_kwargs = dict(
-            **lg_full_result,
-            config_hash=lg_chash,
-            settings=np.array(json.dumps(lg_stable_cfg)),
-            obs_delta_rv=lg_obs_drv,
-            timestamp=np.array(_dt.datetime.now().isoformat()),
-        )
-        # Save legacy file (backward compat)
-        np.savez(_result_path('langer'), **_lg_save_kwargs)
-        # Save with descriptive filename
-        _lg_desc_name = _build_descriptive_filename(
-            'langer',
-            float(lg_fbin_min), float(lg_fbin_max), int(lg_fbin_steps),
-            float(lg_sigma_min), float(lg_sigma_max), int(lg_sigma_steps),
-            int(lg_n_stars), lg_sigma_vals,
-            float(lg_logP_min), float(lg_logP_max),
-            x_label='sig',
-        )
-        _lg_desc_path = os.path.join(_RESULT_DIR, _lg_desc_name)
-        np.savez(_lg_desc_path, **_lg_save_kwargs)
-        cached_load_grid_result.clear()
-        st.session_state[f'{p}_result'] = lg_full_result
-        # Clean up partial checkpoint
-        _lg_partial = _result_path('langer') + '.partial.npz'
-        if os.path.exists(_lg_partial):
-            os.remove(_lg_partial)
+        _lg_params = {
+            'cadence_list': lg_cad_list, 'cadence_weights': lg_cad_weights,
+            'obs_delta_rv': lg_obs_drv,
+            'n_stars': int(lg_n_stars), 'sigma_meas': float(lg_sigma_meas),
+            'n_proc': int(lg_n_proc),
+            'fbin_vals': lg_fbin_vals, 'sigma_vals': lg_sigma_vals,
+            'bin_cfg': lg_bin_cfg, 'stable_cfg': lg_stable_cfg,
+            'acc_ks_p': lg_acc_ks_p, 'acc_ks_D': lg_acc_ks_D,
+            'missing_fbin_idx': lg_missing_fbin_idx,
+            'save_params': {
+                'fbin_min': float(lg_fbin_min), 'fbin_max': float(lg_fbin_max),
+                'fbin_steps': int(lg_fbin_steps),
+                'sigma_min': float(lg_sigma_min), 'sigma_max': float(lg_sigma_max),
+                'sigma_steps': int(lg_sigma_steps),
+                'logP_min': float(lg_logP_min), 'logP_max': float(lg_logP_max),
+                'weight_A': float(lg_weight_A),
+            },
+        }
+        _lg_t = threading.Thread(target=_run_langer_bg, args=(_lg_job, _lg_params),
+                                 daemon=True)
+        _lg_t.start()
+        st.session_state[f'{p}_job'] = _lg_job
+        st.rerun()
 
-        _append_run_history({
-            'timestamp':     _dt.datetime.now().isoformat(),
-            'model':         'langer2020',
-            'config_hash':   lg_chash,
-            'config':        lg_stable_cfg,
-            'elapsed_s':     round(lg_elapsed_total, 1),
-            'result_file':   _result_path('langer'),
-            'descriptive_file': _lg_desc_path,
-            'n_reused_fbin': lg_n_reused,
-        })
+    # ── Poll running / completed job ─────────────────────────────────────────
+    _lg_job = st.session_state.get(f'{p}_job')
+    if _lg_job is not None:
+        if _lg_job['status'] == 'running':
+            lg_progress_slot.progress(
+                _lg_job['progress_pct'], text=_lg_job['progress_text'])
+            if _lg_job.get('live_heatmap'):
+                hd = _lg_job['live_heatmap']
+                lg_heatmap_slot.plotly_chart(
+                    _make_heatmap_fig(
+                        hd['p'], hd['fbin'], hd['x'],
+                        title='Langer 2020 — K-S p-value (live)',
+                        show_d=lg_show_d, ks_d_2d=hd['d'],
+                        height=_ch, width=_cw,
+                        x_label='σ_single (km/s)', x_name='σ',
+                        best_label_fmt='  f={fbin:.3f}, σ={x:.1f}, p={p:.3f}',
+                    ), use_container_width=_use_cw)
+            if _lg_job.get('live_status'):
+                lg_status_slot.markdown(_lg_job['live_status'])
 
-        lg_status_slot.success(
-            f'Saved to results/langer_result.npz  '
-            f'({lg_n_reused} f_bin rows reused, '
-            f'{len(lg_fbin_vals) - lg_n_reused} computed in {_fmt_eta(lg_elapsed_total)})')
+        elif _lg_job['status'] == 'done':
+            _lg_res = _lg_job['result']
+            st.session_state[f'{p}_result'] = _lg_res
+            cached_load_grid_result.clear()
+            _lg_elapsed = _lg_job.get('elapsed_total', 0)
+            _lg_desc = _lg_job.get('desc_name', '')
+            _lg_nc = _lg_job.get('n_cells_total', 0)
+            lg_progress_slot.progress(
+                1.0, text=f'Done in {_fmt_eta(_lg_elapsed)}.')
+            lg_status_slot.success(
+                f'Saved to results/{_lg_desc}  '
+                f'({_lg_nc} cells computed in {_fmt_eta(_lg_elapsed)})')
+            del st.session_state[f'{p}_job']
+
+        elif _lg_job['status'] == 'error':
+            lg_status_slot.error(
+                f"Simulation failed:\n```\n{_lg_job['error']}\n```")
+            del st.session_state[f'{p}_job']
+
+        elif _lg_job['status'] == 'cancelled':
+            lg_status_slot.warning('Simulation cancelled.')
+            del st.session_state[f'{p}_job']
 
     # ── Display result (always shown when result exists) ─────────────────────
     lg_result = st.session_state.get(f'{p}_result')
@@ -2993,8 +3233,8 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         lg_ks_p_2d = np.asarray(lg_result['ks_p'])
         lg_ks_D_2d = np.asarray(lg_result['ks_D'])
 
-        # Show heatmap (skip if just ran — live heatmap already shown)
-        if not lg_run_btn:
+        # Show heatmap (skip if job is running — live heatmap shown by poller)
+        if not _lg_job_running:
             lg_heatmap_slot.plotly_chart(
                 _make_heatmap_fig(
                     lg_ks_p_2d, lg_fbin_g, lg_sigma_g,
@@ -3023,15 +3263,22 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             lg_n_det = 0
 
         # ── Marginalization + HDI68 ───────────────────────────────────────────
-        from wr_bias_simulation import compute_hdi68
-
-        # 1D posterior for f_bin: sum over σ
-        lg_post_fbin = np.sum(lg_ks_p_2d, axis=1)
-        lg_mode_fbin, lg_lo_fbin, lg_hi_fbin = compute_hdi68(lg_fbin_g, lg_post_fbin)
-
-        # 1D posterior for σ_single: sum over f_bin
+        # Always compute posteriors (needed for corner plot); HDI from .npz if available
+        lg_post_fbin  = np.sum(lg_ks_p_2d, axis=1)
         lg_post_sigma = np.sum(lg_ks_p_2d, axis=0)
-        lg_mode_sigma, lg_lo_sigma, lg_hi_sigma = compute_hdi68(lg_sigma_g, lg_post_sigma)
+
+        _lg_res = st.session_state.get(f'{p}_result', {})
+        if 'mode_fbin' in _lg_res:
+            lg_mode_fbin  = float(_lg_res['mode_fbin'])
+            lg_lo_fbin    = float(_lg_res['lo_fbin'])
+            lg_hi_fbin    = float(_lg_res['hi_fbin'])
+            lg_mode_sigma = float(_lg_res['mode_sigma'])
+            lg_lo_sigma   = float(_lg_res['lo_sigma'])
+            lg_hi_sigma   = float(_lg_res['hi_sigma'])
+        else:
+            from wr_bias_simulation import compute_hdi68
+            lg_mode_fbin, lg_lo_fbin, lg_hi_fbin = compute_hdi68(lg_fbin_g, lg_post_fbin)
+            lg_mode_sigma, lg_lo_sigma, lg_hi_sigma = compute_hdi68(lg_sigma_g, lg_post_sigma)
 
         # Compute p-value at HDI mode (nearest grid point)
         _lg_mode_fb_idx = int(np.argmin(np.abs(lg_fbin_g - lg_mode_fbin)))
@@ -3267,55 +3514,123 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             with _lg_lp_col:
                 st.markdown('### Period Distribution  (log P)')
 
-                fig_lg_logP = go.Figure()
-                if lg_gap_sim['P_days'].size > 0:
-                    _lg_logP_det = (np.log10(lg_gap_sim['P_days'][_lg_bin_det_mask])
-                                    if np.any(_lg_bin_det_mask) else np.array([]))
-                    _lg_logP_mis = (np.log10(lg_gap_sim['P_days'][_lg_bin_mis_mask])
-                                    if np.any(_lg_bin_mis_mask) else np.array([]))
+                # Check if Case A/B mask is available
+                _lg_case_A = lg_gap_sim.get('case_A_mask')
+                _has_cases = _lg_case_A is not None and lg_gap_sim['P_days'].size > 0
 
-                    if _lg_logP_det.size > 0:
-                        fig_lg_logP.add_trace(go.Histogram(
-                            x=_lg_logP_det, nbinsx=35,
-                            histnorm='probability density',
-                            name=f'Detected ({_lg_logP_det.size})',
-                            marker_color=_CLR_DETECTED, opacity=0.6,
-                        ))
-                    if _lg_logP_mis.size > 0:
-                        fig_lg_logP.add_trace(go.Histogram(
-                            x=_lg_logP_mis, nbinsx=35,
-                            histnorm='probability density',
-                            name=f'Missed ({_lg_logP_mis.size})',
-                            marker_color=_CLR_MISSED, opacity=0.6,
-                        ))
+                _view_opts = ['Detected / Missed']
+                if _has_cases:
+                    _view_opts += ['Case A / B', 'All (Det/Mis + A/B)']
+                _lg_logP_view = st.radio(
+                    'View', _view_opts, horizontal=True,
+                    key=f'{p}_logP_view', label_visibility='collapsed')
 
-                fig_lg_logP.add_vline(x=float(lg_logP_min), line_dash='dash',
-                                      line_color='#888', line_width=1.5,
-                                      annotation_text='logP_min',
-                                      annotation_position='top left',
-                                      annotation_font_color='#888')
-                fig_lg_logP.add_vline(x=float(lg_logP_max), line_dash='dash',
-                                      line_color='#888', line_width=1.5,
-                                      annotation_text='logP_max',
-                                      annotation_position='top right',
-                                      annotation_font_color='#888')
-                fig_lg_logP.update_layout(**{
+                # --- Prepare data arrays once ---
+                _lg_logP_all = (np.log10(lg_gap_sim['P_days'])
+                                if lg_gap_sim['P_days'].size > 0 else np.array([]))
+                _lg_logP_det = (_lg_logP_all[_lg_bin_det_mask]
+                                if _lg_logP_all.size > 0 and np.any(_lg_bin_det_mask)
+                                else np.array([]))
+                _lg_logP_mis = (_lg_logP_all[_lg_bin_mis_mask]
+                                if _lg_logP_all.size > 0 and np.any(_lg_bin_mis_mask)
+                                else np.array([]))
+                _show_det = _lg_logP_view in ('Detected / Missed', 'All (Det/Mis + A/B)')
+                _show_ab  = _lg_logP_view in ('Case A / B', 'All (Det/Mis + A/B)')
+
+                # Helper: add vlines to a figure
+                def _add_logP_vlines(fig):
+                    fig.add_vline(x=float(lg_logP_min), line_dash='dash',
+                                  line_color='#888', line_width=1.5,
+                                  annotation_text='logP_min',
+                                  annotation_position='top left',
+                                  annotation_font_color='#888')
+                    fig.add_vline(x=float(lg_logP_max), line_dash='dash',
+                                  line_color='#888', line_width=1.5,
+                                  annotation_text='logP_max',
+                                  annotation_position='top right',
+                                  annotation_font_color='#888')
+
+                # Helper: add histogram traces
+                def _add_logP_traces(fig, histnorm_val):
+                    if _show_det:
+                        if _lg_logP_det.size > 0:
+                            fig.add_trace(go.Histogram(
+                                x=_lg_logP_det, nbinsx=35,
+                                histnorm=histnorm_val,
+                                name=f'Detected ({_lg_logP_det.size})',
+                                marker_color=_CLR_DETECTED, opacity=0.6,
+                            ))
+                        if _lg_logP_mis.size > 0:
+                            fig.add_trace(go.Histogram(
+                                x=_lg_logP_mis, nbinsx=35,
+                                histnorm=histnorm_val,
+                                name=f'Missed ({_lg_logP_mis.size})',
+                                marker_color=_CLR_MISSED, opacity=0.6,
+                            ))
+                    if _show_ab and _has_cases:
+                        _lg_logP_caseA = _lg_logP_all[_lg_case_A]
+                        _lg_logP_caseB = _lg_logP_all[~_lg_case_A]
+                        if _lg_logP_caseA.size > 0:
+                            fig.add_trace(go.Histogram(
+                                x=_lg_logP_caseA, nbinsx=35,
+                                histnorm=histnorm_val,
+                                name=f'Case A ({_lg_logP_caseA.size})',
+                                marker_color='#4A90D9', opacity=0.5,
+                            ))
+                        if _lg_logP_caseB.size > 0:
+                            fig.add_trace(go.Histogram(
+                                x=_lg_logP_caseB, nbinsx=35,
+                                histnorm=histnorm_val,
+                                name=f'Case B ({_lg_logP_caseB.size})',
+                                marker_color='#F5A623', opacity=0.5,
+                            ))
+
+                _lg_logP_title_base = {
+                    'Detected / Missed': 'Detected vs Missed',
+                    'Case A / B': 'Case A vs Case B',
+                    'All (Det/Mis + A/B)': 'All Components',
+                }.get(_lg_logP_view, '')
+
+                # ── Plot 1: Probability Density (integral = 1) ──
+                fig_lg_logP_pd = go.Figure()
+                _add_logP_traces(fig_lg_logP_pd, 'probability density')
+                _add_logP_vlines(fig_lg_logP_pd)
+                fig_lg_logP_pd.update_layout(**{
                     **PLOTLY_THEME,
                     'barmode': 'overlay',
-                    'title': dict(
-                        text='Simulated Period Distribution  (Langer 2020 mixture)',
-                        font=dict(size=14)),
+                    'title': dict(text=f'Period Distribution — {_lg_logP_title_base} (density)',
+                                  font=dict(size=14)),
                     'xaxis_title': 'log₁₀(P / days)',
                     'yaxis_title': 'Probability density',
                     'height': 400,
                     'margin': dict(l=60, r=20, t=50, b=50),
-                    'legend': dict(x=0.65, y=0.95),
+                    'legend': dict(x=0.60, y=0.95),
                 })
-                st.plotly_chart(fig_lg_logP, use_container_width=True, key=f'{p}_logP_hist')
-                st.caption(
-                    'Period distribution of simulated binaries using the Langer+2020 '
-                    'two-Gaussian mixture model. Red: detected. Amber: missed.'
-                )
+                st.plotly_chart(fig_lg_logP_pd, use_container_width=True,
+                                key=f'{p}_logP_hist_density')
+                st.caption('**Probability density** normalization (area under curve = 1). '
+                           'Best for comparing distribution *shapes* independent of sample size.')
+
+                # ── Plot 2: Fraction per bin (sum = 1), matching Langer+2020 Fig. 6 ──
+                fig_lg_logP_fr = go.Figure()
+                _add_logP_traces(fig_lg_logP_fr, 'probability')
+                _add_logP_vlines(fig_lg_logP_fr)
+                fig_lg_logP_fr.update_layout(**{
+                    **PLOTLY_THEME,
+                    'barmode': 'overlay',
+                    'title': dict(text=f'Period Distribution — {_lg_logP_title_base} (fraction)',
+                                  font=dict(size=14)),
+                    'xaxis_title': 'log₁₀(P / days)',
+                    'yaxis_title': 'Fraction of binaries',
+                    'height': 400,
+                    'margin': dict(l=60, r=20, t=50, b=50),
+                    'legend': dict(x=0.60, y=0.95),
+                })
+                st.plotly_chart(fig_lg_logP_fr, use_container_width=True,
+                                key=f'{p}_logP_hist_frac')
+                st.caption('**Fraction per bin** normalization (bin heights sum to 1), '
+                           'matching the convention used in Langer+2020 Fig. 6. '
+                           'Directly comparable to the paper.')
 
             with _lg_bf_col:
                 st.markdown('### Observed Binary Fraction vs Threshold')
@@ -3418,10 +3733,13 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             st.markdown('---')
             st.markdown('### Binary Orbital Properties')
 
+            _lg_has_case_mask = lg_gap_sim.get('case_A_mask') is not None
+            _lg_mb_opts = ['Compare detected vs missed', 'Detected binaries only',
+                           'Missed binaries only', 'All binaries (combined)']
+            if _lg_has_case_mask:
+                _lg_mb_opts.append('Case A vs Case B')
             _lg_mb_view = st.radio(
-                'Show populations',
-                ['Compare detected vs missed', 'Detected binaries only',
-                 'Missed binaries only', 'All binaries (combined)'],
+                'Show populations', _lg_mb_opts,
                 horizontal=True, key=f'{p}_mb_view',
             )
 
@@ -3512,6 +3830,39 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 for pi, d in enumerate(_lg_data_all):
                     r, c = _lg_pos(pi)
                     _lg_add_hist(fig_lg_mb, r, c, d, 'All binaries', _CLR_ALL, pi == 0)
+            elif _lg_mb_view == 'Case A vs Case B':
+                _lg_cA = lg_gap_sim['case_A_mask']
+                _lg_cB = ~_lg_cA
+                _lg_cA_data = [
+                    np.log10(_lg_safe_mask(lg_gap_sim['P_days'], _lg_cA)),
+                    _lg_safe_mask(lg_gap_sim['e'], _lg_cA),
+                    _lg_safe_mask(lg_gap_sim['q'], _lg_cA),
+                    _lg_safe_mask(lg_gap_sim['K1'], _lg_cA),
+                    _lg_safe_mask(lg_gap_sim['M1'], _lg_cA),
+                    _lg_safe_mask(lg_gap_sim['q'], _lg_cA) * _lg_safe_mask(lg_gap_sim['M1'], _lg_cA),
+                    np.degrees(_lg_safe_mask(lg_gap_sim['i_rad'], _lg_cA)),
+                    np.degrees(_lg_safe_mask(lg_gap_sim.get('omega', np.array([])), _lg_cA)) if 'omega' in lg_gap_sim else np.array([]),
+                    _lg_safe_mask(lg_gap_sim.get('T0', np.array([])), _lg_cA) if 'T0' in lg_gap_sim else np.array([]),
+                ]
+                _lg_cB_data = [
+                    np.log10(_lg_safe_mask(lg_gap_sim['P_days'], _lg_cB)),
+                    _lg_safe_mask(lg_gap_sim['e'], _lg_cB),
+                    _lg_safe_mask(lg_gap_sim['q'], _lg_cB),
+                    _lg_safe_mask(lg_gap_sim['K1'], _lg_cB),
+                    _lg_safe_mask(lg_gap_sim['M1'], _lg_cB),
+                    _lg_safe_mask(lg_gap_sim['q'], _lg_cB) * _lg_safe_mask(lg_gap_sim['M1'], _lg_cB),
+                    np.degrees(_lg_safe_mask(lg_gap_sim['i_rad'], _lg_cB)),
+                    np.degrees(_lg_safe_mask(lg_gap_sim.get('omega', np.array([])), _lg_cB)) if 'omega' in lg_gap_sim else np.array([]),
+                    _lg_safe_mask(lg_gap_sim.get('T0', np.array([])), _lg_cB) if 'T0' in lg_gap_sim else np.array([]),
+                ]
+                _n_cA = int(_lg_cA.sum())
+                _n_cB = int(_lg_cB.sum())
+                for pi, d in enumerate(_lg_cA_data):
+                    r, c = _lg_pos(pi)
+                    _lg_add_hist(fig_lg_mb, r, c, d, f'Case A ({_n_cA})', '#4A90D9', pi == 0)
+                for pi, d in enumerate(_lg_cB_data):
+                    r, c = _lg_pos(pi)
+                    _lg_add_hist(fig_lg_mb, r, c, d, f'Case B ({_n_cB})', '#F5A623', pi == 0)
             else:
                 _lg_det_data = [
                     np.log10(lg_P_det) if lg_P_det.size > 0 else lg_P_det,
@@ -3957,6 +4308,14 @@ def _render_compare_tab(p: str) -> None:
                 info['best_sigma'] = float(sigma_vals[idx[1]])
                 info['best_pval'] = float(ks_p[idx])
 
+        # Pre-computed HDI68 values (if saved in .npz)
+        for _hk in ('mode_fbin', 'lo_fbin', 'hi_fbin',
+                     'mode_pi', 'lo_pi', 'hi_pi',
+                     'mode_sigma', 'lo_sigma', 'hi_sigma',
+                     'mode_logPmax', 'lo_logPmax', 'hi_logPmax'):
+            if _hk in res:
+                info[_hk] = float(res[_hk])
+
         # Settings JSON
         if 'settings' in res:
             try:
@@ -4024,43 +4383,92 @@ def _render_compare_tab(p: str) -> None:
         with st.expander(f'📋 Run B parameters', expanded=True):
             st.markdown(_format_run_params(info_b, res_b))
 
-    # ── Best-fit comparison table ────────────────────────────────────────
+    # ── Pre-compute HDI68 for table (needs heatmaps) ────────────────────
+    from wr_bias_simulation import compute_hdi68 as _cmp_hdi68
+
+    def _marginalize_1d(heatmap_2d, axis_vals, axis=1):
+        """Marginalize 2D heatmap along given axis to get 1D posterior."""
+        post = np.nansum(heatmap_2d, axis=axis)
+        if post.sum() > 0 and len(axis_vals) == len(post):
+            area = np.trapezoid(post, axis_vals)
+            if area > 0:
+                post = post / area
+        return post
+
+    def _get_hdi(info, param, grid, post):
+        """Return (mode, lo, hi) from pre-computed keys or compute on-the-fly."""
+        mk, lk, hk = f'mode_{param}', f'lo_{param}', f'hi_{param}'
+        if mk in info and lk in info and hk in info:
+            return info[mk], info[lk], info[hk]
+        return _cmp_hdi68(grid, post)
+
+    def _fmt_mode_err(mode, lo, hi, fmt='.4f'):
+        return f'`{mode:{fmt}}` +{hi - mode:{fmt}} −{mode - lo:{fmt}}'
+
+    # Compute posteriors + HDI for both results
+    _hdi_a = _hdi_b = {}
+    if info_a['heatmap'] is not None:
+        _post_fb_a = _marginalize_1d(info_a['heatmap'], info_a['x_vals'], axis=1)
+        _post_x_a  = _marginalize_1d(info_a['heatmap'], info_a['fbin_vals'], axis=0)
+        _xp_a = 'pi' if info_a['type'] == 'dsilva' else 'sigma'
+        _m_fb_a, _lo_fb_a, _hi_fb_a = _get_hdi(info_a, 'fbin', info_a['fbin_vals'], _post_fb_a)
+        _m_x_a, _lo_x_a, _hi_x_a   = _get_hdi(info_a, _xp_a, info_a['x_vals'], _post_x_a)
+        _hdi_a = {'fbin': (_m_fb_a, _lo_fb_a, _hi_fb_a),
+                  'x': (_m_x_a, _lo_x_a, _hi_x_a),
+                  'post_fbin': _post_fb_a, 'post_x': _post_x_a}
+    if info_b['heatmap'] is not None:
+        _post_fb_b = _marginalize_1d(info_b['heatmap'], info_b['x_vals'], axis=1)
+        _post_x_b  = _marginalize_1d(info_b['heatmap'], info_b['fbin_vals'], axis=0)
+        _xp_b = 'pi' if info_b['type'] == 'dsilva' else 'sigma'
+        _m_fb_b, _lo_fb_b, _hi_fb_b = _get_hdi(info_b, 'fbin', info_b['fbin_vals'], _post_fb_b)
+        _m_x_b, _lo_x_b, _hi_x_b   = _get_hdi(info_b, _xp_b, info_b['x_vals'], _post_x_b)
+        _hdi_b = {'fbin': (_m_fb_b, _lo_fb_b, _hi_fb_b),
+                  'x': (_m_x_b, _lo_x_b, _hi_x_b),
+                  'post_fbin': _post_fb_b, 'post_x': _post_x_b}
+
+    # ── Best-fit comparison table (with HDI68 errors) ─────────────────
     st.markdown('### Best-fit comparison')
-    _summary_rows = []
-    _summary_rows.append({
-        'Parameter': 'f_bin',
-        'Result A': f"{info_a.get('best_fbin', '—'):.4f}" if 'best_fbin' in info_a else '—',
-        'Result B': f"{info_b.get('best_fbin', '—'):.4f}" if 'best_fbin' in info_b else '—',
-    })
+    _tbl = '| Parameter | Best-fit A | Mode ± 1σ A | Best-fit B | Mode ± 1σ B |\n'
+    _tbl += '|---|---|---|---|---|\n'
+
+    # f_bin
+    _bf_a = f"`{info_a.get('best_fbin', 0):.4f}`" if 'best_fbin' in info_a else '—'
+    _bf_b = f"`{info_b.get('best_fbin', 0):.4f}`" if 'best_fbin' in info_b else '—'
+    _hdi_a_fb = _fmt_mode_err(*_hdi_a['fbin']) if 'fbin' in _hdi_a else '—'
+    _hdi_b_fb = _fmt_mode_err(*_hdi_b['fbin']) if 'fbin' in _hdi_b else '—'
+    _tbl += f'| f_bin | {_bf_a} | {_hdi_a_fb} | {_bf_b} | {_hdi_b_fb} |\n'
+
+    # π (Dsilva only)
     if 'best_pi' in info_a or 'best_pi' in info_b:
-        _summary_rows.append({
-            'Parameter': 'π',
-            'Result A': f"{info_a['best_pi']:.4f}" if 'best_pi' in info_a else '—',
-            'Result B': f"{info_b['best_pi']:.4f}" if 'best_pi' in info_b else '—',
-        })
+        _bp_a = f"`{info_a['best_pi']:.4f}`" if 'best_pi' in info_a else '—'
+        _bp_b = f"`{info_b['best_pi']:.4f}`" if 'best_pi' in info_b else '—'
+        _hp_a = _fmt_mode_err(*_hdi_a['x']) if ('x' in _hdi_a and info_a['type'] == 'dsilva') else '—'
+        _hp_b = _fmt_mode_err(*_hdi_b['x']) if ('x' in _hdi_b and info_b['type'] == 'dsilva') else '—'
+        _tbl += f'| π | {_bp_a} | {_hp_a} | {_bp_b} | {_hp_b} |\n'
+
+    # σ_single
     if 'best_sigma' in info_a or 'best_sigma' in info_b:
-        _summary_rows.append({
-            'Parameter': 'σ_single',
-            'Result A': f"{info_a['best_sigma']:.2f}" if info_a.get('best_sigma') is not None else '—',
-            'Result B': f"{info_b['best_sigma']:.2f}" if info_b.get('best_sigma') is not None else '—',
-        })
+        _bs_a = f"`{info_a['best_sigma']:.2f}`" if info_a.get('best_sigma') is not None else '—'
+        _bs_b = f"`{info_b['best_sigma']:.2f}`" if info_b.get('best_sigma') is not None else '—'
+        _hs_a = _fmt_mode_err(*_hdi_a['x'], fmt='.2f') if ('x' in _hdi_a and info_a['type'] == 'langer') else '—'
+        _hs_b = _fmt_mode_err(*_hdi_b['x'], fmt='.2f') if ('x' in _hdi_b and info_b['type'] == 'langer') else '—'
+        _tbl += f'| σ_single | {_bs_a} | {_hs_a} | {_bs_b} | {_hs_b} |\n'
+
+    # logP_max
     if 'best_logPmax' in info_a or 'best_logPmax' in info_b:
-        _summary_rows.append({
-            'Parameter': 'logP_max',
-            'Result A': f"{info_a['best_logPmax']:.2f}" if info_a.get('best_logPmax') is not None else '—',
-            'Result B': f"{info_b['best_logPmax']:.2f}" if info_b.get('best_logPmax') is not None else '—',
-        })
-    _summary_rows.append({
-        'Parameter': 'K-S p-value',
-        'Result A': f"{info_a.get('best_pval', 0):.5f}" if 'best_pval' in info_a else '—',
-        'Result B': f"{info_b.get('best_pval', 0):.5f}" if 'best_pval' in info_b else '—',
-    })
-    _summary_rows.append({
-        'Parameter': 'Model',
-        'Result A': info_a['type'],
-        'Result B': info_b['type'],
-    })
-    st.dataframe(pd.DataFrame(_summary_rows), use_container_width=True, hide_index=True)
+        _bl_a = f"`{info_a['best_logPmax']:.2f}`" if info_a.get('best_logPmax') is not None else '—'
+        _bl_b = f"`{info_b['best_logPmax']:.2f}`" if info_b.get('best_logPmax') is not None else '—'
+        _tbl += f'| logP_max | {_bl_a} | — | {_bl_b} | — |\n'
+
+    # K-S p-value
+    _pv_a = f"`{info_a.get('best_pval', 0):.5f}`" if 'best_pval' in info_a else '—'
+    _pv_b = f"`{info_b.get('best_pval', 0):.5f}`" if 'best_pval' in info_b else '—'
+    _tbl += f'| K-S p-value | {_pv_a} | — | {_pv_b} | — |\n'
+
+    # Model
+    _tbl += f"| Model | {info_a['type']} | — | {info_b['type']} | — |\n"
+
+    st.markdown(_tbl)
 
     # ── Parameter comparison table ───────────────────────────────────────
     with st.expander('📊 Settings comparison', expanded=False):
@@ -4151,26 +4559,37 @@ def _render_compare_tab(p: str) -> None:
                     )
                     st.plotly_chart(fig_b, use_container_width=True, key=f'{p}_hm_b2')
 
-    # ── 1D Posteriors (f_bin) ────────────────────────────────────────────
+    # ── 1D Posteriors with HDI68 errors ─────────────────────────────────
     if info_a['heatmap'] is not None and info_b['heatmap'] is not None:
-        st.markdown('### 1D Posteriors')
+        st.markdown('### 1D Posteriors (with 68% HDI errors)')
 
-        def _marginalize_1d(heatmap_2d, axis_vals, axis=1):
-            """Marginalize 2D heatmap along given axis to get 1D posterior."""
-            post = np.nansum(heatmap_2d, axis=axis)
-            if post.sum() > 0 and len(axis_vals) == len(post):
-                area = np.trapezoid(post, axis_vals)
-                if area > 0:
-                    post = post / area
-            return post
+        # Reuse posteriors + HDI computed above for the best-fit table
+        post_fbin_a = _hdi_a.get('post_fbin', np.array([]))
+        post_fbin_b = _hdi_b.get('post_fbin', np.array([]))
+        post_x_a    = _hdi_a.get('post_x', np.array([]))
+        post_x_b    = _hdi_b.get('post_x', np.array([]))
+        mode_fbin_a, lo_fbin_a, hi_fbin_a = _hdi_a.get('fbin', (0, 0, 0))
+        mode_fbin_b, lo_fbin_b, hi_fbin_b = _hdi_b.get('fbin', (0, 0, 0))
+        mode_x_a, lo_x_a, hi_x_a = _hdi_a.get('x', (0, 0, 0))
+        mode_x_b, lo_x_b, hi_x_b = _hdi_b.get('x', (0, 0, 0))
 
-        # f_bin posterior (marginalize over x axis)
-        post_fbin_a = _marginalize_1d(info_a['heatmap'], info_a['x_vals'], axis=1)
-        post_fbin_b = _marginalize_1d(info_b['heatmap'], info_b['x_vals'], axis=1)
+        def _add_hdi_shading(fig, grid, post, lo, hi, color, opacity=0.15):
+            """Add HDI68 shaded region to a posterior plot."""
+            mask = (grid >= lo) & (grid <= hi)
+            x_hdi = grid[mask]
+            y_hdi = post[mask]
+            if len(x_hdi) > 0:
+                fig.add_trace(go.Scatter(
+                    x=np.concatenate([x_hdi, x_hdi[::-1]]),
+                    y=np.concatenate([y_hdi, np.zeros(len(y_hdi))]),
+                    fill='toself', fillcolor=color,
+                    line=dict(width=0), opacity=opacity,
+                    showlegend=False, hoverinfo='skip',
+                ))
 
-        # Second axis posterior (π or σ — marginalize over fbin)
-        post_x_a = _marginalize_1d(info_a['heatmap'], info_a['fbin_vals'], axis=0)
-        post_x_b = _marginalize_1d(info_b['heatmap'], info_b['fbin_vals'], axis=0)
+        def _add_mode_line(fig, mode_val, color):
+            """Add vertical dashed line at posterior mode."""
+            fig.add_vline(x=mode_val, line=dict(color=color, width=1.5, dash='dash'))
 
         if view_mode == 'Side-by-side':
             pc1, pc2 = st.columns(2)
@@ -4182,11 +4601,17 @@ def _render_compare_tab(p: str) -> None:
                     mode='lines', line=dict(color='#4A90D9', width=2),
                     name='A',
                 ))
+                _add_hdi_shading(fig_pa, info_a['fbin_vals'], post_fbin_a,
+                                 lo_fbin_a, hi_fbin_a, 'rgba(74,144,217,0.2)')
+                _add_mode_line(fig_pa, mode_fbin_a, '#4A90D9')
                 fig_pa.add_trace(go.Scatter(
                     x=info_b['fbin_vals'], y=post_fbin_b,
                     mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
                     name='B',
                 ))
+                _add_hdi_shading(fig_pa, info_b['fbin_vals'], post_fbin_b,
+                                 lo_fbin_b, hi_fbin_b, 'rgba(226,90,83,0.2)')
+                _add_mode_line(fig_pa, mode_fbin_b, '#E25A53')
                 fig_pa.update_layout(**{**PLOTLY_THEME, 'title': dict(text='f_bin posterior'), 'height': 350,
                                         'xaxis_title': 'f_bin', 'yaxis_title': 'Posterior density'})
                 st.plotly_chart(fig_pa, use_container_width=True, key=f'{p}_post_fbin')
@@ -4198,11 +4623,17 @@ def _render_compare_tab(p: str) -> None:
                     mode='lines', line=dict(color='#4A90D9', width=2),
                     name='A',
                 ))
+                _add_hdi_shading(fig_pb, info_a['x_vals'], post_x_a,
+                                 lo_x_a, hi_x_a, 'rgba(74,144,217,0.2)')
+                _add_mode_line(fig_pb, mode_x_a, '#4A90D9')
                 fig_pb.add_trace(go.Scatter(
                     x=info_b['x_vals'], y=post_x_b,
                     mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
                     name='B',
                 ))
+                _add_hdi_shading(fig_pb, info_b['x_vals'], post_x_b,
+                                 lo_x_b, hi_x_b, 'rgba(226,90,83,0.2)')
+                _add_mode_line(fig_pb, mode_x_b, '#E25A53')
                 fig_pb.update_layout(**{**PLOTLY_THEME, 'title': dict(text=f'{info_a["x_label"]} posterior'), 'height': 350,
                                         'xaxis_title': info_a['x_label'], 'yaxis_title': 'Posterior density'})
                 st.plotly_chart(fig_pb, use_container_width=True, key=f'{p}_post_x')
@@ -4213,11 +4644,17 @@ def _render_compare_tab(p: str) -> None:
                 mode='lines', line=dict(color='#4A90D9', width=2),
                 name=f'A: f_bin',
             ))
+            _add_hdi_shading(fig_po, info_a['fbin_vals'], post_fbin_a,
+                             lo_fbin_a, hi_fbin_a, 'rgba(74,144,217,0.2)')
+            _add_mode_line(fig_po, mode_fbin_a, '#4A90D9')
             fig_po.add_trace(go.Scatter(
                 x=info_b['fbin_vals'], y=post_fbin_b,
                 mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
                 name=f'B: f_bin',
             ))
+            _add_hdi_shading(fig_po, info_b['fbin_vals'], post_fbin_b,
+                             lo_fbin_b, hi_fbin_b, 'rgba(226,90,83,0.2)')
+            _add_mode_line(fig_po, mode_fbin_b, '#E25A53')
             fig_po.update_layout(**{
                 **PLOTLY_THEME,
                 'title': dict(text='f_bin posterior comparison'),
@@ -4235,11 +4672,17 @@ def _render_compare_tab(p: str) -> None:
                     mode='lines', line=dict(color='#4A90D9', width=2),
                     name='A',
                 ))
+                _add_hdi_shading(fig_xo, info_a['x_vals'], post_x_a,
+                                 lo_x_a, hi_x_a, 'rgba(74,144,217,0.2)')
+                _add_mode_line(fig_xo, mode_x_a, '#4A90D9')
                 fig_xo.add_trace(go.Scatter(
                     x=info_b['x_vals'], y=post_x_b,
                     mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
                     name='B',
                 ))
+                _add_hdi_shading(fig_xo, info_b['x_vals'], post_x_b,
+                                 lo_x_b, hi_x_b, 'rgba(226,90,83,0.2)')
+                _add_mode_line(fig_xo, mode_x_b, '#E25A53')
                 fig_xo.update_layout(**{
                     **PLOTLY_THEME,
                     'title': dict(text=f'{info_a["x_label"]} posterior comparison'),
@@ -4287,6 +4730,7 @@ if 'bc_tabs' not in st.session_state:
     st.session_state['bc_tabs'] = [
         {'type': 'dsilva', 'name': 'Dsilva (power-law)', 'prefix': 'bc'},
         {'type': 'langer', 'name': 'Langer 2020', 'prefix': 'lg'},
+        {'type': 'compare', 'name': 'Compare', 'prefix': 'cmp'},
     ]
 
 # "+" button to add new tabs
@@ -4311,8 +4755,8 @@ with _tab_mgmt_cols[1]:
             })
             st.rerun()
 
-        # Remove last tab (if more than 2)
-        if len(st.session_state['bc_tabs']) > 2:
+        # Remove last tab (if more than 3 default tabs)
+        if len(st.session_state['bc_tabs']) > 3:
             if _add_col2.button('Remove last', key='_bc_rm_tab_btn'):
                 st.session_state['bc_tabs'].pop()
                 st.rerun()
@@ -4329,3 +4773,21 @@ for _tw, _ti in zip(_tab_widgets, st.session_state['bc_tabs']):
             _render_langer_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'compare':
             _render_compare_tab(_ti['prefix'])
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auto-refresh while any background simulation is running
+# ─────────────────────────────────────────────────────────────────────────────
+_any_job_running = any(
+    st.session_state.get(f"{t['prefix']}_job", {}).get('status') == 'running'
+    for t in st.session_state.get('bc_tabs', [])
+)
+if _any_job_running:
+    @st.fragment(run_every=3)
+    def _auto_refresh():
+        _still = any(
+            st.session_state.get(f"{t['prefix']}_job", {}).get('status') == 'running'
+            for t in st.session_state.get('bc_tabs', [])
+        )
+        if _still:
+            st.rerun(scope='app')
+    _auto_refresh()

@@ -244,6 +244,28 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 | **Why** | Python dict/list comprehension variables leak into (Python 2) or shadow (Python 3) the enclosing scope. If a function parameter is named `p` and a comprehension uses `p` as an iteration variable, the function parameter is shadowed within the comprehension. All subsequent uses of `p` in the function still refer to the parameter, but code inside the same expression sees the loop variable. This caused the compare tab to completely break — `f'{p}_sel_a'` keys used the file path string instead of the prefix. |
 | **Found in** | `app/pages/05_bias_correction.py` — `_render_compare_tab()` line 3788 |
 
+### E022 — `multiprocessing.Pool` can't pickle functions in Streamlit pages
+
+| | |
+|---|---|
+| **Bad** | Defining `def worker(args): ...` in `app/pages/*.py` and passing it to `multiprocessing.Pool.map()` |
+| **Fix** | Move worker functions to a separate importable module (e.g. `app/nres_ccf_worker.py`) and `from nres_ccf_worker import worker` in the page |
+| **Grep** | `multiprocessing\.Pool` (check if file is under `app/pages/`) |
+| **Why** | Streamlit pages run as `__main__`, not as their module name. `multiprocessing.Pool` pickles function references by module path — `__main__.worker` can't be found by the child process. `ThreadPoolExecutor` avoids this (threads share the same process/namespace), but for CPU-bound work like `double_ccf`, true multiprocessing via Pool is needed. The solution is always to put Pool worker functions in a separate importable `.py` file. |
+| **Found in** | `app/pages/11_nres_analysis.py` — `_process_single_line`, `_save_single_plot` (moved to `app/nres_ccf_worker.py`) |
+
+---
+
+### E023 — `@st.cache_data` ignores underscore-prefixed parameters from cache key
+
+| | |
+|---|---|
+| **Bad** | `@st.cache_data` + `def func(_star_name, epoch):` — `_star_name` is excluded from cache key, so `func('WR 52', 1)` and `func('WR17', 1)` return the same cached result |
+| **Fix** | Remove the leading underscore: `def func(star_name, epoch):` |
+| **Grep** | `@st.cache_data` then `def.*\(_[a-z]` (parameter starting with `_` in a cached function) |
+| **Why** | Streamlit treats parameters prefixed with `_` as "unhashable" and excludes them from the cache key. This is documented Streamlit behavior intended for unhashable objects like DB connections, but if used on a regular string/int parameter, all distinct values collapse to the same cache entry. |
+| **Found in** | `app/pages/11_nres_analysis.py` — `_load_star_epochs(_star_name)`, `_load_normalized_flux(_star_name)`, `_get_mjd(_star_name)` all returned WR 52's data for WR17 too |
+
 ---
 
 ## Adding New Errors

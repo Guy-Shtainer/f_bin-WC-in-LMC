@@ -1,0 +1,44 @@
+[
+  {
+    "Line": "He II 4686",
+    "lam_min": 4560.0,
+    "lam_max": 4800.0,
+    "fit_fraction": 0.97,
+    "enabled": true
+  },
+  {
+    "Line": "O VI 5210-5340",
+    "lam_min": 5210.0,
+    "lam_max": 5335.0,
+    "fit_fraction": 0.97,
+    "enabled": true
+  },
+  {
+    "Line": "He II 5412 & C IV 5471",
+    "lam_min": 5350.0,
+    "lam_max": 5540.0,
+    "fit_fraction": 0.97,
+    "enabled": true
+  },
+  {
+    "Line": "C IV 5808-5812",
+    "lam_min": 5740.0,
+    "lam_max": 5880.0,
+    "fit_fraction": 0.97,
+    "enabled": true
+  },
+  {
+    "Line": "C III 6700-6800",
+    "lam_min": 6665.0,
+    "lam_max": 6840.0,
+    "fit_fraction": 0.97,
+    "enabled": true
+  },
+  {
+    "Line": "C IV 7063",
+    "lam_min": 6970.0,
+    "lam_max": 7140.0,
+    "fit_fraction": 0.97,
+    "enabled": true
+  }
+]
