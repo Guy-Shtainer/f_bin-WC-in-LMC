@@ -59,6 +59,14 @@ If no upstream branch: `git push -u origin <branch>`.
 - NEVER commit secrets (`.env`, credentials, API keys)
 - If a pre-commit hook fails: fix the issue, re-stage, create a NEW commit
 
+## Branch Targeting
+
+- **main** is the working branch for confirmed, tested changes
+- `agent/*` branches are unconfirmed work from the overnight agent — NEVER push unrelated changes to them
+- If the user asks to commit/push, always target **main** unless explicitly told otherwise
+- Before committing, run `git branch` to confirm you're on main
+- If on an agent branch, `git checkout main` first (stash if needed, restore Data symlink after checkout)
+
 ## When NOT to commit
 
 - If there are no changes (`git status` shows clean tree)

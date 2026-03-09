@@ -123,6 +123,10 @@ ObservationManager (ObservationClass.py)
 
 ## Key Conventions
 
+**Git branching:** Always commit to `main` unless explicitly told otherwise. `agent/*` branches
+are unconfirmed work — if one exists, it hasn't been approved yet. Before committing, verify
+the current branch with `git branch`. If on an agent branch, switch to main first.
+
 **Data symlink:** `Data/` in the project root is a symlink to `../Data`.
 Git operations (checkout, stash, branch switch) can destroy symlinks.
 After ANY git operation, verify `Data/` exists: `ls -la Data`.
