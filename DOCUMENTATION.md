@@ -139,10 +139,11 @@ asymmetric posteriors. Results are reported as: mode +Δ_upper −Δ_lower.
 **Two period distribution models are tested:**
 1. **Dsilva (power-law):** p(log P) ∝ (log P)^π, where π is a free parameter
    searched over the grid. This is the standard assumption from Dsilva et al. (2023).
-2. **Langer+2020 (bimodal Gaussian):** p(log P) = w_A · N(μ_A, σ_A) + w_B · N(μ_B, σ_B),
-   a mixture of two Gaussians representing Case A (short-period) and Case B
-   (long-period) mass transfer channels. Default parameters from Langer et al. (2020):
-   μ_A=1.1, σ_A=0.15, μ_B=2.2, σ_B=0.35, w_A=0.3.
+2. **Langer+2020 (two-component mixture):** p(log P) = w_A · N(μ_A, σ_A) + (1−w_A) · LogNorm(μ_B, σ_B),
+   where Case A is a Gaussian in logP (short-period RLOF, μ_A=0.80, σ_A=0.15) and
+   Case B is a log-normal in logP space (wide-orbit, mode μ_B=2.0, σ_B=0.2,
+   right-skewed to match Langer+2020 Fig. 6). Default weight w_A=0.20 (Case B
+   dominates ~80%). Circular orbits (e=0), Gaussian q (μ=0.7, σ=0.2).
 
 ### Cadence Library
 
@@ -410,12 +411,63 @@ work.
 - Result files embed the full settings JSON, enabling reproducibility: any saved
   result can be traced back to the exact parameter configuration that produced it.
 
+- **Langer 2020 period model refinements (Task 4):** Verified implementation
+  against Langer et al. 2020 (A&A 638, A39) Figures 4 and 6. Key changes:
+  - **Case B distribution:** Changed from Gaussian to **log-normal in logP space**
+    to match the right-skewed tail in Langer Fig. 6. Internal implementation:
+    `ln(logP) ~ Normal(μ_ln, σ_B)` where `μ_ln = ln(μ_B) + σ_B²`, ensuring
+    the mode sits at exactly μ_B ≈ 2.0 (periods ~100 days). Default params:
+    μ_A=0.80, σ_A=0.15 (Case A Gaussian); μ_B=2.0, σ_B=0.2 (Case B log-normal);
+    weight_A=0.20 (Case B dominates ~80%).
+  - **q mass-ratio flip toggle:** Added `q_flipped` boolean to `BinaryParameterConfig`.
+    Default: q = M_companion/M_primary (BH as companion, M₂ = M₁ × q).
+    Flipped: q = M_primary/M_companion (M₂ = M₁ / q). Langer Fig. 4 shows
+    M_BH/M_OB peaks at ~0.5–0.7.
+  - **Case A/B preset buttons:** Three convenience presets in the Langer tab UI:
+    "Case A only" (w_A=1.0), "Case B only" (w_A=0.0), "Both (Langer)" (w_A=0.20).
+  - **Cache fix:** `_find_reusable_fbin_langer()` now checks `q_preset`,
+    `q_flipped`, and `langer_period_params` — previously missing, causing false
+    cache hits when switching between q presets or Case A/B weights.
+  - **Descriptive filename tags:** Langer result files now include case suffix:
+    `_caseA` (w_A=1.0), `_caseB` (w_A=0.0), or `_wA{value}` (custom weight).
+
+- **NRES analysis page:** New `app/pages/11_nres_analysis.py` for NRES
+  spectroscopy CCF processing. Worker functions extracted to
+  `app/nres_ccf_worker.py` to enable `multiprocessing.Pool` (Streamlit pages
+  can't pickle functions defined in `__main__` — see E022).
+
+**Simulation runs performed (Langer model):**
+- Case A only (w_A=1.0): `langer_..._260309-1751_caseA.npz`
+- Case A+B mixed (w_A=0.30): three runs at 20:09, 20:16, 20:27
+- Various sigma ranges tested: σ ∈ [1.0, 9.0] and [3.0, 13.0]
+- All runs: 100×100 grid, N=10,000 stars, logP ∈ [0.5, 3.5]
+
+**Bugs found and fixed:**
+- **E020:** Missing `title` argument to `_make_heatmap_fig()` in compare tab.
+- **E021:** Dict comprehension variable `p` shadowed function parameter `prefix`
+  in `_render_compare_tab()`, breaking all session state key lookups.
+- **E022:** `multiprocessing.Pool` can't pickle functions defined in Streamlit
+  pages (running as `__main__`). Fix: move workers to separate importable module.
+- **E023:** `@st.cache_data` silently ignores underscore-prefixed parameters
+  from cache key — `_star_name` meant all stars returned WR 52's cached data.
+- **E024:** Cache reuse function missing checks for newly added config fields
+  (`q_preset`, `q_flipped`, `langer_period_params`), causing stale results.
+
 **Decisions:**
 - Settings save to `user_settings.json` only from the primary tabs (prefix `bc`
   for Dsilva, `lg` for Langer). Duplicate tabs created via "+" are session-only
   and do not persist settings across restarts.
 - The compare tab auto-discovers all `.npz` files in `results/` matching either
   model prefix, sorted by modification time (newest first).
+- Case B log-normal distribution chosen over Gaussian because Langer+2020 Fig. 6
+  shows a clear right-skewed tail for Case B periods — a symmetric Gaussian
+  underestimates the long-period tail.
+
+**Open questions:**
+- What are the best-fit corrected f_bin values from the Langer model runs?
+  Need to extract and compare with Dsilva model results.
+- Does the Case A/B weight significantly affect the corrected binary fraction?
+  Preliminary runs suggest moderate sensitivity — need systematic comparison.
 
 ---
 

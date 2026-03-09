@@ -268,6 +268,18 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 ---
 
+### E024 — Cache/reuse check missing newly added config fields
+
+| | |
+|---|---|
+| **Bad** | Adding `q_flipped: bool` to `BinaryParameterConfig` but not including it in `_find_reusable_fbin_langer()` parameter comparison |
+| **Fix** | Whenever a new field is added to a config dataclass, audit ALL cache/reuse/hash functions that compare configs |
+| **Grep** | *(not greppable — requires code review discipline)* |
+| **Why** | Cache reuse functions compare a subset of config fields to decide if a previous result can be reloaded. When new fields are added to the config (e.g., `q_flipped`, `q_preset`, `langer_period_params`), the cache check silently returns stale results computed with different parameter values. This caused false cache hits when switching between q presets or Case A/B weights in the Langer model. |
+| **Found in** | `_find_reusable_fbin_langer()` in `wr_bias_simulation.py` — was missing checks for `q_preset`, `q_flipped`, and `langer_period_params` |
+
+---
+
 ## Adding New Errors
 
 When you encounter a new recurring error, add it here with:
