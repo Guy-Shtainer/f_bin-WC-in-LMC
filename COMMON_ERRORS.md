@@ -222,6 +222,30 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 ---
 
+### E020 — `make_heatmap_fig()` missing required `title` argument
+
+| | |
+|---|---|
+| **Bad** | `_make_heatmap_fig(z, fbin, x_vals, x_label='π', height=400)` |
+| **Fix** | `_make_heatmap_fig(z, fbin, x_vals, title='My title', x_label='π', height=400)` |
+| **Grep** | `_make_heatmap_fig(` (manual check — verify `title=` is always 4th arg) |
+| **Why** | `make_heatmap_fig` in `shared.py` has `title: str` as a required positional parameter (4th). Omitting it causes `TypeError: missing 1 required positional argument: 'title'`. Easy to miss because all other params have defaults. |
+| **Found in** | `app/pages/05_bias_correction.py` — compare tab `_render_compare_tab()` |
+
+---
+
+### E021 — Dict comprehension variable shadows function parameter
+
+| | |
+|---|---|
+| **Bad** | `def func(p): paths = {n: p for n, p in items}` |
+| **Fix** | `def func(p): paths = {n: fp for n, fp in items}` |
+| **Grep** | *(not reliably greppable — code review pattern)* |
+| **Why** | Python dict/list comprehension variables leak into (Python 2) or shadow (Python 3) the enclosing scope. If a function parameter is named `p` and a comprehension uses `p` as an iteration variable, the function parameter is shadowed within the comprehension. All subsequent uses of `p` in the function still refer to the parameter, but code inside the same expression sees the loop variable. This caused the compare tab to completely break — `f'{p}_sel_a'` keys used the file path string instead of the prefix. |
+| **Found in** | `app/pages/05_bias_correction.py` — `_render_compare_tab()` line 3788 |
+
+---
+
 ## Adding New Errors
 
 When you encounter a new recurring error, add it here with:

@@ -3968,43 +3968,93 @@ def _render_compare_tab(p: str) -> None:
     info_a = _get_arrays(res_a, sel_a)
     info_b = _get_arrays(res_b, sel_b)
 
-    # ── Summary: best-fit values side-by-side ────────────────────────────
+    # ── Run parameters for each result ───────────────────────────────────
+    def _format_run_params(info, res):
+        """Build a markdown summary of run parameters."""
+        s = info.get('settings', {})
+        fbin = info.get('fbin_vals', np.array([]))
+        x = info.get('x_vals', np.array([]))
+        sigma = info.get('sigma_vals', np.array([]))
+        logPmax = info.get('logPmax_vals', np.array([]))
+        ts = str(res.get('timestamp', '—'))
+
+        lines = []
+        lines.append(f"**Model:** {info['type'].title()}")
+        lines.append(f"**Timestamp:** {ts}")
+        lines.append(f"**N stars:** {s.get('n_stars_sim', '—')}")
+        lines.append(f"**σ_measure:** {s.get('sigma_measure', '—')} km/s")
+        if fbin.size > 0:
+            lines.append(f"**f_bin:** [{fbin[0]:.3f}, {fbin[-1]:.3f}] × {fbin.size} steps")
+        if info['type'] == 'dsilva':
+            pi = info.get('pi_vals', np.array([]))
+            if pi.size > 0:
+                lines.append(f"**π:** [{pi[0]:.2f}, {pi[-1]:.2f}] × {pi.size} steps")
+        if sigma.size > 0:
+            if sigma.size == 1:
+                lines.append(f"**σ_single:** {sigma[0]:.2f} km/s")
+            else:
+                lines.append(f"**σ_single:** [{sigma[0]:.2f}, {sigma[-1]:.2f}] × {sigma.size} steps")
+        if logPmax.size > 0:
+            if logPmax.size == 1:
+                lines.append(f"**logP_max:** {logPmax[0]:.2f}")
+            else:
+                lines.append(f"**logP_max:** [{logPmax[0]:.2f}, {logPmax[-1]:.2f}] × {logPmax.size} steps")
+        lines.append(f"**logP range:** [{s.get('logP_min', '—')}, {s.get('logP_max', '—')}]")
+
+        # Orbital params if present
+        orb = s.get('orbital', {})
+        if orb:
+            lines.append(f"**e_model:** {orb.get('e_model', '—')}, e_max={orb.get('e_max', '—')}")
+            lines.append(f"**q_model:** {orb.get('q_model', '—')}, range=[{orb.get('q_range', '—')}]")
+            lines.append(f"**M₁:** {orb.get('mass_primary_model', '—')}, {orb.get('mass_primary_fixed', '—')} M⊙")
+
+        # Langer period params
+        lp = s.get('langer_period_params', {})
+        if lp:
+            lines.append(f"**Period model:** μ_A={lp.get('mu_A','—')}, σ_A={lp.get('sigma_A','—')}, "
+                          f"μ_B={lp.get('mu_B','—')}, σ_B={lp.get('sigma_B','—')}, w_A={lp.get('weight_A','—')}")
+
+        return '\n\n'.join(lines)
+
+    _pc1, _pc2 = st.columns(2)
+    with _pc1:
+        with st.expander(f'📋 Run A parameters', expanded=True):
+            st.markdown(_format_run_params(info_a, res_a))
+    with _pc2:
+        with st.expander(f'📋 Run B parameters', expanded=True):
+            st.markdown(_format_run_params(info_b, res_b))
+
+    # ── Best-fit comparison table ────────────────────────────────────────
     st.markdown('### Best-fit comparison')
     _summary_rows = []
-    # f_bin
     _summary_rows.append({
         'Parameter': 'f_bin',
         'Result A': f"{info_a.get('best_fbin', '—'):.4f}" if 'best_fbin' in info_a else '—',
         'Result B': f"{info_b.get('best_fbin', '—'):.4f}" if 'best_fbin' in info_b else '—',
     })
-    # π (Dsilva only)
     if 'best_pi' in info_a or 'best_pi' in info_b:
         _summary_rows.append({
             'Parameter': 'π',
             'Result A': f"{info_a['best_pi']:.4f}" if 'best_pi' in info_a else '—',
             'Result B': f"{info_b['best_pi']:.4f}" if 'best_pi' in info_b else '—',
         })
-    # σ_single
     if 'best_sigma' in info_a or 'best_sigma' in info_b:
         _summary_rows.append({
             'Parameter': 'σ_single',
             'Result A': f"{info_a['best_sigma']:.2f}" if info_a.get('best_sigma') is not None else '—',
             'Result B': f"{info_b['best_sigma']:.2f}" if info_b.get('best_sigma') is not None else '—',
         })
-    # logP_max
     if 'best_logPmax' in info_a or 'best_logPmax' in info_b:
         _summary_rows.append({
             'Parameter': 'logP_max',
             'Result A': f"{info_a['best_logPmax']:.2f}" if info_a.get('best_logPmax') is not None else '—',
             'Result B': f"{info_b['best_logPmax']:.2f}" if info_b.get('best_logPmax') is not None else '—',
         })
-    # K-S p
     _summary_rows.append({
         'Parameter': 'K-S p-value',
         'Result A': f"{info_a.get('best_pval', 0):.5f}" if 'best_pval' in info_a else '—',
         'Result B': f"{info_b.get('best_pval', 0):.5f}" if 'best_pval' in info_b else '—',
     })
-    # Model type
     _summary_rows.append({
         'Parameter': 'Model',
         'Result A': info_a['type'],
@@ -4035,6 +4085,7 @@ def _render_compare_tab(p: str) -> None:
                 fig_a = _make_heatmap_fig(
                     info_a['heatmap'],
                     info_a['fbin_vals'], info_a['x_vals'],
+                    title=f'K-S p-value — A ({info_a["type"]})',
                     x_label=info_a['x_label'],
                     height=400,
                 )
@@ -4044,6 +4095,7 @@ def _render_compare_tab(p: str) -> None:
                 fig_b = _make_heatmap_fig(
                     info_b['heatmap'],
                     info_b['fbin_vals'], info_b['x_vals'],
+                    title=f'K-S p-value — B ({info_b["type"]})',
                     x_label=info_b['x_label'],
                     height=400,
                 )
@@ -4085,6 +4137,7 @@ def _render_compare_tab(p: str) -> None:
                     fig_a = _make_heatmap_fig(
                         info_a['heatmap'],
                         info_a['fbin_vals'], info_a['x_vals'],
+                        title=f'K-S p-value — A ({info_a["type"]})',
                         x_label=info_a['x_label'], height=400,
                     )
                     st.plotly_chart(fig_a, use_container_width=True, key=f'{p}_hm_a2')
@@ -4093,6 +4146,7 @@ def _render_compare_tab(p: str) -> None:
                     fig_b = _make_heatmap_fig(
                         info_b['heatmap'],
                         info_b['fbin_vals'], info_b['x_vals'],
+                        title=f'K-S p-value — B ({info_b["type"]})',
                         x_label=info_b['x_label'], height=400,
                     )
                     st.plotly_chart(fig_b, use_container_width=True, key=f'{p}_hm_b2')
