@@ -35,7 +35,7 @@ from shared import (
     cached_load_observed_delta_rvs, cached_load_cadence,
     cached_load_grid_result, settings_hash,
     find_best_grid_point, make_heatmap_fig,
-    PLOTLY_THEME,
+    PLOTLY_THEME, get_palette,
 )
 
 _best_point = find_best_grid_point
@@ -78,6 +78,7 @@ _HISTORY_PATH = os.path.join(_ROOT, 'settings', 'run_history.json')
 # ─────────────────────────────────────────────────────────────────────────────
 tab_dsilva, tab_langer = st.tabs(['Dsilva (power-law)', 'Langer 2020'])
 
+pal = get_palette()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -156,6 +157,7 @@ def _make_3d_stacked_fig(
     width: int | None = None,
 ) -> go.Figure:
     """3D stacked semi-transparent surfaces: one per sigma_single."""
+    pal = get_palette()
     valid = ks_p_3d[~np.isnan(ks_p_3d)]
     global_zmax = float(np.percentile(valid, 98)) if valid.size > 0 else 1.0
 
@@ -204,7 +206,7 @@ def _make_3d_stacked_fig(
             xaxis_title='π  (period power-law index)',
             yaxis_title='f_bin  (binary fraction)',
             zaxis_title='σ_single (km/s)',
-            bgcolor='white',
+            bgcolor=pal['plot_bg'],
         ),
         'height': height,
         'margin': dict(l=10, r=10, t=50, b=10),
@@ -301,6 +303,29 @@ with tab_dsilva:
     simcfg = settings.get('simulation', {})
     cls    = settings.get('classification', {})
     orb    = gcfg.get('orbital', {})
+
+    # Pre-initialise session_state from settings (only on first visit)
+    _bc_grid_defaults = {
+        'bc_fbin_min':   float(gcfg.get('fbin_min', 0.01)),
+        'bc_fbin_max':   float(gcfg.get('fbin_max', 0.99)),
+        'bc_fbin_steps': int(gcfg.get('fbin_steps', 137)),
+        'bc_pi_min':     float(gcfg.get('pi_min', -3.0)),
+        'bc_pi_max':     float(gcfg.get('pi_max', 3.0)),
+        'bc_pi_steps':   int(gcfg.get('pi_steps', 249)),
+        'bc_n_stars':    int(gcfg.get('n_stars_sim', 3000)),
+        'bc_sigma_meas': float(simcfg.get('sigma_measure', 1.622)),
+        'bc_logP_min':   float(orb.get('logP_min', gcfg.get('logP_min', 0.15))),
+        'bc_logP_max':   float(orb.get('logP_max', gcfg.get('logP_max', 5.0))),
+        'bc_e_max':      float(orb.get('e_max', 0.9)),
+        'bc_mass_fixed': float(orb.get('mass_primary_fixed', 10.0)),
+        'bc_q_min':      float(orb.get('q_range', [0.1, 2.0])[0]),
+        'bc_q_max':      float(orb.get('q_range', [0.1, 2.0])[1]),
+        'bc_lq_mu':      float(orb.get('langer_q_mu', 0.7)),
+        'bc_lq_sig':     float(orb.get('langer_q_sigma', 0.2)),
+    }
+    for _k, _v in _bc_grid_defaults.items():
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
 
     col_left, col_right = st.columns([0.30, 0.70])
 
@@ -1072,11 +1097,7 @@ with tab_dsilva:
             mode_logPmax = float(logPmax_g[0])
             lo_logPmax = hi_logPmax = mode_logPmax
 
-        # Format errors as +upper/-lower
-        def _fmt_err(mode, lo, hi):
-            return f'{mode:.4f}' + f' ^{{+{hi - mode:.4f}}}_{{-{mode - lo:.4f}}}'
-
-        # Compute p-value at HDI mode (nearest grid point)
+        # Compute p-value at posterior mode (nearest grid point)
         _mode_fb_idx = int(np.argmin(np.abs(fbin_g - mode_fbin)))
         _mode_pi_idx = int(np.argmin(np.abs(pi_g - mode_pi)))
         _mode_sig_idx = int(np.argmin(np.abs(sigma_g - mode_sigma)))
@@ -1084,28 +1105,49 @@ with tab_dsilva:
         _mode_pval = float(ks_p_4d[_mode_lp_idx, _mode_sig_idx,
                                     _mode_fb_idx, _mode_pi_idx])
 
-        # Build summary table
-        _logP_hdr = ' logP_max |' if _has_logPmax_scan else ''
-        _logP_sep = '---|' if _has_logPmax_scan else ''
-        _logP_argmax = f' `{best_logPmax_v:.2f}` |' if _has_logPmax_scan else ''
-        _logP_hdi = (f' `{mode_logPmax:.2f}` (+{hi_logPmax-mode_logPmax:.2f}'
-                     f'/-{mode_logPmax-lo_logPmax:.2f}) |'
-                     if _has_logPmax_scan else '')
+        # Build summary table — one row per parameter, errors as ±1σ
+        _rows = []
+        _rows.append(
+            f'| f_bin | `{best_fbin_v:.4f}` '
+            f'| `{mode_fbin:.4f}` +{hi_fbin - mode_fbin:.4f} '
+            f'−{mode_fbin - lo_fbin:.4f} |'
+        )
+        _rows.append(
+            f'| π | `{best_pi_v:.4f}` '
+            f'| `{mode_pi:.4f}` +{hi_pi - mode_pi:.4f} '
+            f'−{mode_pi - lo_pi:.4f} |'
+        )
+        if _has_sigma_scan:
+            _rows.append(
+                f'| σ_single (km/s) | `{best_sigma_v:.1f}` '
+                f'| `{mode_sigma:.1f}` +{hi_sigma - mode_sigma:.1f} '
+                f'−{mode_sigma - lo_sigma:.1f} |'
+            )
+        else:
+            _rows.append(
+                f'| σ_single (km/s) | `{best_sigma_v:.1f}` '
+                f'| `{mode_sigma:.1f}` (fixed) |'
+            )
+        if _has_logPmax_scan:
+            _rows.append(
+                f'| logP_max | `{best_logPmax_v:.2f}` '
+                f'| `{mode_logPmax:.2f}` +{hi_logPmax - mode_logPmax:.2f} '
+                f'−{mode_logPmax - lo_logPmax:.2f} |'
+            )
+        else:
+            _rows.append(
+                f'| logP_max | `{best_logPmax_v:.2f}` '
+                f'| `{mode_logPmax:.2f}` (fixed) |'
+            )
+        _rows.append(
+            f'| **K-S p** | `{best_pval_v:.6f}` '
+            f'| `{_mode_pval:.6f}` |'
+        )
 
         result_slot.markdown(
-            f'| | f_bin | π | σ (km/s) |{_logP_hdr} K-S p |\n'
-            f'|---|---|---|---|{_logP_sep}---|\n'
-            f'| **Global argmax** | `{best_fbin_v:.4f}` | `{best_pi_v:.4f}` '
-            f'| `{best_sigma_v:.1f}` |{_logP_argmax} `{best_pval_v:.6f}` |\n'
-            f'| **Posterior mode (HDI68)** '
-            f'| `{mode_fbin:.4f}` (+{hi_fbin-mode_fbin:.4f}'
-            f'/-{mode_fbin-lo_fbin:.4f}) '
-            f'| `{mode_pi:.4f}` (+{hi_pi-mode_pi:.4f}'
-            f'/-{mode_pi-lo_pi:.4f}) '
-            f'| `{mode_sigma:.1f}` '
-            + (f'(+{hi_sigma-mode_sigma:.1f}/-{mode_sigma-lo_sigma:.1f}) '
-               if _has_sigma_scan else '')
-            + f'|{_logP_hdi} `{_mode_pval:.6f}` |\n\n'
+            '| Parameter | Best fit (argmax) | Posterior mode ± 1σ |\n'
+            '|---|---|---|\n'
+            + '\n'.join(_rows) + '\n\n'
             f'**Observed fraction:**  '
             f'({n_det}+{bartzakos})/{total_pop} = '
             f'**{(n_det+bartzakos)/total_pop*100:.1f}%**'
@@ -1228,12 +1270,12 @@ with tab_dsilva:
                         x=_param_grids[j], y=_param_grids[i], z=_z,
                         contours=dict(
                             coloring='none', showlabels=True,
-                            labelfont=dict(size=8, color='white'),
+                            labelfont=dict(size=8, color=pal['contour_label']),
                         ),
                         ncontours=2,
                         contours_start=_lvl_95,
                         contours_end=_lvl_68,
-                        line=dict(color='white', width=1.5, dash='dot'),
+                        line=dict(color=pal['contour_color'], width=1.5, dash='dot'),
                         showscale=False, hoverinfo='skip',
                     ), row=i + 1, col=j + 1)
 
@@ -1550,7 +1592,7 @@ with tab_dsilva:
                     text=f'Gap: {gap_pct:.1%}<br>({missed_count} missed / {total_bin} binaries)',
                     showarrow=False,
                     font=dict(size=11, color='#F5A623'),
-                    bgcolor='rgba(255,255,255,0.9)',
+                    bgcolor=pal['annotation_bg'],
                     bordercolor='#F5A623',
                     borderwidth=1,
                     borderpad=4,
@@ -1839,8 +1881,8 @@ with tab_dsilva:
                         x=0.98, y=0.95, xref='paper', yref='paper',
                         text=f'K-S D = {D_val:.4f}<br>p = {p_val:.4f}',
                         showarrow=False,
-                        font=dict(size=12, color='#333333'),
-                        bgcolor='rgba(255,255,255,0.9)',
+                        font=dict(size=12, color=pal['annotation_font']),
+                        bgcolor=pal['annotation_bg'],
                         borderpad=6,
                         xanchor='right',
                     )],
@@ -1990,7 +2032,7 @@ with tab_dsilva:
                     mode='markers+text',
                     marker=dict(size=10, color=['#4A90D9', '#E25A53'],
                                 symbol='circle',
-                                line=dict(color='white', width=1)),
+                                line=dict(color=pal['plot_bg'], width=1)),
                     text=[f'  {frac_obs_at_thresh:.2%}',
                           f'  {frac_sim_at_thresh:.2%}'],
                     textposition='middle right',
@@ -2225,6 +2267,29 @@ with tab_langer:
     lg_sim   = settings.get('simulation', {})
     lg_cls   = settings.get('classification', {})
     lg_pp    = lg_cfg.get('langer_period_params', {})
+
+    # Pre-initialise session_state from settings (only on first visit)
+    _lg_defaults = {
+        'lg_fbin_min':   float(lg_cfg.get('fbin_min', 0.01)),
+        'lg_fbin_max':   float(lg_cfg.get('fbin_max', 0.99)),
+        'lg_fbin_steps': int(lg_cfg.get('fbin_steps', 100)),
+        'lg_sigma_min':  float(lg_cfg.get('sigma_min', 1.0)),
+        'lg_sigma_max':  float(lg_cfg.get('sigma_max', 15.0)),
+        'lg_sigma_steps': int(lg_cfg.get('sigma_steps', 30)),
+        'lg_n_stars':    int(lg_cfg.get('n_stars_sim', 10000)),
+        'lg_sigma_meas': float(lg_sim.get('sigma_measure', 1.622)),
+        'lg_mu_A':       float(lg_pp.get('mu_A', 1.1)),
+        'lg_sigma_A':    float(lg_pp.get('sigma_A', 0.15)),
+        'lg_mu_B':       float(lg_pp.get('mu_B', 2.2)),
+        'lg_sigma_B':    float(lg_pp.get('sigma_B', 0.35)),
+        'lg_weight_A':   float(lg_pp.get('weight_A', 0.3)),
+        'lg_logP_min':   float(lg_cfg.get('logP_min', 0.5)),
+        'lg_logP_max':   float(lg_cfg.get('logP_max', 3.5)),
+        'lg_mass_fixed': float(lg_cfg.get('mass_primary_fixed', 10.0)),
+    }
+    for _k, _v in _lg_defaults.items():
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
 
     lg_col_left, lg_col_right = st.columns([0.30, 0.70])
 
@@ -2732,15 +2797,15 @@ with tab_langer:
         _lg_mode_pval = float(lg_ks_p_2d[_lg_mode_fb_idx, _lg_mode_sig_idx])
 
         lg_result_slot.markdown(
-            f'| | f_bin | σ_single (km/s) | K-S p |\n'
-            f'|---|---|---|---|\n'
-            f'| **Global argmax** | `{best_fbin_lg:.4f}` '
-            f'| `{best_sigma_lg:.1f}` | `{best_pval_lg:.6f}` |\n'
-            f'| **Posterior mode (HDI68)** '
-            f'| `{lg_mode_fbin:.4f}` (+{lg_hi_fbin-lg_mode_fbin:.4f}'
-            f'/-{lg_mode_fbin-lg_lo_fbin:.4f}) '
-            f'| `{lg_mode_sigma:.1f}` (+{lg_hi_sigma-lg_mode_sigma:.1f}'
-            f'/-{lg_mode_sigma-lg_lo_sigma:.1f}) '
+            '| Parameter | Best fit (argmax) | Posterior mode ± 1σ |\n'
+            '|---|---|---|\n'
+            f'| f_bin | `{best_fbin_lg:.4f}` '
+            f'| `{lg_mode_fbin:.4f}` +{lg_hi_fbin - lg_mode_fbin:.4f} '
+            f'−{lg_mode_fbin - lg_lo_fbin:.4f} |\n'
+            f'| σ_single (km/s) | `{best_sigma_lg:.1f}` '
+            f'| `{lg_mode_sigma:.1f}` +{lg_hi_sigma - lg_mode_sigma:.1f} '
+            f'−{lg_mode_sigma - lg_lo_sigma:.1f} |\n'
+            f'| **K-S p** | `{best_pval_lg:.6f}` '
             f'| `{_lg_mode_pval:.6f}` |\n\n'
             f'**Observed fraction:**  '
             f'({lg_n_det}+{lg_bartzakos})/{lg_total_pop} = '
@@ -2832,12 +2897,12 @@ with tab_langer:
                         z=_lg_z,
                         contours=dict(
                             coloring='none', showlabels=True,
-                            labelfont=dict(size=8, color='white'),
+                            labelfont=dict(size=8, color=pal['contour_label']),
                         ),
                         ncontours=2,
                         contours_start=_lg_lvl_95,
                         contours_end=_lg_lvl_68,
-                        line=dict(color='white', width=1.5, dash='dot'),
+                        line=dict(color=pal['contour_color'], width=1.5, dash='dot'),
                         showscale=False, hoverinfo='skip',
                     ), row=i + 1, col=j + 1)
 
@@ -3077,7 +3142,7 @@ with tab_langer:
                     text=f'Gap: {lg_gap_pct:.1%}<br>({lg_missed_count} missed / {lg_total_bin} binaries)',
                     showarrow=False,
                     font=dict(size=11, color='#F5A623'),
-                    bgcolor='rgba(255,255,255,0.9)',
+                    bgcolor=pal['annotation_bg'],
                     bordercolor='#F5A623', borderwidth=1, borderpad=4,
                 )
                 fig_lg_gap.add_annotation(
@@ -3333,8 +3398,8 @@ with tab_langer:
                         x=0.98, y=0.95, xref='paper', yref='paper',
                         text=f'K-S D = {lg_D_val:.4f}<br>p = {lg_p_val:.4f}',
                         showarrow=False,
-                        font=dict(size=12, color='#333333'),
-                        bgcolor='rgba(255,255,255,0.9)',
+                        font=dict(size=12, color=pal['annotation_font']),
+                        bgcolor=pal['annotation_bg'],
                         borderpad=6, xanchor='right',
                     )],
                 })
@@ -3476,7 +3541,7 @@ with tab_langer:
                     mode='markers+text',
                     marker=dict(size=10, color=['#4A90D9', '#E25A53'],
                                 symbol='circle',
-                                line=dict(color='white', width=1)),
+                                line=dict(color=pal['plot_bg'], width=1)),
                     text=[f'  {lg_frac_obs_t:.2%}', f'  {lg_frac_sim_t:.2%}'],
                     textposition='middle right',
                     textfont=dict(size=11),
