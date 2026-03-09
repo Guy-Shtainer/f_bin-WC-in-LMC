@@ -6,11 +6,12 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
-## 2026-03-09 — Dynamic tabs for bias correction page
+## 2026-03-09 — Dynamic tabs for bias correction page + bug fixes
 
 | Hash | Summary |
 |------|---------|
 | `aa49dd5` | Refactor bias correction page: dynamic tabs with parameterized session keys |
+| `bb299da` | Fix dynamic tabs: save button, compare tab bugs, heatmap resolution |
 
 Major refactor of `app/pages/05_bias_correction.py`: extracted Dsilva and Langer
 tab bodies into parameterized `_render_dsilva_tab(p)` and `_render_langer_tab(p)`
@@ -18,6 +19,11 @@ functions (114 session state keys parameterized). Added `_render_compare_tab(p)`
 for side-by-side and overlay comparison of saved results. Added dynamic tab
 management with a "+" popover to create new Dsilva, Langer, or Compare tabs
 at runtime, each with full independent run capability.
+
+Bug fixes: critical `p` variable shadowing in compare tab dict comprehension,
+wrong npz key names (`ks_p_3d`→`ks_p`, `fbin_vals`→`fbin_grid`), missing palette
+keys, heatmap `zsmooth='best'` removed for crisp rendering, added explicit save
+buttons to both tabs.
 
 ---
 
