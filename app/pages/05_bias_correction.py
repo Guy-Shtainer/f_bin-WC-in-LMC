@@ -173,6 +173,76 @@ def _list_saved_results(model: str) -> list[tuple[str, str]]:
     return [(os.path.basename(f).replace('.npz', ''), f) for f in files]
 
 
+@st.cache_data(ttl=30)
+def _scan_result_metadata(model: str | None = None) -> pd.DataFrame:
+    """Scan saved .npz result files and return a DataFrame of metadata.
+
+    Parameters
+    ----------
+    model : str or None
+        'dsilva', 'langer', or None (both).
+    """
+    models = [model] if model else ['dsilva', 'langer']
+    rows: list[dict] = []
+    for mdl in models:
+        for name, path in _list_saved_results(mdl):
+            try:
+                d = np.load(path, allow_pickle=True)
+                is_dsilva = 'pi_grid' in d
+                mtype = 'dsilva' if is_dsilva else 'langer'
+
+                def _range_str(arr):
+                    if arr is None or len(arr) == 0:
+                        return '—'
+                    if len(arr) == 1:
+                        return f'{arr[0]:.2f}'
+                    return f'{arr[0]:.2f}–{arr[-1]:.2f} ({len(arr)})'
+
+                fb = d.get('fbin_grid', np.array([]))
+                pi = d.get('pi_grid', np.array([]))
+                sig = d.get('sigma_grid', np.array([]))
+                logP = d.get('logPmax_grid', np.array([]))
+
+                # N stars from settings
+                n_stars = '—'
+                if 'settings' in d:
+                    try:
+                        sett = json.loads(str(d['settings']))
+                        n_stars = str(sett.get('n_stars_sim', '—'))
+                    except Exception:
+                        pass
+
+                # Best-fit
+                ks_p = d.get('ks_p', np.array([0]))
+                best_p = float(np.nanmax(ks_p))
+                best_fb = f'{float(d["mode_fbin"]):.3f}' if 'mode_fbin' in d else '—'
+
+                # Timestamp
+                ts = str(d['timestamp']) if 'timestamp' in d else '—'
+                ts = ts.replace('T', ' ')[:19]
+
+                d.close()
+
+                rows.append({
+                    'Model': mtype,
+                    'Date': ts,
+                    'f_bin': _range_str(fb),
+                    'pi': _range_str(pi) if is_dsilva else '—',
+                    'sigma': _range_str(sig),
+                    'logP': _range_str(logP),
+                    'N_stars': n_stars,
+                    'Best p': f'{best_p:.5f}',
+                    'Best f_bin': best_fb,
+                    'File': name,
+                    '_path': path,
+                })
+            except Exception:
+                continue
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
 def _make_max_pval_fig(
     sigma_vals: np.ndarray,
     max_pvals: list[float],
@@ -603,6 +673,7 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
         )
         _desc_path = os.path.join(_RESULT_DIR, _desc_name)
         np.savez(_desc_path, **_save_kwargs)
+        _scan_result_metadata.clear()
         _partial = _result_path('dsilva') + '.partial.npz'
         if os.path.exists(_partial):
             os.remove(_partial)
@@ -785,6 +856,7 @@ def _run_langer_bg(job: dict, params: dict) -> None:
             _desc_name = _desc_name.replace('.npz', f'_wA{_wA:.2f}.npz')
         _desc_path = os.path.join(_RESULT_DIR, _desc_name)
         np.savez(_desc_path, **_save_kwargs)
+        _scan_result_metadata.clear()
         _partial = _result_path('langer') + '.partial.npz'
         if os.path.exists(_partial):
             os.remove(_partial)
@@ -1094,36 +1166,32 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 st.session_state[f'{p}_job']['cancel'] = True
                 st.rerun()
 
-        # Load saved results dropdown
-        _saved_dsilva = _list_saved_results('dsilva')
+        # Load saved results — clickable parameter table
         load_btn = False
-        if _saved_dsilva:
-            with _load_col.popover('📂 Load saved result'):
-                st.caption(_FILENAME_FORMAT_HELP)
-                _load_options = [name for name, _ in _saved_dsilva]
-                _load_idx = st.selectbox(
-                    'Select result file', range(len(_load_options)),
-                    format_func=lambda i: _load_options[i],
-                    key=f'{p}_load_select',
+        _ds_meta = _scan_result_metadata('dsilva')
+        if not _ds_meta.empty:
+            with st.expander('📂 Load saved result', expanded=False):
+                _ds_display = _ds_meta.drop(columns=['_path', 'Model'], errors='ignore')
+                _ds_sel = st.dataframe(
+                    _ds_display,
+                    on_select='rerun',
+                    selection_mode='single-row',
+                    key=f'{p}_load_table',
+                    hide_index=True,
+                    use_container_width=True,
                 )
-                _sel_path = _saved_dsilva[_load_idx][1]
-                # Show timestamp if available
-                try:
-                    _preview = np.load(_sel_path, allow_pickle=True)
-                    if 'timestamp' in _preview:
-                        st.caption(f"Saved: {str(_preview['timestamp'])}")
-                    if 'settings' in _preview:
-                        with st.expander('View settings'):
-                            st.json(json.loads(str(_preview['settings'])))
-                    _preview.close()
-                except Exception:
-                    pass
-                if st.button('Load selected', key=f'{p}_load_sel_btn'):
-                    _loaded = dict(np.load(_sel_path, allow_pickle=True))
-                    st.session_state[f'{p}_result'] = _loaded
-                    st.session_state['result_dsilva'] = _loaded
-                    st.toast(f'Loaded: {os.path.basename(_sel_path)}')
-                    load_btn = True
+                _ds_sel_rows = _ds_sel.selection.rows if _ds_sel.selection else []
+                if _ds_sel_rows:
+                    _sel_idx = _ds_sel_rows[0]
+                    _sel_path = _ds_meta.iloc[_sel_idx]['_path']
+                    # Avoid re-loading same file on rerun
+                    if st.session_state.get(f'{p}_loaded_path') != _sel_path:
+                        _loaded = dict(np.load(_sel_path, allow_pickle=True))
+                        st.session_state[f'{p}_result'] = _loaded
+                        st.session_state['result_dsilva'] = _loaded
+                        st.session_state[f'{p}_loaded_path'] = _sel_path
+                        st.toast(f"Loaded: {_ds_meta.iloc[_sel_idx]['File']}")
+                        load_btn = True
         else:
             _load_col.caption('No saved results yet.')
 
@@ -1157,6 +1225,7 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 _save_path = os.path.join(_RESULT_DIR, _desc)
                 np.savez(_save_path, **_save_kwargs_manual)
                 cached_load_grid_result.clear()
+                _scan_result_metadata.clear()
                 st.toast(f'Saved: {_desc}')
             else:
                 _save_col.warning('No result to save. Run a simulation first.')
@@ -3042,34 +3111,30 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 st.session_state[f'{p}_job']['cancel'] = True
                 st.rerun()
 
-        # Load saved results dropdown (Langer)
-        _saved_langer = _list_saved_results('langer')
+        # Load saved results — clickable parameter table (Langer)
         lg_load_btn = False
-        if _saved_langer:
-            with _lg_load_col.popover('📂 Load saved result'):
-                st.caption(_FILENAME_FORMAT_HELP)
-                _lg_load_options = [name for name, _ in _saved_langer]
-                _lg_load_idx = st.selectbox(
-                    'Select result file', range(len(_lg_load_options)),
-                    format_func=lambda i: _lg_load_options[i],
-                    key=f'{p}_load_select',
+        _lg_meta = _scan_result_metadata('langer')
+        if not _lg_meta.empty:
+            with st.expander('📂 Load saved result', expanded=False):
+                _lg_display = _lg_meta.drop(columns=['_path', 'Model'], errors='ignore')
+                _lg_sel = st.dataframe(
+                    _lg_display,
+                    on_select='rerun',
+                    selection_mode='single-row',
+                    key=f'{p}_load_table',
+                    hide_index=True,
+                    use_container_width=True,
                 )
-                _lg_sel_path = _saved_langer[_lg_load_idx][1]
-                try:
-                    _lg_preview = np.load(_lg_sel_path, allow_pickle=True)
-                    if 'timestamp' in _lg_preview:
-                        st.caption(f"Saved: {str(_lg_preview['timestamp'])}")
-                    if 'settings' in _lg_preview:
-                        with st.expander('View settings'):
-                            st.json(json.loads(str(_lg_preview['settings'])))
-                    _lg_preview.close()
-                except Exception:
-                    pass
-                if st.button('Load selected', key=f'{p}_load_sel_btn'):
-                    _lg_loaded = dict(np.load(_lg_sel_path, allow_pickle=True))
-                    st.session_state[f'{p}_result'] = _lg_loaded
-                    st.toast(f'Loaded: {os.path.basename(_lg_sel_path)}')
-                    lg_load_btn = True
+                _lg_sel_rows = _lg_sel.selection.rows if _lg_sel.selection else []
+                if _lg_sel_rows:
+                    _lg_idx = _lg_sel_rows[0]
+                    _lg_sel_path = _lg_meta.iloc[_lg_idx]['_path']
+                    if st.session_state.get(f'{p}_loaded_path') != _lg_sel_path:
+                        _lg_loaded = dict(np.load(_lg_sel_path, allow_pickle=True))
+                        st.session_state[f'{p}_result'] = _lg_loaded
+                        st.session_state[f'{p}_loaded_path'] = _lg_sel_path
+                        st.toast(f"Loaded: {_lg_meta.iloc[_lg_idx]['File']}")
+                        lg_load_btn = True
         else:
             _lg_load_col.caption('No saved results yet.')
 
@@ -3112,6 +3177,7 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 _lg_save_path = os.path.join(_RESULT_DIR, _lg_desc)
                 np.savez(_lg_save_path, **_lg_save_kw)
                 cached_load_grid_result.clear()
+                _scan_result_metadata.clear()
                 st.toast(f'Saved: {_lg_desc}')
             else:
                 _lg_save_col.warning('No result to save. Run first.')
@@ -4249,6 +4315,518 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Cadence-Aware tab: background runner
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _run_cadence_bg(job: dict, params: dict) -> None:
+    """Run cadence-aware grid search in a background thread."""
+    try:
+        import multiprocessing as mp
+        from wr_bias_simulation import (
+            SimulationConfig, BinaryParameterConfig,
+            _single_grid_task_cadence_aware, _init_worker,
+            DEFAULT_DRV_BIN_EDGES, binned_cdf,
+            compute_hdi68 as _hdi68,
+        )
+
+        cadence_list     = params['cadence_list']
+        cadence_weights  = params['cadence_weights']
+        obs_delta_rv     = params['obs_delta_rv']
+        n_proc           = params['n_proc']
+        fbin_vals        = params['fbin_vals']
+        pi_vals          = params['pi_vals']
+        sigma_vals       = params['sigma_vals']
+        n_sets           = params['n_sets']
+        period_model     = params['period_model']
+        bin_cfg          = params['bin_cfg']
+        sigma_meas       = params['sigma_meas']
+        save_params      = params.get('save_params', {})
+
+        fbin_grid = np.array(fbin_vals, dtype=float)
+        pi_grid   = np.array(pi_vals, dtype=float)
+        sigma_grid = np.array(sigma_vals, dtype=float)
+        n_sig = len(sigma_grid)
+        n_fb  = len(fbin_grid)
+        n_pi  = len(pi_grid)
+
+        # Build tasks
+        tasks = []
+        idx = 0
+        for sigma in sigma_grid:
+            for fb in fbin_grid:
+                for pi_val in pi_grid:
+                    tasks.append((fb, pi_val, sigma, bin_cfg, period_model,
+                                  1234 + idx, n_sets))
+                    idx += 1
+        n_tasks = len(tasks)
+
+        _initargs = (
+            cadence_list, cadence_weights, obs_delta_rv,
+            len(cadence_list), float(sigma_meas),
+            6, 3650.0, None, 0.0, DEFAULT_DRV_BIN_EDGES,
+        )
+
+        ks_D = np.empty((n_sig, n_fb, n_pi), dtype=float)
+        ks_p = np.empty((n_sig, n_fb, n_pi), dtype=float)
+        best_p = -1.0
+        best_fb = 0.0
+        best_median_cdf = None
+        best_lo_cdf = None
+        best_hi_cdf = None
+        completed = 0
+
+        import time as _time
+        t_start = _time.time()
+
+        with mp.Pool(processes=int(n_proc),
+                     initializer=_init_worker,
+                     initargs=_initargs) as pool:
+            for res in pool.imap_unordered(_single_grid_task_cadence_aware, tasks):
+                if job.get('cancel'):
+                    pool.terminate()
+                    job['status'] = 'cancelled'
+                    return
+                fb, pi_val, sigma, D, p, med_cdf, lo_cdf, hi_cdf = res
+                i_sig = int(np.searchsorted(sigma_grid, sigma))
+                i_fb  = int(np.searchsorted(fbin_grid, fb))
+                i_pi  = int(np.searchsorted(pi_grid, pi_val))
+                if i_sig < n_sig and i_fb < n_fb and i_pi < n_pi:
+                    ks_D[i_sig, i_fb, i_pi] = D
+                    ks_p[i_sig, i_fb, i_pi] = p
+                if p > best_p:
+                    best_p = p
+                    best_fb = fb
+                    best_median_cdf = med_cdf
+                    best_lo_cdf = lo_cdf
+                    best_hi_cdf = hi_cdf
+                completed += 1
+
+                # ETA + percentage
+                elapsed = _time.time() - t_start
+                eta_str = ''
+                if completed > 1 and completed < n_tasks:
+                    eta = elapsed / completed * (n_tasks - completed)
+                    eta_str = f'  —  ETA {_fmt_eta(eta)}'
+                pct = completed / n_tasks
+                job['progress_pct'] = pct
+                job['progress_text'] = (
+                    f'{pct*100:.1f}%  ({completed}/{n_tasks}){eta_str}')
+
+                # Live heatmap update (throttled) — Dsilva-compatible format
+                _now = _time.monotonic()
+                _is_final = (completed == n_tasks)
+                if _now - job.get('_last_hm', 0) > 1.0 or _is_final:
+                    job['_last_hm'] = _now
+                    # Show best sigma slice
+                    _best_sig_idx = 0
+                    if n_sig > 1:
+                        _pmax_per_sig = [float(ks_p[s].max()) for s in range(n_sig)
+                                         if np.any(ks_p[s] > 0)]
+                        if _pmax_per_sig:
+                            _best_sig_idx = int(np.argmax(_pmax_per_sig))
+                    _sig_label = f'σ={sigma_grid[_best_sig_idx]:.1f}'
+                    cur_p = ks_p[_best_sig_idx]
+                    cur_p_disp = np.where(np.isnan(cur_p), 0.0, cur_p)
+                    cur_D_disp = np.where(
+                        np.isnan(ks_D[_best_sig_idx]),
+                        0.0, ks_D[_best_sig_idx])
+                    job['live_heatmap'] = {
+                        'p': cur_p_disp.copy(),
+                        'd': cur_D_disp.copy(),
+                        'fbin': fbin_grid.copy(),
+                        'x': pi_grid.copy(),
+                        'title': f'K-S p-value  (cadence-aware, {_sig_label} km/s)',
+                        'is_final': _is_final,
+                    }
+                    # Live status text
+                    _bp_idx = np.unravel_index(np.argmax(cur_p_disp), cur_p_disp.shape)
+                    _bf = float(fbin_grid[_bp_idx[0]])
+                    _bpi = float(pi_grid[_bp_idx[1]])
+                    _bpv = float(cur_p_disp[_bp_idx])
+                    job['live_status'] = (
+                        f'{_sig_label} km/s  →  '
+                        f'best f_bin = **{_bf:.4f}**, '
+                        f'π = **{_bpi:.3f}**, '
+                        f'K-S p = **{_bpv:.4f}**')
+
+        # Build result
+        result = {
+            'fbin_grid': fbin_grid,
+            'pi_grid': pi_grid,
+            'sigma_grid': sigma_grid,
+            'ks_D': ks_D,
+            'ks_p': ks_p,
+            'obs_delta_rv': obs_delta_rv,
+            'best_median_cdf': best_median_cdf,
+            'best_lo_cdf': best_lo_cdf,
+            'best_hi_cdf': best_hi_cdf,
+            'n_sets': n_sets,
+            'mode': 'cadence_aware',
+        }
+
+        # HDI68
+        if n_sig == 1:
+            _ks2 = ks_p[0]
+            _post_fb = np.sum(_ks2, axis=1)
+            _post_pi = np.sum(_ks2, axis=0)
+            if _post_fb.sum() > 0:
+                m_fb, lo_fb, hi_fb = _hdi68(fbin_grid, _post_fb)
+                result.update(mode_fbin=m_fb, lo_fbin=lo_fb, hi_fbin=hi_fb)
+            if _post_pi.sum() > 0:
+                m_pi, lo_pi, hi_pi = _hdi68(pi_grid, _post_pi)
+                result.update(mode_pi=m_pi, lo_pi=lo_pi, hi_pi=hi_pi)
+        else:
+            _ks3 = ks_p
+            _post_fb = np.sum(_ks3, axis=(0, 2))
+            _post_pi = np.sum(_ks3, axis=(0, 1))
+            _post_sig = np.sum(_ks3, axis=(1, 2))
+            if _post_fb.sum() > 0:
+                m_fb, lo_fb, hi_fb = _hdi68(fbin_grid, _post_fb)
+                result.update(mode_fbin=m_fb, lo_fbin=lo_fb, hi_fbin=hi_fb)
+            if _post_pi.sum() > 0:
+                m_pi, lo_pi, hi_pi = _hdi68(pi_grid, _post_pi)
+                result.update(mode_pi=m_pi, lo_pi=lo_pi, hi_pi=hi_pi)
+            if _post_sig.sum() > 0:
+                m_sig, lo_sig, hi_sig = _hdi68(sigma_grid, _post_sig)
+                result.update(mode_sigma=m_sig, lo_sigma=lo_sig, hi_sigma=hi_sig)
+
+        # Save result
+        import datetime
+        result['timestamp'] = datetime.datetime.now().isoformat()
+        result['settings'] = json.dumps(save_params, default=str)
+
+        _desc = (f"cadence_fb{fbin_grid[0]:.1f}-{fbin_grid[-1]:.1f}x{n_fb}"
+                 f"_pi{pi_grid[0]:.1f}-{pi_grid[-1]:.1f}x{n_pi}"
+                 f"_N{n_sets}"
+                 f"_sig{sigma_grid[0]:.1f}")
+        if n_sig > 1:
+            _desc += f"-{sigma_grid[-1]:.1f}x{n_sig}"
+        _ts = datetime.datetime.now().strftime('%y%m%d-%H%M')
+        _fname = f"{_desc}_{_ts}.npz"
+        _save_path = os.path.join(_RESULT_DIR, _fname)
+        os.makedirs(_RESULT_DIR, exist_ok=True)
+
+        _save_dict = {}
+        for k, v in result.items():
+            if isinstance(v, np.ndarray):
+                _save_dict[k] = v
+            else:
+                _save_dict[k] = np.array(v, dtype=object)
+        np.savez_compressed(_save_path, **_save_dict)
+        result['save_path'] = _save_path
+
+        job['result'] = result
+        job['status'] = 'done'
+
+    except Exception as exc:
+        import traceback
+        job['error'] = traceback.format_exc()
+        job['status'] = 'error'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cadence-Aware tab renderer
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_cadence_tab(p: str, settings: dict, sm,
+                        period_model: str = 'powerlaw') -> None:
+    """Render Cadence-Aware simulation tab."""
+    pal = get_palette()
+    _is_dsilva = (period_model == 'powerlaw')
+    _period_model = period_model
+
+    left_col, right_col = st.columns([0.30, 0.70])
+
+    # ── LEFT: Parameters ─────────────────────────────────────────────────────
+    with left_col:
+        _model_label = 'Dsilva (power-law)' if _is_dsilva else 'Langer 2020'
+        st.markdown(f'#### Cadence-Aware — {_model_label}')
+
+        with st.expander('Grid parameters', expanded=True):
+            _c1, _c2, _c3 = st.columns(3)
+            fb_min = _c1.number_input('f_bin min', 0.0, 1.0, 0.0, 0.01, key=f'{p}_fb_min')
+            fb_max = _c2.number_input('f_bin max', 0.0, 1.0, 1.0, 0.01, key=f'{p}_fb_max')
+            fb_steps = _c3.number_input('steps', 5, 500, 100, 5, key=f'{p}_fb_steps')
+
+            if _is_dsilva:
+                _c4, _c5, _c6 = st.columns(3)
+                pi_min = _c4.number_input('π min', -5.0, 5.0, -3.0, 0.1, key=f'{p}_pi_min')
+                pi_max = _c5.number_input('π max', -5.0, 5.0, 3.0, 0.1, key=f'{p}_pi_max')
+                pi_steps = _c6.number_input('π steps', 5, 500, 60, 5, key=f'{p}_pi_steps')
+            else:
+                pi_min, pi_max, pi_steps = 0.0, 0.0, 1
+
+        with st.expander('Cadence-aware settings', expanded=True):
+            _ca1, _ca2 = st.columns(2)
+            n_sets = _ca1.number_input('N_sets', 100, 100000, 10000, 100,
+                                       key=f'{p}_n_sets')
+            n_stars_sim = st.number_input('N_stars (per set)', 10, 100000, 10000, 100,
+                                          key=f'{p}_n_stars_sim',
+                                          help='Not used in cadence-aware mode (fixed to 25)',
+                                          disabled=True)
+
+        with st.expander('Sigma scan', expanded=False):
+            _scan_sigma = st.checkbox('Scan σ_single', key=f'{p}_scan_sigma')
+            if _scan_sigma:
+                _s1, _s2, _s3 = st.columns(3)
+                sig_min = _s1.number_input('σ min', 0.1, 100.0, 5.0, 0.5, key=f'{p}_sig_min')
+                sig_max = _s2.number_input('σ max', 0.1, 100.0, 30.0, 0.5, key=f'{p}_sig_max')
+                sig_steps = _s3.number_input('σ steps', 2, 100, 10, 1, key=f'{p}_sig_steps')
+                sigma_vals = np.linspace(sig_min, sig_max, sig_steps).tolist()
+            else:
+                _single_sig = st.number_input('σ_single (km/s)', 0.1, 100.0,
+                                              float(settings.get('grid', {}).get('sigma_single', 15.0)),
+                                              0.5, key=f'{p}_sigma_single')
+                sigma_vals = [_single_sig]
+
+        with st.expander('Orbital parameters', expanded=False):
+            from wr_bias_simulation import BinaryParameterConfig
+            _e_model = st.selectbox('Eccentricity model', ['zero', 'flat'],
+                                    key=f'{p}_e_model')
+            _e_max = 0.9
+            if _e_model == 'flat':
+                _e_max = st.number_input('e_max', 0.01, 0.99, 0.9, 0.05, key=f'{p}_e_max')
+
+            _q_model = st.selectbox('Mass ratio q model',
+                                    ['flat', 'gaussian', 'lognormal'],
+                                    key=f'{p}_q_model')
+            _q1, _q2 = st.columns(2)
+            _q_min = _q1.number_input('q_min', 0.01, 5.0, 0.1, 0.05, key=f'{p}_q_min')
+            _q_max = _q2.number_input('q_max', 0.01, 5.0, 2.0, 0.1, key=f'{p}_q_max')
+
+            _m1 = st.number_input('M_primary (M☉)', 1.0, 100.0, 10.0, 1.0, key=f'{p}_m1')
+            _sigma_meas = st.number_input('σ_measure (km/s)', 0.1, 50.0,
+                                          float(settings.get('grid', {}).get('sigma_measure', 5.0)),
+                                          0.5, key=f'{p}_sigma_meas')
+
+            if _is_dsilva:
+                _lp1, _lp2 = st.columns(2)
+                _logp_min = _lp1.number_input('logP_min', 0.0, 5.0, 0.15, 0.05, key=f'{p}_logp_min')
+                _logp_max = _lp2.number_input('logP_max', 0.0, 8.0, 5.0, 0.5, key=f'{p}_logp_max')
+            else:
+                _logp_min, _logp_max = 0.15, 5.0
+
+            _bin_cfg = BinaryParameterConfig(
+                logP_min=_logp_min, logP_max=_logp_max,
+                period_model=_period_model,
+                e_model=_e_model, e_max=_e_max,
+                mass_primary_model='fixed', mass_primary_fixed=_m1,
+                q_model=_q_model, q_range=(_q_min, _q_max),
+            )
+
+        # Workers
+        _n_proc = os.cpu_count() - 1
+
+        # Action buttons
+        _a1, _a2 = st.columns(2)
+        _run_btn = _a1.button('▶️ Run', key=f'{p}_run_btn', type='primary')
+        _cancel_btn = _a2.button('⏹ Cancel', key=f'{p}_cancel_btn')
+
+        if _cancel_btn and f'{p}_job' in st.session_state:
+            st.session_state[f'{p}_job']['cancel'] = True
+
+        if _run_btn:
+            _sh = settings_hash(settings)
+            obs_drv, obs_det = cached_load_observed_delta_rvs(_sh)
+            cad_list, cad_wts = cached_load_cadence(_sh)
+
+            fbin_vals = np.linspace(fb_min, fb_max, fb_steps).tolist()
+            if _is_dsilva:
+                pi_v = np.linspace(pi_min, pi_max, pi_steps).tolist()
+            else:
+                pi_v = [0.0]
+
+            job = {
+                'status': 'running',
+                'progress_pct': 0.0,
+                'progress_text': 'Starting...',
+                'live_heatmap': None,
+                '_last_hm': 0,
+            }
+            st.session_state[f'{p}_job'] = job
+
+            params = {
+                'cadence_list': cad_list,
+                'cadence_weights': cad_wts,
+                'obs_delta_rv': obs_drv,
+                'n_proc': _n_proc,
+                'fbin_vals': fbin_vals,
+                'pi_vals': pi_v,
+                'sigma_vals': sigma_vals,
+                'n_sets': n_sets,
+                'period_model': _period_model,
+                'bin_cfg': _bin_cfg,
+                'sigma_meas': _sigma_meas,
+                'save_params': {
+                    'mode': 'cadence_aware',
+                    'period_model': _period_model,
+                    'n_sets': n_sets,
+                },
+            }
+
+            import threading
+            t = threading.Thread(target=_run_cadence_bg, args=(job, params), daemon=True)
+            t.start()
+            st.rerun()
+
+    # ── RIGHT: Results ───────────────────────────────────────────────────────
+    with right_col:
+        job = st.session_state.get(f'{p}_job')
+
+        if job is None:
+            st.info('Configure parameters and click **Run** to start a cadence-aware simulation.')
+            return
+
+        status = job.get('status', 'idle')
+
+        if status == 'running':
+            pct = job.get('progress_pct', 0)
+            st.progress(pct, text=job.get('progress_text', 'Running...'))
+
+            # Live heatmap
+            hm_data = job.get('live_heatmap')
+            if hm_data and hm_data.get('z'):
+                try:
+                    fig_live = _make_heatmap_fig(
+                        np.array(hm_data['z']),
+                        hm_data['x'], hm_data['y'],
+                        'π' if _period_choice.startswith('Dsilva') else 'σ_single',
+                        'f_bin', 'K-S p-value (live)', _ch, _cw,
+                    )
+                    st.plotly_chart(fig_live, use_container_width=_use_cw,
+                                   key=f'{p}_live_hm')
+                except Exception:
+                    pass
+
+        elif status == 'error':
+            st.error(f"Simulation failed:\n```\n{job.get('error', 'Unknown')}\n```")
+
+        elif status == 'cancelled':
+            st.warning('Simulation was cancelled.')
+
+        elif status == 'done':
+            result = job.get('result', {})
+            ks_p_arr = result.get('ks_p')
+            if ks_p_arr is None:
+                st.warning('No results found.')
+                return
+
+            fbin_grid = result['fbin_grid']
+            pi_grid   = result['pi_grid']
+            sigma_grid = result['sigma_grid']
+            n_sig = len(sigma_grid)
+
+            # Best slice
+            if n_sig == 1:
+                hm_z = ks_p_arr[0]
+            else:
+                _pmax = [ks_p_arr[s].max() for s in range(n_sig)]
+                _best_s = int(np.argmax(_pmax))
+                hm_z = ks_p_arr[_best_s]
+                st.info(f'Showing best σ_single slice: {sigma_grid[_best_s]:.1f} km/s')
+
+            # Heatmap
+            _x_label = 'π' if _period_choice.startswith('Dsilva') else 'σ_single'
+            fig_hm = _make_heatmap_fig(
+                hm_z, pi_grid.tolist(), fbin_grid.tolist(),
+                _x_label, 'f_bin', 'K-S p-value', _ch, _cw,
+            )
+            # Best point marker
+            _bi = np.unravel_index(np.argmax(hm_z), hm_z.shape)
+            fig_hm.add_trace(go.Scatter(
+                x=[float(pi_grid[_bi[1]])], y=[float(fbin_grid[_bi[0]])],
+                mode='markers',
+                marker=dict(symbol='star', size=16, color='#DAA520',
+                            line=dict(width=1.5, color='black')),
+                name='Best fit', showlegend=True,
+            ))
+            st.plotly_chart(fig_hm, use_container_width=_use_cw, key=f'{p}_heatmap')
+
+            # Summary
+            st.markdown('### Best-fit summary')
+            _rows = []
+            _best_fb = float(fbin_grid[_bi[0]])
+            _best_pi = float(pi_grid[_bi[1]])
+            _best_pval = float(hm_z[_bi])
+            _rows.append({'Parameter': 'f_bin', 'Best': f'{_best_fb:.3f}',
+                          'Mode (HDI68)': f"{result.get('mode_fbin', _best_fb):.3f} "
+                                          f"[{result.get('lo_fbin', '?')}, {result.get('hi_fbin', '?')}]"})
+            if _is_dsilva:
+                _rows.append({'Parameter': 'π', 'Best': f'{_best_pi:.2f}',
+                              'Mode (HDI68)': f"{result.get('mode_pi', _best_pi):.2f} "
+                                              f"[{result.get('lo_pi', '?')}, {result.get('hi_pi', '?')}]"})
+            _rows.append({'Parameter': 'K-S p', 'Best': f'{_best_pval:.4f}', 'Mode (HDI68)': ''})
+            _rows.append({'Parameter': 'N_sets', 'Best': str(result.get('n_sets', '?')), 'Mode (HDI68)': ''})
+            st.table(pd.DataFrame(_rows))
+
+            # CDF comparison with error band
+            st.markdown('### CDF Comparison (cadence-aware)')
+
+            from wr_bias_simulation import binned_cdf, DEFAULT_DRV_BIN_EDGES
+            _bin_edges = DEFAULT_DRV_BIN_EDGES
+            obs_drv = result.get('obs_delta_rv')
+            med_cdf = result.get('best_median_cdf')
+            lo_cdf  = result.get('best_lo_cdf')
+            hi_cdf  = result.get('best_hi_cdf')
+
+            if obs_drv is not None and med_cdf is not None:
+                obs_cdf_b = binned_cdf(obs_drv, _bin_edges)
+
+                fig_cdf = go.Figure()
+                # 68% band
+                fig_cdf.add_trace(go.Scatter(
+                    x=np.concatenate([_bin_edges, _bin_edges[::-1]]),
+                    y=np.concatenate([hi_cdf, lo_cdf[::-1]]),
+                    fill='toself', fillcolor='rgba(226, 90, 83, 0.15)',
+                    line=dict(width=0), name='68% band',
+                    hoverinfo='skip', showlegend=True,
+                ))
+                # Observed
+                fig_cdf.add_trace(go.Scatter(
+                    x=_bin_edges, y=obs_cdf_b,
+                    mode='lines', name='Observed',
+                    line=dict(color='#4A90D9', width=2.5, shape='hv'),
+                ))
+                # Simulated median
+                fig_cdf.add_trace(go.Scatter(
+                    x=_bin_edges, y=med_cdf,
+                    mode='lines', name='Simulated (median)',
+                    line=dict(color='#E25A53', width=2.5, dash='dash', shape='hv'),
+                ))
+                fig_cdf.update_layout(**{
+                    **PLOTLY_THEME,
+                    'title': dict(
+                        text=f'Cadence-aware CDF  (f_bin={_best_fb:.3f}, N_sets={result.get("n_sets", "?")})',
+                        font=dict(size=14)),
+                    'xaxis_title': 'ΔRV (km/s)',
+                    'yaxis_title': 'Cumulative fraction',
+                    'height': 450,
+                    'legend': dict(x=0.55, y=0.15),
+                    'annotations': [dict(
+                        x=0.98, y=0.95, xref='paper', yref='paper',
+                        text=f'Binned K-S D = {float(np.max(np.abs(med_cdf - obs_cdf_b))):.4f}<br>'
+                             f'p = {_best_pval:.4f}',
+                        showarrow=False,
+                        font=dict(size=12, color=pal['annotation_font']),
+                        bgcolor=pal['annotation_bg'],
+                        borderpad=6, xanchor='right',
+                    )],
+                })
+                st.plotly_chart(fig_cdf, use_container_width=True, key=f'{p}_cdf')
+                st.caption(
+                    f'Cadence-aware CDF comparison. Each of {result.get("n_sets", "?")} sets '
+                    f'contains exactly 25 simulated stars with observation cadences matching '
+                    f'the real sample. The shaded band shows the 68% confidence interval across sets.'
+                )
+
+    # Auto-refresh while running
+    if st.session_state.get(f'{p}_job', {}).get('status') == 'running':
+        import time as _time
+        _time.sleep(2)
+        st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Compare tab renderer
 # ─────────────────────────────────────────────────────────────────────────────
 def _render_compare_tab(p: str) -> None:
@@ -4262,36 +4840,40 @@ def _render_compare_tab(p: str) -> None:
     pal = get_palette()
 
     st.markdown('### Compare two saved results')
-    st.caption('Load any two saved result files and compare them side-by-side or overlaid.')
+    st.caption('Select 2 rows from the table below to compare them.')
 
-    # ── List all available results (both models) ─────────────────────────
-    all_results = []
-    for model in ('dsilva', 'langer'):
-        for name, path in _list_saved_results(model):
-            all_results.append((f'[{model}] {name}', path))
-
-    if len(all_results) < 2:
+    # ── Clickable multi-select table ─────────────────────────────────────
+    _cmp_meta = _scan_result_metadata()  # both models
+    if len(_cmp_meta) < 2:
         st.info('Need at least 2 saved result files to compare. Run some simulations first!')
         return
 
-    names = [n for n, _ in all_results]
-    paths = {n: fp for n, fp in all_results}
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        sel_a = st.selectbox('Result A', names, index=0, key=f'{p}_sel_a')
-    with col_b:
-        default_b = min(1, len(names) - 1)
-        sel_b = st.selectbox('Result B', names, index=default_b, key=f'{p}_sel_b')
-
-    if sel_a == sel_b:
-        st.warning('Select two different results to compare.')
+    _cmp_display = _cmp_meta.drop(columns=['_path'], errors='ignore')
+    _cmp_sel = st.dataframe(
+        _cmp_display,
+        on_select='rerun',
+        selection_mode='multi-row',
+        key=f'{p}_cmp_table',
+        hide_index=True,
+        use_container_width=True,
+    )
+    _cmp_rows = _cmp_sel.selection.rows if _cmp_sel.selection else []
+    if len(_cmp_rows) < 2:
+        st.info('Select 2 results from the table above to compare.')
         return
+    if len(_cmp_rows) > 2:
+        st.warning('Only the first 2 selected results will be compared.')
+        _cmp_rows = _cmp_rows[:2]
+
+    sel_a = _cmp_meta.iloc[_cmp_rows[0]]['File']
+    sel_b = _cmp_meta.iloc[_cmp_rows[1]]['File']
+    _path_a = _cmp_meta.iloc[_cmp_rows[0]]['_path']
+    _path_b = _cmp_meta.iloc[_cmp_rows[1]]['_path']
 
     # Load both results
     try:
-        res_a = dict(np.load(paths[sel_a], allow_pickle=True))
-        res_b = dict(np.load(paths[sel_b], allow_pickle=True))
+        res_a = dict(np.load(_path_a, allow_pickle=True))
+        res_b = dict(np.load(_path_b, allow_pickle=True))
     except Exception as e:
         st.error(f'Error loading results: {e}')
         return
@@ -4543,17 +5125,34 @@ def _render_compare_tab(p: str) -> None:
 
     st.markdown(_tbl)
 
-    # ── Parameter comparison table ───────────────────────────────────────
-    with st.expander('📊 Settings comparison', expanded=False):
-        rows = []
-        all_keys = sorted(set(list(info_a['settings'].keys()) + list(info_b['settings'].keys())))
-        for k in all_keys:
-            va = info_a['settings'].get(k, '—')
-            vb = info_b['settings'].get(k, '—')
-            match = '✓' if str(va) == str(vb) else '✗'
-            rows.append({'Parameter': k, 'Result A': str(va), 'Result B': str(vb), 'Match': match})
-        if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    # ── Parameter comparison table with diff highlighting ───────────────
+    st.markdown('### Parameter differences')
+    _diff_rows = []
+    _all_sett_keys = sorted(set(
+        list(info_a['settings'].keys()) + list(info_b['settings'].keys())))
+    for _sk in _all_sett_keys:
+        _va = info_a['settings'].get(_sk, '—')
+        _vb = info_b['settings'].get(_sk, '—')
+        _differs = str(_va) != str(_vb)
+        _diff_rows.append({
+            'Parameter': _sk,
+            'Result A': str(_va),
+            'Result B': str(_vb),
+            'Differs': 'Yes' if _differs else '',
+        })
+    if _diff_rows:
+        _diff_df = pd.DataFrame(_diff_rows)
+
+        def _highlight_diff(row):
+            if row['Differs'] == 'Yes':
+                return ['background-color: rgba(255, 165, 0, 0.15)'] * len(row)
+            return [''] * len(row)
+
+        st.dataframe(
+            _diff_df.style.apply(_highlight_diff, axis=1),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     # ── Heatmaps ─────────────────────────────────────────────────────────
     if info_a['heatmap'] is not None and info_b['heatmap'] is not None:
@@ -4803,7 +5402,8 @@ if 'bc_tabs' not in st.session_state:
     st.session_state['bc_tabs'] = [
         {'type': 'dsilva', 'name': 'Dsilva (power-law)', 'prefix': 'bc'},
         {'type': 'langer', 'name': 'Langer 2020', 'prefix': 'lg'},
-        {'type': 'cadence', 'name': 'Cadence-Aware', 'prefix': 'ca'},
+        {'type': 'cadence_dsilva', 'name': 'Cadence (Dsilva)', 'prefix': 'cad'},
+        {'type': 'cadence_langer', 'name': 'Cadence (Langer)', 'prefix': 'cal'},
         {'type': 'compare', 'name': 'Compare', 'prefix': 'cmp'},
     ]
 
@@ -4813,7 +5413,7 @@ with _tab_mgmt_cols[1]:
     with st.popover('➕ Add tab'):
         _add_type = st.radio(
             'Tab type',
-            ['Dsilva', 'Langer', 'Cadence-Aware', 'Compare'],
+            ['Dsilva', 'Langer', 'Cadence (Dsilva)', 'Cadence (Langer)', 'Compare'],
             key='_bc_add_tab_type',
         )
         _add_name = st.text_input('Tab name (optional)', key='_bc_add_tab_name')
@@ -4821,7 +5421,9 @@ with _tab_mgmt_cols[1]:
         if _add_col1.button('Add', key='_bc_add_tab_btn', type='primary'):
             _idx = len(st.session_state['bc_tabs'])
             _type_map = {'dsilva': 'dsilva', 'langer': 'langer',
-                         'cadence-aware': 'cadence', 'compare': 'compare'}
+                         'cadence (dsilva)': 'cadence_dsilva',
+                         'cadence (langer)': 'cadence_langer',
+                         'compare': 'compare'}
             _type_lower = _type_map.get(_add_type.lower(), _add_type.lower())
             _pfx = f'{_type_lower[:3]}{_idx}'
             st.session_state['bc_tabs'].append({
@@ -4847,8 +5449,10 @@ for _tw, _ti in zip(_tab_widgets, st.session_state['bc_tabs']):
             _render_dsilva_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'langer':
             _render_langer_tab(_ti['prefix'], settings, sm)
-        elif _ti['type'] == 'cadence':
-            _render_cadence_tab(_ti['prefix'], settings, sm)
+        elif _ti['type'] in ('cadence_dsilva', 'cadence_langer'):
+            _render_cadence_tab(
+                _ti['prefix'], settings, sm,
+                period_model='powerlaw' if 'dsilva' in _ti['type'] else 'langer2020')
         elif _ti['type'] == 'compare':
             _render_compare_tab(_ti['prefix'])
 
