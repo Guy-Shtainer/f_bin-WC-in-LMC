@@ -57,6 +57,9 @@ G_SI = 6.67430e-11        # m^3 kg^-1 s^-2
 M_SUN = 1.98847e30        # kg
 DAY_S = 86400.0           # s/day
 
+# Default bin edges for binned CDF K-S comparison (delta-RV in km/s)
+DEFAULT_DRV_BIN_EDGES = np.arange(0.0, 360.0, 10.0)  # [0, 10, 20, ..., 350]
+
 
 # ---------------------------------------------------------------------------
 # Configuration dataclasses
@@ -160,6 +163,16 @@ class SimulationConfig:
                          p=self._cadence_weights_cache)
         return [self._cadence_lib_cache[i] for i in idx]
 
+    def assign_times_deterministic(self) -> list[np.ndarray]:
+        """Return cadence_library entries in order (star i -> cadence i).
+
+        Used by cadence-aware simulation where each simulated star is
+        matched to a specific real star's observation cadence.
+        """
+        if self.cadence_library is None:
+            raise ValueError("cadence_library must be set for deterministic assignment.")
+        self._build_cadence_cache()
+        return list(self._cadence_lib_cache)
 
 
 @dataclass
@@ -722,6 +735,120 @@ def simulate_delta_rv_sample(
     return delta_all
 
 
+# ---------------------------------------------------------------------------
+# Cadence-aware simulation: N_sets x N_stars_per_set
+# ---------------------------------------------------------------------------
+
+def simulate_delta_rv_cadence_aware(
+    f_bin: float,
+    pi: float,
+    sim_cfg: SimulationConfig,
+    bin_cfg: BinaryParameterConfig,
+    rng: np.random.Generator,
+    n_sets: int = 10_000,
+    bin_edges: np.ndarray | None = None,
+) -> dict:
+    """Cadence-aware simulation: *n_sets* repetitions of *N_stars* sets.
+
+    Each set contains exactly ``len(sim_cfg.cadence_library)`` simulated stars,
+    where star *i* always receives cadence *i* (the real observation cadence of
+    the *i*-th star in the sample).  This is repeated *n_sets* times.
+
+    For each set, the binned CDF is computed.  Across sets we report the median
+    and 16th/84th percentile envelope.
+
+    Returns
+    -------
+    dict with keys ``median_cdf``, ``lo_cdf``, ``hi_cdf``, ``all_delta_rv``.
+    """
+    if bin_edges is None:
+        bin_edges = DEFAULT_DRV_BIN_EDGES
+
+    cadences = sim_cfg.assign_times_deterministic()
+    n_stars_per_set = len(cadences)
+    N_total = n_sets * n_stars_per_set
+
+    # Binary / single decision for every system
+    is_binary = rng.random(N_total) < f_bin
+    idx_bin = np.where(is_binary)[0]
+    idx_single = np.where(~is_binary)[0]
+    n_bin = idx_bin.size
+
+    # Assign cadences deterministically: system s*25+i gets cadence i
+    times_list: list[np.ndarray] = [cadences[k % n_stars_per_set] for k in range(N_total)]
+
+    delta_all = np.zeros(N_total, dtype=float)
+
+    # Singles: group by cadence length, batch-draw RVs
+    single_groups: dict[int, list[int]] = {}
+    for k in idx_single:
+        n_ep = times_list[k].size
+        if n_ep >= 2:
+            single_groups.setdefault(n_ep, []).append(k)
+
+    for n_ep, ks_list in single_groups.items():
+        n_grp = len(ks_list)
+        v = rng.normal(loc=sim_cfg.v_sys, scale=sim_cfg.sigma_single,
+                       size=(n_grp, n_ep))
+        drv = v.max(axis=1) - v.min(axis=1)
+        delta_all[np.array(ks_list)] = drv
+
+    # Binaries: draw orbital params, group by cadence length
+    if n_bin > 0:
+        logP = sample_logP(size=n_bin, rng=rng, pi=pi, cfg=bin_cfg)
+        P_days = 10.0 ** logP
+        e    = sample_eccentricity(bin_cfg, n_bin, rng)
+        M1   = sample_primary_mass(bin_cfg, n_bin, rng)
+        q    = sample_mass_ratio(bin_cfg, n_bin, rng)
+        M2   = M1 / q if bin_cfg.q_flipped else M1 * q
+        i_inc = sample_inclination(n_bin, rng)
+        omega = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
+        T0    = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
+        K1    = compute_K1(P_days=P_days, e=e, M1=M1, M2=M2, i_rad=i_inc)
+
+        bin_groups: dict[int, list[tuple[int, int]]] = {}
+        for j, k in enumerate(idx_bin):
+            n_ep = times_list[k].size
+            if n_ep < 2:
+                delta_all[k] = 0.0
+            else:
+                bin_groups.setdefault(n_ep, []).append((j, k))
+
+        for n_ep, jk_list in bin_groups.items():
+            js = np.array([x[0] for x in jk_list])
+            ks_arr = np.array([x[1] for x in jk_list])
+            n_grp = len(js)
+
+            t_mat = np.vstack([times_list[k] for k in ks_arr])
+            M_mean = T0[js, None] + 2.0 * np.pi * (t_mat / P_days[js, None])
+            E = solve_kepler(M_mean, e[js, None])
+            sqrt_fac = np.sqrt((1.0 + e[js, None]) / (1.0 - e[js, None]))
+            nu = 2.0 * np.arctan2(sqrt_fac * np.tan(E / 2.0), 1.0)
+            v = sim_cfg.v_sys + K1[js, None] * (
+                np.cos(omega[js, None] + nu) + e[js, None] * np.cos(omega[js, None])
+            )
+            drv = v.max(axis=1) - v.min(axis=1)
+            delta_all[ks_arr] = drv
+
+    # Reshape to (n_sets, n_stars_per_set) and compute per-set CDFs
+    all_drv = delta_all.reshape(n_sets, n_stars_per_set)
+    n_bins = len(bin_edges)
+    all_cdfs = np.empty((n_sets, n_bins), dtype=float)
+    for s in range(n_sets):
+        all_cdfs[s] = binned_cdf(all_drv[s], bin_edges)
+
+    median_cdf = np.median(all_cdfs, axis=0)
+    lo_cdf = np.percentile(all_cdfs, 16, axis=0)
+    hi_cdf = np.percentile(all_cdfs, 84, axis=0)
+
+    return {
+        'median_cdf': median_cdf,
+        'lo_cdf': lo_cdf,
+        'hi_cdf': hi_cdf,
+        'all_delta_rv': all_drv,
+    }
+
+
 def simulate_with_params(
     f_bin: float,
     pi: float,
@@ -895,6 +1022,51 @@ def ks_two_sample(
 
 
 # ---------------------------------------------------------------------------
+# Binned CDF K-S comparison
+# ---------------------------------------------------------------------------
+
+def binned_cdf(data: np.ndarray, bin_edges: np.ndarray) -> np.ndarray:
+    """Empirical CDF evaluated at *bin_edges*: CDF(x) = fraction of data <= x."""
+    sorted_data = np.sort(data)
+    return np.searchsorted(sorted_data, bin_edges, side='right') / len(sorted_data)
+
+
+def ks_two_sample_binned(
+    sim_data: np.ndarray,
+    obs_data: np.ndarray,
+    bin_edges: np.ndarray | None = None,
+) -> Tuple[float, float]:
+    """Binned K-S test: D = max|CDF_sim(b) - CDF_obs(b)| over *bin_edges*.
+
+    Uses the same Kolmogorov-series p-value approximation as ks_two_sample
+    with effective sample sizes n1=len(sim_data), n2=len(obs_data).
+    """
+    if bin_edges is None:
+        bin_edges = DEFAULT_DRV_BIN_EDGES
+
+    sim_data = np.asarray(sim_data, dtype=float)
+    obs_data = np.asarray(obs_data, dtype=float)
+    n1 = sim_data.size
+    n2 = obs_data.size
+
+    cdf_sim = binned_cdf(sim_data, bin_edges)
+    cdf_obs = binned_cdf(obs_data, bin_edges)
+    D = float(np.max(np.abs(cdf_sim - cdf_obs)))
+
+    # Approximate p-value (Kolmogorov series)
+    en = math.sqrt(n1 * n2 / (n1 + n2))
+    x = (en + 0.12 + 0.11 / en) * D
+    term_sum = 0.0
+    for j in range(1, 101):
+        term = 2.0 * ((-1) ** (j - 1)) * math.exp(-2.0 * (j ** 2) * (x ** 2))
+        term_sum += term
+        if abs(term) < 1e-8:
+            break
+    p_value = max(0.0, min(1.0, term_sum))
+    return D, p_value
+
+
+# ---------------------------------------------------------------------------
 # Marginalization & HDI68 credible intervals (Dsilva et al. 2023 style)
 # ---------------------------------------------------------------------------
 
@@ -1028,7 +1200,7 @@ def _single_grid_task(args):
         bin_cfg=bin_cfg_local,
         rng=rng,
     )
-    D, p = ks_two_sample(delta_sim, obs_delta_rv)
+    D, p = ks_two_sample_binned(delta_sim, obs_delta_rv)
     return f_bin, pi, sigma_single, D, p
 
 
@@ -1039,7 +1211,8 @@ _WORKER_GLOBALS: dict = {}
 def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
                  n_stars, sigma_measure,
                  n_epochs=6, time_span=3650.0,
-                 observation_times=None, v_sys=0.0):
+                 observation_times=None, v_sys=0.0,
+                 bin_edges=None):
     """Pool initializer: store shared data as process-level globals."""
     global _WORKER_GLOBALS
     _WORKER_GLOBALS = {
@@ -1052,6 +1225,7 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
         'time_span': time_span,
         'observation_times': observation_times,
         'v_sys': v_sys,
+        'bin_edges': bin_edges,
     }
 
 
@@ -1082,7 +1256,7 @@ def _single_grid_task_lite(args):
         f_bin=f_bin, pi=pi,
         sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng,
     )
-    D, p = ks_two_sample(delta_sim, g['obs_delta_rv'])
+    D, p = ks_two_sample_binned(delta_sim, g['obs_delta_rv'], g.get('bin_edges'))
     return f_bin, pi, sigma_single, D, p
 
 
@@ -1175,6 +1349,7 @@ def run_bias_grid(
         sim_cfg.time_span,
         sim_cfg.observation_times,
         sim_cfg.v_sys,
+        DEFAULT_DRV_BIN_EDGES,
     )
 
     if use_multiprocessing and n_tasks > 1:
@@ -1218,6 +1393,184 @@ def run_bias_grid(
         "sigma_grid": sigma_grid,
         "ks_D":       ks_D,
         "ks_p":       ks_p,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Cadence-aware grid runner
+# ---------------------------------------------------------------------------
+
+def _single_grid_task_cadence_aware(args):
+    """Worker for cadence-aware grid search.
+
+    args = (f_bin, pi, sigma_single, bin_cfg, period_model, seed, n_sets)
+    """
+    f_bin, pi, sigma_single, bin_cfg, period_model, seed, n_sets = args
+    g = _WORKER_GLOBALS
+
+    sim_cfg_local = SimulationConfig(
+        n_stars=len(g['cadence_library']),
+        n_epochs=g.get('n_epochs', 6),
+        time_span=g.get('time_span', 3650.0),
+        sigma_single=sigma_single,
+        sigma_measure=g['sigma_measure'],
+        v_sys=g.get('v_sys', 0.0),
+        observation_times=g.get('observation_times'),
+        cadence_library=g['cadence_library'],
+        cadence_weights=g['cadence_weights'],
+    )
+    bin_cfg_local = BinaryParameterConfig(**vars(bin_cfg))
+    bin_cfg_local.period_model = period_model
+
+    _bin_edges = g.get('bin_edges')
+
+    rng = np.random.default_rng(seed)
+    result = simulate_delta_rv_cadence_aware(
+        f_bin=f_bin, pi=pi,
+        sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng,
+        n_sets=n_sets, bin_edges=_bin_edges,
+    )
+
+    obs_cdf = binned_cdf(g['obs_delta_rv'],
+                         _bin_edges if _bin_edges is not None else DEFAULT_DRV_BIN_EDGES)
+    median_cdf = result['median_cdf']
+    D = float(np.max(np.abs(median_cdf - obs_cdf)))
+
+    # Approximate p-value
+    n1 = n_sets * len(g['cadence_library'])
+    n2 = len(g['obs_delta_rv'])
+    en = math.sqrt(n1 * n2 / (n1 + n2))
+    x = (en + 0.12 + 0.11 / en) * D
+    term_sum = 0.0
+    for j in range(1, 101):
+        term = 2.0 * ((-1) ** (j - 1)) * math.exp(-2.0 * (j ** 2) * (x ** 2))
+        term_sum += term
+        if abs(term) < 1e-8:
+            break
+    p_value = max(0.0, min(1.0, term_sum))
+
+    return (f_bin, pi, sigma_single, D, p_value,
+            result['median_cdf'], result['lo_cdf'], result['hi_cdf'])
+
+
+def run_bias_grid_cadence_aware(
+    fbin_values: Iterable[float],
+    pi_values: Iterable[float],
+    obs_delta_rv: np.ndarray,
+    sim_cfg: Optional[SimulationConfig] = None,
+    bin_cfg: Optional[BinaryParameterConfig] = None,
+    period_model: str = "powerlaw",
+    sigma_values: Optional[Iterable[float]] = None,
+    n_sets: int = 10_000,
+    n_processes: Optional[int] = None,
+    seed_base: int = 1234,
+    use_multiprocessing: bool = True,
+    callback=None,
+) -> Dict[str, np.ndarray]:
+    """Cadence-aware grid search over (f_bin, pi[, sigma_single]).
+
+    Like ``run_bias_grid`` but each grid point uses
+    ``simulate_delta_rv_cadence_aware`` with *n_sets* repetitions of 25-star
+    sets, comparing the **median binned CDF** to the observed CDF.
+
+    Extra parameter *callback(completed, total, result_tuple)* is called after
+    each completed task (useful for live progress updates in the webapp).
+    """
+    if sim_cfg is None:
+        sim_cfg = SimulationConfig()
+    if bin_cfg is None:
+        bin_cfg = BinaryParameterConfig()
+
+    obs_delta_rv = np.asarray(obs_delta_rv, dtype=float)
+    fbin_grid = np.asarray(list(fbin_values), dtype=float)
+    pi_grid   = np.asarray(list(pi_values), dtype=float)
+
+    if sigma_values is not None:
+        sigma_grid = np.asarray(list(sigma_values), dtype=float)
+    else:
+        sigma_grid = np.array([sim_cfg.sigma_single])
+
+    # Build task list
+    tasks = []
+    idx = 0
+    for sigma in sigma_grid:
+        for fb in fbin_grid:
+            for pi_val in pi_grid:
+                tasks.append((
+                    fb, pi_val, sigma,
+                    bin_cfg, period_model,
+                    seed_base + idx,
+                    n_sets,
+                ))
+                idx += 1
+
+    n_tasks = len(tasks)
+
+    _initargs = (
+        sim_cfg.cadence_library,
+        getattr(sim_cfg, 'cadence_weights', None),
+        obs_delta_rv,
+        len(sim_cfg.cadence_library) if sim_cfg.cadence_library else 25,
+        sim_cfg.sigma_measure,
+        sim_cfg.n_epochs,
+        sim_cfg.time_span,
+        sim_cfg.observation_times,
+        sim_cfg.v_sys,
+        DEFAULT_DRV_BIN_EDGES,
+    )
+
+    # Storage for best-fit CDF band
+    best_p = -1.0
+    best_median_cdf = None
+    best_lo_cdf = None
+    best_hi_cdf = None
+
+    n_sig = sigma_grid.size
+    n_fb  = fbin_grid.size
+    n_pi  = pi_grid.size
+    ks_D  = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    ks_p  = np.empty((n_sig, n_fb, n_pi), dtype=float)
+
+    def _process_result(res_tuple, completed):
+        nonlocal best_p, best_median_cdf, best_lo_cdf, best_hi_cdf
+        fb, pi_val, sigma, D, p, med_cdf, lo_cdf, hi_cdf = res_tuple
+        i_sig = np.searchsorted(sigma_grid, sigma)
+        i_fb  = np.searchsorted(fbin_grid, fb)
+        i_pi  = np.searchsorted(pi_grid, pi_val)
+        if i_sig < n_sig and i_fb < n_fb and i_pi < n_pi:
+            ks_D[i_sig, i_fb, i_pi] = D
+            ks_p[i_sig, i_fb, i_pi] = p
+        if p > best_p:
+            best_p = p
+            best_median_cdf = med_cdf
+            best_lo_cdf = lo_cdf
+            best_hi_cdf = hi_cdf
+        if callback is not None:
+            callback(completed, n_tasks, res_tuple)
+
+    if use_multiprocessing and n_tasks > 1:
+        with mp.Pool(processes=n_processes,
+                     initializer=_init_worker,
+                     initargs=_initargs) as pool:
+            for completed, res in enumerate(pool.imap_unordered(
+                    _single_grid_task_cadence_aware, tasks), 1):
+                _process_result(res, completed)
+    else:
+        _init_worker(*_initargs)
+        for completed, t in enumerate(tasks, 1):
+            res = _single_grid_task_cadence_aware(t)
+            _process_result(res, completed)
+
+    return {
+        "fbin_grid":       fbin_grid,
+        "pi_grid":         pi_grid,
+        "sigma_grid":      sigma_grid,
+        "ks_D":            ks_D,
+        "ks_p":            ks_p,
+        "best_median_cdf": best_median_cdf,
+        "best_lo_cdf":     best_lo_cdf,
+        "best_hi_cdf":     best_hi_cdf,
+        "n_sets":          n_sets,
     }
 
 

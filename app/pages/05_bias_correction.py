@@ -431,7 +431,8 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                 processes=int(n_proc),
                 initializer=_init_worker,
                 initargs=(cadence_list, cadence_weights, obs_delta_rv,
-                          int(n_stars_sim), float(sigma_meas)),
+                          int(n_stars_sim), float(sigma_meas),
+                          6, 3650.0, None, 0.0, None),
             ) as pool:
                 for i_lp, logPmax_v in enumerate(logPmax_scan_vals):
                     if job.get('cancel'):
@@ -675,7 +676,8 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                 processes=int(n_proc),
                 initializer=_init_worker,
                 initargs=(cadence_list, cadence_weights, obs_delta_rv,
-                          int(n_stars), float(sigma_meas)),
+                          int(n_stars), float(sigma_meas),
+                          6, 3650.0, None, 0.0, None),
             ) as pool:
                 for fb, _pi_ret, sigma_ret, D, p_val in pool.imap_unordered(
                         _single_grid_task_lite, tasks,
@@ -2285,33 +2287,33 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 f'{p}_explore_vals', (_ana_fbin, _ana_pi, _ana_sigma))
 
             if sim_drv is not None:
-                # ── 1) CDF Comparison ────────────────────────────────────────
+                # ── 1) CDF Comparison (binned) ──────────────────────────────
                 st.markdown('### CDF Comparison  (ΔRV)')
 
-                obs_sorted = np.sort(obs_drv_analysis)
-                obs_cdf = np.arange(1, len(obs_sorted) + 1) / len(obs_sorted)
-                sim_sorted = np.sort(sim_drv)
-                sim_cdf = np.arange(1, len(sim_sorted) + 1) / len(sim_sorted)
+                from wr_bias_simulation import binned_cdf, ks_two_sample_binned, DEFAULT_DRV_BIN_EDGES
+                _bin_edges = DEFAULT_DRV_BIN_EDGES
+                obs_cdf_binned = binned_cdf(obs_drv_analysis, _bin_edges)
+                sim_cdf_binned = binned_cdf(sim_drv, _bin_edges)
 
-                D_val, p_val = ks_two_sample(sim_drv, obs_drv_analysis)
+                D_val, p_val = ks_two_sample_binned(sim_drv, obs_drv_analysis, _bin_edges)
 
                 fig_cdf = go.Figure()
                 fig_cdf.add_trace(go.Scatter(
-                    x=obs_sorted, y=obs_cdf,
+                    x=_bin_edges, y=obs_cdf_binned,
                     mode='lines', name='Observed',
-                    line=dict(color='#4A90D9', width=2.5),
-                    hovertemplate='ΔRV=%{x:.1f} km/s<br>CDF=%{y:.3f}<extra>Observed</extra>',
+                    line=dict(color='#4A90D9', width=2.5, shape='hv'),
+                    hovertemplate='ΔRV=%{x:.0f} km/s<br>CDF=%{y:.3f}<extra>Observed</extra>',
                 ))
                 fig_cdf.add_trace(go.Scatter(
-                    x=sim_sorted, y=sim_cdf,
+                    x=_bin_edges, y=sim_cdf_binned,
                     mode='lines', name='Simulated',
-                    line=dict(color='#E25A53', width=2.5, dash='dash'),
-                    hovertemplate='ΔRV=%{x:.1f} km/s<br>CDF=%{y:.3f}<extra>Simulated</extra>',
+                    line=dict(color='#E25A53', width=2.5, dash='dash', shape='hv'),
+                    hovertemplate='ΔRV=%{x:.0f} km/s<br>CDF=%{y:.3f}<extra>Simulated</extra>',
                 ))
                 fig_cdf.update_layout(**{
                     **PLOTLY_THEME,
                     'title': dict(
-                        text=(f'ΔRV CDF — Observed vs Model  '
+                        text=(f'Binned ΔRV CDF — Observed vs Model  '
                               f'(f_bin={ex_fb:.3f}, π={ex_pi:.2f}, '
                               f'σ={ex_sig:.1f})'),
                         font=dict(size=14),
@@ -2322,7 +2324,7 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                     'legend': dict(x=0.65, y=0.15),
                     'annotations': [dict(
                         x=0.98, y=0.95, xref='paper', yref='paper',
-                        text=f'K-S D = {D_val:.4f}<br>p = {p_val:.4f}',
+                        text=f'Binned K-S D = {D_val:.4f}<br>p = {p_val:.4f}',
                         showarrow=False,
                         font=dict(size=12, color=pal['annotation_font']),
                         bgcolor=pal['annotation_bg'],
@@ -2332,7 +2334,8 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 })
                 st.plotly_chart(fig_cdf, use_container_width=True, key=f'{p}_cdf')
                 st.caption(
-                    'Empirical cumulative distribution of peak-to-peak ΔRV. '
+                    'Binned cumulative distribution of peak-to-peak ΔRV '
+                    f'(10 km/s bins up to 350 km/s). '
                     'The K-S statistic (D) measures the maximum vertical '
                     'distance between the two CDFs; a higher p-value indicates '
                     'a better match between model and observations.'
@@ -4024,31 +4027,31 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 f'{p}_explore_vals', (best_fbin_lg, best_sigma_lg))
 
             if lg_sim_drv is not None:
-                # ── CDF Comparison ────────────────────────────────────────────
+                # ── CDF Comparison (binned) ──────────────────────────────────
                 st.markdown('### CDF Comparison  (ΔRV)')
 
-                lg_obs_sorted = np.sort(lg_obs_drv_analysis)
-                lg_obs_cdf = np.arange(1, len(lg_obs_sorted) + 1) / len(lg_obs_sorted)
-                lg_sim_sorted = np.sort(lg_sim_drv)
-                lg_sim_cdf = np.arange(1, len(lg_sim_sorted) + 1) / len(lg_sim_sorted)
+                from wr_bias_simulation import binned_cdf, ks_two_sample_binned, DEFAULT_DRV_BIN_EDGES
+                _bin_edges = DEFAULT_DRV_BIN_EDGES
+                lg_obs_cdf_binned = binned_cdf(lg_obs_drv_analysis, _bin_edges)
+                lg_sim_cdf_binned = binned_cdf(lg_sim_drv, _bin_edges)
 
-                lg_D_val, lg_p_val = ks_two_sample(lg_sim_drv, lg_obs_drv_analysis)
+                lg_D_val, lg_p_val = ks_two_sample_binned(lg_sim_drv, lg_obs_drv_analysis, _bin_edges)
 
                 fig_lg_cdf = go.Figure()
                 fig_lg_cdf.add_trace(go.Scatter(
-                    x=lg_obs_sorted, y=lg_obs_cdf,
+                    x=_bin_edges, y=lg_obs_cdf_binned,
                     mode='lines', name='Observed',
-                    line=dict(color='#4A90D9', width=2.5),
+                    line=dict(color='#4A90D9', width=2.5, shape='hv'),
                 ))
                 fig_lg_cdf.add_trace(go.Scatter(
-                    x=lg_sim_sorted, y=lg_sim_cdf,
+                    x=_bin_edges, y=lg_sim_cdf_binned,
                     mode='lines', name='Simulated',
-                    line=dict(color='#E25A53', width=2.5, dash='dash'),
+                    line=dict(color='#E25A53', width=2.5, dash='dash', shape='hv'),
                 ))
                 fig_lg_cdf.update_layout(**{
                     **PLOTLY_THEME,
                     'title': dict(
-                        text=(f'ΔRV CDF — Observed vs Langer Model  '
+                        text=(f'Binned ΔRV CDF — Observed vs Langer Model  '
                               f'(f_bin={lg_ex_fb_v:.3f}, σ={lg_ex_sig_v:.1f})'),
                         font=dict(size=14)),
                     'xaxis_title': 'ΔRV (km/s)',
@@ -4057,7 +4060,7 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                     'legend': dict(x=0.65, y=0.15),
                     'annotations': [dict(
                         x=0.98, y=0.95, xref='paper', yref='paper',
-                        text=f'K-S D = {lg_D_val:.4f}<br>p = {lg_p_val:.4f}',
+                        text=f'Binned K-S D = {lg_D_val:.4f}<br>p = {lg_p_val:.4f}',
                         showarrow=False,
                         font=dict(size=12, color=pal['annotation_font']),
                         bgcolor=pal['annotation_bg'],
@@ -4066,8 +4069,8 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 })
                 st.plotly_chart(fig_lg_cdf, use_container_width=True, key=f'{p}_cdf')
                 st.caption(
-                    'CDF of peak-to-peak ΔRV (Langer 2020 model). Higher p-value '
-                    'indicates a better match between model and observations.'
+                    'Binned CDF of peak-to-peak ΔRV (Langer 2020 model, 10 km/s bins). '
+                    'Higher p-value indicates a better match between model and observations.'
                 )
 
                 # ── RV Distribution ───────────────────────────────────────────
@@ -4800,6 +4803,7 @@ if 'bc_tabs' not in st.session_state:
     st.session_state['bc_tabs'] = [
         {'type': 'dsilva', 'name': 'Dsilva (power-law)', 'prefix': 'bc'},
         {'type': 'langer', 'name': 'Langer 2020', 'prefix': 'lg'},
+        {'type': 'cadence', 'name': 'Cadence-Aware', 'prefix': 'ca'},
         {'type': 'compare', 'name': 'Compare', 'prefix': 'cmp'},
     ]
 
@@ -4809,14 +4813,16 @@ with _tab_mgmt_cols[1]:
     with st.popover('➕ Add tab'):
         _add_type = st.radio(
             'Tab type',
-            ['Dsilva', 'Langer', 'Compare'],
+            ['Dsilva', 'Langer', 'Cadence-Aware', 'Compare'],
             key='_bc_add_tab_type',
         )
         _add_name = st.text_input('Tab name (optional)', key='_bc_add_tab_name')
         _add_col1, _add_col2 = st.columns(2)
         if _add_col1.button('Add', key='_bc_add_tab_btn', type='primary'):
             _idx = len(st.session_state['bc_tabs'])
-            _type_lower = _add_type.lower()
+            _type_map = {'dsilva': 'dsilva', 'langer': 'langer',
+                         'cadence-aware': 'cadence', 'compare': 'compare'}
+            _type_lower = _type_map.get(_add_type.lower(), _add_type.lower())
             _pfx = f'{_type_lower[:3]}{_idx}'
             st.session_state['bc_tabs'].append({
                 'type': _type_lower,
@@ -4841,6 +4847,8 @@ for _tw, _ti in zip(_tab_widgets, st.session_state['bc_tabs']):
             _render_dsilva_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'langer':
             _render_langer_tab(_ti['prefix'], settings, sm)
+        elif _ti['type'] == 'cadence':
+            _render_cadence_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'compare':
             _render_compare_tab(_ti['prefix'])
 

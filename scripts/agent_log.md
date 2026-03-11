@@ -961,3 +961,5 @@ I fully rewrote `app/pages/06_plots.py` (from 228 lines → ~680 lines) imp
 **Quadrant:** eliminate
 
 [2026-03-11 17:10:03] --- Starting task #103: RV Modeling page improvements — follow-up on #52 ---
+[2026-03-11 17:27:48]   [REGRESSION] Running Python-level regression check...
+[2026-03-11 17:28:14]   [REGRESSION] PASSED — 21 core files OK
