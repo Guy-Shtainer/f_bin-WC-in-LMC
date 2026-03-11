@@ -290,6 +290,30 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 ---
 
+### E026 — `st.rerun(scope='app')` inside polling fragment causes full-page flicker
+
+| | |
+|---|---|
+| **Bad** | `@st.fragment(run_every=3)` → `st.rerun(scope='app')` to refresh live display |
+| **Fix** | Put the live display elements (progress, heatmap, status) **inside** a `@st.fragment(run_every=3)` that renders them directly. Only use `st.rerun(scope='app')` once when the job completes to transition to the done state. |
+| **Grep** | `st.rerun(scope='app')` inside any `run_every` fragment (manual check) |
+| **Why** | `st.rerun(scope='app')` reruns the *entire page* from top to bottom, clearing all `st.empty()` slots and recreating them. The gap between clear and re-populate causes visible flicker (elements go dark for ~100ms). Fragment-scoped re-renders only update the fragment's content. |
+| **Found in** | `app/pages/05_bias_correction.py` — global `_auto_refresh` fragment at page bottom |
+
+---
+
+### E027 — `np.empty()` for accumulation arrays leaves garbage in uncomputed cells
+
+| | |
+|---|---|
+| **Bad** | `ks_p = np.empty((n_sig, n_fb, n_pi), dtype=float)` |
+| **Fix** | `ks_p = np.full((n_sig, n_fb, n_pi), np.nan)` |
+| **Grep** | `np\.empty\(` (check if used for accumulation arrays where NaN sentinel is needed) |
+| **Why** | `np.empty` fills with uninitialized memory (arbitrary floats). When computing `max()` or `argmax()` on partially-filled arrays, garbage values in uncomputed cells produce wrong results. Always use `np.full(..., np.nan)` for arrays that accumulate results incrementally. |
+| **Found in** | `app/pages/05_bias_correction.py` — `_run_cadence_bg()` line ~4380 |
+
+---
+
 ## Adding New Errors
 
 When you encounter a new recurring error, add it here with:

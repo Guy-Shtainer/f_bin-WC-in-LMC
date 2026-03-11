@@ -557,4 +557,33 @@ strength of this analysis compared to the prior work.
 
 ---
 
-*Last updated: 2026-03-10*
+### 2026-03-11 — Bias correction page: flicker fix, Langer cadence display correction
+
+**What was done:**
+- Diagnosed and fixed the live heatmap UI flicker during bias correction simulations.
+  Root cause: a global `@st.fragment(run_every=3)` was calling `st.rerun(scope='app')`
+  every 3 seconds, triggering a full page rerun that cleared all `st.empty()` slots
+  before re-populating them. Fix: replaced with per-tab `@st.fragment(run_every=3)`
+  functions that render live elements (progress bar, heatmap, status text) directly
+  inside the fragment — only the fragment's content re-renders, not the full page.
+- Fixed the Langer cadence-aware live heatmap display: was showing f_bin vs π (π always
+  0.0 for Langer), now correctly shows f_bin vs σ_single when sigma scan is active.
+  The 3D array `ks_p[n_sig, n_fb, n_pi=1]` is reshaped to `(n_fb, n_sig)` by squeezing
+  the pi dimension and transposing.
+- Fixed `np.empty()` → `np.full(..., np.nan)` in the cadence-aware background runner,
+  preventing garbage values in uncomputed grid cells from corrupting `max()` / `argmax()`
+  calculations during live updates.
+
+**Methodology notes:**
+- Also investigated the observed slowdown in grid point completion rate: higher f_bin
+  values require more binary systems to be simulated (more Kepler equation solving via
+  Newton-Raphson), so tasks with high f_bin are inherently slower. This is not a bug —
+  it is an expected consequence of the physics simulation cost scaling with binary fraction.
+
+**Bugs found and fixed:**
+- E026: `st.rerun(scope='app')` inside polling fragment causes full-page flicker
+- E027: `np.empty()` leaves garbage values in accumulation arrays
+
+---
+
+*Last updated: 2026-03-11*
