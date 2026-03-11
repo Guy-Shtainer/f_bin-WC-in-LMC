@@ -983,3 +983,39 @@ I fully rewrote `app/pages/06_plots.py` (from 228 lines → ~680 lines) imp
 [2026-03-11 16:50:30]   [AUTO-LEARN] Running reflection...
 [2026-03-11 16:51:50]   [AUTO-LEARN] Reflection complete.
 [2026-03-11 16:51:50]   [AUTO-LEARN] Reflection complete.
+Traceback (most recent call last):
+  File "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/תואר שני!/Thesis/Thesis-codes/scripts/overnight_agent.py", line 1832, in <module>
+    main()
+    ~~~~^^
+  File "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/תואר שני!/Thesis/Thesis-codes/scripts/overnight_agent.py", line 1821, in main
+    asyncio.run(agent_loop(args.quadrant, args.max_tasks, args.dry_run,
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                           include_critical=args.include_critical,
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                           task_ids=task_ids,
+                           ^^^^^^^^^^^^^^^^^^
+                           architecture=architecture))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/guyshtainer/miniconda3/envs/guyenv/lib/python3.14/asyncio/runners.py", line 204, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/Users/guyshtainer/miniconda3/envs/guyenv/lib/python3.14/asyncio/runners.py", line 127, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/guyshtainer/miniconda3/envs/guyenv/lib/python3.14/asyncio/base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/תואר שני!/Thesis/Thesis-codes/scripts/overnight_agent.py", line 1549, in agent_loop
+    git_back_to_main(source_branch)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/תואר שני!/Thesis/Thesis-codes/scripts/overnight_agent.py", line 335, in git_back_to_main
+    git_commit_all('[AGENT] Auto-save before switching back')
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/תואר שני!/Thesis/Thesis-codes/scripts/overnight_agent.py", line 326, in git_commit_all
+    git('commit', '-m', message)
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/תואר שני!/Thesis/Thesis-codes/scripts/overnight_agent.py", line 247, in git
+    raise RuntimeError(f'git {" ".join(args)} failed: {result.stderr.strip()}')
+RuntimeError: git commit -m [AGENT] Auto-save before switching back failed: 
+[2026-03-11 17:13:28] Architecture: opus
+[2026-03-11 17:13:28] Architecture: opus
