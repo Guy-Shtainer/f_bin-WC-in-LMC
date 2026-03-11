@@ -984,3 +984,11 @@ The Spectrum Browser page (`app/pages/02_spectrum.py`) has been significantly en
 [2026-03-11 17:28:14]   [AUTO-LEARN] Running reflection...
 [2026-03-11 17:29:23]   [AUTO-LEARN] Reflection complete.
 [2026-03-11 18:47:36] Architecture: opus
+[2026-03-11 18:47:36] Agent starting — free-form task (architecture=opus)
+[2026-03-11 18:47:36] Git checkpoint: pre-agent-20260311-1847
+
+## Agent Session — 2026-03-11 18:47
+**Checkpoint:** `pre-agent-20260311-1847`
+**Rollback:** `git reset --hard pre-agent-20260311-1847`
+**Quadrant:** freeform
+

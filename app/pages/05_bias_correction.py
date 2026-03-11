@@ -4523,307 +4523,823 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         job['error'] = traceback.format_exc()
         job['status'] = 'error'
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Cadence-Aware tab renderer
+# Cadence-Aware tab renderers (Dsilva variant + Langer variant)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_cadence_tab(p: str, settings: dict, sm,
-                        period_model: str = 'powerlaw') -> None:
-    """Render Cadence-Aware simulation tab."""
+def _render_cadence_results(p: str, _is_dsilva: bool) -> None:
+    """Shared right-column results display for both cadence tabs."""
     pal = get_palette()
-    _is_dsilva = (period_model == 'powerlaw')
-    _period_model = period_model
+
+    # Persistent st.empty() slots for live updates (matching Dsilva pattern)
+    progress_slot  = st.empty()
+    status_slot    = st.empty()
+    heatmap_slot   = st.empty()
+
+    _job = st.session_state.get(f'{p}_job')
+    _saved_result = st.session_state.get(f'{p}_result')
+
+    if _job is None and _saved_result is None:
+        st.info('Configure parameters and click **Run** to start a cadence-aware simulation.')
+        return
+
+    # If job is done or we have a saved result, show it
+    if _job is None and _saved_result is not None:
+        status = 'done'
+    else:
+        status = _job.get('status', 'idle') if _job else 'idle'
+
+    if status == 'running':
+        progress_slot.progress(
+            _job.get('progress_pct', 0),
+            text=_job.get('progress_text', 'Running...'))
+
+        # Live heatmap (Dsilva-compatible data format)
+        if _job.get('live_heatmap'):
+            hd = _job['live_heatmap']
+            try:
+                show_d = False
+                heatmap_slot.plotly_chart(
+                    _make_heatmap_fig(
+                        hd['p'], hd['fbin'], hd['x'],
+                        title=hd['title'], show_d=show_d,
+                        ks_d_2d=hd.get('d'), height=_ch, width=_cw,
+                        live=not hd.get('is_final', False),
+                    ), use_container_width=_use_cw)
+            except Exception:
+                pass
+        if _job.get('live_status'):
+            status_slot.markdown(_job['live_status'])
+
+    elif status == 'error':
+        status_slot.error(
+            f"Simulation failed:\n```\n{_job.get('error', 'Unknown')}\n```")
+        del st.session_state[f'{p}_job']
+
+    elif status == 'cancelled':
+        status_slot.warning('Simulation was cancelled.')
+        del st.session_state[f'{p}_job']
+
+    elif status == 'done':
+        # Get result from job (first time) or saved state (subsequent reruns)
+        if _job is not None and _job.get('result'):
+            result = _job['result']
+            st.session_state[f'{p}_result'] = result
+            del st.session_state[f'{p}_job']
+        else:
+            result = _saved_result or {}
+
+        ks_p_arr = result.get('ks_p')
+        if ks_p_arr is None:
+            st.warning('No results found.')
+            return
+
+        fbin_grid = result['fbin_grid']
+        pi_grid   = result['pi_grid']
+        sigma_grid = result['sigma_grid']
+        n_sig = len(sigma_grid)
+
+        # Best slice
+        if n_sig == 1:
+            hm_z = ks_p_arr[0]
+        else:
+            _pmax = [ks_p_arr[s].max() for s in range(n_sig)]
+            _best_s = int(np.argmax(_pmax))
+            hm_z = ks_p_arr[_best_s]
+            st.info(f'Showing best σ_single slice: {sigma_grid[_best_s]:.1f} km/s')
+
+        # Heatmap — use make_heatmap_fig with keyword args (Dsilva-compatible)
+        _x_label = 'π  (period power-law index)' if _is_dsilva else 'σ_single (km/s)'
+        fig_hm = _make_heatmap_fig(
+            hm_z, fbin_grid.tolist(), pi_grid.tolist(),
+            title='K-S p-value (cadence-aware)',
+            height=_ch, width=_cw,
+            x_label=_x_label,
+        )
+        # Best point marker
+        _bi = np.unravel_index(np.argmax(hm_z), hm_z.shape)
+        fig_hm.add_trace(go.Scatter(
+            x=[float(pi_grid[_bi[1]])], y=[float(fbin_grid[_bi[0]])],
+            mode='markers',
+            marker=dict(symbol='star', size=16, color='#DAA520',
+                        line=dict(width=1.5, color='black')),
+            name='Best fit', showlegend=True,
+        ))
+        st.plotly_chart(fig_hm, use_container_width=_use_cw, key=f'{p}_heatmap')
+
+        # Summary
+        st.markdown('### Best-fit summary')
+        _rows = []
+        _best_fb = float(fbin_grid[_bi[0]])
+        _best_pi = float(pi_grid[_bi[1]])
+        _best_pval = float(hm_z[_bi])
+        _rows.append({'Parameter': 'f_bin', 'Best': f'{_best_fb:.3f}',
+                      'Mode (HDI68)': f"{result.get('mode_fbin', _best_fb):.3f} "
+                                      f"[{result.get('lo_fbin', '?')}, {result.get('hi_fbin', '?')}]"})
+        if _is_dsilva:
+            _rows.append({'Parameter': 'π', 'Best': f'{_best_pi:.2f}',
+                          'Mode (HDI68)': f"{result.get('mode_pi', _best_pi):.2f} "
+                                          f"[{result.get('lo_pi', '?')}, {result.get('hi_pi', '?')}]"})
+        _rows.append({'Parameter': 'K-S p', 'Best': f'{_best_pval:.4f}', 'Mode (HDI68)': ''})
+        _rows.append({'Parameter': 'N_sets', 'Best': str(result.get('n_sets', '?')), 'Mode (HDI68)': ''})
+        st.table(pd.DataFrame(_rows))
+
+        # CDF comparison with error band
+        st.markdown('### CDF Comparison (cadence-aware)')
+
+        from wr_bias_simulation import binned_cdf, DEFAULT_DRV_BIN_EDGES
+        _bin_edges = DEFAULT_DRV_BIN_EDGES
+        obs_drv = result.get('obs_delta_rv')
+        med_cdf = result.get('best_median_cdf')
+        lo_cdf  = result.get('best_lo_cdf')
+        hi_cdf  = result.get('best_hi_cdf')
+
+        if obs_drv is not None and med_cdf is not None:
+            obs_cdf_b = binned_cdf(obs_drv, _bin_edges)
+
+            fig_cdf = go.Figure()
+            # 68% band
+            fig_cdf.add_trace(go.Scatter(
+                x=np.concatenate([_bin_edges, _bin_edges[::-1]]),
+                y=np.concatenate([hi_cdf, lo_cdf[::-1]]),
+                fill='toself', fillcolor='rgba(226, 90, 83, 0.15)',
+                line=dict(width=0), name='68% band',
+                hoverinfo='skip', showlegend=True,
+            ))
+            # Observed
+            fig_cdf.add_trace(go.Scatter(
+                x=_bin_edges, y=obs_cdf_b,
+                mode='lines', name='Observed',
+                line=dict(color='#4A90D9', width=2.5, shape='hv'),
+            ))
+            # Simulated median
+            fig_cdf.add_trace(go.Scatter(
+                x=_bin_edges, y=med_cdf,
+                mode='lines', name='Simulated (median)',
+                line=dict(color='#E25A53', width=2.5, dash='dash', shape='hv'),
+            ))
+            fig_cdf.update_layout(**{
+                **PLOTLY_THEME,
+                'title': dict(
+                    text=f'Cadence-aware CDF  (f_bin={_best_fb:.3f}, N_sets={result.get("n_sets", "?")})',
+                    font=dict(size=14)),
+                'xaxis_title': 'ΔRV (km/s)',
+                'yaxis_title': 'Cumulative fraction',
+                'height': 450,
+                'legend': dict(x=0.55, y=0.15),
+                'annotations': [dict(
+                    x=0.98, y=0.95, xref='paper', yref='paper',
+                    text=f'Binned K-S D = {float(np.max(np.abs(med_cdf - obs_cdf_b))):.4f}<br>'
+                         f'p = {_best_pval:.4f}',
+                    showarrow=False,
+                    font=dict(size=12, color=pal['annotation_font']),
+                    bgcolor=pal['annotation_bg'],
+                    borderpad=6, xanchor='right',
+                )],
+            })
+            st.plotly_chart(fig_cdf, use_container_width=True, key=f'{p}_cdf')
+            st.caption(
+                f'Cadence-aware CDF comparison. Each of {result.get("n_sets", "?")} sets '
+                f'contains exactly 25 simulated stars with observation cadences matching '
+                f'the real sample. The shaded band shows the 68% confidence interval across sets.'
+            )
+
+
+def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
+                              fb_min, fb_max, fb_steps,
+                              pi_min, pi_max, pi_steps,
+                              n_sets, sigma_vals, _bin_cfg,
+                              _sigma_meas, settings, sm) -> None:
+    """Shared action buttons + right column for cadence tabs."""
+    # Workers
+    _n_proc = os.cpu_count() - 1
+
+    # Action buttons
+    _a1, _a2 = st.columns(2)
+    _run_btn = _a1.button('▶️ Run', key=f'{p}_run_btn', type='primary')
+    _cancel_btn = _a2.button('⏹ Cancel', key=f'{p}_cancel_btn')
+
+    if _cancel_btn and f'{p}_job' in st.session_state:
+        st.session_state[f'{p}_job']['cancel'] = True
+
+    if _run_btn:
+        _sh = settings_hash(settings)
+        obs_drv, obs_det = cached_load_observed_delta_rvs(_sh)
+        cad_list, cad_wts = cached_load_cadence(_sh)
+
+        fbin_vals = np.linspace(fb_min, fb_max, fb_steps).tolist()
+        if _is_dsilva:
+            pi_v = np.linspace(pi_min, pi_max, pi_steps).tolist()
+        else:
+            pi_v = [0.0]
+
+        job = {
+            'status': 'running',
+            'progress_pct': 0.0,
+            'progress_text': 'Starting...',
+            'live_heatmap': None,
+            'live_status': '',
+            '_last_hm': 0,
+        }
+        st.session_state[f'{p}_job'] = job
+
+        params = {
+            'cadence_list': cad_list,
+            'cadence_weights': cad_wts,
+            'obs_delta_rv': obs_drv,
+            'n_proc': _n_proc,
+            'fbin_vals': fbin_vals,
+            'pi_vals': pi_v,
+            'sigma_vals': sigma_vals,
+            'n_sets': n_sets,
+            'period_model': _period_model,
+            'bin_cfg': _bin_cfg,
+            'sigma_meas': _sigma_meas,
+            'save_params': {
+                'mode': 'cadence_aware',
+                'period_model': _period_model,
+                'n_sets': n_sets,
+            },
+        }
+
+        import threading
+        t = threading.Thread(target=_run_cadence_bg, args=(job, params), daemon=True)
+        t.start()
+        st.rerun()
+
+
+def _render_cadence_dsilva_tab(p: str, settings: dict, sm) -> None:
+    """Render Cadence-Aware simulation tab (Dsilva / power-law period model)."""
+    _is_dsilva = True
+    _period_model = 'powerlaw'
+    _sec = 'grid_cadence_dsilva'
+
+    gcfg = settings.get(_sec, {})
+    orb  = gcfg.get('orbital', {})
+    simcfg = settings.get('simulation', {})
+
+    # Pre-initialise session_state from settings (only on first visit)
+    _defaults = {
+        f'{p}_fb_min':      float(gcfg.get('fbin_min', 0.0)),
+        f'{p}_fb_max':      float(gcfg.get('fbin_max', 1.0)),
+        f'{p}_fb_steps':    int(gcfg.get('fbin_steps', 100)),
+        f'{p}_pi_min':      float(gcfg.get('pi_min', -3.0)),
+        f'{p}_pi_max':      float(gcfg.get('pi_max', 3.0)),
+        f'{p}_pi_steps':    int(gcfg.get('pi_steps', 60)),
+        f'{p}_n_sets':      int(gcfg.get('n_sets', 10000)),
+        f'{p}_scan_sigma':  bool(gcfg.get('scan_sigma', False)),
+        f'{p}_sigma_single': float(gcfg.get('sigma_single',
+                                    float(settings.get('grid', {}).get('sigma_single', 15.0)))),
+        f'{p}_sig_min':     float(gcfg.get('sigma_min', 5.0)),
+        f'{p}_sig_max':     float(gcfg.get('sigma_max', 30.0)),
+        f'{p}_sig_steps':   int(gcfg.get('sigma_steps', 10)),
+        f'{p}_logp_min':    float(orb.get('logP_min', 0.15)),
+        f'{p}_logp_max':    float(orb.get('logP_max', 5.0)),
+        f'{p}_e_max':       float(orb.get('e_max', 0.9)),
+        f'{p}_mass_fixed':  float(orb.get('mass_primary_fixed', 10.0)),
+        f'{p}_q_min':       float(orb.get('q_range', [0.1, 2.0])[0]),
+        f'{p}_q_max':       float(orb.get('q_range', [0.1, 2.0])[1]),
+        f'{p}_lq_mu':       float(orb.get('langer_q_mu', 0.7)),
+        f'{p}_lq_sig':      float(orb.get('langer_q_sigma', 0.2)),
+        f'{p}_sigma_meas':  float(simcfg.get('sigma_measure', 1.622)),
+    }
+    for _k, _v in _defaults.items():
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
 
     left_col, right_col = st.columns([0.30, 0.70])
 
     # ── LEFT: Parameters ─────────────────────────────────────────────────────
     with left_col:
-        _model_label = 'Dsilva (power-law)' if _is_dsilva else 'Langer 2020'
-        st.markdown(f'#### Cadence-Aware — {_model_label}')
+        st.markdown('#### Cadence-Aware — Dsilva (power-law)')
 
         with st.expander('Grid parameters', expanded=True):
             _c1, _c2, _c3 = st.columns(3)
-            fb_min = _c1.number_input('f_bin min', 0.0, 1.0, 0.0, 0.01, key=f'{p}_fb_min')
-            fb_max = _c2.number_input('f_bin max', 0.0, 1.0, 1.0, 0.01, key=f'{p}_fb_max')
-            fb_steps = _c3.number_input('steps', 5, 500, 100, 5, key=f'{p}_fb_steps')
+            fb_min = _c1.number_input('f_bin min', 0.0, 1.0,
+                float(gcfg.get('fbin_min', 0.0)), 0.01, key=f'{p}_fb_min',
+                on_change=lambda: sm.save([_sec, 'fbin_min'],
+                                          value=st.session_state[f'{p}_fb_min']))
+            fb_max = _c2.number_input('f_bin max', 0.0, 1.0,
+                float(gcfg.get('fbin_max', 1.0)), 0.01, key=f'{p}_fb_max',
+                on_change=lambda: sm.save([_sec, 'fbin_max'],
+                                          value=st.session_state[f'{p}_fb_max']))
+            fb_steps = _c3.number_input('steps', 5, 500,
+                int(gcfg.get('fbin_steps', 100)), 5, key=f'{p}_fb_steps',
+                on_change=lambda: sm.save([_sec, 'fbin_steps'],
+                                          value=st.session_state[f'{p}_fb_steps']))
 
-            if _is_dsilva:
-                _c4, _c5, _c6 = st.columns(3)
-                pi_min = _c4.number_input('π min', -5.0, 5.0, -3.0, 0.1, key=f'{p}_pi_min')
-                pi_max = _c5.number_input('π max', -5.0, 5.0, 3.0, 0.1, key=f'{p}_pi_max')
-                pi_steps = _c6.number_input('π steps', 5, 500, 60, 5, key=f'{p}_pi_steps')
-            else:
-                pi_min, pi_max, pi_steps = 0.0, 0.0, 1
+            _c4, _c5, _c6 = st.columns(3)
+            pi_min = _c4.number_input('π min', -5.0, 5.0,
+                float(gcfg.get('pi_min', -3.0)), 0.1, key=f'{p}_pi_min',
+                on_change=lambda: sm.save([_sec, 'pi_min'],
+                                          value=st.session_state[f'{p}_pi_min']))
+            pi_max = _c5.number_input('π max', -5.0, 5.0,
+                float(gcfg.get('pi_max', 3.0)), 0.1, key=f'{p}_pi_max',
+                on_change=lambda: sm.save([_sec, 'pi_max'],
+                                          value=st.session_state[f'{p}_pi_max']))
+            pi_steps = _c6.number_input('π steps', 5, 500,
+                int(gcfg.get('pi_steps', 60)), 5, key=f'{p}_pi_steps',
+                on_change=lambda: sm.save([_sec, 'pi_steps'],
+                                          value=st.session_state[f'{p}_pi_steps']))
 
         with st.expander('Cadence-aware settings', expanded=True):
-            _ca1, _ca2 = st.columns(2)
-            n_sets = _ca1.number_input('N_sets', 100, 100000, 10000, 100,
-                                       key=f'{p}_n_sets')
-            n_stars_sim = st.number_input('N_stars (per set)', 10, 100000, 10000, 100,
-                                          key=f'{p}_n_stars_sim',
-                                          help='Not used in cadence-aware mode (fixed to 25)',
-                                          disabled=True)
+            n_sets = st.number_input('N_sets', 100, 100000,
+                int(gcfg.get('n_sets', 10000)), 100, key=f'{p}_n_sets',
+                on_change=lambda: sm.save([_sec, 'n_sets'],
+                                          value=st.session_state[f'{p}_n_sets']))
+            _sigma_meas = st.number_input('σ_measure (km/s)', 0.001, 20.0,
+                float(simcfg.get('sigma_measure', 1.622)), 0.001,
+                format='%.3f', key=f'{p}_sigma_meas',
+                on_change=lambda: sm.save([_sec, 'sigma_meas'],
+                                          value=st.session_state[f'{p}_sigma_meas']))
 
         with st.expander('Sigma scan', expanded=False):
-            _scan_sigma = st.checkbox('Scan σ_single', key=f'{p}_scan_sigma')
+            _scan_sigma = st.checkbox('Scan σ_single', key=f'{p}_scan_sigma',
+                on_change=lambda: sm.save([_sec, 'scan_sigma'],
+                                          value=st.session_state[f'{p}_scan_sigma']))
             if _scan_sigma:
                 _s1, _s2, _s3 = st.columns(3)
-                sig_min = _s1.number_input('σ min', 0.1, 100.0, 5.0, 0.5, key=f'{p}_sig_min')
-                sig_max = _s2.number_input('σ max', 0.1, 100.0, 30.0, 0.5, key=f'{p}_sig_max')
-                sig_steps = _s3.number_input('σ steps', 2, 100, 10, 1, key=f'{p}_sig_steps')
+                sig_min = _s1.number_input('σ min', 0.1, 100.0,
+                    float(gcfg.get('sigma_min', 5.0)), 0.5, key=f'{p}_sig_min',
+                    on_change=lambda: sm.save([_sec, 'sigma_min'],
+                                              value=st.session_state[f'{p}_sig_min']))
+                sig_max = _s2.number_input('σ max', 0.1, 100.0,
+                    float(gcfg.get('sigma_max', 30.0)), 0.5, key=f'{p}_sig_max',
+                    on_change=lambda: sm.save([_sec, 'sigma_max'],
+                                              value=st.session_state[f'{p}_sig_max']))
+                sig_steps = _s3.number_input('σ steps', 2, 100,
+                    int(gcfg.get('sigma_steps', 10)), 1, key=f'{p}_sig_steps',
+                    on_change=lambda: sm.save([_sec, 'sigma_steps'],
+                                              value=st.session_state[f'{p}_sig_steps']))
                 sigma_vals = np.linspace(sig_min, sig_max, sig_steps).tolist()
             else:
                 _single_sig = st.number_input('σ_single (km/s)', 0.1, 100.0,
-                                              float(settings.get('grid', {}).get('sigma_single', 15.0)),
-                                              0.5, key=f'{p}_sigma_single')
+                    float(gcfg.get('sigma_single',
+                          float(settings.get('grid', {}).get('sigma_single', 15.0)))),
+                    0.5, key=f'{p}_sigma_single',
+                    on_change=lambda: sm.save([_sec, 'sigma_single'],
+                                              value=st.session_state[f'{p}_sigma_single']))
                 sigma_vals = [_single_sig]
 
-        with st.expander('Orbital parameters', expanded=False):
-            from wr_bias_simulation import BinaryParameterConfig
-            _e_model = st.selectbox('Eccentricity model', ['zero', 'flat'],
-                                    key=f'{p}_e_model')
-            _e_max = 0.9
+        with st.expander('🔧 Orbital parameters (Kepler)', expanded=False):
+            st.caption('Parameters of the Kepler orbit randomization.')
+
+            # Period range
+            _logp_min = st.number_input('log₁₀(P/days) min', 0.01, 10.0,
+                float(orb.get('logP_min', 0.15)), 0.01, key=f'{p}_logp_min',
+                on_change=lambda: sm.save([_sec, 'orbital', 'logP_min'],
+                                          value=st.session_state[f'{p}_logp_min']))
+            _logp_max = st.number_input('log₁₀(P/days) max', 0.1, 10.0,
+                float(orb.get('logP_max', 5.0)), 0.1, key=f'{p}_logp_max',
+                on_change=lambda: sm.save([_sec, 'orbital', 'logP_max'],
+                                          value=st.session_state[f'{p}_logp_max']))
+
+            st.markdown('---')
+            # Eccentricity
+            _e_model = st.selectbox('Eccentricity model', ['flat', 'zero'],
+                index=['flat', 'zero'].index(orb.get('e_model', 'flat')),
+                key=f'{p}_e_model',
+                on_change=lambda: sm.save([_sec, 'orbital', 'e_model'],
+                                          value=st.session_state[f'{p}_e_model']))
             if _e_model == 'flat':
-                _e_max = st.number_input('e_max', 0.01, 0.99, 0.9, 0.05, key=f'{p}_e_max')
-
-            _q_model = st.selectbox('Mass ratio q model',
-                                    ['flat', 'gaussian', 'lognormal'],
-                                    key=f'{p}_q_model')
-            _q1, _q2 = st.columns(2)
-            _q_min = _q1.number_input('q_min', 0.01, 5.0, 0.1, 0.05, key=f'{p}_q_min')
-            _q_max = _q2.number_input('q_max', 0.01, 5.0, 2.0, 0.1, key=f'{p}_q_max')
-
-            _m1 = st.number_input('M_primary (M☉)', 1.0, 100.0, 10.0, 1.0, key=f'{p}_m1')
-            _sigma_meas = st.number_input('σ_measure (km/s)', 0.1, 50.0,
-                                          float(settings.get('grid', {}).get('sigma_measure', 5.0)),
-                                          0.5, key=f'{p}_sigma_meas')
-
-            if _is_dsilva:
-                _lp1, _lp2 = st.columns(2)
-                _logp_min = _lp1.number_input('logP_min', 0.0, 5.0, 0.15, 0.05, key=f'{p}_logp_min')
-                _logp_max = _lp2.number_input('logP_max', 0.0, 8.0, 5.0, 0.5, key=f'{p}_logp_max')
+                _e_max = st.number_input('e_max', 0.0, 0.99,
+                    float(orb.get('e_max', 0.9)), 0.05, key=f'{p}_e_max',
+                    on_change=lambda: sm.save([_sec, 'orbital', 'e_max'],
+                                              value=st.session_state[f'{p}_e_max']))
             else:
-                _logp_min, _logp_max = 0.15, 5.0
+                _e_max = 0.0
 
+            st.markdown('---')
+            # Primary mass
+            _mass_model = st.selectbox('Primary mass model', ['fixed', 'uniform'],
+                index=['fixed', 'uniform'].index(orb.get('mass_primary_model', 'fixed')),
+                key=f'{p}_mass_model',
+                on_change=lambda: sm.save([_sec, 'orbital', 'mass_primary_model'],
+                                          value=st.session_state[f'{p}_mass_model']))
+            if _mass_model == 'fixed':
+                _mass_fixed = st.number_input('M₁ (M☉)', 1.0, 200.0,
+                    float(orb.get('mass_primary_fixed', 10.0)), 1.0,
+                    key=f'{p}_mass_fixed',
+                    on_change=lambda: sm.save([_sec, 'orbital', 'mass_primary_fixed'],
+                                              value=st.session_state[f'{p}_mass_fixed']))
+                _mass_range = (float(_mass_fixed), float(_mass_fixed))
+            else:
+                _mass_fixed = 10.0
+                _mr = orb.get('mass_primary_range', [10.0, 20.0])
+                _mc1, _mc2 = st.columns(2)
+                _mass_min_v = _mc1.number_input('M₁ min', 1.0, 200.0,
+                    float(_mr[0]), 1.0, key=f'{p}_mass_min',
+                    on_change=lambda: sm.save([_sec, 'orbital', 'mass_primary_range'],
+                                              value=[st.session_state[f'{p}_mass_min'],
+                                                     st.session_state.get(f'{p}_mass_max', _mr[1])]))
+                _mass_max_v = _mc2.number_input('M₁ max', 1.0, 200.0,
+                    float(_mr[1]), 1.0, key=f'{p}_mass_max',
+                    on_change=lambda: sm.save([_sec, 'orbital', 'mass_primary_range'],
+                                              value=[st.session_state.get(f'{p}_mass_min', _mr[0]),
+                                                     st.session_state[f'{p}_mass_max']]))
+                _mass_range = (float(_mass_min_v), float(_mass_max_v))
+
+            st.markdown('---')
+            # Mass ratio q
+            _q_model = st.selectbox('Mass ratio q model', ['flat', 'langer'],
+                index=['flat', 'langer'].index(orb.get('q_model', 'flat')),
+                key=f'{p}_q_model',
+                on_change=lambda: sm.save([_sec, 'orbital', 'q_model'],
+                                          value=st.session_state[f'{p}_q_model']))
+            _qr = orb.get('q_range', [0.1, 2.0])
+            _qc1, _qc2 = st.columns(2)
+            _q_min = _qc1.number_input('q min', 0.01, 10.0,
+                float(_qr[0]), 0.01, key=f'{p}_q_min',
+                on_change=lambda: sm.save([_sec, 'orbital', 'q_range'],
+                                          value=[st.session_state[f'{p}_q_min'],
+                                                 st.session_state.get(f'{p}_q_max', _qr[1])]))
+            _q_max = _qc2.number_input('q max', 0.01, 10.0,
+                float(_qr[1]), 0.1, key=f'{p}_q_max',
+                on_change=lambda: sm.save([_sec, 'orbital', 'q_range'],
+                                          value=[st.session_state.get(f'{p}_q_min', _qr[0]),
+                                                 st.session_state[f'{p}_q_max']]))
+            if _q_model == 'langer':
+                _lq_mu = st.number_input('Langer q mean', 0.01, 5.0,
+                    float(orb.get('langer_q_mu', 0.7)), 0.05, key=f'{p}_lq_mu',
+                    on_change=lambda: sm.save([_sec, 'orbital', 'langer_q_mu'],
+                                              value=st.session_state[f'{p}_lq_mu']))
+                _lq_sig = st.number_input('Langer q sigma', 0.01, 5.0,
+                    float(orb.get('langer_q_sigma', 0.2)), 0.05, key=f'{p}_lq_sig',
+                    on_change=lambda: sm.save([_sec, 'orbital', 'langer_q_sigma'],
+                                              value=st.session_state[f'{p}_lq_sig']))
+            else:
+                _lq_mu, _lq_sig = 0.7, 0.2
+
+            from wr_bias_simulation import BinaryParameterConfig
             _bin_cfg = BinaryParameterConfig(
-                logP_min=_logp_min, logP_max=_logp_max,
-                period_model=_period_model,
-                e_model=_e_model, e_max=_e_max,
-                mass_primary_model='fixed', mass_primary_fixed=_m1,
-                q_model=_q_model, q_range=(_q_min, _q_max),
+                logP_min=float(_logp_min), logP_max=float(_logp_max),
+                period_model='powerlaw',
+                e_model=str(_e_model), e_max=float(_e_max),
+                mass_primary_model=str(_mass_model),
+                mass_primary_fixed=float(_mass_fixed),
+                mass_primary_range=tuple(_mass_range),
+                q_model=str(_q_model),
+                q_range=(float(_q_min), float(_q_max)),
+                langer_q_mu=float(_lq_mu),
+                langer_q_sigma=float(_lq_sig),
             )
 
-        # Workers
-        _n_proc = os.cpu_count() - 1
-
-        # Action buttons
-        _a1, _a2 = st.columns(2)
-        _run_btn = _a1.button('▶️ Run', key=f'{p}_run_btn', type='primary')
-        _cancel_btn = _a2.button('⏹ Cancel', key=f'{p}_cancel_btn')
-
-        if _cancel_btn and f'{p}_job' in st.session_state:
-            st.session_state[f'{p}_job']['cancel'] = True
-
-        if _run_btn:
-            _sh = settings_hash(settings)
-            obs_drv, obs_det = cached_load_observed_delta_rvs(_sh)
-            cad_list, cad_wts = cached_load_cadence(_sh)
-
-            fbin_vals = np.linspace(fb_min, fb_max, fb_steps).tolist()
-            if _is_dsilva:
-                pi_v = np.linspace(pi_min, pi_max, pi_steps).tolist()
-            else:
-                pi_v = [0.0]
-
-            job = {
-                'status': 'running',
-                'progress_pct': 0.0,
-                'progress_text': 'Starting...',
-                'live_heatmap': None,
-                '_last_hm': 0,
-            }
-            st.session_state[f'{p}_job'] = job
-
-            params = {
-                'cadence_list': cad_list,
-                'cadence_weights': cad_wts,
-                'obs_delta_rv': obs_drv,
-                'n_proc': _n_proc,
-                'fbin_vals': fbin_vals,
-                'pi_vals': pi_v,
-                'sigma_vals': sigma_vals,
-                'n_sets': n_sets,
-                'period_model': _period_model,
-                'bin_cfg': _bin_cfg,
-                'sigma_meas': _sigma_meas,
-                'save_params': {
-                    'mode': 'cadence_aware',
-                    'period_model': _period_model,
-                    'n_sets': n_sets,
-                },
-            }
-
-            import threading
-            t = threading.Thread(target=_run_cadence_bg, args=(job, params), daemon=True)
-            t.start()
-            st.rerun()
+        # Action buttons + run logic
+        _cadence_run_and_results(
+            p, _is_dsilva, _period_model,
+            fb_min, fb_max, fb_steps,
+            pi_min, pi_max, pi_steps,
+            n_sets, sigma_vals, _bin_cfg, _sigma_meas,
+            settings, sm)
 
     # ── RIGHT: Results ───────────────────────────────────────────────────────
     with right_col:
-        job = st.session_state.get(f'{p}_job')
+        _render_cadence_results(p, _is_dsilva)
 
-        if job is None:
-            st.info('Configure parameters and click **Run** to start a cadence-aware simulation.')
-            return
+    # NOTE: Auto-refresh handled by global @st.fragment(run_every=3) at page bottom
 
-        status = job.get('status', 'idle')
 
-        if status == 'running':
-            pct = job.get('progress_pct', 0)
-            st.progress(pct, text=job.get('progress_text', 'Running...'))
+def _render_cadence_langer_tab(p: str, settings: dict, sm) -> None:
+    """Render Cadence-Aware simulation tab (Langer 2020 period model)."""
+    _is_dsilva = False
+    _period_model = 'langer2020'
+    _sec = 'grid_cadence_langer'
 
-            # Live heatmap
-            hm_data = job.get('live_heatmap')
-            if hm_data and hm_data.get('z'):
-                try:
-                    fig_live = _make_heatmap_fig(
-                        np.array(hm_data['z']),
-                        hm_data['x'], hm_data['y'],
-                        'π' if _period_choice.startswith('Dsilva') else 'σ_single',
-                        'f_bin', 'K-S p-value (live)', _ch, _cw,
-                    )
-                    st.plotly_chart(fig_live, use_container_width=_use_cw,
-                                   key=f'{p}_live_hm')
-                except Exception:
-                    pass
+    lg_cfg = settings.get(_sec, {})
+    lg_pp  = lg_cfg.get('langer_period_params', {})
+    simcfg = settings.get('simulation', {})
 
-        elif status == 'error':
-            st.error(f"Simulation failed:\n```\n{job.get('error', 'Unknown')}\n```")
+    # Pre-initialise session_state from settings (only on first visit)
+    _defaults = {
+        f'{p}_fb_min':      float(lg_cfg.get('fbin_min', 0.0)),
+        f'{p}_fb_max':      float(lg_cfg.get('fbin_max', 1.0)),
+        f'{p}_fb_steps':    int(lg_cfg.get('fbin_steps', 100)),
+        f'{p}_n_sets':      int(lg_cfg.get('n_sets', 10000)),
+        f'{p}_scan_sigma':  bool(lg_cfg.get('scan_sigma', False)),
+        f'{p}_sigma_single': float(lg_cfg.get('sigma_single',
+                                     float(settings.get('grid', {}).get('sigma_single', 15.0)))),
+        f'{p}_sig_min':     float(lg_cfg.get('sigma_min', 5.0)),
+        f'{p}_sig_max':     float(lg_cfg.get('sigma_max', 30.0)),
+        f'{p}_sig_steps':   int(lg_cfg.get('sigma_steps', 10)),
+        f'{p}_sigma_meas':  float(lg_cfg.get('sigma_meas',
+                                    float(simcfg.get('sigma_measure', 1.622)))),
+        f'{p}_dist_A':      str(lg_pp.get('dist_A', 'empirical')),
+        f'{p}_mu_A':        float(lg_pp.get('mu_A', 1.0)),
+        f'{p}_sigma_A':     float(lg_pp.get('sigma_A', 0.12)),
+        f'{p}_dist_B':      str(lg_pp.get('dist_B', 'empirical')),
+        f'{p}_mu_B':        float(lg_pp.get('mu_B', 2.1)),
+        f'{p}_sigma_B':     float(lg_pp.get('sigma_B', 0.2)),
+        f'{p}_weight_A':    float(lg_pp.get('weight_A', 0.08)),
+        f'{p}_logP_min':    float(lg_cfg.get('logP_min', 0.5)),
+        f'{p}_logP_max':    float(lg_cfg.get('logP_max', 3.5)),
+        f'{p}_mass_fixed':  float(lg_cfg.get('mass_primary_fixed', 10.0)),
+        f'{p}_q_min':       float(lg_cfg.get('q_range', [0.25, 1.65])[0]),
+        f'{p}_q_max':       float(lg_cfg.get('q_range', [0.25, 1.65])[1]),
+        f'{p}_lq_mu':       float(lg_cfg.get('langer_q_mu', 0.67)),
+        f'{p}_lq_sig':      float(lg_cfg.get('langer_q_sigma', 0.39)),
+        f'{p}_q_flipped':   bool(lg_cfg.get('q_flipped', False)),
+    }
+    for _k, _v in _defaults.items():
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
 
-        elif status == 'cancelled':
-            st.warning('Simulation was cancelled.')
+    left_col, right_col = st.columns([0.30, 0.70])
 
-        elif status == 'done':
-            result = job.get('result', {})
-            ks_p_arr = result.get('ks_p')
-            if ks_p_arr is None:
-                st.warning('No results found.')
-                return
+    # ── LEFT: Parameters ─────────────────────────────────────────────────────
+    with left_col:
+        st.markdown('#### Cadence-Aware — Langer 2020')
 
-            fbin_grid = result['fbin_grid']
-            pi_grid   = result['pi_grid']
-            sigma_grid = result['sigma_grid']
-            n_sig = len(sigma_grid)
+        with st.expander('Grid parameters', expanded=True):
+            _c1, _c2, _c3 = st.columns(3)
+            fb_min = _c1.number_input('f_bin min', 0.0, 1.0,
+                float(lg_cfg.get('fbin_min', 0.0)), 0.01, key=f'{p}_fb_min',
+                on_change=lambda: sm.save([_sec, 'fbin_min'],
+                                          value=st.session_state[f'{p}_fb_min']))
+            fb_max = _c2.number_input('f_bin max', 0.0, 1.0,
+                float(lg_cfg.get('fbin_max', 1.0)), 0.01, key=f'{p}_fb_max',
+                on_change=lambda: sm.save([_sec, 'fbin_max'],
+                                          value=st.session_state[f'{p}_fb_max']))
+            fb_steps = _c3.number_input('steps', 5, 500,
+                int(lg_cfg.get('fbin_steps', 100)), 5, key=f'{p}_fb_steps',
+                on_change=lambda: sm.save([_sec, 'fbin_steps'],
+                                          value=st.session_state[f'{p}_fb_steps']))
 
-            # Best slice
-            if n_sig == 1:
-                hm_z = ks_p_arr[0]
+        with st.expander('Cadence-aware settings', expanded=True):
+            n_sets = st.number_input('N_sets', 100, 100000,
+                int(lg_cfg.get('n_sets', 10000)), 100, key=f'{p}_n_sets',
+                on_change=lambda: sm.save([_sec, 'n_sets'],
+                                          value=st.session_state[f'{p}_n_sets']))
+            _sigma_meas = st.number_input('σ_measure (km/s)', 0.001, 20.0,
+                float(lg_cfg.get('sigma_meas',
+                      float(simcfg.get('sigma_measure', 1.622)))), 0.001,
+                format='%.3f', key=f'{p}_sigma_meas',
+                on_change=lambda: sm.save([_sec, 'sigma_meas'],
+                                          value=st.session_state[f'{p}_sigma_meas']))
+
+        with st.expander('Sigma scan', expanded=False):
+            _scan_sigma = st.checkbox('Scan σ_single', key=f'{p}_scan_sigma',
+                on_change=lambda: sm.save([_sec, 'scan_sigma'],
+                                          value=st.session_state[f'{p}_scan_sigma']))
+            if _scan_sigma:
+                _s1, _s2, _s3 = st.columns(3)
+                sig_min = _s1.number_input('σ min', 0.1, 100.0,
+                    float(lg_cfg.get('sigma_min', 5.0)), 0.5, key=f'{p}_sig_min',
+                    on_change=lambda: sm.save([_sec, 'sigma_min'],
+                                              value=st.session_state[f'{p}_sig_min']))
+                sig_max = _s2.number_input('σ max', 0.1, 100.0,
+                    float(lg_cfg.get('sigma_max', 30.0)), 0.5, key=f'{p}_sig_max',
+                    on_change=lambda: sm.save([_sec, 'sigma_max'],
+                                              value=st.session_state[f'{p}_sig_max']))
+                sig_steps = _s3.number_input('σ steps', 2, 100,
+                    int(lg_cfg.get('sigma_steps', 10)), 1, key=f'{p}_sig_steps',
+                    on_change=lambda: sm.save([_sec, 'sigma_steps'],
+                                              value=st.session_state[f'{p}_sig_steps']))
+                sigma_vals = np.linspace(sig_min, sig_max, sig_steps).tolist()
             else:
-                _pmax = [ks_p_arr[s].max() for s in range(n_sig)]
-                _best_s = int(np.argmax(_pmax))
-                hm_z = ks_p_arr[_best_s]
-                st.info(f'Showing best σ_single slice: {sigma_grid[_best_s]:.1f} km/s')
+                _single_sig = st.number_input('σ_single (km/s)', 0.1, 100.0,
+                    float(lg_cfg.get('sigma_single',
+                          float(settings.get('grid', {}).get('sigma_single', 15.0)))),
+                    0.5, key=f'{p}_sigma_single',
+                    on_change=lambda: sm.save([_sec, 'sigma_single'],
+                                              value=st.session_state[f'{p}_sigma_single']))
+                sigma_vals = [_single_sig]
 
-            # Heatmap
-            _x_label = 'π' if _period_choice.startswith('Dsilva') else 'σ_single'
-            fig_hm = _make_heatmap_fig(
-                hm_z, pi_grid.tolist(), fbin_grid.tolist(),
-                _x_label, 'f_bin', 'K-S p-value', _ch, _cw,
+        with st.expander('🔧 Orbital parameters (Langer 2020)', expanded=False):
+            st.caption('Period distribution: two-component mixture in log₁₀(P/days), '
+                       'fitting the combined Langer+2020 Fig. 6 shape.')
+
+            # Distribution type options (shared by both components)
+            _pd_options = ['Gaussian', 'Log-normal', 'Reflected log-normal',
+                           'Empirical (Langer Fig.)', 'Flat (uniform)']
+            _pd_map = {'Gaussian': 'gaussian', 'Log-normal': 'lognormal',
+                       'Reflected log-normal': 'reflected_lognormal',
+                       'Empirical (Langer Fig.)': 'empirical',
+                       'Flat (uniform)': 'flat'}
+            _pd_inv = {v: k for k, v in _pd_map.items()}
+
+            def _mu_label(dist_key):
+                if dist_key in ('lognormal', 'reflected_lognormal'):
+                    return 'mode'
+                return 'mean'
+
+            # Component 1 (short-period)
+            st.markdown('**Component 1** (short-period)')
+            _saved_dA = lg_pp.get('dist_A', 'empirical')
+            _dist_A_label = st.selectbox('Distribution', _pd_options,
+                index=_pd_options.index(_pd_inv.get(_saved_dA, _pd_options[0])),
+                key=f'{p}_dist_A',
+                on_change=lambda: sm.save(
+                    [_sec, 'langer_period_params', 'dist_A'],
+                    value=_pd_map[st.session_state[f'{p}_dist_A']]))
+            _dist_A = _pd_map[_dist_A_label]
+            if _dist_A not in ('flat', 'empirical'):
+                _cA1, _cA2 = st.columns(2)
+                with _cA1:
+                    _mu_A = st.number_input(
+                        f'μ₁ ({_mu_label(_dist_A)})', 0.01, 10.0,
+                        float(lg_pp.get('mu_A', 1.0)), 0.05, key=f'{p}_mu_A',
+                        on_change=lambda: sm.save(
+                            [_sec, 'langer_period_params', 'mu_A'],
+                            value=st.session_state[f'{p}_mu_A']))
+                with _cA2:
+                    _sigma_A = st.number_input('σ₁', 0.01, 5.0,
+                        float(lg_pp.get('sigma_A', 0.12)), 0.01, key=f'{p}_sigma_A',
+                        on_change=lambda: sm.save(
+                            [_sec, 'langer_period_params', 'sigma_A'],
+                            value=st.session_state[f'{p}_sigma_A']))
+            else:
+                _mu_A, _sigma_A = float(lg_pp.get('mu_A', 1.0)), float(lg_pp.get('sigma_A', 0.12))
+
+            # Component 2 (long-period)
+            st.markdown('**Component 2** (long-period)')
+            _saved_dB = lg_pp.get('dist_B', 'empirical')
+            _dist_B_label = st.selectbox('Distribution ', _pd_options,
+                index=_pd_options.index(_pd_inv.get(_saved_dB, _pd_options[0])),
+                key=f'{p}_dist_B',
+                on_change=lambda: sm.save(
+                    [_sec, 'langer_period_params', 'dist_B'],
+                    value=_pd_map[st.session_state[f'{p}_dist_B']]))
+            _dist_B = _pd_map[_dist_B_label]
+            if _dist_B not in ('flat', 'empirical'):
+                _cB1, _cB2 = st.columns(2)
+                with _cB1:
+                    _mu_B = st.number_input(
+                        f'μ₂ ({_mu_label(_dist_B)})', 0.01, 10.0,
+                        float(lg_pp.get('mu_B', 2.1)), 0.05, key=f'{p}_mu_B',
+                        on_change=lambda: sm.save(
+                            [_sec, 'langer_period_params', 'mu_B'],
+                            value=st.session_state[f'{p}_mu_B']))
+                with _cB2:
+                    _sigma_B = st.number_input('σ₂', 0.01, 5.0,
+                        float(lg_pp.get('sigma_B', 0.2)), 0.01, key=f'{p}_sigma_B',
+                        on_change=lambda: sm.save(
+                            [_sec, 'langer_period_params', 'sigma_B'],
+                            value=st.session_state[f'{p}_sigma_B']))
+            else:
+                _mu_B, _sigma_B = float(lg_pp.get('mu_B', 2.1)), float(lg_pp.get('sigma_B', 0.2))
+
+            # Mixture weight
+            _weight_A = st.slider('Weight of Component 1', 0.0, 1.0,
+                float(lg_pp.get('weight_A', 0.08)), 0.01, key=f'{p}_weight_A',
+                on_change=lambda: sm.save(
+                    [_sec, 'langer_period_params', 'weight_A'],
+                    value=st.session_state[f'{p}_weight_A']))
+
+            st.markdown('---')
+            # Period range
+            _logP_min = st.number_input('log₁₀(P/days) min', 0.01, 5.0,
+                float(lg_cfg.get('logP_min', 0.5)), 0.01, key=f'{p}_logP_min',
+                on_change=lambda: sm.save([_sec, 'logP_min'],
+                                          value=st.session_state[f'{p}_logP_min']))
+            _logP_max = st.number_input('log₁₀(P/days) max', 0.1, 10.0,
+                float(lg_cfg.get('logP_max', 3.5)), 0.1, key=f'{p}_logP_max',
+                on_change=lambda: sm.save([_sec, 'logP_max'],
+                                          value=st.session_state[f'{p}_logP_max']))
+
+            st.markdown('---')
+            # Eccentricity — fixed at 0 per Langer assumption
+            st.markdown('**Eccentricity:** fixed at e = 0 (Langer+2020 assumption)')
+
+            st.markdown('---')
+            # Primary mass
+            _mass_model = st.selectbox('Primary mass model', ['fixed', 'uniform'],
+                index=['fixed', 'uniform'].index(
+                    lg_cfg.get('mass_primary_model', 'fixed')),
+                key=f'{p}_mass_model',
+                on_change=lambda: sm.save([_sec, 'mass_primary_model'],
+                                          value=st.session_state[f'{p}_mass_model']))
+            if _mass_model == 'fixed':
+                _mass_fixed = st.number_input('M₁ (M☉)', 1.0, 200.0,
+                    float(lg_cfg.get('mass_primary_fixed', 10.0)), 1.0,
+                    key=f'{p}_mass_fixed',
+                    on_change=lambda: sm.save([_sec, 'mass_primary_fixed'],
+                                              value=st.session_state[f'{p}_mass_fixed']))
+                _mass_range = (float(_mass_fixed), float(_mass_fixed))
+            else:
+                _mass_fixed = 10.0
+                _mr = lg_cfg.get('mass_primary_range', [10.0, 20.0])
+                _mc1, _mc2 = st.columns(2)
+                _mass_min_v = _mc1.number_input('M₁ min', 1.0, 200.0,
+                    float(_mr[0]), 1.0, key=f'{p}_mass_min',
+                    on_change=lambda: sm.save([_sec, 'mass_primary_range'],
+                                              value=[st.session_state[f'{p}_mass_min'],
+                                                     st.session_state.get(f'{p}_mass_max', _mr[1])]))
+                _mass_max_v = _mc2.number_input('M₁ max', 1.0, 200.0,
+                    float(_mr[1]), 1.0, key=f'{p}_mass_max',
+                    on_change=lambda: sm.save([_sec, 'mass_primary_range'],
+                                              value=[st.session_state.get(f'{p}_mass_min', _mr[0]),
+                                                     st.session_state[f'{p}_mass_max']]))
+                _mass_range = (float(_mass_min_v), float(_mass_max_v))
+
+            st.markdown('---')
+            # Mass ratio q
+            _q_dist_options = ['Flat (uniform)', 'Gaussian', 'Log-normal',
+                               'Reflected log-normal',
+                               'Empirical (Langer Fig.)']
+            _q_dist_map = {'Flat (uniform)': 'flat', 'Gaussian': 'langer',
+                           'Log-normal': 'lognormal',
+                           'Reflected log-normal': 'reflected_lognormal',
+                           'Empirical (Langer Fig.)': 'empirical'}
+            _q_dist_inv = {v: k for k, v in _q_dist_map.items()}
+            _saved_qm = lg_cfg.get('q_model', 'empirical')
+            _q_dist_label = st.selectbox('Mass ratio q distribution', _q_dist_options,
+                index=_q_dist_options.index(
+                    _q_dist_inv.get(_saved_qm, _q_dist_options[0])),
+                key=f'{p}_q_dist',
+                on_change=lambda: sm.save(
+                    [_sec, 'q_model'],
+                    value=_q_dist_map[st.session_state[f'{p}_q_dist']]))
+            _q_model = _q_dist_map[_q_dist_label]
+
+            if _q_model != 'empirical':
+                _qr = lg_cfg.get('q_range', [0.25, 1.65])
+                _qc1, _qc2 = st.columns(2)
+                with _qc1:
+                    _q_min = st.number_input('q min', 0.01, 50.0,
+                        float(_qr[0]), 0.05, key=f'{p}_q_min',
+                        on_change=lambda: sm.save(
+                            [_sec, 'q_range'],
+                            value=[st.session_state[f'{p}_q_min'],
+                                   st.session_state.get(f'{p}_q_max', 1.65)]))
+                with _qc2:
+                    _q_max = st.number_input('q max', 0.01, 50.0,
+                        float(_qr[1]), 0.05, key=f'{p}_q_max',
+                        on_change=lambda: sm.save(
+                            [_sec, 'q_range'],
+                            value=[st.session_state.get(f'{p}_q_min', 0.25),
+                                   st.session_state[f'{p}_q_max']]))
+            else:
+                _q_min, _q_max = 0.1, 2.0
+                st.caption('Sampling directly from digitized Langer+2020 Fig. 4')
+
+            if _q_model not in ('flat', 'empirical'):
+                _ql = _mu_label(_q_model) if _q_model in (
+                    'lognormal', 'reflected_lognormal') else 'mean'
+                _lq_mu = st.number_input(f'q μ ({_ql})', 0.01, 50.0,
+                    float(lg_cfg.get('langer_q_mu', 0.67)), 0.05,
+                    key=f'{p}_lq_mu',
+                    on_change=lambda: sm.save(
+                        [_sec, 'langer_q_mu'],
+                        value=st.session_state[f'{p}_lq_mu']))
+                _lq_sig = st.number_input('q σ', 0.01, 50.0,
+                    float(lg_cfg.get('langer_q_sigma', 0.39)), 0.05,
+                    key=f'{p}_lq_sig',
+                    on_change=lambda: sm.save(
+                        [_sec, 'langer_q_sigma'],
+                        value=st.session_state[f'{p}_lq_sig']))
+            else:
+                _lq_mu, _lq_sig = 0.67, 0.39
+
+            # q flip toggle
+            _q_flipped = st.checkbox('Flip q (M_primary / M_companion)',
+                value=bool(lg_cfg.get('q_flipped', False)),
+                key=f'{p}_q_flipped',
+                on_change=lambda: sm.save(
+                    [_sec, 'q_flipped'],
+                    value=st.session_state[f'{p}_q_flipped']))
+            if _q_flipped:
+                st.caption('q = M_primary / M_companion (BH as primary). M₂ = M₁ / q.')
+            else:
+                st.caption('q = M_companion / M_primary (BH as companion). '
+                           'Langer Fig. 4: M_BH/M_OB peaks at ~0.5–0.7. M₂ = M₁ × q.')
+
+            # Build BinaryParameterConfig
+            from wr_bias_simulation import BinaryParameterConfig
+            _period_params = {
+                'dist_A': str(_dist_A), 'mu_A': float(_mu_A), 'sigma_A': float(_sigma_A),
+                'dist_B': str(_dist_B), 'mu_B': float(_mu_B), 'sigma_B': float(_sigma_B),
+                'weight_A': float(_weight_A),
+            }
+            _bin_cfg = BinaryParameterConfig(
+                logP_min=float(_logP_min), logP_max=float(_logP_max),
+                period_model='langer2020',
+                langer_period_params=_period_params,
+                e_model='zero', e_max=0.0,
+                mass_primary_model=str(_mass_model),
+                mass_primary_fixed=float(_mass_fixed),
+                mass_primary_range=tuple(_mass_range),
+                q_model=str(_q_model),
+                q_range=(float(_q_min), float(_q_max)),
+                langer_q_mu=float(_lq_mu),
+                langer_q_sigma=float(_lq_sig),
+                q_flipped=bool(_q_flipped),
             )
-            # Best point marker
-            _bi = np.unravel_index(np.argmax(hm_z), hm_z.shape)
-            fig_hm.add_trace(go.Scatter(
-                x=[float(pi_grid[_bi[1]])], y=[float(fbin_grid[_bi[0]])],
-                mode='markers',
-                marker=dict(symbol='star', size=16, color='#DAA520',
-                            line=dict(width=1.5, color='black')),
-                name='Best fit', showlegend=True,
-            ))
-            st.plotly_chart(fig_hm, use_container_width=_use_cw, key=f'{p}_heatmap')
 
-            # Summary
-            st.markdown('### Best-fit summary')
-            _rows = []
-            _best_fb = float(fbin_grid[_bi[0]])
-            _best_pi = float(pi_grid[_bi[1]])
-            _best_pval = float(hm_z[_bi])
-            _rows.append({'Parameter': 'f_bin', 'Best': f'{_best_fb:.3f}',
-                          'Mode (HDI68)': f"{result.get('mode_fbin', _best_fb):.3f} "
-                                          f"[{result.get('lo_fbin', '?')}, {result.get('hi_fbin', '?')}]"})
-            if _is_dsilva:
-                _rows.append({'Parameter': 'π', 'Best': f'{_best_pi:.2f}',
-                              'Mode (HDI68)': f"{result.get('mode_pi', _best_pi):.2f} "
-                                              f"[{result.get('lo_pi', '?')}, {result.get('hi_pi', '?')}]"})
-            _rows.append({'Parameter': 'K-S p', 'Best': f'{_best_pval:.4f}', 'Mode (HDI68)': ''})
-            _rows.append({'Parameter': 'N_sets', 'Best': str(result.get('n_sets', '?')), 'Mode (HDI68)': ''})
-            st.table(pd.DataFrame(_rows))
+        # Action buttons + run logic
+        pi_min, pi_max, pi_steps = 0.0, 0.0, 1
+        _cadence_run_and_results(
+            p, _is_dsilva, _period_model,
+            fb_min, fb_max, fb_steps,
+            pi_min, pi_max, pi_steps,
+            n_sets, sigma_vals, _bin_cfg, _sigma_meas,
+            settings, sm)
 
-            # CDF comparison with error band
-            st.markdown('### CDF Comparison (cadence-aware)')
+    # ── RIGHT: Results ───────────────────────────────────────────────────────
+    with right_col:
+        _render_cadence_results(p, _is_dsilva)
 
-            from wr_bias_simulation import binned_cdf, DEFAULT_DRV_BIN_EDGES
-            _bin_edges = DEFAULT_DRV_BIN_EDGES
-            obs_drv = result.get('obs_delta_rv')
-            med_cdf = result.get('best_median_cdf')
-            lo_cdf  = result.get('best_lo_cdf')
-            hi_cdf  = result.get('best_hi_cdf')
+    # NOTE: Auto-refresh handled by global @st.fragment(run_every=3) at page bottom
 
-            if obs_drv is not None and med_cdf is not None:
-                obs_cdf_b = binned_cdf(obs_drv, _bin_edges)
-
-                fig_cdf = go.Figure()
-                # 68% band
-                fig_cdf.add_trace(go.Scatter(
-                    x=np.concatenate([_bin_edges, _bin_edges[::-1]]),
-                    y=np.concatenate([hi_cdf, lo_cdf[::-1]]),
-                    fill='toself', fillcolor='rgba(226, 90, 83, 0.15)',
-                    line=dict(width=0), name='68% band',
-                    hoverinfo='skip', showlegend=True,
-                ))
-                # Observed
-                fig_cdf.add_trace(go.Scatter(
-                    x=_bin_edges, y=obs_cdf_b,
-                    mode='lines', name='Observed',
-                    line=dict(color='#4A90D9', width=2.5, shape='hv'),
-                ))
-                # Simulated median
-                fig_cdf.add_trace(go.Scatter(
-                    x=_bin_edges, y=med_cdf,
-                    mode='lines', name='Simulated (median)',
-                    line=dict(color='#E25A53', width=2.5, dash='dash', shape='hv'),
-                ))
-                fig_cdf.update_layout(**{
-                    **PLOTLY_THEME,
-                    'title': dict(
-                        text=f'Cadence-aware CDF  (f_bin={_best_fb:.3f}, N_sets={result.get("n_sets", "?")})',
-                        font=dict(size=14)),
-                    'xaxis_title': 'ΔRV (km/s)',
-                    'yaxis_title': 'Cumulative fraction',
-                    'height': 450,
-                    'legend': dict(x=0.55, y=0.15),
-                    'annotations': [dict(
-                        x=0.98, y=0.95, xref='paper', yref='paper',
-                        text=f'Binned K-S D = {float(np.max(np.abs(med_cdf - obs_cdf_b))):.4f}<br>'
-                             f'p = {_best_pval:.4f}',
-                        showarrow=False,
-                        font=dict(size=12, color=pal['annotation_font']),
-                        bgcolor=pal['annotation_bg'],
-                        borderpad=6, xanchor='right',
-                    )],
-                })
-                st.plotly_chart(fig_cdf, use_container_width=True, key=f'{p}_cdf')
-                st.caption(
-                    f'Cadence-aware CDF comparison. Each of {result.get("n_sets", "?")} sets '
-                    f'contains exactly 25 simulated stars with observation cadences matching '
-                    f'the real sample. The shaded band shows the 68% confidence interval across sets.'
-                )
-
-    # Auto-refresh while running
-    if st.session_state.get(f'{p}_job', {}).get('status') == 'running':
-        import time as _time
-        _time.sleep(2)
-        st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5433,8 +5949,8 @@ with _tab_mgmt_cols[1]:
             })
             st.rerun()
 
-        # Remove last tab (if more than 3 default tabs)
-        if len(st.session_state['bc_tabs']) > 3:
+        # Remove last tab (if more than default tabs)
+        if len(st.session_state['bc_tabs']) > 4:
             if _add_col2.button('Remove last', key='_bc_rm_tab_btn'):
                 st.session_state['bc_tabs'].pop()
                 st.rerun()
@@ -5449,10 +5965,10 @@ for _tw, _ti in zip(_tab_widgets, st.session_state['bc_tabs']):
             _render_dsilva_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'langer':
             _render_langer_tab(_ti['prefix'], settings, sm)
-        elif _ti['type'] in ('cadence_dsilva', 'cadence_langer'):
-            _render_cadence_tab(
-                _ti['prefix'], settings, sm,
-                period_model='powerlaw' if 'dsilva' in _ti['type'] else 'langer2020')
+        elif _ti['type'] == 'cadence_dsilva':
+            _render_cadence_dsilva_tab(_ti['prefix'], settings, sm)
+        elif _ti['type'] == 'cadence_langer':
+            _render_cadence_langer_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'compare':
             _render_compare_tab(_ti['prefix'])
 

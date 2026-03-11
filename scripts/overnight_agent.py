@@ -652,7 +652,7 @@ async def run_opus_manager(task: dict, timeout: int = 7200,
     os.environ.pop('CLAUDECODE', None)
     from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
     from subagent_definitions import (
-        build_subagents, OPUS_MANAGER_PROMPT, OPUS_RESUME_PROMPT,
+        build_subagents, format_opus_prompt, format_opus_resume_prompt,
     )
 
     work_dir = create_work_dir(task)
@@ -667,25 +667,35 @@ async def run_opus_manager(task: dict, timeout: int = 7200,
 
     # Choose prompt template based on whether we're resuming
     if resume and progress_file.exists():
-        system_prompt = OPUS_RESUME_PROMPT.format(
-            progress_file=progress_file,
-            work_dir=work_dir,
+        system_prompt = format_opus_resume_prompt(
+            progress_file=str(progress_file),
+            work_dir=str(work_dir),
             task_description=task_desc,
         )
     else:
-        system_prompt = OPUS_MANAGER_PROMPT.format(
-            work_dir=work_dir,
-            progress_file=progress_file,
-            intervention_file=intervention_file,
+        system_prompt = format_opus_prompt(
+            work_dir=str(work_dir),
+            progress_file=str(progress_file),
+            intervention_file=str(intervention_file),
             task_description=task_desc,
         )
 
-    # Inject learned notes
+    # Inject learned notes into Opus manager prompt
     notes_prefix = _load_notes_for_role('global')
     if notes_prefix:
         system_prompt = notes_prefix + system_prompt
 
-    # Build subagent definitions
+    # Inject role-specific notes into each subagent's prompt before building
+    from subagent_definitions import SUBAGENT_CONFIGS
+    for role_name in list(SUBAGENT_CONFIGS.keys()):
+        role_notes = _load_notes_for_role(role_name)
+        if role_notes:
+            original_prompt = SUBAGENT_CONFIGS[role_name]['prompt']
+            # Prepend notes only if not already prepended (idempotent)
+            if not original_prompt.startswith('## Learnings'):
+                SUBAGENT_CONFIGS[role_name]['prompt'] = role_notes + original_prompt
+
+    # Build subagent definitions (with injected notes)
     subagents = build_subagents()
 
     # Read settings for Opus-specific config
