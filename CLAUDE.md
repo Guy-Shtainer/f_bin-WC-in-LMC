@@ -210,17 +210,19 @@ disliked; when they seem satisfied, note what worked. Update this section with
 short descriptions of preferred graph styles as patterns emerge.
 
 **Current preferences (update as feedback arrives):**
-- Light scientific theme: white backgrounds, serif fonts, dark text (#333333)
-- Centralized via `PLOTLY_THEME` dict in `app/shared.py` — always use `**PLOTLY_THEME`
-  in `update_layout()` calls, never hardcode plot colors
-- **CRITICAL (E018):** `PLOTLY_THEME` contains `title`, `legend`, `xaxis`, `yaxis`, `font`.
-  NEVER use these as keyword args alongside `**PLOTLY_THEME` in the same call — Python
-  raises `TypeError: got multiple values`. Use dict literal override instead:
-  `fig.update_layout(**{**PLOTLY_THEME, 'title': ..., 'legend': ...})`
-- Axes: outside ticks, thin black borders with mirror, light grey gridlines (#e0e0e0)
+- **Plots page (06_plots.py):** White academic Plotly theme (`_ACADEMIC_THEME`). White bg,
+  serif fonts (Times New Roman), black mirrored axes, no gridlines, outside ticks.
+  Matches A&A / ApJ paper style. Interactive (zoom/pan/hover via Plotly).
+- **Rest of app:** Centralized via `PLOTLY_THEME` dict in `app/shared.py` — always use
+  `**PLOTLY_THEME` in `update_layout()` calls, never hardcode plot colors
+- **CRITICAL (E018):** `PLOTLY_THEME` / `_ACADEMIC_THEME` contains `title`, `legend`, `xaxis`,
+  `yaxis`, `font`. NEVER use these as keyword args alongside spread — Python raises
+  `TypeError: got multiple values`. Use dict literal override instead:
+  `fig.update_layout(**{**_ACADEMIC_THEME, 'title': dict(text='...')})`
 - Gold star markers for best-fit points (use darker gold #DAA520 for readability on white)
 - Observed data: solid lines in steel blue (#4A90D9)
 - Simulated/model data: dashed lines in tomato red (#E25A53)
 - Annotations with key statistics: semi-transparent white boxes with dark text
 - Contour lines on heatmaps (dark grey, dotted)
 - Semi-transparent histogram overlays for distribution comparisons
+- **Auto-learn:** After any plot feedback, update `memory/plot_preferences.md`

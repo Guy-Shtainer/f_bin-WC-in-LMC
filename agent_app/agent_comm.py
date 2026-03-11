@@ -170,6 +170,7 @@ def launch_agent(
     include_critical: bool = False,
     freeform_task: str | None = None,
     task_ids: list[int] | None = None,
+    architecture: str | None = None,
     wait_on_reject: bool = True,
     wait_on_fail: bool = True,
     intervention_timeout: int = 1800,
@@ -177,6 +178,9 @@ def launch_agent(
     """
     Launch overnight_agent.py as a background subprocess.
     Returns (success, message).
+
+    Args:
+        architecture: 'pipeline' or 'opus'. If None, uses agent_settings.json default.
     """
     if is_running():
         return False, 'Agent is already running.'
@@ -198,12 +202,17 @@ def launch_agent(
         if include_critical:
             cmd.append('--include-critical')
 
+    # Architecture flag (opus or pipeline)
+    if architecture:
+        cmd.extend(['--architecture', architecture])
+
     if wait_on_reject:
         cmd.append('--wait-on-reject')
     if wait_on_fail:
         cmd.append('--wait-on-fail')
     cmd.extend(['--intervention-timeout', str(intervention_timeout)])
 
+    arch_desc = f', arch={architecture}' if architecture else ''
     try:
         proc = subprocess.Popen(
             cmd,
@@ -213,11 +222,11 @@ def launch_agent(
             start_new_session=True,
         )
         if freeform_task:
-            return True, f'Agent launched (PID {proc.pid}), mode=free-form'
+            return True, f'Agent launched (PID {proc.pid}), mode=free-form{arch_desc}'
         elif task_ids:
-            return True, f'Agent launched (PID {proc.pid}), tasks={task_ids}'
+            return True, f'Agent launched (PID {proc.pid}), tasks={task_ids}{arch_desc}'
         else:
-            return True, f'Agent launched (PID {proc.pid}), quadrant={quadrant}'
+            return True, f'Agent launched (PID {proc.pid}), quadrant={quadrant}{arch_desc}'
     except Exception as e:
         return False, f'Failed to launch: {e}'
 

@@ -321,6 +321,22 @@ else:
     # ── Launch options ────────────────────────────────────────────────────
     st.markdown('---')
     int_cfg = settings.get('intervention', {})
+
+    # Architecture selector
+    default_arch = settings.get('architecture', 'opus')
+    arch_options = ['opus', 'pipeline']
+    arch_labels = {
+        'opus': 'Opus Manager + Sonnet Workers (recommended)',
+        'pipeline': 'Fixed 5-stage Pipeline (legacy)',
+    }
+    architecture = st.selectbox(
+        'Agent Architecture',
+        arch_options,
+        index=arch_options.index(default_arch) if default_arch in arch_options else 0,
+        format_func=lambda x: arch_labels.get(x, x),
+        key='arch_select',
+    )
+
     opt1, opt2 = st.columns(2)
     wait_reject = opt1.checkbox(
         'Wait on reviewer rejection',
@@ -335,6 +351,7 @@ else:
 
     if st.button('Start Agent', type='primary', key='start_agent_btn'):
         launch_kwargs = dict(
+            architecture=architecture,
             wait_on_reject=wait_reject,
             wait_on_fail=wait_fail,
             intervention_timeout=int_cfg.get('timeout_seconds', 1800),

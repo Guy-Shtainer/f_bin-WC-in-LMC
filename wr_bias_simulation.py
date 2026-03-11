@@ -200,9 +200,15 @@ class BinaryParameterConfig:
     Mass ratio q = M2/M1:
     ---------------------
     q_model : str
-        "flat"   -> q ~ U[q_range[0], q_range[1]].
-        "langer" -> crude Gaussian approximation to Langer+2020 BH/OB
-                    mass-ratio distribution; tune langer_q_mu/sigma.
+        "flat"      -> q ~ U[q_range[0], q_range[1]].
+        "langer"    -> Gaussian approximation to Langer+2020 BH/OB
+                       mass-ratio distribution; tune langer_q_mu/sigma.
+        "lognormal" -> log-normal with mode = langer_q_mu, shape = langer_q_sigma.
+                       Right-skewed (rises fast, drops slow).
+        "reflected_lognormal" -> mirrored log-normal around the mode.
+                       Left-skewed (rises slow, drops fast).
+        "empirical"  -> directly sample from digitized Langer+2020 Fig. 4
+                       histogram (ignores langer_q_mu/sigma).
     q_range : tuple
         (q_min, q_max) for flat model.
     langer_q_mu, langer_q_sigma : float
@@ -229,6 +235,39 @@ class BinaryParameterConfig:
     langer_q_mu: float = 0.7
     langer_q_sigma: float = 0.2
     q_flipped: bool = False  # if True, M2 = M1/q instead of M1*q
+
+
+# ---------------------------------------------------------------------------
+# Digitized Langer+2020 histograms (combined Case A + B + non-interacting)
+# ---------------------------------------------------------------------------
+
+# Fig. 4: M_BH / M_OB — mass ratio distribution
+LANGER_Q_BIN_EDGES = np.array([
+    0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0,
+    1.125, 1.25, 1.375, 1.5, 1.625, 1.75])
+LANGER_Q_WEIGHTS = np.array([
+    0.010, 0.045, 0.150, 0.148, 0.140, 0.110,
+    0.080, 0.058, 0.040, 0.030, 0.022, 0.022])
+
+# Fig. 6: log₁₀(P/days) — orbital period distribution
+LANGER_LOGP_BIN_EDGES = np.array([
+    0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75,
+    2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5])
+LANGER_LOGP_WEIGHTS = np.array([
+    0.002, 0.008, 0.025, 0.028, 0.040, 0.050,
+    0.060, 0.068, 0.065, 0.045, 0.020, 0.005, 0.012])
+
+
+def _sample_empirical(
+    bin_edges: np.ndarray, weights: np.ndarray,
+    size: int, rng: np.random.Generator,
+) -> np.ndarray:
+    """Sample from a piecewise-constant PDF defined by bin edges + weights."""
+    probs = weights / weights.sum()
+    bin_idx = rng.choice(len(probs), size=size, p=probs)
+    lo = bin_edges[bin_idx]
+    hi = bin_edges[bin_idx + 1]
+    return rng.uniform(lo, hi)
 
 
 # ---------------------------------------------------------------------------
@@ -269,46 +308,71 @@ def sample_logP_powerlaw(
     return x
 
 
+def _sample_single_component(
+    rng: np.random.Generator, dist: str, mu: float, sigma: float,
+    logP_min: float, logP_max: float, size: int,
+) -> np.ndarray:
+    """Sample from a single parametric distribution, clipped to [logP_min, logP_max]."""
+    d = dist.lower()
+    if d == "gaussian":
+        return rng.normal(loc=mu, scale=sigma, size=size)
+    elif d == "lognormal":
+        # Mode-based: mode = mu, internally ln(x) ~ N(mu_ln, sigma)
+        mu_ln = np.log(mu) + sigma ** 2
+        return rng.lognormal(mean=mu_ln, sigma=sigma, size=size)
+    elif d == "reflected_lognormal":
+        # Left-skewed: rises slowly, drops fast after peak.
+        # Mirror a log-normal around its mode (mu).
+        mu_ln = np.log(mu) + sigma ** 2
+        x = rng.lognormal(mean=mu_ln, sigma=sigma, size=size)
+        return 2 * mu - x
+    elif d == "empirical":
+        return _sample_empirical(LANGER_LOGP_BIN_EDGES, LANGER_LOGP_WEIGHTS,
+                                  size, rng)
+    elif d == "flat":
+        return rng.uniform(logP_min, logP_max, size=size)
+    else:
+        raise ValueError(f"Unknown component distribution: {dist}")
+
+
 def sample_logP_langer2020(
     size: int,
     rng: np.random.Generator,
+    dist_A: str = "gaussian",
     mu_A: float = 0.80,
     sigma_A: float = 0.35,
+    dist_B: str = "reflected_lognormal",
     mu_B: float = 2.0,
     sigma_B: float = 0.45,
     weight_A: float = 0.20,
     logP_min: float = 0.5,
     logP_max: float = 3.5,
     return_components: bool = False,
+    **_ignored,
 ) -> "np.ndarray | tuple":
     """
-    Approximation to the OB+BH logP distribution in Langer+2020 (Fig. 6).
+    Two-component mixture approximation to Langer+2020 Fig. 6 (combined).
 
-    Two-component mixture in logP space:
-    - "Case A" Gaussian: short-period RLOF systems, peak ~6 d (mu_A, sigma_A).
-    - "Case B" Log-normal in logP: wide-orbit systems with right-skewed tail,
-      mode at ~100 d (mu_B sets the mode; sigma_B controls width and skew).
+    Each component can be 'gaussian', 'lognormal', or 'flat':
+    - Component 1 (short-period): default Gaussian, peak ~6 d.
+    - Component 2 (long-period): default log-normal (mode-based), peak ~100 d.
 
-    Default parameters are tuned to visually match Langer+2020 Fig. 6.
-    Can be overridden via BinaryParameterConfig.langer_period_params.
+    The total distribution is the weighted sum of both components.
     """
     u = rng.random(size)
     logP = np.empty(size, dtype=float)
 
     mask_A = u < weight_A
     mask_B = ~mask_A
-
-    n_A = mask_A.sum()
-    n_B = mask_B.sum()
+    n_A = int(mask_A.sum())
+    n_B = int(mask_B.sum())
 
     if n_A > 0:
-        logP[mask_A] = rng.normal(loc=mu_A, scale=sigma_A, size=n_A)
+        logP[mask_A] = _sample_single_component(
+            rng, dist_A, mu_A, sigma_A, logP_min, logP_max, n_A)
     if n_B > 0:
-        # Log-normal in logP space: mode = mu_B, right-skewed tail toward higher P.
-        # Internal parameterization: ln(logP) ~ Normal(mu_ln, sigma_B)
-        # where mu_ln = ln(mu_B) + sigma_B^2  ensures mode = mu_B.
-        mu_ln = np.log(mu_B) + sigma_B ** 2
-        logP[mask_B] = rng.lognormal(mean=mu_ln, sigma=sigma_B, size=n_B)
+        logP[mask_B] = _sample_single_component(
+            rng, dist_B, mu_B, sigma_B, logP_min, logP_max, n_B)
 
     logP = np.clip(logP, logP_min, logP_max)
     if return_components:
@@ -335,9 +399,28 @@ def sample_mass_ratio(cfg: BinaryParameterConfig, size: int, rng: np.random.Gene
         qmin, qmax = cfg.q_range
         return rng.uniform(qmin, qmax, size=size)
     elif mode == "langer":
-        # Very rough Gaussian approximation to Langer+2020 BH/OB mass ratios.
+        # Gaussian approximation to Langer+2020 BH/OB mass ratios.
         q = rng.normal(loc=cfg.langer_q_mu, scale=cfg.langer_q_sigma, size=size)
-        return np.clip(q, 0.25, 1.75)
+        qmin, qmax = cfg.q_range
+        return np.clip(q, qmin, qmax)
+    elif mode == "lognormal":
+        # Log-normal with mode = langer_q_mu, shape = langer_q_sigma.
+        mu_ln = np.log(cfg.langer_q_mu) + cfg.langer_q_sigma ** 2
+        q = rng.lognormal(mean=mu_ln, sigma=cfg.langer_q_sigma, size=size)
+        qmin, qmax = cfg.q_range
+        return np.clip(q, qmin, qmax)
+    elif mode == "reflected_lognormal":
+        # Left-skewed: rises slowly, drops fast after peak (mode = langer_q_mu).
+        mu_ln = np.log(cfg.langer_q_mu) + cfg.langer_q_sigma ** 2
+        x = rng.lognormal(mean=mu_ln, sigma=cfg.langer_q_sigma, size=size)
+        q = 2 * cfg.langer_q_mu - x
+        qmin, qmax = cfg.q_range
+        return np.clip(q, qmin, qmax)
+    elif mode == "empirical":
+        # Directly sample from digitized Langer+2020 Fig. 4 histogram.
+        q = _sample_empirical(LANGER_Q_BIN_EDGES, LANGER_Q_WEIGHTS, size, rng)
+        qmin, qmax = cfg.q_range
+        return np.clip(q, qmin, qmax)
     else:
         raise ValueError(f"Unknown q_model: {cfg.q_model}")
 
@@ -357,6 +440,47 @@ def sample_inclination(size: int, rng: np.random.Generator) -> np.ndarray:
     """Sample inclination angles i [rad] with p(i) ∝ sin(i), i in [0, π/2]."""
     cos_i = rng.uniform(0.0, 1.0, size=size)
     return np.arccos(cos_i)
+
+
+def sample_logP_langer_single(
+    size: int,
+    rng: np.random.Generator,
+    distribution: str = "lognormal",
+    mu: float = 2.0,
+    sigma: float = 0.45,
+    logP_min: float = 0.5,
+    logP_max: float = 3.5,
+    **_ignored,
+) -> np.ndarray:
+    """
+    Single parametric distribution for logP, fitting the combined
+    Langer+2020 Fig. 6 shape (Case A + Case B treated as one distribution).
+
+    Parameters
+    ----------
+    distribution : str
+        "flat"      -> logP ~ U[logP_min, logP_max]
+        "gaussian"  -> logP ~ N(mu, sigma), clipped
+        "lognormal" -> log-normal with mode = mu in logP space, clipped
+    mu : float
+        Mean (Gaussian) or mode (log-normal) of the distribution.
+    sigma : float
+        Std dev (Gaussian) or shape parameter (log-normal).
+    """
+    dist = distribution.lower()
+    if dist == "flat":
+        return rng.uniform(logP_min, logP_max, size=size)
+    elif dist == "gaussian":
+        logP = rng.normal(loc=mu, scale=sigma, size=size)
+        return np.clip(logP, logP_min, logP_max)
+    elif dist == "lognormal":
+        # Log-normal in logP: mode = mu, right-skewed.
+        # Internal: ln(logP) ~ N(mu_ln, sigma) where mu_ln = ln(mu) + sigma^2
+        mu_ln = np.log(mu) + sigma ** 2
+        logP = rng.lognormal(mean=mu_ln, sigma=sigma, size=size)
+        return np.clip(logP, logP_min, logP_max)
+    else:
+        raise ValueError(f"Unknown logP distribution: {distribution}")
 
 
 def sample_logP(
@@ -381,6 +505,11 @@ def sample_logP(
         # allow overriding logP_min/max via params, but fall back to cfg if absent
         params.setdefault("logP_min", cfg.logP_min)
         params.setdefault("logP_max", cfg.logP_max)
+        # New single-distribution mode (has 'distribution' key)
+        if "distribution" in params:
+            logP = sample_logP_langer_single(size=size, rng=rng, **params)
+            return (logP, None) if return_components else logP
+        # Legacy: Case A/B mixture
         if return_components:
             return sample_logP_langer2020(size=size, rng=rng,
                                           return_components=True, **params)

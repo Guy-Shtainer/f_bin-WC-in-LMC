@@ -449,6 +449,7 @@ with st.expander('📋 Pipeline Workflow Status', expanded=False):
         ('Stitch spectra', has_data),
         ('Normalize spectra', has_data),
         ('Clean spectra', has_data),
+        ('Classify spectra (model comparison + notes)', False),
         ('Run CCF for RVs', has_rvs),
         ('Determine RV threshold (NRES + model fitting)', has_classification),
         ('Get observed binary fraction', has_classification),

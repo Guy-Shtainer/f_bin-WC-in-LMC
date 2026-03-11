@@ -504,7 +504,7 @@ class Star:
         Returns:
             list: A list of epoch numbers as strings.
         """
-        epoch_numbers = [int(epoch[-1]) for epoch in self.observation_dict.keys()]
+        epoch_numbers = [int(epoch.replace('epoch', '')) for epoch in self.observation_dict.keys()]
         return epoch_numbers
 
     ########################################                                     ########################################
@@ -734,6 +734,8 @@ class Star:
                 return None
         elif os.path.isdir(property_path):
             self.print(f"Property '{property_name}' is a directory")
+            if not self.to_print:
+                return None  # Non-interactive context can't use directory path
             return property_path
         else:
             self.print(f"Property '{property_name}' not found")

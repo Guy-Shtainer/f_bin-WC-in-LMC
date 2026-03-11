@@ -18,6 +18,8 @@ Options:
     --status              Show current agent status
     --max-tasks N         Stop after completing N tasks
     --task "prompt"       Free-form task (skip TODO.md)
+    --architecture X      Agent architecture: 'pipeline' (fixed 5-stage) or 'opus'
+                          (Opus manager + Sonnet workers). Default: from agent_settings.json
     --wait-on-reject      Pause and wait for human input when reviewer rejects
     --wait-on-fail        Pause and wait for human input when tester fails
     --intervention-timeout N  Seconds to wait for human intervention (default: from settings)
@@ -617,11 +619,280 @@ async def run_agent_with_retry(role: str, user_prompt: str,
             log('  Resuming after rate limit wait...')
 
 
+# ── Opus Manager (architecture='opus') ────────────────────────────────────────
+
+async def run_opus_manager(task: dict, timeout: int = 7200,
+                           resume: bool = False) -> str:
+    """Run a single Opus manager agent that orchestrates Sonnet subagents.
+
+    One query() call per task — Opus decides the workflow dynamically.
+    Python only handles: rate limits, state updates via hooks, git.
+
+    Args:
+        task: Task dict with id, title, description, tags.
+        timeout: Max seconds for the entire Opus session.
+        resume: If True, use OPUS_RESUME_PROMPT (continuing after interruption).
+
+    Returns the manager's final text output, or raises RateLimitError.
+    """
+    os.environ.pop('CLAUDECODE', None)
+    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+    from subagent_definitions import (
+        build_subagents, OPUS_MANAGER_PROMPT, OPUS_RESUME_PROMPT,
+    )
+
+    work_dir = create_work_dir(task)
+    progress_file = work_dir / 'progress.md'
+    intervention_file = work_dir / '.intervention.json'
+
+    task_desc = (
+        f'Task #{task["id"]}: {task["title"]}\n'
+        f'Description: {task.get("description", "No description")}\n'
+        f'Tags: {task.get("tags", "")}\n'
+    )
+
+    # Choose prompt template based on whether we're resuming
+    if resume and progress_file.exists():
+        system_prompt = OPUS_RESUME_PROMPT.format(
+            progress_file=progress_file,
+            work_dir=work_dir,
+            task_description=task_desc,
+        )
+    else:
+        system_prompt = OPUS_MANAGER_PROMPT.format(
+            work_dir=work_dir,
+            progress_file=progress_file,
+            intervention_file=intervention_file,
+            task_description=task_desc,
+        )
+
+    # Inject learned notes
+    notes_prefix = _load_notes_for_role('global')
+    if notes_prefix:
+        system_prompt = notes_prefix + system_prompt
+
+    # Build subagent definitions
+    subagents = build_subagents()
+
+    # Read settings for Opus-specific config
+    settings = _get_settings()
+    opus_max_turns = settings.get('opus_max_turns', 200)
+
+    options = ClaudeAgentOptions(
+        permission_mode='bypassPermissions',
+        model='opus',
+        system_prompt=system_prompt,
+        cwd=str(_ROOT),
+        max_turns=opus_max_turns,
+        setting_sources=['project'],
+        agents=subagents,
+    )
+
+    result_text = ''
+    rate_limited = False
+
+    try:
+        gen = query(prompt=task_desc, options=options)
+        try:
+            async def consume():
+                nonlocal result_text, rate_limited
+                async for message in gen:
+                    if isinstance(message, ResultMessage) and message.result:
+                        result_text = message.result
+                    elif hasattr(message, 'error') and message.error == 'rate_limit':
+                        rate_limited = True
+                        return
+                    # Update state on any message to show activity
+                    state = load_state() or {}
+                    state['updated_at'] = datetime.now().isoformat()
+                    state['architecture'] = 'opus-manager'
+                    save_state(state)
+
+            await asyncio.wait_for(consume(), timeout=timeout)
+        except asyncio.TimeoutError:
+            log(f'  Opus manager timed out after {timeout}s')
+            return f'TIMEOUT after {timeout}s'
+        finally:
+            try:
+                await asyncio.shield(gen.aclose())
+            except (RuntimeError, asyncio.CancelledError, GeneratorExit, Exception):
+                pass
+    except Exception as e:
+        err_str = str(e).lower()
+        if 'rate' in err_str or '429' in err_str or 'overloaded' in err_str or '529' in err_str:
+            rate_limited = True
+        else:
+            raise
+
+    if rate_limited:
+        raise RateLimitError()
+
+    return result_text or 'No output captured'
+
+
+async def run_opus_with_retry(task: dict) -> str:
+    """Run Opus manager with rate-limit retry and progress-based resume.
+
+    On rate limit: sleep until next hour boundary, then start a NEW Opus
+    session with resume=True (reads progress.md to continue where it left off).
+    """
+    settings = _get_settings()
+    opus_timeout = settings.get('opus_timeout', 7200)
+    attempt = 0
+    is_resume = False
+
+    while True:
+        try:
+            return await run_opus_manager(task, timeout=opus_timeout,
+                                          resume=is_resume)
+        except RateLimitError:
+            attempt += 1
+            now = datetime.now()
+            next_hour = (now + timedelta(hours=1)).replace(
+                minute=0, second=0, microsecond=0)
+            sleep_time = max(60, int((next_hour - now).total_seconds()))
+            resume_at = (now + timedelta(seconds=sleep_time)).isoformat()
+
+            log(f'  Opus manager rate-limited (attempt {attempt}). '
+                f'Sleeping until {resume_at}...')
+
+            # Update state for webapp
+            state = load_state() or {}
+            state['rate_limited'] = True
+            state['rate_limit_resume_at'] = resume_at
+            state['rate_limit_attempt'] = attempt
+            state['architecture'] = 'opus-manager'
+            save_state(state)
+
+            _blocking_sleep(sleep_time)
+
+            # Clear rate limit flag
+            state = load_state() or {}
+            state['rate_limited'] = False
+            state['rate_limit_resume_at'] = None
+            save_state(state)
+            log('  Resuming Opus manager after rate limit wait...')
+
+            # Next iteration will use resume prompt
+            is_resume = True
+
+
+def _run_regression_check(task: dict) -> bool:
+    """Python-level regression safety net: py_compile all core project files.
+
+    Returns True if all files pass, False if any fail.
+    This runs BEFORE committing, as a final safety gate.
+    """
+    import subprocess as sp
+    core_files = []
+
+    # Collect core .py files
+    for pattern in [
+        'app/app.py', 'app/shared.py',
+        'CCF.py', 'ccf_tasks.py', 'ObservationClass.py', 'StarClass.py',
+        'wr_bias_simulation.py',
+    ]:
+        path = _ROOT / pattern
+        if path.exists():
+            core_files.append(path)
+
+    for dir_pattern in ['app/pages', 'pipeline']:
+        dir_path = _ROOT / dir_pattern
+        if dir_path.exists():
+            core_files.extend(dir_path.glob('*.py'))
+
+    # Run py_compile on each
+    failures = []
+    for f in core_files:
+        try:
+            result = sp.run(
+                ['conda', 'run', '-n', 'guyenv', 'python', '-m', 'py_compile', str(f)],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode != 0:
+                failures.append((f.name, result.stderr.strip()))
+        except (sp.TimeoutExpired, OSError) as e:
+            failures.append((f.name, str(e)))
+
+    if failures:
+        log(f'  [REGRESSION] FAILED — {len(failures)} file(s) broken:')
+        for fname, err in failures:
+            log(f'    {fname}: {err[:100]}')
+
+        # Write failure report
+        work_dir = create_work_dir(task)
+        report_path = work_dir / 'failure_report.md'
+        lines = [
+            f'# Regression Failure Report — Task #{task["id"]}',
+            f'\nTimestamp: {datetime.now().isoformat()}',
+            f'\n## Failed Files\n',
+        ]
+        for fname, err in failures:
+            lines.append(f'- **{fname}**: `{err}`')
+        lines.append(
+            f'\n## Action\n'
+            f'Changes were NOT committed. The branch will be reverted.\n'
+            f'Manual investigation needed.\n'
+        )
+        report_path.write_text('\n'.join(lines), encoding='utf-8')
+        return False
+
+    log(f'  [REGRESSION] PASSED — {len(core_files)} core files OK')
+    return True
+
+
+async def run_task_opus(task: dict, source_branch: str) -> tuple[str, str]:
+    """Run a task using the Opus manager architecture.
+
+    Returns (status, summary) like run_pipeline().
+    """
+    # Initialize state for webapp
+    save_state({
+        'current_task_id': task['id'],
+        'current_task_title': task.get('title', ''),
+        'architecture': 'opus-manager',
+        'current_stage': 'opus_starting',
+        'started_at': datetime.now().isoformat(),
+        'updated_at': datetime.now().isoformat(),
+        'subagents_completed': [],
+        'awaiting_intervention': False,
+        'rate_limited': False,
+        'rate_limit_resume_at': None,
+    })
+
+    log(f'  [OPUS] Starting manager agent...')
+
+    try:
+        result = await run_opus_with_retry(task)
+    except Exception as e:
+        return 'error', f'Opus manager failed: {e}'
+
+    if result.startswith('TIMEOUT'):
+        return 'error', 'Opus manager timed out'
+
+    # Python-level regression safety net (runs even if Opus did its own)
+    log(f'  [REGRESSION] Running Python-level regression check...')
+    if not _run_regression_check(task):
+        log(f'  [REGRESSION] FAILED — reverting branch changes')
+        # Revert all changes on this branch
+        try:
+            git('checkout', '--', '.')
+            git('clean', '-fd')
+        except RuntimeError as e:
+            log(f'  Warning: revert failed: {e}')
+        return 'regression_failed', 'Regression check failed — changes reverted. See failure_report.md'
+
+    # Commit the successful changes
+    git_commit_all(f'[AGENT] Opus completed #{task["id"]}: {task["title"]}')
+
+    return 'completed', result[:500] if result else 'Implementation done'
+
+
 # ── CLI flags (set from main, read by pipeline) ──────────────────────────────
 _cli_flags: dict = {}
 
 
-# ── Pipeline ──────────────────────────────────────────────────────────────────
+# ── Pipeline (architecture='pipeline', the original fixed pipeline) ───────────
 async def run_pipeline(task: dict) -> tuple[str, str]:
     """Run the full multi-agent pipeline for a task.
 
@@ -1086,16 +1357,17 @@ async def auto_learn_reflection(task: dict, status: str, summary: str) -> None:
 
 
 # ── Main agent loop ───────────────────────────────────────────────────────────
-async def run_freeform_task(task_prompt: str, dry_run: bool) -> None:
+async def run_freeform_task(task_prompt: str, dry_run: bool,
+                           architecture: str = 'pipeline') -> None:
     """Run a single free-form task through the pipeline."""
     commit_pending_log()
     checkpoint = git_checkpoint()
-    log(f'Agent starting — free-form task')
+    log(f'Agent starting — free-form task (architecture={architecture})')
     log(f'Git checkpoint: {checkpoint}')
     log_session_start(checkpoint, 'freeform')
 
     if dry_run:
-        log(f'  [DRY RUN] Would run free-form task:')
+        log(f'  [DRY RUN] Would run free-form task (architecture={architecture}):')
         log(f'  Prompt: {task_prompt[:200]}...' if len(task_prompt) > 200 else f'  Prompt: {task_prompt}')
         log('Agent session complete.')
         return
@@ -1113,7 +1385,11 @@ async def run_freeform_task(task_prompt: str, dry_run: bool) -> None:
         git_safe_checkout(branch)
 
     log(f'Working on branch: {branch} (will return to {source_branch})')
-    status, summary = await run_pipeline(task)
+
+    if architecture == 'opus':
+        status, summary = await run_task_opus(task, source_branch)
+    else:
+        status, summary = await run_pipeline(task)
 
     log_task_result(task, branch, status, summary)
     log(f'Free-form task finished: {status}')
@@ -1125,12 +1401,13 @@ async def run_freeform_task(task_prompt: str, dry_run: bool) -> None:
 
 async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
                      include_critical: bool = False,
-                     task_ids: list[int] | None = None) -> None:
+                     task_ids: list[int] | None = None,
+                     architecture: str = 'pipeline') -> None:
     """Main loop: pick tasks, run pipeline, repeat."""
     commit_pending_log()
     checkpoint = git_checkpoint()
     mode_desc = f'task_ids={task_ids}' if task_ids else f'quadrant={quadrant}'
-    log(f'Agent starting — {mode_desc}, max_tasks={max_tasks}')
+    log(f'Agent starting — {mode_desc}, max_tasks={max_tasks}, architecture={architecture}')
     log(f'Git checkpoint: {checkpoint}')
     log_session_start(checkpoint, quadrant)
 
@@ -1183,9 +1460,12 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
             'rate_limit_resume_at': None,
         })
 
-        # Run the full pipeline
+        # Run the full pipeline (or Opus manager)
         try:
-            status, summary = await run_pipeline(task)
+            if architecture == 'opus':
+                status, summary = await run_task_opus(task, source_branch)
+            else:
+                status, summary = await run_pipeline(task)
         except Exception as e:
             status, summary = 'error', f'Pipeline crashed: {e}'
             log(f'  Pipeline error: {e}')
@@ -1409,6 +1689,9 @@ def parse_args() -> argparse.Namespace:
                    help='Free-form task prompt (skip TODO.md)')
     p.add_argument('--task-ids', type=str, default=None,
                    help='Comma-separated TODO task IDs to run (e.g. "18,20,2")')
+    p.add_argument('--architecture', type=str, default=None,
+                   choices=['pipeline', 'opus'],
+                   help='Agent architecture: pipeline (fixed 5-stage) or opus (Opus manager + Sonnet workers). Default: from agent_settings.json')
     p.add_argument('--wait-on-reject', action='store_true',
                    help='Wait for human input when reviewer rejects a plan')
     p.add_argument('--wait-on-fail', action='store_true',
@@ -1469,13 +1752,22 @@ def main() -> None:
     if args.task_ids:
         task_ids = [int(x.strip()) for x in args.task_ids.split(',') if x.strip().isdigit()]
 
+    # Determine architecture: CLI flag > agent_settings.json > default 'pipeline'
+    architecture = args.architecture
+    if architecture is None:
+        settings = _get_settings()
+        architecture = settings.get('architecture', 'pipeline')
+    log(f'Architecture: {architecture}')
+
     try:
         if args.task:
-            asyncio.run(run_freeform_task(args.task, args.dry_run))
+            asyncio.run(run_freeform_task(args.task, args.dry_run,
+                                          architecture=architecture))
         else:
             asyncio.run(agent_loop(args.quadrant, args.max_tasks, args.dry_run,
                                    include_critical=args.include_critical,
-                                   task_ids=task_ids))
+                                   task_ids=task_ids,
+                                   architecture=architecture))
     except KeyboardInterrupt:
         log('Agent stopped by user (Ctrl+C).')
     finally:

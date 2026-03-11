@@ -60,6 +60,17 @@ AGENT_ROLES = [
 
 PIPELINE_STAGES = ['planner', 'reviewer', 'implementer', 'tester', 'regression']
 
+# Subagent types for Opus manager architecture
+SUBAGENT_TYPES = ['code-explorer', 'implementer', 'tester', 'reviewer']
+
+SUBAGENT_COLORS = {
+    'code-explorer': '#6C8EBF',   # steel blue
+    'implementer':   '#F5A623',   # amber
+    'tester':        '#52B788',   # green
+    'reviewer':      '#B47CC7',   # purple
+}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CSS theme (VS Code dark theme)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -374,6 +385,65 @@ def render_pipeline_stages(stages_done: list[str], current_stage: str | None,
         if i < len(PIPELINE_STAGES) - 1:
             html_parts.append('<span class="stage-arrow">&rarr;</span>')
     return ''.join(html_parts)
+
+
+def render_subagent_timeline(state: dict) -> str:
+    """Return HTML for Opus manager subagent timeline visualization.
+
+    Shows completed subagents as colored boxes and the current activity.
+    Used when state['architecture'] == 'opus-manager'.
+    """
+    completed = state.get('subagents_completed', [])
+    current_stage = state.get('current_stage', '')
+    html_parts = []
+
+    # Completed subagents
+    for entry in completed:
+        agent_type = entry.get('type', 'unknown')
+        color = SUBAGENT_COLORS.get(agent_type, COLOR_PENDING)
+        label = agent_type.replace('-', ' ').title()
+        ts = entry.get('time', '')
+        # Extract HH:MM from ISO timestamp
+        short_time = ts[11:16] if len(ts) > 16 else ''
+        html_parts.append(
+            f'<span class="stage-box" style="background:{color};color:#fff;">'
+            f'{label}'
+            f'<span style="font-size:0.7em;opacity:0.7;display:block;">{short_time}</span>'
+            f'</span>'
+            f'<span class="stage-arrow">&rarr;</span>'
+        )
+
+    # Current activity
+    if current_stage.startswith('subagent:'):
+        agent_type = current_stage.split(':', 1)[1]
+        color = SUBAGENT_COLORS.get(agent_type, COLOR_ACTIVE)
+        label = agent_type.replace('-', ' ').title()
+        html_parts.append(
+            f'<span class="stage-box" style="background:{color};color:#fff;'
+            f'animation:pulse 1.5s infinite;">'
+            f'{label} (running...)</span>'
+        )
+    elif current_stage == 'opus_starting':
+        html_parts.append(
+            f'<span class="stage-box" style="background:{COLOR_ACTIVE};color:#fff;">'
+            f'Opus Starting...</span>'
+        )
+    else:
+        # Manager is thinking between subagent calls
+        html_parts.append(
+            f'<span class="stage-box" style="background:{COLOR_ACTIVE};color:#fff;'
+            f'font-style:italic;">'
+            f'Manager Thinking...</span>'
+        )
+
+    return ''.join(html_parts)
+
+
+def is_opus_architecture(state: dict | None) -> bool:
+    """Check if the current state is using the Opus manager architecture."""
+    if not state:
+        return False
+    return state.get('architecture') == 'opus-manager'
 
 
 # ─────────────────────────────────────────────────────────────────────────────

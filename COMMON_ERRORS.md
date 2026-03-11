@@ -278,6 +278,16 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 | **Why** | Cache reuse functions compare a subset of config fields to decide if a previous result can be reloaded. When new fields are added to the config (e.g., `q_flipped`, `q_preset`, `langer_period_params`), the cache check silently returns stale results computed with different parameter values. This caused false cache hits when switching between q presets or Case A/B weights in the Langer model. |
 | **Found in** | `_find_reusable_fbin_langer()` in `wr_bias_simulation.py` — was missing checks for `q_preset`, `q_flipped`, and `langer_period_params` |
 
+### E025 — UI variable removed but still referenced downstream
+
+| | |
+|---|---|
+| **Bad** | Removing a UI widget (e.g., `lg_weight_A = st.slider(...)`) but leaving downstream references (`float(lg_weight_A)` in save_params, filename building, etc.) |
+| **Fix** | Before removing any UI variable, grep for ALL occurrences of that variable name in the file. Fix or remove every reference. |
+| **Grep** | *(not greppable — requires discipline: grep for the variable name before deleting its definition)* |
+| **Why** | When refactoring UI controls (e.g., replacing presets with direct inputs), it's easy to remove the widget definition but miss downstream code that reads the variable for config saving, descriptive filenames, or display. Results in `NameError` at runtime. |
+| **Found in** | `app/pages/05_bias_correction.py` — `lg_weight_A` removed from period UI but still referenced in `save_params` dict and case-tag filename logic |
+
 ---
 
 ## Adding New Errors

@@ -471,4 +471,90 @@ work.
 
 ---
 
-*Last updated: 2026-03-09*
+### 2026-03-10 — Meeting 41 with Tomer: cadence-aware simulation, binned CDF, error propagation
+
+**Meeting with Tomer (41st):**
+
+Tomer reviewed the Dsilva and Langer bias correction results. Six methodological
+improvements were agreed upon, several of which represent fundamental changes to the
+simulation framework. These are documented below in order of scientific impact.
+
+**1. Cadence-aware grouped simulation (replaces independent-star approach):**
+
+The current simulation draws N_stars=10,000 independent stars, each randomly
+assigned a cadence from the 25-star library. Tomer's key insight: simulate in
+**sets** of 25 stars, where each set contains exactly one simulated star per
+real star in the sample, using that star's actual observation cadence (MJD
+timestamps). Run N_sets (user-configurable, default 10k) of these grouped sets,
+yielding 25 × N_sets = 250,000 total simulated stars.
+
+This change is important because:
+- It preserves the exact sample structure — each simulated "survey" mirrors
+  the real one (same number of stars, same cadences, same epoch counts).
+- It enables proper uncertainty quantification on the simulated CDF: across
+  the N_sets realizations, compute the **median** binary fraction in each ΔRV
+  bin, and the **68% posterior width** as a shaded error band.
+- The K-S score is then computed against the median CDF, **weighted by the
+  per-bin standard deviation** — giving less weight to bins where the
+  simulation outcome is uncertain.
+
+For the paper: this is the "cadence-matched Monte-Carlo" method. It should be
+described in Section 4 (Bias Correction) as the primary simulation approach,
+contrasted with the simpler independent-star method used in Dsilva et al. (2023).
+
+**2. Binned CDF (replaces raw-value CDF):**
+
+Instead of constructing the CDF from raw ΔRV values, discretize into a regular
+grid with ~10 km/s bins, ending at ~350 km/s. This:
+- Regularizes the CDF comparison (avoids noise from sparse high-RV tails).
+- Aligns with the CDF truncation idea from meeting 40 (#1 in TODO).
+- Makes the per-bin median and standard deviation from the grouped simulation
+  well-defined.
+
+**3. RV measurement errors in the observed CDF:**
+
+The observed CDF currently treats each measured ΔRV as exact. Tomer raised the
+question of how to propagate RV measurement uncertainties — options include
+binomial confidence intervals on the observed fraction per bin, or Monte-Carlo
+resampling of ΔRV within the measurement error bars. If incorporated, these
+errors could serve as weights in the K-S comparison. This is a **research item**
+— needs theoretical work before implementation.
+
+**4. Langer model: direct distribution sampling:**
+
+Instead of parametric fits (Gaussian + log-normal) for the Langer period and
+mass-ratio distributions, directly sample from the full distributions shown in
+Langer et al. (2020) Fig. 6 (logP) and Fig. 4 (q). This requires digitizing
+the histogram from the published figure. The advantage: no parametric assumptions
+beyond what the evolutionary models already encode.
+
+**5. Marginalized posterior σ_single handling:**
+
+Tomer flagged a potential issue: the posterior summary may display the
+last-computed σ_single slice rather than the true best-fit across all σ values.
+Additionally, the marginalization over σ_single may implicitly assume a flat
+prior on σ_single rather than weighting by the K-S p-value. Both the GUI
+behaviour and the mathematical marginalization need verification. Related to
+the HDI68 computation in `compute_hdi68()`.
+
+**6. NRES validation + per-epoch STD diagnostic:**
+
+The NRES-derived RVs need independent validation. A per-epoch STD plot (showing
+the scatter of RV measurements within each epoch) would reveal outlier epochs or
+instrumental systematics. This feeds into the ΔRV threshold determination from
+the NRES sample (task #51).
+
+**Scientific context for the paper:**
+
+Items 1–3 together represent a significant methodological advance over the
+Dsilva et al. (2023) approach:
+- **Dsilva (2023):** Independent stars, raw CDF, error-free observed CDF.
+- **This work (after implementation):** Cadence-matched grouped sets with
+  uncertainty bands, binned CDF, potential error propagation.
+
+This should be highlighted in both the Methods section and the Discussion as a
+strength of this analysis compared to the prior work.
+
+---
+
+*Last updated: 2026-03-10*

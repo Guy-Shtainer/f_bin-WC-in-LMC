@@ -89,14 +89,21 @@
     "n_processes": null,
     "logP_min": 0.5,
     "logP_max": 3.5,
-    "q_preset": "langer_fig3",
+    "q_preset": "langer_flat",
     "langer_period_params": {
-      "mu_A": 1.1,
-      "sigma_A": 0.15,
-      "mu_B": 2.0,
+      "mu_A": 1.0,
+      "sigma_A": 0.12,
+      "mu_B": 2.1,
       "sigma_B": 0.2,
-      "weight_A": 0.3
-    }
+      "weight_A": 0.08,
+      "dist_A": "lognormal"
+    },
+    "q_range": [
+      0.25,
+      1.65
+    ],
+    "langer_q_mu": 0.67,
+    "langer_q_sigma": 0.39
   },
   "ui": {
     "last_star": "MNM2014 LMC195-1",

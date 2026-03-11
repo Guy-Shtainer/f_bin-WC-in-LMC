@@ -332,7 +332,8 @@ def _find_reusable_fbin_langer(
                    'period_model', 'e_model', 'e_max',
                    'mass_primary_model', 'mass_primary_fixed',
                    'q_model', 'q_min', 'q_max',
-                   'q_preset', 'q_flipped', 'langer_period_params'):
+                   'q_flipped', 'langer_q_mu', 'langer_q_sigma',
+                   'langer_period_params'):
             if str(cached_cfg.get(k)) != str(stable_cfg.get(k)):
                 return None
         cached_fbin = np.asarray(cached['fbin_grid'])
@@ -2741,8 +2742,10 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         f'{p}_sigma_steps': int(lg_cfg.get('sigma_steps', 30)),
         f'{p}_n_stars':    int(lg_cfg.get('n_stars_sim', 10000)),
         f'{p}_sigma_meas': float(lg_sim.get('sigma_measure', 1.622)),
+        f'{p}_dist_A':     str(lg_pp.get('dist_A', 'gaussian')),
         f'{p}_mu_A':       float(lg_pp.get('mu_A', 0.80)),
         f'{p}_sigma_A':    float(lg_pp.get('sigma_A', 0.35)),
+        f'{p}_dist_B':     str(lg_pp.get('dist_B', 'reflected_lognormal')),
         f'{p}_mu_B':       float(lg_pp.get('mu_B', 2.0)),
         f'{p}_sigma_B':    float(lg_pp.get('sigma_B', 0.45)),
         f'{p}_weight_A':   float(lg_pp.get('weight_A', 0.20)),
@@ -2806,50 +2809,86 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 format='%.3f', key=f'{p}_sigma_meas')
 
         with st.expander('🔧 Orbital parameters (Langer 2020)', expanded=False):
-            st.caption('Period distribution: Case A (Gaussian) + Case B (log-normal) '
-                       'mixture in log₁₀(P/days) approximating Langer+2020 Fig. 6.')
+            st.caption('Period distribution: two-component mixture in log₁₀(P/days), '
+                       'fitting the combined Langer+2020 Fig. 6 shape.')
 
-            # Period distribution parameters
-            lg_mu_A = st.number_input(
-                'μ_A (Case A peak)', 0.1, 5.0,
-                float(lg_pp.get('mu_A', 0.80)), 0.05, key=f'{p}_mu_A',
+            # --- Distribution type options (shared by both components) ---
+            _pd_options = ['Gaussian', 'Log-normal', 'Reflected log-normal',
+                           'Empirical (Langer Fig.)', 'Flat (uniform)']
+            _pd_map = {'Gaussian': 'gaussian', 'Log-normal': 'lognormal',
+                       'Reflected log-normal': 'reflected_lognormal',
+                       'Empirical (Langer Fig.)': 'empirical',
+                       'Flat (uniform)': 'flat'}
+            _pd_inv = {v: k for k, v in _pd_map.items()}
+
+            def _mu_label(dist_key):
+                if dist_key in ('lognormal', 'reflected_lognormal'):
+                    return 'mode'
+                return 'mean'
+
+            # Component 1 (short-period)
+            st.markdown('**Component 1** (short-period)')
+            _saved_dA = lg_pp.get('dist_A', 'gaussian')
+            lg_dist_A_label = st.selectbox(
+                'Distribution', _pd_options,
+                index=_pd_options.index(_pd_inv.get(_saved_dA, _pd_options[0])),
+                key=f'{p}_dist_A',
                 on_change=lambda: sm.save(
-                    ['grid_langer', 'langer_period_params', 'mu_A'],
-                    value=st.session_state[f'{p}_mu_A']))
-            lg_sigma_A = st.number_input(
-                'σ_A (Case A width)', 0.01, 2.0,
-                float(lg_pp.get('sigma_A', 0.35)), 0.01, key=f'{p}_sigma_A',
+                    ['grid_langer', 'langer_period_params', 'dist_A'],
+                    value=_pd_map[st.session_state[f'{p}_dist_A']]))
+            lg_dist_A = _pd_map[lg_dist_A_label]
+            if lg_dist_A not in ('flat', 'empirical'):
+                _cA1, _cA2 = st.columns(2)
+                with _cA1:
+                    lg_mu_A = st.number_input(
+                        f'μ₁ ({_mu_label(lg_dist_A)})', 0.01, 10.0,
+                        float(lg_pp.get('mu_A', 0.80)), 0.05, key=f'{p}_mu_A',
+                        on_change=lambda: sm.save(
+                            ['grid_langer', 'langer_period_params', 'mu_A'],
+                            value=st.session_state[f'{p}_mu_A']))
+                with _cA2:
+                    lg_sigma_A = st.number_input(
+                        'σ₁', 0.01, 5.0,
+                        float(lg_pp.get('sigma_A', 0.35)), 0.01, key=f'{p}_sigma_A',
+                        on_change=lambda: sm.save(
+                            ['grid_langer', 'langer_period_params', 'sigma_A'],
+                            value=st.session_state[f'{p}_sigma_A']))
+            else:
+                lg_mu_A, lg_sigma_A = 0.80, 0.35
+
+            # Component 2 (long-period)
+            st.markdown('**Component 2** (long-period)')
+            _saved_dB = lg_pp.get('dist_B', 'reflected_lognormal')
+            lg_dist_B_label = st.selectbox(
+                'Distribution ', _pd_options,
+                index=_pd_options.index(_pd_inv.get(_saved_dB, _pd_options[2])),
+                key=f'{p}_dist_B',
                 on_change=lambda: sm.save(
-                    ['grid_langer', 'langer_period_params', 'sigma_A'],
-                    value=st.session_state[f'{p}_sigma_A']))
-            lg_mu_B = st.number_input(
-                'μ_B (Case B mode, log-normal)', 0.1, 5.0,
-                float(lg_pp.get('mu_B', 2.0)), 0.05, key=f'{p}_mu_B',
-                on_change=lambda: sm.save(
-                    ['grid_langer', 'langer_period_params', 'mu_B'],
-                    value=st.session_state[f'{p}_mu_B']))
-            lg_sigma_B = st.number_input(
-                'σ_B (Case B skew/width)', 0.01, 2.0,
-                float(lg_pp.get('sigma_B', 0.45)), 0.01, key=f'{p}_sigma_B',
-                on_change=lambda: sm.save(
-                    ['grid_langer', 'langer_period_params', 'sigma_B'],
-                    value=st.session_state[f'{p}_sigma_B']))
-            # Case A / Case B presets
-            _prc1, _prc2, _prc3 = st.columns(3)
-            if _prc1.button('Case A only', key=f'{p}_preset_A'):
-                st.session_state[f'{p}_weight_A'] = 1.0
-                sm.save(['grid_langer', 'langer_period_params', 'weight_A'], value=1.0)
-                st.rerun()
-            if _prc2.button('Case B only', key=f'{p}_preset_B'):
-                st.session_state[f'{p}_weight_A'] = 0.0
-                sm.save(['grid_langer', 'langer_period_params', 'weight_A'], value=0.0)
-                st.rerun()
-            if _prc3.button('Both (Langer)', key=f'{p}_preset_AB'):
-                st.session_state[f'{p}_weight_A'] = 0.20
-                sm.save(['grid_langer', 'langer_period_params', 'weight_A'], value=0.20)
-                st.rerun()
+                    ['grid_langer', 'langer_period_params', 'dist_B'],
+                    value=_pd_map[st.session_state[f'{p}_dist_B']]))
+            lg_dist_B = _pd_map[lg_dist_B_label]
+            if lg_dist_B not in ('flat', 'empirical'):
+                _cB1, _cB2 = st.columns(2)
+                with _cB1:
+                    lg_mu_B = st.number_input(
+                        f'μ₂ ({_mu_label(lg_dist_B)})', 0.01, 10.0,
+                        float(lg_pp.get('mu_B', 2.0)), 0.05, key=f'{p}_mu_B',
+                        on_change=lambda: sm.save(
+                            ['grid_langer', 'langer_period_params', 'mu_B'],
+                            value=st.session_state[f'{p}_mu_B']))
+                with _cB2:
+                    lg_sigma_B = st.number_input(
+                        'σ₂', 0.01, 5.0,
+                        float(lg_pp.get('sigma_B', 0.45)), 0.01, key=f'{p}_sigma_B',
+                        on_change=lambda: sm.save(
+                            ['grid_langer', 'langer_period_params', 'sigma_B'],
+                            value=st.session_state[f'{p}_sigma_B']))
+            else:
+                lg_mu_B, lg_sigma_B = 2.0, 0.45
+
+            # Mixture weight
             lg_weight_A = st.slider(
-                'Weight of Case A', 0.0, 1.0,
+                'Weight of Component 1', 0.0, 1.0,
                 float(lg_pp.get('weight_A', 0.20)), 0.01, key=f'{p}_weight_A',
                 on_change=lambda: sm.save(
                     ['grid_langer', 'langer_period_params', 'weight_A'],
@@ -2896,51 +2935,73 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 lg_mass_range = (float(lg_mass_min_v), float(lg_mass_max_v))
 
             st.markdown('---')
-            # Mass ratio q — three presets
-            _q_preset_options = ['Dsilva (flat 0.1–2.0)',
-                                 'Langer flat (0.5–10.0)',
-                                 'Langer Fig.3 Case B (Gaussian)']
-            _q_preset_map = {
-                'Dsilva (flat 0.1–2.0)': 'dsilva',
-                'Langer flat (0.5–10.0)': 'langer_flat',
-                'Langer Fig.3 Case B (Gaussian)': 'langer_fig3',
-            }
-            _q_preset_inv = {v: k for k, v in _q_preset_map.items()}
-            _saved_q = lg_cfg.get('q_preset', 'langer_fig3')
-            lg_q_preset_label = st.selectbox(
-                'Mass ratio q model', _q_preset_options,
-                index=_q_preset_options.index(
-                    _q_preset_inv.get(_saved_q, _q_preset_options[2])),
-                key=f'{p}_q_preset',
+            # Mass ratio q — distribution type + range
+            _q_dist_options = ['Flat (uniform)', 'Gaussian', 'Log-normal',
+                               'Reflected log-normal',
+                               'Empirical (Langer Fig.)']
+            _q_dist_map = {'Flat (uniform)': 'flat', 'Gaussian': 'langer',
+                           'Log-normal': 'lognormal',
+                           'Reflected log-normal': 'reflected_lognormal',
+                           'Empirical (Langer Fig.)': 'empirical'}
+            _q_dist_inv = {v: k for k, v in _q_dist_map.items()}
+            _saved_qm = lg_cfg.get('q_model', 'lognormal')
+            lg_q_dist_label = st.selectbox(
+                'Mass ratio q distribution', _q_dist_options,
+                index=_q_dist_options.index(
+                    _q_dist_inv.get(_saved_qm, _q_dist_options[2])),
+                key=f'{p}_q_dist',
                 on_change=lambda: sm.save(
-                    ['grid_langer', 'q_preset'],
-                    value=_q_preset_map[st.session_state[f'{p}_q_preset']]))
-            lg_q_preset = _q_preset_map[lg_q_preset_label]
+                    ['grid_langer', 'q_model'],
+                    value=_q_dist_map[st.session_state[f'{p}_q_dist']]))
+            lg_q_model = _q_dist_map[lg_q_dist_label]
 
-            if lg_q_preset == 'dsilva':
-                lg_q_model = 'flat'
-                lg_q_min, lg_q_max = 0.1, 2.0
-                lg_lq_mu, lg_lq_sig = 0.7, 0.2
-            elif lg_q_preset == 'langer_flat':
-                lg_q_model = 'flat'
-                lg_q_min, lg_q_max = 0.5, 10.0
-                lg_lq_mu, lg_lq_sig = 0.7, 0.2
-            else:  # langer_fig3
-                lg_q_model = 'langer'
-                lg_q_min, lg_q_max = 0.1, 2.0
+            _lg_qr = lg_cfg.get('q_range', [0.1, 2.0])
+            _qc1, _qc2 = st.columns(2)
+            with _qc1:
+                lg_q_min = st.number_input(
+                    'q min', 0.01, 50.0, float(_lg_qr[0]), 0.05,
+                    key=f'{p}_q_min',
+                    on_change=lambda: sm.save(
+                        ['grid_langer', 'q_range'],
+                        value=[st.session_state[f'{p}_q_min'],
+                               st.session_state.get(f'{p}_q_max', 2.0)]))
+            with _qc2:
+                lg_q_max = st.number_input(
+                    'q max', 0.01, 50.0, float(_lg_qr[1]), 0.05,
+                    key=f'{p}_q_max',
+                    on_change=lambda: sm.save(
+                        ['grid_langer', 'q_range'],
+                        value=[st.session_state.get(f'{p}_q_min', 0.1),
+                               st.session_state[f'{p}_q_max']]))
+
+            if lg_q_model not in ('flat', 'empirical'):
+                _ql = _mu_label(lg_q_model) if lg_q_model in (
+                    'lognormal', 'reflected_lognormal') else 'mean'
                 lg_lq_mu = st.number_input(
-                    'Langer q mean', 0.01, 5.0,
-                    float(lg_cfg.get('langer_q_mu', 0.7)), 0.05,
-                    key=f'{p}_lq_mu')
+                    f'q μ ({_ql})', 0.01, 50.0,
+                    float(lg_cfg.get('langer_q_mu', 0.65)), 0.05,
+                    key=f'{p}_lq_mu',
+                    on_change=lambda: sm.save(
+                        ['grid_langer', 'langer_q_mu'],
+                        value=st.session_state[f'{p}_lq_mu']))
                 lg_lq_sig = st.number_input(
-                    'Langer q sigma', 0.01, 5.0,
-                    float(lg_cfg.get('langer_q_sigma', 0.2)), 0.05,
-                    key=f'{p}_lq_sig')
+                    'q σ', 0.01, 50.0,
+                    float(lg_cfg.get('langer_q_sigma', 0.3)), 0.05,
+                    key=f'{p}_lq_sig',
+                    on_change=lambda: sm.save(
+                        ['grid_langer', 'langer_q_sigma'],
+                        value=st.session_state[f'{p}_lq_sig']))
+            else:
+                lg_lq_mu, lg_lq_sig = 0.65, 0.3
 
             # q convention note and flip toggle
             lg_q_flipped = st.checkbox(
                 'Flip q (M_primary / M_companion)',
-                value=False, key=f'{p}_q_flipped')
+                value=bool(lg_cfg.get('q_flipped', False)),
+                key=f'{p}_q_flipped',
+                on_change=lambda: sm.save(
+                    ['grid_langer', 'q_flipped'],
+                    value=st.session_state[f'{p}_q_flipped']))
             if lg_q_flipped:
                 st.caption('q = M_primary / M_companion (BH as primary). '
                            'M₂ = M₁ / q.')
@@ -2948,8 +3009,10 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 st.caption('q = M_companion / M_primary (BH as companion, '
                            'typically lighter). Langer Fig. 4: M_BH/M_OB '
                            'peaks at ~0.5–0.7. M₂ = M₁ × q.')
+            _q_extra = (f', μ={lg_lq_mu}, σ={lg_lq_sig}'
+                        if lg_q_model not in ('flat', 'empirical') else '')
             st.caption(f'Active: q_model="{lg_q_model}", '
-                       f'range=[{lg_q_min}, {lg_q_max}]')
+                       f'range=[{lg_q_min}, {lg_q_max}]{_q_extra}')
 
     # ── Right column: actions + display ───────────────────────────────────────
     with lg_col_right:
@@ -3054,8 +3117,8 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
 
     # ── Stable config ─────────────────────────────────────────────────────────
     lg_period_params = {
-        'mu_A': float(lg_mu_A), 'sigma_A': float(lg_sigma_A),
-        'mu_B': float(lg_mu_B), 'sigma_B': float(lg_sigma_B),
+        'dist_A': str(lg_dist_A), 'mu_A': float(lg_mu_A), 'sigma_A': float(lg_sigma_A),
+        'dist_B': str(lg_dist_B), 'mu_B': float(lg_mu_B), 'sigma_B': float(lg_sigma_B),
         'weight_A': float(lg_weight_A),
     }
     lg_stable_cfg = {
@@ -3071,8 +3134,9 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         'q_model':            str(lg_q_model),
         'q_min':              float(lg_q_min),
         'q_max':              float(lg_q_max),
-        'q_preset':           str(lg_q_preset),
         'q_flipped':          bool(lg_q_flipped),
+        'langer_q_mu':        float(lg_lq_mu),
+        'langer_q_sigma':     float(lg_lq_sig),
         'langer_period_params': lg_period_params,
         'primary_line':       settings.get('primary_line', 'C IV 5808-5812'),
         'threshold_dRV':      lg_cls.get('threshold_dRV', 45.5),
@@ -4370,8 +4434,10 @@ def _render_compare_tab(p: str) -> None:
         # Langer period params
         lp = s.get('langer_period_params', {})
         if lp:
-            lines.append(f"**Period model:** μ_A={lp.get('mu_A','—')}, σ_A={lp.get('sigma_A','—')}, "
-                          f"μ_B={lp.get('mu_B','—')}, σ_B={lp.get('sigma_B','—')}, w_A={lp.get('weight_A','—')}")
+            lines.append(
+                f"**Period model:** C1={lp.get('dist_A','gauss')}(μ={lp.get('mu_A','—')}, σ={lp.get('sigma_A','—')}), "
+                f"C2={lp.get('dist_B','logn')}(μ={lp.get('mu_B','—')}, σ={lp.get('sigma_B','—')}), "
+                f"w₁={lp.get('weight_A','—')}")
 
         return '\n\n'.join(lines)
 
