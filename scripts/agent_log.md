@@ -963,3 +963,23 @@ I fully rewrote `app/pages/06_plots.py` (from 228 lines → ~680 lines) imp
 [2026-03-11 17:10:03] --- Starting task #103: RV Modeling page improvements — follow-up on #52 ---
 [2026-03-11 17:27:48]   [REGRESSION] Running Python-level regression check...
 [2026-03-11 17:28:14]   [REGRESSION] PASSED — 21 core files OK
+### Task #99: Spectrum page: model comparison + classification table
+- **Branch:** `agent/99-spectrum-page-model-comparison-classific`
+- **Status:** completed
+- **Summary:** ## Task #99 Complete ✅
+
+The Spectrum Browser page (`app/pages/02_spectrum.py`) has been significantly enhanced with all three requested features:
+
+### What was implemented:
+
+**1. Diagnostic Spectral Line Markers** 🔬
+- 6 line groups with ~25 individual spectral features:
+  - **Hydrogen Balmer** (Hα–Hε) — blue dashed lines for OB companion detection
+  - **He I absorption** (6 lines) — teal, key SB2 signature indicator
+  - **He II absorption** (4 lines) — purple, hot companion marker
+  - **Carbon W
+- **UNSUPERVISED — needs human review and testing**
+
+[2026-03-11 17:28:14] Task #99 finished: completed
+[2026-03-11 17:28:14]   [AUTO-LEARN] Running reflection...
+[2026-03-11 17:29:23]   [AUTO-LEARN] Reflection complete.

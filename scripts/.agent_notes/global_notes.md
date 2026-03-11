@@ -18,3 +18,10 @@ These notes are prepended to ALL agent roles. Add general project learnings here
 - **PLOTLY_THEME dict-merge pattern is settled** — use `fig.update_layout(**{**PLOTLY_THEME, 'title': dict(text='...'), 'xaxis': {**PLOTLY_THEME.get('xaxis', {}), 'title': '...'}})`. This avoids E018 collisions while keeping a single `update_layout` call.
 - **Two-stage `curve_fit` improves convergence** — fit raw (unfiltered) data first for stable initial guesses, then re-fit significance-filtered data with binomial error weights (`sigma=sig_err, absolute_sigma=True`). This pattern is robust for noisy fraction-vs-threshold curves.
 - **Session state for expensive results** — store computation outputs in `st.session_state["key"]` so they survive Streamlit reruns without re-computation. Check `if "key" not in st.session_state` to show a preview state before the user clicks "Run".
+
+## Task #99 — 2026-03-11 (Spectrum page: model comparison + classification table)
+
+- **`plot.py` `read_file()` is a universal spectrum parser** — it handles X-SHOOTER, HERMES, FEROS, UVES, COS, STIS, MUSE, and plain text formats. Import it from the project root (`from plot import read_file`) for any page that needs to load external spectrum files. No need to write custom parsers.
+- **JSON file persistence for cross-session data** — for lightweight metadata like per-star classifications, use a simple JSON file in `settings/` (e.g., `star_classifications.json`) rather than `st.session_state`. JSON survives app restarts; session_state does not.
+- **Quick-set buttons + `st.rerun()` pattern** — to programmatically update selectbox/widget values, set `st.session_state['widget_key']` then call `st.rerun()`. The widget reads its initial value from session_state on the next run. This is the standard pattern for "quick classify" buttons.
+- **Diagnostic line constants belong at module level** — defining spectral line catalogs (wavelengths, element IDs, line types) as module-level dicts makes them importable by other pages and avoids re-creation on every Streamlit rerun. Group by physical category (Hydrogen, He I, He II, Carbon, etc.).
