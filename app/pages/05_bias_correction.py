@@ -1339,22 +1339,27 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
 
     # ── Poll running / completed job ─────────────────────────────────────────
     _job = st.session_state.get(f'{p}_job')
-    if _job is not None:
-        if _job['status'] == 'running':
-            progress_slot.progress(
-                _job['progress_pct'], text=_job['progress_text'])
-            if _job.get('live_heatmap'):
-                hd = _job['live_heatmap']
-                heatmap_slot.plotly_chart(
+    if _job is not None and _job.get('status') == 'running':
+        # Fragment-based polling: only re-renders itself every 3s, no full-page rerun
+        @st.fragment(run_every=3)
+        def _dsilva_live_poll():
+            _j = st.session_state.get(f'{p}_job')
+            if _j is None or _j.get('status') != 'running':
+                st.rerun(scope='app')  # one final full rerun to show done state
+                return
+            st.progress(_j.get('progress_pct', 0), text=_j.get('progress_text', '...'))
+            if _j.get('live_heatmap'):
+                hd = _j['live_heatmap']
+                st.plotly_chart(
                     _make_heatmap_fig(
                         hd['p'], hd['fbin'], hd['x'],
                         title=hd['title'], show_d=show_d,
                         ks_d_2d=hd['d'], height=_ch, width=_cw,
                         live=not hd['is_final'],
                     ), use_container_width=_use_cw)
-            if _job.get('live_outer_heatmap'):
-                ohd = _job['live_outer_heatmap']
-                outer_heatmap_slot.plotly_chart(
+            if _j.get('live_outer_heatmap'):
+                ohd = _j['live_outer_heatmap']
+                st.plotly_chart(
                     _make_heatmap_fig(
                         ohd['p'], ohd['y'], ohd['x'],
                         title='Max K-S p  (logP_max × σ_single)',
@@ -1365,32 +1370,33 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                         best_label_fmt='  logP_max={fbin:.2f}, σ={x:.1f}, p={p:.4f}',
                         live=not ohd['is_final'],
                     ), use_container_width=_use_cw)
-            if _job.get('live_status'):
-                status_slot.markdown(_job['live_status'])
+            if _j.get('live_status'):
+                st.markdown(_j['live_status'])
+        _dsilva_live_poll()
 
-        elif _job['status'] == 'done':
-            _res = _job['result']
-            st.session_state[f'{p}_result'] = _res
-            st.session_state['result_dsilva'] = _res
-            cached_load_grid_result.clear()
-            _elapsed = _job.get('elapsed_total', 0)
-            _desc = _job.get('desc_name', '')
-            _nrows = _job.get('n_rows_total', 0)
-            progress_slot.progress(
-                1.0, text=f'Done in {_fmt_eta(_elapsed)}.')
-            status_slot.success(
-                f'Saved to results/{_desc}  '
-                f'({_nrows} rows computed in {_fmt_eta(_elapsed)})')
-            del st.session_state[f'{p}_job']
+    elif _job is not None and _job.get('status') == 'done':
+        _res = _job['result']
+        st.session_state[f'{p}_result'] = _res
+        st.session_state['result_dsilva'] = _res
+        cached_load_grid_result.clear()
+        _elapsed = _job.get('elapsed_total', 0)
+        _desc = _job.get('desc_name', '')
+        _nrows = _job.get('n_rows_total', 0)
+        progress_slot.progress(
+            1.0, text=f'Done in {_fmt_eta(_elapsed)}.')
+        status_slot.success(
+            f'Saved to results/{_desc}  '
+            f'({_nrows} rows computed in {_fmt_eta(_elapsed)})')
+        del st.session_state[f'{p}_job']
 
-        elif _job['status'] == 'error':
-            status_slot.error(
-                f"Simulation failed:\n```\n{_job['error']}\n```")
-            del st.session_state[f'{p}_job']
+    elif _job is not None and _job.get('status') == 'error':
+        status_slot.error(
+            f"Simulation failed:\n```\n{_job['error']}\n```")
+        del st.session_state[f'{p}_job']
 
-        elif _job['status'] == 'cancelled':
-            status_slot.warning('Simulation cancelled.')
-            del st.session_state[f'{p}_job']
+    elif _job is not None and _job.get('status') == 'cancelled':
+        status_slot.warning('Simulation cancelled.')
+        del st.session_state[f'{p}_job']
 
     # ── Display result (always shown when result exists) ─────────────────────
     result = st.session_state.get(f'{p}_result') or st.session_state.get('result_dsilva')
@@ -3316,13 +3322,17 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
 
     # ── Poll running / completed job ─────────────────────────────────────────
     _lg_job = st.session_state.get(f'{p}_job')
-    if _lg_job is not None:
-        if _lg_job['status'] == 'running':
-            lg_progress_slot.progress(
-                _lg_job['progress_pct'], text=_lg_job['progress_text'])
-            if _lg_job.get('live_heatmap'):
-                hd = _lg_job['live_heatmap']
-                lg_heatmap_slot.plotly_chart(
+    if _lg_job is not None and _lg_job.get('status') == 'running':
+        @st.fragment(run_every=3)
+        def _langer_live_poll():
+            _j = st.session_state.get(f'{p}_job')
+            if _j is None or _j.get('status') != 'running':
+                st.rerun(scope='app')
+                return
+            st.progress(_j.get('progress_pct', 0), text=_j.get('progress_text', '...'))
+            if _j.get('live_heatmap'):
+                hd = _j['live_heatmap']
+                st.plotly_chart(
                     _make_heatmap_fig(
                         hd['p'], hd['fbin'], hd['x'],
                         title='Langer 2020 — K-S p-value (live)',
@@ -3331,31 +3341,32 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                         x_label='σ_single (km/s)', x_name='σ',
                         best_label_fmt='  f={fbin:.3f}, σ={x:.1f}, p={p:.3f}',
                     ), use_container_width=_use_cw)
-            if _lg_job.get('live_status'):
-                lg_status_slot.markdown(_lg_job['live_status'])
+            if _j.get('live_status'):
+                st.markdown(_j['live_status'])
+        _langer_live_poll()
 
-        elif _lg_job['status'] == 'done':
-            _lg_res = _lg_job['result']
-            st.session_state[f'{p}_result'] = _lg_res
-            cached_load_grid_result.clear()
-            _lg_elapsed = _lg_job.get('elapsed_total', 0)
-            _lg_desc = _lg_job.get('desc_name', '')
-            _lg_nc = _lg_job.get('n_cells_total', 0)
-            lg_progress_slot.progress(
-                1.0, text=f'Done in {_fmt_eta(_lg_elapsed)}.')
-            lg_status_slot.success(
-                f'Saved to results/{_lg_desc}  '
-                f'({_lg_nc} cells computed in {_fmt_eta(_lg_elapsed)})')
-            del st.session_state[f'{p}_job']
+    elif _lg_job is not None and _lg_job.get('status') == 'done':
+        _lg_res = _lg_job['result']
+        st.session_state[f'{p}_result'] = _lg_res
+        cached_load_grid_result.clear()
+        _lg_elapsed = _lg_job.get('elapsed_total', 0)
+        _lg_desc = _lg_job.get('desc_name', '')
+        _lg_nc = _lg_job.get('n_cells_total', 0)
+        lg_progress_slot.progress(
+            1.0, text=f'Done in {_fmt_eta(_lg_elapsed)}.')
+        lg_status_slot.success(
+            f'Saved to results/{_lg_desc}  '
+            f'({_lg_nc} cells computed in {_fmt_eta(_lg_elapsed)})')
+        del st.session_state[f'{p}_job']
 
-        elif _lg_job['status'] == 'error':
-            lg_status_slot.error(
-                f"Simulation failed:\n```\n{_lg_job['error']}\n```")
-            del st.session_state[f'{p}_job']
+    elif _lg_job is not None and _lg_job.get('status') == 'error':
+        lg_status_slot.error(
+            f"Simulation failed:\n```\n{_lg_job['error']}\n```")
+        del st.session_state[f'{p}_job']
 
-        elif _lg_job['status'] == 'cancelled':
-            lg_status_slot.warning('Simulation cancelled.')
-            del st.session_state[f'{p}_job']
+    elif _lg_job is not None and _lg_job.get('status') == 'cancelled':
+        lg_status_slot.warning('Simulation cancelled.')
+        del st.session_state[f'{p}_job']
 
     # ── Display result (always shown when result exists) ─────────────────────
     lg_result = st.session_state.get(f'{p}_result')
@@ -4366,8 +4377,8 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             6, 3650.0, None, 0.0, DEFAULT_DRV_BIN_EDGES,
         )
 
-        ks_D = np.empty((n_sig, n_fb, n_pi), dtype=float)
-        ks_p = np.empty((n_sig, n_fb, n_pi), dtype=float)
+        ks_D = np.full((n_sig, n_fb, n_pi), np.nan)
+        ks_p = np.full((n_sig, n_fb, n_pi), np.nan)
         best_p = -1.0
         best_fb = 0.0
         best_median_cdf = None
@@ -4412,42 +4423,74 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                 job['progress_text'] = (
                     f'{pct*100:.1f}%  ({completed}/{n_tasks}){eta_str}')
 
-                # Live heatmap update (throttled) — Dsilva-compatible format
+                # Live heatmap update (throttled)
                 _now = _time.monotonic()
                 _is_final = (completed == n_tasks)
+                _is_langer = (period_model == 'langer2020')
                 if _now - job.get('_last_hm', 0) > 1.0 or _is_final:
                     job['_last_hm'] = _now
-                    # Show best sigma slice
-                    _best_sig_idx = 0
-                    if n_sig > 1:
-                        _pmax_per_sig = [float(ks_p[s].max()) for s in range(n_sig)
-                                         if np.any(ks_p[s] > 0)]
-                        if _pmax_per_sig:
-                            _best_sig_idx = int(np.argmax(_pmax_per_sig))
-                    _sig_label = f'σ={sigma_grid[_best_sig_idx]:.1f}'
-                    cur_p = ks_p[_best_sig_idx]
-                    cur_p_disp = np.where(np.isnan(cur_p), 0.0, cur_p)
-                    cur_D_disp = np.where(
-                        np.isnan(ks_D[_best_sig_idx]),
-                        0.0, ks_D[_best_sig_idx])
-                    job['live_heatmap'] = {
-                        'p': cur_p_disp.copy(),
-                        'd': cur_D_disp.copy(),
-                        'fbin': fbin_grid.copy(),
-                        'x': pi_grid.copy(),
-                        'title': f'K-S p-value  (cadence-aware, {_sig_label} km/s)',
-                        'is_final': _is_final,
-                    }
-                    # Live status text
-                    _bp_idx = np.unravel_index(np.argmax(cur_p_disp), cur_p_disp.shape)
-                    _bf = float(fbin_grid[_bp_idx[0]])
-                    _bpi = float(pi_grid[_bp_idx[1]])
-                    _bpv = float(cur_p_disp[_bp_idx])
-                    job['live_status'] = (
-                        f'{_sig_label} km/s  →  '
-                        f'best f_bin = **{_bf:.4f}**, '
-                        f'π = **{_bpi:.3f}**, '
-                        f'K-S p = **{_bpv:.4f}**')
+
+                    if _is_langer and n_sig > 1:
+                        # Langer with sigma scan: show f_bin × σ_single heatmap
+                        # ks_p shape: (n_sig, n_fb, n_pi=1) → squeeze pi dim
+                        cur_p_2d = ks_p[:, :, 0].T  # (n_fb, n_sig)
+                        cur_p_disp = np.where(np.isnan(cur_p_2d), 0.0, cur_p_2d)
+                        cur_D_2d = ks_D[:, :, 0].T
+                        cur_D_disp = np.where(np.isnan(cur_D_2d), 0.0, cur_D_2d)
+                        job['live_heatmap'] = {
+                            'p': cur_p_disp.copy(),
+                            'd': cur_D_disp.copy(),
+                            'fbin': fbin_grid.copy(),
+                            'x': sigma_grid.copy(),
+                            'x_label': 'σ_single (km/s)',
+                            'x_name': 'σ',
+                            'title': 'K-S p-value  (cadence-aware, Langer 2020)',
+                            'is_final': _is_final,
+                        }
+                        _bp_idx = np.unravel_index(
+                            np.argmax(cur_p_disp), cur_p_disp.shape)
+                        _bf = float(fbin_grid[_bp_idx[0]])
+                        _bsig = float(sigma_grid[_bp_idx[1]])
+                        _bpv = float(cur_p_disp[_bp_idx])
+                        job['live_status'] = (
+                            f'best f_bin = **{_bf:.4f}**, '
+                            f'σ_single = **{_bsig:.1f}** km/s, '
+                            f'K-S p = **{_bpv:.4f}**')
+                    else:
+                        # Dsilva (or single-sigma Langer): show best sigma slice as f_bin × π
+                        _best_sig_idx = 0
+                        if n_sig > 1:
+                            _pmax_per_sig = [
+                                float(np.nanmax(ks_p[s]))
+                                for s in range(n_sig)
+                                if np.any(~np.isnan(ks_p[s]))
+                            ]
+                            if _pmax_per_sig:
+                                _best_sig_idx = int(np.argmax(_pmax_per_sig))
+                        _sig_label = f'σ={sigma_grid[_best_sig_idx]:.1f}'
+                        cur_p = ks_p[_best_sig_idx]
+                        cur_p_disp = np.where(np.isnan(cur_p), 0.0, cur_p)
+                        cur_D_disp = np.where(
+                            np.isnan(ks_D[_best_sig_idx]),
+                            0.0, ks_D[_best_sig_idx])
+                        job['live_heatmap'] = {
+                            'p': cur_p_disp.copy(),
+                            'd': cur_D_disp.copy(),
+                            'fbin': fbin_grid.copy(),
+                            'x': pi_grid.copy(),
+                            'title': f'K-S p-value  (cadence-aware, {_sig_label} km/s)',
+                            'is_final': _is_final,
+                        }
+                        _bp_idx = np.unravel_index(
+                            np.argmax(cur_p_disp), cur_p_disp.shape)
+                        _bf = float(fbin_grid[_bp_idx[0]])
+                        _bpi = float(pi_grid[_bp_idx[1]])
+                        _bpv = float(cur_p_disp[_bp_idx])
+                        job['live_status'] = (
+                            f'{_sig_label} km/s  →  '
+                            f'best f_bin = **{_bf:.4f}**, '
+                            f'π = **{_bpi:.3f}**, '
+                            f'K-S p = **{_bpv:.4f}**')
 
         # Build result
         result = {
@@ -4531,11 +4574,6 @@ def _render_cadence_results(p: str, _is_dsilva: bool) -> None:
     """Shared right-column results display for both cadence tabs."""
     pal = get_palette()
 
-    # Persistent st.empty() slots for live updates (matching Dsilva pattern)
-    progress_slot  = st.empty()
-    status_slot    = st.empty()
-    heatmap_slot   = st.empty()
-
     _job = st.session_state.get(f'{p}_job')
     _saved_result = st.session_state.get(f'{p}_result')
 
@@ -4550,34 +4588,41 @@ def _render_cadence_results(p: str, _is_dsilva: bool) -> None:
         status = _job.get('status', 'idle') if _job else 'idle'
 
     if status == 'running':
-        progress_slot.progress(
-            _job.get('progress_pct', 0),
-            text=_job.get('progress_text', 'Running...'))
-
-        # Live heatmap (Dsilva-compatible data format)
-        if _job.get('live_heatmap'):
-            hd = _job['live_heatmap']
-            try:
-                show_d = False
-                heatmap_slot.plotly_chart(
-                    _make_heatmap_fig(
-                        hd['p'], hd['fbin'], hd['x'],
-                        title=hd['title'], show_d=show_d,
-                        ks_d_2d=hd.get('d'), height=_ch, width=_cw,
-                        live=not hd.get('is_final', False),
-                    ), use_container_width=_use_cw)
-            except Exception:
-                pass
-        if _job.get('live_status'):
-            status_slot.markdown(_job['live_status'])
+        # Fragment-based polling: only re-renders itself every 3s, no flicker
+        @st.fragment(run_every=3)
+        def _cadence_live_poll():
+            _j = st.session_state.get(f'{p}_job')
+            if _j is None or _j.get('status') != 'running':
+                st.rerun(scope='app')
+                return
+            st.progress(_j.get('progress_pct', 0),
+                        text=_j.get('progress_text', 'Running...'))
+            if _j.get('live_heatmap'):
+                hd = _j['live_heatmap']
+                try:
+                    st.plotly_chart(
+                        _make_heatmap_fig(
+                            hd['p'], hd['fbin'], hd['x'],
+                            title=hd.get('title', ''),
+                            show_d=False,
+                            ks_d_2d=hd.get('d'), height=_ch, width=_cw,
+                            x_label=hd.get('x_label', 'π  (period power-law index)'),
+                            x_name=hd.get('x_name', 'π'),
+                            live=not hd.get('is_final', False),
+                        ), use_container_width=_use_cw)
+                except Exception:
+                    pass
+            if _j.get('live_status'):
+                st.markdown(_j['live_status'])
+        _cadence_live_poll()
 
     elif status == 'error':
-        status_slot.error(
+        st.error(
             f"Simulation failed:\n```\n{_job.get('error', 'Unknown')}\n```")
         del st.session_state[f'{p}_job']
 
     elif status == 'cancelled':
-        status_slot.warning('Simulation was cancelled.')
+        st.warning('Simulation was cancelled.')
         del st.session_state[f'{p}_job']
 
     elif status == 'done':
@@ -4598,28 +4643,40 @@ def _render_cadence_results(p: str, _is_dsilva: bool) -> None:
         pi_grid   = result['pi_grid']
         sigma_grid = result['sigma_grid']
         n_sig = len(sigma_grid)
+        _is_langer_sigma = (not _is_dsilva) and n_sig > 1
 
-        # Best slice
-        if n_sig == 1:
+        if _is_langer_sigma:
+            # Langer with sigma scan: reshape to (n_fb, n_sig) — fbin × σ
+            hm_z = ks_p_arr[:, :, 0].T  # (n_sig, n_fb, 1) → squeeze → transpose
+            _x_vals = sigma_grid
+            _x_label = 'σ_single (km/s)'
+            _x_name = 'σ'
+        elif n_sig == 1:
             hm_z = ks_p_arr[0]
+            _x_vals = pi_grid if _is_dsilva else sigma_grid
+            _x_label = 'π  (period power-law index)' if _is_dsilva else 'σ_single (km/s)'
+            _x_name = 'π' if _is_dsilva else 'σ'
         else:
-            _pmax = [ks_p_arr[s].max() for s in range(n_sig)]
+            # Dsilva with sigma scan: show best sigma slice
+            _pmax = [float(np.nanmax(ks_p_arr[s])) for s in range(n_sig)]
             _best_s = int(np.argmax(_pmax))
             hm_z = ks_p_arr[_best_s]
+            _x_vals = pi_grid
+            _x_label = 'π  (period power-law index)'
+            _x_name = 'π'
             st.info(f'Showing best σ_single slice: {sigma_grid[_best_s]:.1f} km/s')
 
-        # Heatmap — use make_heatmap_fig with keyword args (Dsilva-compatible)
-        _x_label = 'π  (period power-law index)' if _is_dsilva else 'σ_single (km/s)'
         fig_hm = _make_heatmap_fig(
-            hm_z, fbin_grid.tolist(), pi_grid.tolist(),
+            hm_z, fbin_grid.tolist(), np.asarray(_x_vals).tolist(),
             title='K-S p-value (cadence-aware)',
             height=_ch, width=_cw,
-            x_label=_x_label,
+            x_label=_x_label, x_name=_x_name,
         )
         # Best point marker
         _bi = np.unravel_index(np.argmax(hm_z), hm_z.shape)
+        _best_x_val = float(np.asarray(_x_vals)[_bi[1]])
         fig_hm.add_trace(go.Scatter(
-            x=[float(pi_grid[_bi[1]])], y=[float(fbin_grid[_bi[0]])],
+            x=[_best_x_val], y=[float(fbin_grid[_bi[0]])],
             mode='markers',
             marker=dict(symbol='star', size=16, color='#DAA520',
                         line=dict(width=1.5, color='black')),
@@ -4631,15 +4688,18 @@ def _render_cadence_results(p: str, _is_dsilva: bool) -> None:
         st.markdown('### Best-fit summary')
         _rows = []
         _best_fb = float(fbin_grid[_bi[0]])
-        _best_pi = float(pi_grid[_bi[1]])
         _best_pval = float(hm_z[_bi])
         _rows.append({'Parameter': 'f_bin', 'Best': f'{_best_fb:.3f}',
                       'Mode (HDI68)': f"{result.get('mode_fbin', _best_fb):.3f} "
                                       f"[{result.get('lo_fbin', '?')}, {result.get('hi_fbin', '?')}]"})
         if _is_dsilva:
-            _rows.append({'Parameter': 'π', 'Best': f'{_best_pi:.2f}',
-                          'Mode (HDI68)': f"{result.get('mode_pi', _best_pi):.2f} "
+            _rows.append({'Parameter': 'π', 'Best': f'{_best_x_val:.2f}',
+                          'Mode (HDI68)': f"{result.get('mode_pi', _best_x_val):.2f} "
                                           f"[{result.get('lo_pi', '?')}, {result.get('hi_pi', '?')}]"})
+        elif _is_langer_sigma:
+            _rows.append({'Parameter': 'σ_single', 'Best': f'{_best_x_val:.1f} km/s',
+                          'Mode (HDI68)': f"{result.get('mode_sigma', _best_x_val):.1f} "
+                                          f"[{result.get('lo_sigma', '?')}, {result.get('hi_sigma', '?')}]"})
         _rows.append({'Parameter': 'K-S p', 'Best': f'{_best_pval:.4f}', 'Mode (HDI68)': ''})
         _rows.append({'Parameter': 'N_sets', 'Best': str(result.get('n_sets', '?')), 'Mode (HDI68)': ''})
         st.table(pd.DataFrame(_rows))
@@ -5972,20 +6032,5 @@ for _tw, _ti in zip(_tab_widgets, st.session_state['bc_tabs']):
         elif _ti['type'] == 'compare':
             _render_compare_tab(_ti['prefix'])
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Auto-refresh while any background simulation is running
-# ─────────────────────────────────────────────────────────────────────────────
-_any_job_running = any(
-    st.session_state.get(f"{t['prefix']}_job", {}).get('status') == 'running'
-    for t in st.session_state.get('bc_tabs', [])
-)
-if _any_job_running:
-    @st.fragment(run_every=3)
-    def _auto_refresh():
-        _still = any(
-            st.session_state.get(f"{t['prefix']}_job", {}).get('status') == 'running'
-            for t in st.session_state.get('bc_tabs', [])
-        )
-        if _still:
-            st.rerun(scope='app')
-    _auto_refresh()
+# NOTE: Live polling is handled by @st.fragment(run_every=3) inside each tab's
+# rendering function. No global auto-refresh needed (avoids full-page flicker).
