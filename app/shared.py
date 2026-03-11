@@ -610,6 +610,7 @@ def render_sidebar(page_name: str = '') -> dict:
         st.page_link('pages/08_results.py', label='📈 Results')
         st.page_link('pages/09_settings.py', label='⚙️ Settings')
         st.page_link('pages/10_todo.py', label='📝 To-Do')
+        st.page_link('pages/12_rv_modeling.py', label='📈 RV Modeling')
 
         st.markdown('---')
 
