@@ -49,6 +49,11 @@ _WORK_DIR = _HERE / '.agent_work'
 _NOTES_DIR = _HERE / '.agent_notes'
 _SETTINGS_PATH = _HERE / 'agent_settings.json'
 
+# Ensure scripts/ is on sys.path so subagent_definitions is importable
+# even after git checkout changes the working tree
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
 
 # ── Agent settings (from agent_settings.json) ─────────────────────────────────
 _AGENT_SETTINGS_DEFAULTS = {
@@ -289,24 +294,19 @@ def git_checkpoint() -> str:
 
 
 def git_create_branch(task: dict) -> str:
-    """Create or switch to a task branch from verified-good tag (or current HEAD).
+    """Create or switch to a task branch from current HEAD.
 
-    Branches from the 'verified-good' tag if it exists, otherwise current HEAD.
     Auto-commits uncommitted work before switching.
+    Note: Previously branched from 'verified-good' tag, but that caused
+    imported modules (subagent_definitions.py) to disappear from disk and
+    agent_log.md to be overwritten. Regression check after implementation
+    provides the same safety guarantee.
     """
     slug = re.sub(r'[^a-z0-9]+', '-', task['title'].lower())[:40].strip('-')
     branch = f'agent/{task["id"]}-{slug}'
 
     # Commit any uncommitted work before switching — prevents stash/pop conflicts
     git_commit_all(f'[AGENT] Auto-save before switching to task #{task["id"]}')
-
-    # Branch from verified-good tag if it exists, otherwise current HEAD
-    try:
-        git('rev-parse', 'verified-good')
-        git('checkout', 'verified-good')
-        log(f'  Branching from verified-good tag')
-    except RuntimeError:
-        pass  # No tag — stay on current HEAD
 
     try:
         git('checkout', '-b', branch)
@@ -1372,6 +1372,10 @@ async def run_freeform_task(task_prompt: str, dry_run: bool,
         log('Agent session complete.')
         return
 
+    # Pre-import subagent definitions before any git checkout may remove the file
+    if architecture == 'opus':
+        import subagent_definitions  # noqa: F811 — cached in sys.modules
+
     freeform_id = int(datetime.now().strftime('%y%m%d%H%M'))
     task = {'id': freeform_id, 'title': 'Free-form task', 'description': task_prompt, 'tags': ''}
     branch = f'agent/freeform-{datetime.now().strftime("%Y%m%d-%H%M")}'
@@ -1411,6 +1415,10 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
     log(f'Git checkpoint: {checkpoint}')
     log_session_start(checkpoint, quadrant)
 
+    # Pre-import subagent definitions before any git checkout may remove the file
+    if architecture == 'opus':
+        import subagent_definitions  # noqa: F811 — cached in sys.modules
+
     state = load_state()
     completed_ids: list[int] = state.get('completed_tasks', []) if state else []
     tasks_done = len(completed_ids)
@@ -1438,30 +1446,31 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
             tasks_done += 1
             continue
 
-        # Create branch (preserving current branch as return target)
+        # Create branch and run pipeline — all inside try/except for robustness
+        branch = None
         source_branch = git('branch', '--show-current')
-        branch = git_create_branch(task)
-        log(f'Working on branch: {branch} (will return to {source_branch})')
-
-        save_state({
-            'current_task_id': task['id'],
-            'current_task_title': task.get('title', ''),
-            'completed_tasks': completed_ids,
-            'checkpoint_tag': checkpoint,
-            'quadrant': quadrant,
-            'branch': branch,
-            'current_stage': 'starting',
-            'started_at': datetime.now().isoformat(),
-            'pipeline_stages_done': [],
-            'pipeline_stages_total': ['planner', 'reviewer', 'implementer', 'tester', 'regression'],
-            'awaiting_intervention': False,
-            'intervention_type': None,
-            'rate_limited': False,
-            'rate_limit_resume_at': None,
-        })
-
-        # Run the full pipeline (or Opus manager)
         try:
+            branch = git_create_branch(task)
+            log(f'Working on branch: {branch} (will return to {source_branch})')
+
+            save_state({
+                'current_task_id': task['id'],
+                'current_task_title': task.get('title', ''),
+                'completed_tasks': completed_ids,
+                'checkpoint_tag': checkpoint,
+                'quadrant': quadrant,
+                'branch': branch,
+                'current_stage': 'starting',
+                'started_at': datetime.now().isoformat(),
+                'pipeline_stages_done': [],
+                'pipeline_stages_total': ['planner', 'reviewer', 'implementer', 'tester', 'regression'],
+                'awaiting_intervention': False,
+                'intervention_type': None,
+                'rate_limited': False,
+                'rate_limit_resume_at': None,
+            })
+
+            # Run the full pipeline (or Opus manager)
             if architecture == 'opus':
                 status, summary = await run_task_opus(task, source_branch)
             else:
@@ -1470,7 +1479,7 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
             status, summary = 'error', f'Pipeline crashed: {e}'
             log(f'  Pipeline error: {e}')
 
-        log_task_result(task, branch, status, summary)
+        log_task_result(task, branch or '?', status, summary)
         log(f'Task #{task["id"]} finished: {status}')
 
         # Auto-learn reflection

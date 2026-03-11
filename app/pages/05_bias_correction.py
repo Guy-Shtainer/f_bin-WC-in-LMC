@@ -2955,24 +2955,28 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                     value=_q_dist_map[st.session_state[f'{p}_q_dist']]))
             lg_q_model = _q_dist_map[lg_q_dist_label]
 
-            _lg_qr = lg_cfg.get('q_range', [0.1, 2.0])
-            _qc1, _qc2 = st.columns(2)
-            with _qc1:
-                lg_q_min = st.number_input(
-                    'q min', 0.01, 50.0, float(_lg_qr[0]), 0.05,
-                    key=f'{p}_q_min',
-                    on_change=lambda: sm.save(
-                        ['grid_langer', 'q_range'],
-                        value=[st.session_state[f'{p}_q_min'],
-                               st.session_state.get(f'{p}_q_max', 2.0)]))
-            with _qc2:
-                lg_q_max = st.number_input(
-                    'q max', 0.01, 50.0, float(_lg_qr[1]), 0.05,
-                    key=f'{p}_q_max',
-                    on_change=lambda: sm.save(
-                        ['grid_langer', 'q_range'],
-                        value=[st.session_state.get(f'{p}_q_min', 0.1),
-                               st.session_state[f'{p}_q_max']]))
+            if lg_q_model != 'empirical':
+                _lg_qr = lg_cfg.get('q_range', [0.1, 2.0])
+                _qc1, _qc2 = st.columns(2)
+                with _qc1:
+                    lg_q_min = st.number_input(
+                        'q min', 0.01, 50.0, float(_lg_qr[0]), 0.05,
+                        key=f'{p}_q_min',
+                        on_change=lambda: sm.save(
+                            ['grid_langer', 'q_range'],
+                            value=[st.session_state[f'{p}_q_min'],
+                                   st.session_state.get(f'{p}_q_max', 2.0)]))
+                with _qc2:
+                    lg_q_max = st.number_input(
+                        'q max', 0.01, 50.0, float(_lg_qr[1]), 0.05,
+                        key=f'{p}_q_max',
+                        on_change=lambda: sm.save(
+                            ['grid_langer', 'q_range'],
+                            value=[st.session_state.get(f'{p}_q_min', 0.1),
+                                   st.session_state[f'{p}_q_max']]))
+            else:
+                lg_q_min, lg_q_max = 0.1, 2.0
+                st.caption('Sampling directly from digitized Langer+2020 Fig. 4')
 
             if lg_q_model not in ('flat', 'empirical'):
                 _ql = _mu_label(lg_q_model) if lg_q_model in (

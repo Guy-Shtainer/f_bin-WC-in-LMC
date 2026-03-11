@@ -912,13 +912,26 @@ with tab_xshooter:
                         ), row=i + 1, col=j + 1)
                     elif i > j:
                         common = df_view[['Star', col_i, col_j]].dropna()
+                        err_y = [drverr_map.get((s, li), np.nan) for s in common['Star']]
+                        err_x = [drverr_map.get((s, lj), np.nan) for s in common['Star']]
                         cc = [COLOR_BINARY if detail.get(s, {}).get('is_binary')
                               else COLOR_SINGLE for s in common['Star']]
                         fig_corner.add_trace(go.Scatter(
                             x=common[col_j].values, y=common[col_i].values,
+                            error_x=dict(type='data', array=err_x, visible=True,
+                                         thickness=1, width=3),
+                            error_y=dict(type='data', array=err_y, visible=True,
+                                         thickness=1, width=3),
                             mode='markers', marker=dict(size=5, color=cc, opacity=0.7),
                             showlegend=False, hovertext=common['Star'].values,
                         ), row=i + 1, col=j + 1)
+                        # Threshold reference lines
+                        fig_corner.add_hline(y=threshold, line_dash='dash',
+                                             line_color='#DAA520', line_width=1,
+                                             row=i + 1, col=j + 1)
+                        fig_corner.add_vline(x=threshold, line_dash='dash',
+                                             line_color='#DAA520', line_width=1,
+                                             row=i + 1, col=j + 1)
 
                     if j == 0:
                         fig_corner.update_yaxes(title_text=li[:12], row=i + 1, col=j + 1,
@@ -1015,14 +1028,16 @@ with tab_xshooter:
                                   key='xsp_ccf_star')
             pngs = []
             for sn in specs.star_names:
-                d = os.path.join(output_root, sn, 'CCF')
+                clean_sn = re.sub(r"[^A-Za-z0-9_-]", "_", sn)
+                d = os.path.join(output_root, clean_sn, 'CCF')
                 if os.path.isdir(d):
                     for dp, _, fns in os.walk(d):
                         for fn in fns:
                             if fn.lower().endswith('.png'):
                                 pngs.append(os.path.join(dp, fn))
             if star_f != 'All':
-                pngs = [p for p in pngs if star_f in p]
+                clean_filter = re.sub(r"[^A-Za-z0-9_-]", "_", star_f)
+                pngs = [p for p in pngs if clean_filter in p]
             st.write(f'{len(pngs)} CCF plot(s) found.')
             n_show = st.slider('Max plots to show', 3, 30, 12, key='xsp_ccf_n')
             cols = st.columns(3)
