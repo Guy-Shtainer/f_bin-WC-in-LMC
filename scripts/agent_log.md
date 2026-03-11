@@ -913,3 +913,23 @@ I fully rewrote `app/pages/06_plots.py` (from 228 lines → ~680 lines) imp
 [2026-03-11 15:53:23]   [REGRESSION] Running Python-level regression check...
 [2026-03-11 15:53:47]   [REGRESSION] PASSED — 21 core files OK
 [2026-03-11 15:53:47]   [REGRESSION] PASSED — 21 core files OK
+### Task #52: Statistical RV modeling page — f_bin vs DeltaRV threshold fitting
+- **Branch:** `agent/52-statistical-rv-modeling-page-f-bin-vs-de`
+- **Status:** completed
+- **Summary:** ## Task #52 Complete ✅
+
+**Created `app/pages/12_rv_modeling.py`** — Statistical RV Modeling page with an improved two-component mixture model.
+
+### What was built:
+
+**Key improvement over notebook:** Instead of assuming both single and binary ΔRV distributions are Gaussian (4 free params), the binary component now uses an **empirical distribution from Monte-Carlo orbital simulations** via `simulate_delta_rv_sample()`. Only 2 free parameters remain: **f_bin** and **σ_single**.
+
+**Mathematical mod
+- **UNSUPERVISED — needs human review and testing**
+
+[2026-03-11 15:53:47] Task #52 finished: completed
+[2026-03-11 15:53:47] Task #52 finished: completed
+[2026-03-11 15:53:47]   [AUTO-LEARN] Running reflection...
+[2026-03-11 15:53:47]   [AUTO-LEARN] Running reflection...
+[2026-03-11 15:54:50]   [AUTO-LEARN] Reflection complete.
+[2026-03-11 15:54:50]   [AUTO-LEARN] Reflection complete.
