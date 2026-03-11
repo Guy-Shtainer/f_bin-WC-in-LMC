@@ -6,6 +6,26 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-11 — Flicker fix + Langer cadence display
+
+| Hash | Summary |
+|------|---------|
+| `e966140` | Fix bias correction page flicker (fragment-based polling) + Langer cadence display (fbin×σ) + np.empty bug |
+| `236bf15` | Update docs: E026 (flicker), E027 (np.empty), work log, TODO #83 |
+
+Tagged: `v260311-working`
+
+---
+
+## 2026-03-11 — Agent branch cherry-picks + task completions
+
+| Hash | Summary |
+|------|---------|
+| `4f7b719` | Integrate Task #103: RV Modeling page improvements + bias correction updates |
+| `c5a9551` | Fix NRES low-blaze mask not applied to uncertainty arrays + plots null safety |
+
+---
+
 ## 2026-03-09 — Dynamic tabs for bias correction page + bug fixes
 
 | Hash | Summary |
