@@ -951,3 +951,4 @@ I fully rewrote `app/pages/06_plots.py` (from 228 lines → ~680 lines) imp
 
 [2026-03-11 16:37:34] --- Starting task #103: RV Modeling page improvements — follow-up on #52 ---
 [2026-03-11 16:37:34] --- Starting task #103: RV Modeling page improvements — follow-up on #52 ---
+[2026-03-11 17:10:03] Architecture: opus
