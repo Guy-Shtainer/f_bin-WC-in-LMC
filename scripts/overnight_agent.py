@@ -323,8 +323,12 @@ def git_commit_all(message: str) -> bool:
     status = git('status', '--porcelain')
     if not status.strip():
         return False
-    git('commit', '-m', message)
-    return True
+    try:
+        git('commit', '-m', message)
+        return True
+    except RuntimeError as e:
+        log(f'  Warning: git commit failed: {e}')
+        return False
 
 
 def git_back_to_main(target: str = 'main') -> None:
@@ -332,7 +336,10 @@ def git_back_to_main(target: str = 'main') -> None:
     current = git('branch', '--show-current')
     if current == target:
         return
-    git_commit_all('[AGENT] Auto-save before switching back')
+    try:
+        git_commit_all('[AGENT] Auto-save before switching back')
+    except Exception as e:
+        log(f'  Warning: auto-save before branch switch failed: {e}')
     git_safe_checkout(target)
 
 
@@ -377,12 +384,19 @@ def _blocking_sleep(total_seconds: float, chunk: float = 60.0) -> None:
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
+_daemon_mode = False  # Set True when stdout is redirected to _LOG_PATH
+
+
 def log(msg: str) -> None:
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     line = f'[{ts}] {msg}'
-    print(line, flush=True)
-    with open(_LOG_PATH, 'a', encoding='utf-8') as f:
-        f.write(line + '\n')
+    if _daemon_mode:
+        # stdout IS the log file — only write once
+        print(line, flush=True)
+    else:
+        print(line, flush=True)
+        with open(_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(line + '\n')
 
 
 def log_session_start(checkpoint: str, quadrant: str) -> None:
@@ -708,6 +722,9 @@ async def run_opus_manager(task: dict, timeout: int = 7200,
                     state = load_state() or {}
                     state['updated_at'] = datetime.now().isoformat()
                     state['architecture'] = 'opus-manager'
+                    # Flip from 'opus_starting' once we get first message
+                    if state.get('current_stage') == 'opus_starting':
+                        state['current_stage'] = 'opus_running'
                     save_state(state)
 
             # Watchdog: check for inactivity every 60s instead of waiting
@@ -891,10 +908,12 @@ async def run_task_opus(task: dict, source_branch: str) -> tuple[str, str]:
 
     Returns (status, summary) like run_pipeline().
     """
-    # Initialize state for webapp
+    # Initialize state for webapp (preserve branch from agent_loop's save_state)
+    existing = load_state() or {}
     save_state({
         'current_task_id': task['id'],
         'current_task_title': task.get('title', ''),
+        'branch': existing.get('branch', '?'),
         'architecture': 'opus-manager',
         'current_stage': 'opus_starting',
         'started_at': datetime.now().isoformat(),
@@ -1778,6 +1797,8 @@ def main() -> None:
         os.setsid()
         sys.stdout = open(_LOG_PATH, 'a')
         sys.stderr = sys.stdout
+        global _daemon_mode
+        _daemon_mode = True
 
     # Set CLI flags for intervention system
     global _cli_flags

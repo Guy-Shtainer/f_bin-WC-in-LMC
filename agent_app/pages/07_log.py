@@ -33,7 +33,7 @@ st.markdown('# Agent Log')
 # ─────────────────────────────────────────────────────────────────────────────
 # Controls
 # ─────────────────────────────────────────────────────────────────────────────
-c1, c2, c3 = st.columns([2, 1, 1])
+c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
 
 with c1:
     search = st.text_input('Search / filter', placeholder='e.g. REJECTED, FAIL, Task #5')
@@ -52,6 +52,11 @@ with c2:
         st.caption('No log file yet.')
 
 with c3:
+    max_lines = st.selectbox('Lines', [50, 100, 500, 0], index=1,
+                             format_func=lambda x: 'All' if x == 0 else str(x),
+                             key='log_max_lines')
+
+with c4:
     if st.button('Clear log'):
         if os.path.exists(LOG_PATH):
             with open(LOG_PATH, 'w') as f:
@@ -96,5 +101,13 @@ else:
         display_text = full_log
 
 if display_text:
-    # Color-code certain keywords with markdown
-    st.markdown(display_text)
+    # Truncate to max_lines if set
+    if max_lines and max_lines > 0:
+        lines = display_text.split('\n')
+        if len(lines) > max_lines:
+            display_text = '\n'.join(lines[:max_lines])
+            st.caption(f'Showing first {max_lines} of {len(lines)} lines')
+
+    # Scrollable container so user can navigate without page growing unbounded
+    with st.container(height=600):
+        st.markdown(display_text)

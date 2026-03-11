@@ -403,7 +403,7 @@ if open_tasks:
         'Status', ['All', 'Open', 'To Test', 'In Progress'],
         key='todo_filter_status')
     sort_by = _filter_cols[4].selectbox(
-        'Sort by', ['Priority', 'Date added', 'ID', 'Urgent first'],
+        'Sort by', ['Priority', 'Recently added', 'ID', 'Urgent first'],
         key='todo_sort_by')
     filter_quadrant = _filter_cols[5].selectbox(
         'Quadrant', ['All', 'Urgent + Important', 'Important',
@@ -445,7 +445,7 @@ if open_tasks:
     # Apply sort
     if sort_by == 'Priority':
         filtered.sort(key=lambda t: PRIORITY_ORDER.get(t.get('priority', 'low'), 3))
-    elif sort_by == 'Date added':
+    elif sort_by == 'Recently added':
         filtered.sort(key=lambda t: t.get('date_added', ''), reverse=True)
     elif sort_by == 'Urgent first':
         filtered.sort(key=lambda t: (

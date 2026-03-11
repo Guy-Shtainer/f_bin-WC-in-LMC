@@ -125,6 +125,18 @@ if opus_mode:
     else:
         if current_stage == 'opus_starting':
             st.caption('Opus manager is starting up...')
+        elif current_stage == 'opus_running':
+            elapsed = ''
+            if state.get('started_at'):
+                try:
+                    started = datetime.fromisoformat(state['started_at'])
+                    delta = datetime.now() - started
+                    mins = int(delta.total_seconds() // 60)
+                    secs = int(delta.total_seconds() % 60)
+                    elapsed = f' ({mins}m {secs}s elapsed)'
+                except (ValueError, TypeError):
+                    pass
+            st.caption(f'Opus manager is actively working...{elapsed}')
         else:
             st.caption('No subagent invocations yet.')
 
