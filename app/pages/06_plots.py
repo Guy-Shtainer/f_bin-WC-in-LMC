@@ -1179,9 +1179,10 @@ with tab_nres:
             nres_epochs = nres_obj.get_all_epoch_numbers()
         except Exception as e:
             st.error(f'Could not load NRES star {nres_star}: {e}')
+            nres_obj = None
             nres_epochs = []
 
-        if nres_epochs:
+        if nres_obj is not None and nres_epochs:
             nres_ep = st.selectbox('Epoch', nres_epochs, key='nsp_epoch')
             nres_spectra = nres_obj.get_all_spectra_in_epoch(nres_ep)
 

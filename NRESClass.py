@@ -2172,16 +2172,35 @@ class NRES:
                         # tmp_snr[i] = ut.robust_mean(window, 3) 
                         # tmp_snr[i] = np.mean(window)/sigma
             else:
-                unc_obj = uncertainty_arrays[index_sky] / blaze_arrays[index_sky]
-                unc_sky = uncertainty_arrays[index_obj] / blaze_arrays[index_obj]
-                blaze_err_obj = blaze_errors_arrays[index_sky]
-                blaze_err_sky = blaze_errors_arrays[index_obj]
-                
+                # Get raw arrays for this order pair
+                unc_arr_obj = uncertainty_arrays[index_sky]
+                unc_arr_sky = uncertainty_arrays[index_obj]
+                blz_arr_obj = blaze_arrays[index_sky]
+                blz_arr_sky = blaze_arrays[index_obj]
+                blz_err_obj = blaze_errors_arrays[index_sky]
+                blz_err_sky = blaze_errors_arrays[index_obj]
+                flx_arr_obj = flux_arrays[index_sky]
+                flx_arr_sky = flux_arrays[index_obj]
+
+                # Apply the same low-blaze mask used for flux/wave filtering
+                if remove_low_blaze:
+                    unc_arr_obj = unc_arr_obj[mask]
+                    unc_arr_sky = unc_arr_sky[mask]
+                    blz_arr_obj = blz_arr_obj[mask]
+                    blz_arr_sky = blz_arr_sky[mask]
+                    blz_err_obj = blz_err_obj[mask]
+                    blz_err_sky = blz_err_sky[mask]
+                    flx_arr_obj = flx_arr_obj[mask]
+                    flx_arr_sky = flx_arr_sky[mask]
+
+                unc_obj = unc_arr_obj / blz_arr_obj
+                unc_sky = unc_arr_sky / blz_arr_sky
+
                 flux_obj_blazeerr = (
-                    flux_arrays[index_sky] * blaze_err_obj / (blaze_arrays[index_sky]**2)
+                    flx_arr_obj * blz_err_obj / (blz_arr_obj**2)
                 )
                 flux_sky_blazeerr = (
-                    flux_arrays[index_obj] * blaze_err_sky / (blaze_arrays[index_obj]**2)
+                    flx_arr_sky * blz_err_sky / (blz_arr_sky**2)
                 )
                 total_uncert = np.sqrt(
                     unc_obj**2 + unc_sky**2 + flux_obj_blazeerr**2 + flux_sky_blazeerr**2
