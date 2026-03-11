@@ -983,3 +983,4 @@ The Spectrum Browser page (`app/pages/02_spectrum.py`) has been significantly en
 [2026-03-11 17:28:14] Task #99 finished: completed
 [2026-03-11 17:28:14]   [AUTO-LEARN] Running reflection...
 [2026-03-11 17:29:23]   [AUTO-LEARN] Reflection complete.
+[2026-03-11 18:47:36] Architecture: opus
