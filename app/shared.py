@@ -604,13 +604,13 @@ def render_sidebar(page_name: str = '') -> dict:
         st.page_link('pages/03_ccf.py',   label='🔄 CCF')
         st.page_link('pages/04_classification.py', label='🎯 Classification')
         st.page_link('pages/11_nres_analysis.py', label='🔭 NRES')
+        st.page_link('pages/12_rv_modeling.py', label='📈 RV Modeling')
         st.page_link('pages/05_bias_correction.py', label='⚡ Bias Correction')
         st.page_link('pages/06_plots.py', label='🖼️ Plots')
         st.page_link('pages/07_tables.py', label='📋 Tables')
         st.page_link('pages/08_results.py', label='📈 Results')
         st.page_link('pages/09_settings.py', label='⚙️ Settings')
         st.page_link('pages/10_todo.py', label='📝 To-Do')
-        st.page_link('pages/12_rv_modeling.py', label='📈 RV Modeling')
 
         st.markdown('---')
 

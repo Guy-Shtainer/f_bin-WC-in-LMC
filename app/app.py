@@ -456,6 +456,7 @@ with st.expander('📋 Pipeline Workflow Status', expanded=False):
         ('Bias correction — Dsilva', has_dsilva_grid),
         ('Bias correction — Langer', has_langer_grid),
         ('Improve model fitting', has_model_iteration),
+        ('RV Modeling (threshold fitting)', False),
         ('Write paper', has_paper),
     ]
 

@@ -18,6 +18,7 @@ if _ROOT not in sys.path:
 import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from scipy.optimize import curve_fit
 from scipy.interpolate import interp1d
 
@@ -55,12 +56,7 @@ _T_MAX: int = 301          # exclusive upper bound for threshold grid
 def compute_standard_ranges(
     n_epochs: int, n_sim: int = 500_000, seed: int = 12345,
 ) -> np.ndarray:
-    """Return *sorted* ranges of n_epochs standard-normal draws (σ = 1).
-
-    The survival function for any σ_s is obtained by querying at t / σ_s.
-    Using empirical simulation (500 K samples) instead of the analytical
-    double integral — orders of magnitude faster, same accuracy.
-    """
+    """Return *sorted* ranges of n_epochs standard-normal draws (σ = 1)."""
     rng = np.random.default_rng(seed)
     samples = rng.standard_normal((n_sim, n_epochs))
     ranges = np.ptp(samples, axis=1)
@@ -122,7 +118,7 @@ def _empirical_survival(sorted_vals: np.ndarray, t_arr: np.ndarray) -> np.ndarra
 #  Page logic
 # =====================================================================
 
-def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
+def _run_page() -> None:  # noqa: C901
     st.title("Statistical RV Modeling")
     st.caption(
         "Two-component mixture model: fits **f_bin** and **σ_single** to the "
@@ -151,6 +147,13 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
     raw_frac = np.array([np.sum(p2p > t) / n_stars for t in t_full])
     sig_err = np.sqrt(f_obs * (1.0 - f_obs) / n_stars) + 1e-4
 
+    # ── Change-point filter (only thresholds where fraction changes) ─────
+    diffs = np.diff(f_obs, prepend=-999.0)
+    change_mask = diffs != 0.0
+    t_dots = t_full[change_mask]
+    f_dots = f_obs[change_mask]
+    e_dots = sig_err[change_mask]
+
     # ── sidebar controls ─────────────────────────────────────────────────
     with st.sidebar:
         st.subheader("Simulation Parameters")
@@ -158,6 +161,7 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
         period_model = st.selectbox(
             "Period model", ["powerlaw", "langer2020"],
             index=0, key="rvm_period",
+            help="Dsilva: power-law logP. Langer: two-component mixture (Case A+B).",
         )
         pi_val: float = 0.0
         weight_A: float = 0.3
@@ -189,6 +193,7 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
         with st.expander("Advanced orbital parameters"):
             e_model = st.selectbox(
                 "Eccentricity model", ["flat", "zero"], key="rvm_emod",
+                help="Dsilva uses flat; Langer uses zero (post-RLOF circular).",
             )
             e_max: float = 0.9
             if e_model == "flat":
@@ -197,17 +202,36 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
                 )
             q_model = st.selectbox(
                 "Mass-ratio model", ["flat", "langer"], key="rvm_qmod",
+                help="Dsilva uses flat; Langer uses peaked q distribution.",
             )
             seed = st.number_input(
                 "Random seed", 0, 99999, 42, key="rvm_seed",
             )
 
+        st.markdown("---")
+        st.markdown(
+            "**Approach presets:**"
+        )
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            if st.button("Dsilva preset", key="rvm_preset_dsilva", use_container_width=True):
+                st.session_state["rvm_period"] = "powerlaw"
+                st.session_state["rvm_emod"] = "flat"
+                st.session_state["rvm_qmod"] = "flat"
+                st.rerun()
+        with col_p2:
+            if st.button("Langer preset", key="rvm_preset_langer", use_container_width=True):
+                st.session_state["rvm_period"] = "langer2020"
+                st.session_state["rvm_emod"] = "zero"
+                st.session_state["rvm_qmod"] = "langer"
+                st.rerun()
+
+        st.markdown("---")
         run_btn = st.button(
             "🔬 Run Fit", type="primary", use_container_width=True,
         )
 
     # ── run simulation & fitting ─────────────────────────────────────────
-    # Auto-run on first load with default params; re-run on button click
     should_run = run_btn or "rvm_results" not in st.session_state
     if should_run:
       with st.spinner("Running simulation and fitting model..."):
@@ -230,7 +254,6 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
         sorted_std_ranges = compute_standard_ranges(int(n_epochs))
 
         # -- smooth interpolated survival functions -------------------------
-        # Binary: evaluate on a fine grid then interpolate
         t_max_b = max(500.0, float(np.max(binary_drvs)) * 1.1)
         t_interp_b = np.linspace(0, t_max_b, 3000)
         surv_b_raw = _empirical_survival(sorted_binary, t_interp_b)
@@ -239,7 +262,6 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
             bounds_error=False, fill_value=(1.0, 0.0),
         )
 
-        # Single (standardised, sigma=1): evaluate on [0, 15]
         t_interp_s = np.linspace(0, 15, 3000)
         surv_s_raw = _empirical_survival(sorted_std_ranges, t_interp_s)
         std_surv_fn = interp1d(
@@ -273,10 +295,11 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
             f_fit, sigma_s_fit = float(popt[0]), float(popt[1])
             f_err, sigma_s_err = float(perr[0]), float(perr[1])
 
-            fitted_vals = _model(t_full, *popt)
-            residuals_arr = (f_obs - fitted_vals) / sig_err
-            chi2 = float(np.sum(residuals_arr ** 2))
-            ndof = len(t_full) - 2
+            fitted_vals_full = _model(t_full, *popt)
+            fitted_vals_dots = _model(t_dots, *popt)
+            residuals_dots = (f_dots - fitted_vals_dots) / e_dots
+            chi2 = float(np.sum(residuals_dots ** 2))
+            ndof = max(1, len(t_dots) - 2)
             chi2_red = chi2 / ndof
 
             # Survival curves at best-fit
@@ -304,20 +327,28 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
             f_global = (f_fit * n_stars + _N_PRIOR_BINARIES) / n_global
             f_global_err = f_err * n_stars / n_global
 
+            # Store survival functions in session_state so playground can use them
+            # (we can't pickle interp1d, so store the arrays)
             st.session_state["rvm_results"] = dict(
                 f_fit=f_fit, f_err=f_err,
                 sigma_s_fit=sigma_s_fit, sigma_s_err=sigma_s_err,
                 chi2_red=chi2_red, ndof=ndof,
                 f_global=f_global, f_global_err=f_global_err,
                 n_global=n_global,
-                fitted_vals=fitted_vals,
-                residuals=residuals_arr,
+                fitted_vals_full=fitted_vals_full,
+                fitted_vals_dots=fitted_vals_dots,
+                residuals_dots=residuals_dots,
                 single_comp=(1.0 - f_fit) * surv_s_best,
                 binary_comp=f_fit * surv_b_best,
                 w_pdf_s=w_pdf_s, w_pdf_b=w_pdf_b,
                 mid_t=mid_t,
                 t_optimal=t_optimal,
                 binary_drvs=binary_drvs,
+                # Survival function data for playground
+                surv_interp_s_x=t_interp_s,
+                surv_interp_s_y=surv_s_raw,
+                surv_interp_b_x=t_interp_b,
+                surv_interp_b_y=surv_b_raw,
                 sim_info=dict(
                     period_model=period_model, pi=pi_val,
                     weight_A=weight_A, n_sim=int(n_sim),
@@ -347,8 +378,9 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
     f_global = res["f_global"]
     f_global_err = res["f_global_err"]
     n_global = res["n_global"]
-    fitted_vals = res["fitted_vals"]
-    residuals_arr = res["residuals"]
+    fitted_vals_full = res["fitted_vals_full"]
+    fitted_vals_dots = res["fitted_vals_dots"]
+    residuals_dots = res["residuals_dots"]
     single_comp = res["single_comp"]
     binary_comp = res["binary_comp"]
     w_pdf_s = res["w_pdf_s"]
@@ -358,72 +390,137 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
     sim_info = res["sim_info"]
     binary_drvs = res["binary_drvs"]
 
-    # ── Panel 1: fitted curve + observed points ──────────────────────────
+    # ══════════════════════════════════════════════════════════════════════
+    # Panel 1: Combined Fit + Residuals (subplot with shared x-axis)
+    # ══════════════════════════════════════════════════════════════════════
     st.subheader("1 · Fitted Binary Fraction vs ΔRV Threshold")
 
-    fig1 = go.Figure()
+    fig1 = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        row_heights=[0.75, 0.25],
+        vertical_spacing=0.04,
+    )
+
+    # ── Top panel: fit ────────────────────────────────────────────────
+    # Observed data at change points only
     fig1.add_trace(go.Scatter(
-        x=t_full, y=f_obs, mode="markers",
-        marker=dict(size=4, color=COLOR_SINGLE),
+        x=t_dots, y=f_dots, mode="markers",
+        marker=dict(size=5, color="black"),
         name="Observed (sig-filtered)",
         error_y=dict(
-            type="data", array=sig_err, visible=True,
-            thickness=1, width=0,
+            type="data", array=e_dots, visible=True,
+            thickness=1, width=2,
         ),
-    ))
+        legendgroup="obs",
+    ), row=1, col=1)
+
+    # Raw fraction (all points, light grey)
     fig1.add_trace(go.Scatter(
-        x=t_full, y=raw_frac, mode="markers",
-        marker=dict(size=3, color="grey", opacity=0.4),
-        name="Observed (raw)",
-    ))
+        x=t_full, y=raw_frac, mode="lines",
+        line=dict(color="grey", width=1),
+        opacity=0.4,
+        name="Raw (no sig filter)",
+        legendgroup="raw",
+    ), row=1, col=1)
+
+    # Model curve
     fig1.add_trace(go.Scatter(
-        x=t_full, y=fitted_vals, mode="lines",
+        x=t_full, y=fitted_vals_full, mode="lines",
         line=dict(color="#E25A53", width=2.5),
         name=f"Model (f_bin = {f_fit:.3f})",
-    ))
+        legendgroup="model",
+    ), row=1, col=1)
+
+    # Single component
     fig1.add_trace(go.Scatter(
         x=t_full, y=single_comp, mode="lines",
         line=dict(color=COLOR_SINGLE, width=1.5, dash="dash"),
         name=f"Singles (σ = {sigma_s_fit:.1f} km/s)",
-    ))
+        legendgroup="single",
+    ), row=1, col=1)
+
+    # Binary component
     fig1.add_trace(go.Scatter(
         x=t_full, y=binary_comp, mode="lines",
         line=dict(color=COLOR_BINARY, width=1.5, dash="dash"),
         name="Binaries (empirical)",
-    ))
+        legendgroup="binary",
+    ), row=1, col=1)
+
+    # Optimal threshold line
     if t_optimal is not None:
         fig1.add_vline(
             x=t_optimal,
             line=dict(color="#DAA520", width=2, dash="dot"),
             annotation_text=f"t_opt = {t_optimal:.0f} km/s",
             annotation_position="top right",
+            row=1, col=1,
         )
+
+    # Chi_red annotation on the fit panel
+    fig1.add_annotation(
+        x=0.02, y=0.05, xref="x domain", yref="y domain",
+        text=(
+            f"χ²_red = {chi2_red:.2f}<br>"
+            f"f_bin = {f_fit:.3f} ± {f_err:.3f}<br>"
+            f"σ_s = {sigma_s_fit:.1f} ± {sigma_s_err:.1f} km/s"
+        ),
+        showarrow=False,
+        font=dict(size=11),
+        bgcolor="rgba(255,255,255,0.8)",
+        bordercolor="grey",
+        borderwidth=1,
+        row=1, col=1,
+    )
+
+    # ── Bottom panel: residuals ───────────────────────────────────────
+    fig1.add_trace(go.Scatter(
+        x=t_dots, y=residuals_dots, mode="markers",
+        marker=dict(size=4, color="black"),
+        name="Residuals",
+        showlegend=False,
+        error_y=dict(
+            type="constant", value=1.0, visible=True,
+            thickness=1, width=2,
+        ),
+    ), row=2, col=1)
+    fig1.add_hline(y=0, line=dict(color="grey", width=1, dash="dash"), row=2, col=1)
+    fig1.add_hline(y=2, line=dict(color="grey", width=0.5, dash="dot"), row=2, col=1)
+    fig1.add_hline(y=-2, line=dict(color="grey", width=0.5, dash="dot"), row=2, col=1)
+
+    # Layout
+    _theme_xaxis = PLOTLY_THEME.get("xaxis", {})
+    _theme_yaxis = PLOTLY_THEME.get("yaxis", {})
+    _theme_legend = PLOTLY_THEME.get("legend", {})
 
     fig1.update_layout(**{
         **PLOTLY_THEME,
         "title": dict(text="Binary Fraction vs ΔRV Threshold — Mixture Model Fit"),
-        "xaxis": {
-            **PLOTLY_THEME.get("xaxis", {}),
-            "title": "ΔRV threshold (km/s)",
-        },
-        "yaxis": {
-            **PLOTLY_THEME.get("yaxis", {}),
-            "title": "Binary fraction",
-        },
-        "legend": {
-            **PLOTLY_THEME.get("legend", {}),
-            "x": 0.98, "y": 0.98, "xanchor": "right",
-        },
+        "legend": {**_theme_legend, "x": 0.98, "y": 0.98, "xanchor": "right"},
+        "height": 650,
     })
+    fig1.update_yaxes(title_text="Binary fraction", row=1, col=1, **{
+        k: v for k, v in _theme_yaxis.items() if k != "title"
+    })
+    fig1.update_yaxes(title_text="(Obs − Model) / σ", row=2, col=1, **{
+        k: v for k, v in _theme_yaxis.items() if k != "title"
+    })
+    fig1.update_xaxes(title_text="ΔRV threshold (km/s)", row=2, col=1, **{
+        k: v for k, v in _theme_xaxis.items() if k != "title"
+    })
+
     st.plotly_chart(fig1, use_container_width=True)
     st.caption(
-        "Fitted two-component mixture model. Solid red: total model curve. "
-        "Dashed blue: single-star contribution (Gaussian range). "
-        "Dashed red: binary contribution (empirical from simulation). "
-        "Gold line: optimal classification threshold (PDF crossover)."
+        "**Top:** Fitted two-component mixture model. Black dots: observed fraction "
+        "at significance-filtered change points. Red: total model. Dashed: "
+        "single/binary components. Gold: optimal threshold (PDF crossover).  \n"
+        f"**Bottom:** Normalized residuals (χ²_red = {chi2_red:.2f}, "
+        f"{ndof} d.o.f.). Dotted lines: ±2σ bands."
     )
 
-    # ── Panel 2: weighted PDFs ───────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════
+    # Panel 2: Weighted PDF Components
+    # ══════════════════════════════════════════════════════════════════════
     st.subheader("2 · Weighted PDF Components")
 
     fig2 = go.Figure()
@@ -449,62 +546,178 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
     fig2.update_layout(**{
         **PLOTLY_THEME,
         "title": dict(text="Weighted PDF Components (ΔRV Range Distribution)"),
-        "xaxis": {
-            **PLOTLY_THEME.get("xaxis", {}),
-            "title": "ΔRV (km/s)",
-        },
-        "yaxis": {
-            **PLOTLY_THEME.get("yaxis", {}),
-            "title": "Weighted PDF",
-        },
-        "legend": {
-            **PLOTLY_THEME.get("legend", {}),
-            "x": 0.98, "y": 0.98, "xanchor": "right",
-        },
+        "xaxis": {**_theme_xaxis, "title": "ΔRV (km/s)"},
+        "yaxis": {**_theme_yaxis, "title": "Weighted PDF"},
+        "legend": {**_theme_legend, "x": 0.98, "y": 0.98, "xanchor": "right"},
     })
     st.plotly_chart(fig2, use_container_width=True)
     st.caption(
-        "Weighted probability densities of the single-star (blue, Gaussian "
-        "range) and binary (red, empirical) ΔRV distributions. The optimal "
-        "threshold (gold) is where the binary PDF first exceeds the singles "
-        "PDF — the Bayes-optimal decision boundary."
+        "Weighted probability densities of single (blue) and binary (red) ΔRV "
+        "distributions. The optimal threshold (gold) is where the binary PDF "
+        "first exceeds the singles — the Bayes-optimal decision boundary."
     )
 
-    # ── Panel 3: residuals ───────────────────────────────────────────────
-    st.subheader("3 · Fit Residuals")
+    # ══════════════════════════════════════════════════════════════════════
+    # Panel 3: Parameter Playground (interactive sliders)
+    # ══════════════════════════════════════════════════════════════════════
+    st.subheader("3 · Parameter Playground")
+    st.caption(
+        "Adjust f_bin and σ_single manually to see how the model changes. "
+        "The simulation is **not** re-run — only the mixture weights are "
+        "updated using the cached survival functions."
+    )
+
+    pg_col1, pg_col2 = st.columns(2)
+    with pg_col1:
+        pg_fbin = st.slider(
+            "f_bin (binary fraction)", 0.0, 1.0,
+            float(f_fit), 0.01, key="pg_fbin",
+        )
+    with pg_col2:
+        pg_sigma = st.slider(
+            "σ_single (km/s)", 0.5, 80.0,
+            float(sigma_s_fit), 0.5, key="pg_sigma",
+        )
+
+    # Rebuild survival functions from stored data
+    pg_std_surv_fn = interp1d(
+        res["surv_interp_s_x"], res["surv_interp_s_y"],
+        kind="linear", bounds_error=False, fill_value=(1.0, 0.0),
+    )
+    pg_bin_surv_fn = interp1d(
+        res["surv_interp_b_x"], res["surv_interp_b_y"],
+        kind="linear", bounds_error=False, fill_value=(1.0, 0.0),
+    )
+
+    pg_surv_s = pg_std_surv_fn(t_full / pg_sigma)
+    pg_surv_b = pg_bin_surv_fn(t_full)
+    pg_model = (1.0 - pg_fbin) * pg_surv_s + pg_fbin * pg_surv_b
+
+    # Chi_red for playground params
+    pg_model_at_dots = (1.0 - pg_fbin) * pg_std_surv_fn(t_dots / pg_sigma) + pg_fbin * pg_bin_surv_fn(t_dots)
+    pg_res = (f_dots - pg_model_at_dots) / e_dots
+    pg_chi2 = float(np.sum(pg_res ** 2))
+    pg_ndof = max(1, len(t_dots) - 2)
+    pg_chi2_red = pg_chi2 / pg_ndof
 
     fig3 = go.Figure()
+    # Observed data
     fig3.add_trace(go.Scatter(
-        x=t_full, y=residuals_arr, mode="markers",
-        marker=dict(size=3, color=COLOR_SINGLE),
-        name="Residuals",
+        x=t_dots, y=f_dots, mode="markers",
+        marker=dict(size=5, color="black"),
+        name="Observed",
+        error_y=dict(type="data", array=e_dots, visible=True, thickness=1, width=2),
     ))
-    fig3.add_hline(y=0, line=dict(color="grey", width=1, dash="dash"))
-    fig3.add_hline(y=2, line=dict(color="grey", width=0.5, dash="dot"))
-    fig3.add_hline(y=-2, line=dict(color="grey", width=0.5, dash="dot"))
+    # Best-fit reference
+    fig3.add_trace(go.Scatter(
+        x=t_full, y=fitted_vals_full, mode="lines",
+        line=dict(color="grey", width=1.5, dash="dash"),
+        name=f"Best fit (f={f_fit:.3f}, σ={sigma_s_fit:.1f})",
+        opacity=0.5,
+    ))
+    # Playground model
+    fig3.add_trace(go.Scatter(
+        x=t_full, y=pg_model, mode="lines",
+        line=dict(color="#E25A53", width=2.5),
+        name=f"Manual (f={pg_fbin:.3f}, σ={pg_sigma:.1f})",
+    ))
+
+    fig3.add_annotation(
+        x=0.02, y=0.05, xref="x domain", yref="y domain",
+        text=f"χ²_red = {pg_chi2_red:.2f}",
+        showarrow=False,
+        font=dict(size=12, color="#E25A53"),
+        bgcolor="rgba(255,255,255,0.8)",
+        bordercolor="#E25A53",
+        borderwidth=1,
+    )
 
     fig3.update_layout(**{
         **PLOTLY_THEME,
-        "title": dict(
-            text=f"Normalized Residuals (χ²_red = {chi2_red:.2f})",
-        ),
-        "xaxis": {
-            **PLOTLY_THEME.get("xaxis", {}),
-            "title": "ΔRV threshold (km/s)",
-        },
-        "yaxis": {
-            **PLOTLY_THEME.get("yaxis", {}),
-            "title": "(Obs − Model) / σ",
-        },
+        "title": dict(text="Parameter Playground — Interactive Model Comparison"),
+        "xaxis": {**_theme_xaxis, "title": "ΔRV threshold (km/s)"},
+        "yaxis": {**_theme_yaxis, "title": "Binary fraction"},
+        "legend": {**_theme_legend, "x": 0.98, "y": 0.98, "xanchor": "right"},
     })
     st.plotly_chart(fig3, use_container_width=True)
     st.caption(
-        f"Normalized residuals of the fit. Grey dashed lines: ±2σ bands. "
-        f"χ²_red = {chi2_red:.2f} ({ndof} d.o.f.)."
+        f"Interactive parameter exploration. Grey dashed: best-fit model. "
+        f"Red solid: manual model with χ²_red = {pg_chi2_red:.2f}."
     )
 
-    # ── Panel 4: best-fit parameters table ───────────────────────────────
-    st.subheader("4 · Best-Fit Parameters")
+    # ══════════════════════════════════════════════════════════════════════
+    # Panel 4: Binary ΔRV Histogram
+    # ══════════════════════════════════════════════════════════════════════
+    st.subheader("4 · Simulated Binary ΔRV Distribution")
+
+    fig4 = go.Figure()
+    # Histogram of simulated binary ΔRVs
+    fig4.add_trace(go.Histogram(
+        x=binary_drvs,
+        nbinsx=80,
+        marker_color=COLOR_BINARY,
+        opacity=0.6,
+        name="Simulated binary ΔRVs",
+    ))
+
+    # Overlay observed ΔRVs as rug/markers
+    obs_binary_mask = is_sig & (p2p > (t_optimal if t_optimal is not None else 45.5))
+    obs_single_mask = ~obs_binary_mask
+
+    # Mark observed binaries
+    if np.any(obs_binary_mask):
+        fig4.add_trace(go.Scatter(
+            x=p2p[obs_binary_mask],
+            y=np.zeros(int(np.sum(obs_binary_mask))),
+            mode="markers",
+            marker=dict(
+                size=10, color=COLOR_BINARY,
+                symbol="diamond", line=dict(width=1, color="black"),
+            ),
+            name=f"Observed binaries (N={int(np.sum(obs_binary_mask))})",
+        ))
+    # Mark observed singles
+    if np.any(obs_single_mask):
+        fig4.add_trace(go.Scatter(
+            x=p2p[obs_single_mask],
+            y=np.zeros(int(np.sum(obs_single_mask))),
+            mode="markers",
+            marker=dict(
+                size=8, color=COLOR_SINGLE,
+                symbol="circle", line=dict(width=1, color="black"),
+            ),
+            name=f"Observed singles (N={int(np.sum(obs_single_mask))})",
+        ))
+
+    # Optimal threshold line
+    if t_optimal is not None:
+        fig4.add_vline(
+            x=t_optimal,
+            line=dict(color="#DAA520", width=2, dash="dot"),
+            annotation_text=f"t_opt = {t_optimal:.0f} km/s",
+        )
+
+    fig4.update_layout(**{
+        **PLOTLY_THEME,
+        "title": dict(text="Simulated Binary ΔRV Distribution"),
+        "xaxis": {**_theme_xaxis, "title": "ΔRV (km/s)"},
+        "yaxis": {**_theme_yaxis, "title": "Count"},
+        "legend": {**_theme_legend, "x": 0.98, "y": 0.98, "xanchor": "right"},
+        "barmode": "overlay",
+    })
+    st.plotly_chart(fig4, use_container_width=True)
+    st.caption(
+        f"Histogram of {len(binary_drvs):,} simulated binary ΔRVs "
+        f"({sim_info['period_model']} model). Diamond markers: observed "
+        f"binaries; circles: observed singles. "
+        f"Median = {np.median(binary_drvs):.1f} km/s, "
+        f"95th %ile = {np.percentile(binary_drvs, 95):.1f} km/s."
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Panel 5: Best-Fit Parameters
+    # ══════════════════════════════════════════════════════════════════════
+    st.subheader("5 · Best-Fit Parameters")
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -566,7 +779,16 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
             if pm == "powerlaw"
             else f'w_A = {sim_info["weight_A"]:.2f}'
         )
+        approach_desc = (
+            "**Dsilva et al. (2023)**: Power-law period distribution, "
+            "flat eccentricity, flat mass ratio."
+            if pm == "powerlaw"
+            else "**Langer et al. (2020)**: Two-component period mixture "
+            "(Case A + Case B), zero eccentricity (post-RLOF), "
+            "peaked mass-ratio distribution."
+        )
         st.markdown(
+            f"- **Approach:** {approach_desc}\n"
             f"- **Period model:** {pm} ({pm_detail})\n"
             f"- **N_sim:** {sim_info['n_sim']:,} binary systems\n"
             f"- **n_epochs:** {sim_info['n_epochs']}\n"
