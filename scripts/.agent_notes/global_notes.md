@@ -18,3 +18,11 @@ These notes are prepended to ALL agent roles. Add general project learnings here
 - **PLOTLY_THEME dict-merge pattern is settled** — use `fig.update_layout(**{**PLOTLY_THEME, 'title': dict(text='...'), 'xaxis': {**PLOTLY_THEME.get('xaxis', {}), 'title': '...'}})`. This avoids E018 collisions while keeping a single `update_layout` call.
 - **Two-stage `curve_fit` improves convergence** — fit raw (unfiltered) data first for stable initial guesses, then re-fit significance-filtered data with binomial error weights (`sigma=sig_err, absolute_sigma=True`). This pattern is robust for noisy fraction-vs-threshold curves.
 - **Session state for expensive results** — store computation outputs in `st.session_state["key"]` so they survive Streamlit reruns without re-computation. Check `if "key" not in st.session_state` to show a preview state before the user clicks "Run".
+
+## Task #103 — 2026-03-11 (RV Modeling page improvements — follow-up on #52)
+
+- **`interp1d` objects cannot be stored in `st.session_state`** — they are not picklable. Store the raw x/y arrays (`surv_interp_s_x`, `surv_interp_s_y`) and reconstruct `interp1d` on the fly when needed (e.g., in the playground section). This pattern allows interactive parameter sliders without re-running the simulation.
+- **Navigation ordering lives in `shared.py`** — page order in the Streamlit sidebar is controlled by the page registration order in `shared.py`. When adding or repositioning a page, edit the navigation list there (not in individual page files or `app.py`).
+- **Dashboard workflow status in `app.py` must be updated for new pages** — the main dashboard shows a checklist of analysis steps. When adding a new analysis page, add the corresponding workflow step (checked/unchecked) to `app.py`.
+- **Preset buttons pattern: `st.session_state[key] = value` + `st.rerun()`** — to change multiple sidebar widget values at once (e.g., "Dsilva preset" vs "Langer preset"), set all relevant session_state keys then call `st.rerun()`. This is the standard approach for multi-widget preset buttons.
+- **Auto-run on first load: `should_run = run_btn or "key" not in st.session_state`** — this pattern runs the computation on first page load (since session_state key doesn't exist yet) and on explicit button clicks, but caches results between Streamlit reruns.
