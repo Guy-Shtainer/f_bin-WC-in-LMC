@@ -160,6 +160,42 @@ def _load_normalized_spec(star_name: str, epoch: int, band: str, use_cleaned: bo
 
 
 @st.cache_data
+def _load_spectrum(star_name: str, epoch: int, band: str, use_cleaned: bool = True):
+    """Load spectrum: tries cleaned/normalized .npz first, falls back to raw FITS.
+
+    Returns (wave_A, flux, source_type) where source_type is
+    'cleaned_normalized', 'normalized', or 'raw'.  All three are None on failure.
+    """
+    obs = get_obs_manager()
+    star = obs.load_star_instance(star_name, to_print=False)
+    # Try cleaned normalized .npz
+    if use_cleaned:
+        data = star.load_property('cleaned_normalized_flux', epoch, band)
+        if data is not None and isinstance(data, dict):
+            wave = np.asarray(data.get('wavelengths', data.get('wave', [])))
+            flux = np.asarray(data.get('normalized_flux', data.get('flux', [])))
+            if len(wave) > 0:
+                return wave * 10.0, flux, 'cleaned_normalized'
+    # Try normalized .npz
+    data = star.load_property('normalized_flux', epoch, band)
+    if data is not None and isinstance(data, dict):
+        wave = np.asarray(data.get('wavelengths', data.get('wave', [])))
+        flux = np.asarray(data.get('normalized_flux', data.get('flux', [])))
+        if len(wave) > 0:
+            return wave * 10.0, flux, 'normalized'
+    # Fallback: raw FITS (like StarClass.plot_spectra)
+    try:
+        fit = star.load_observation(epoch, band)
+        if fit is not None:
+            wave_nm = np.asarray(fit.data['WAVE'][0])
+            flux = np.asarray(fit.data['FLUX'][0])
+            return wave_nm * 10.0, flux, 'raw'
+    except Exception:
+        pass
+    return None, None, None
+
+
+@st.cache_data
 def _load_raw_spec(star_name: str, epoch: int, band: str):
     obs = get_obs_manager()
     star = obs.load_star_instance(star_name, to_print=False)
@@ -363,25 +399,26 @@ with tab_xshooter:
             fig_norm.update_layout(yaxis_type='log')
 
         colors = _epoch_colors(len(epochs))
+        has_raw = False
         for i, ep in enumerate(epochs):
-            data = _load_normalized_spec(xs_star, ep, xs_band, use_cleaned)
-            if data is None:
+            wave_A, flux, src = _load_spectrum(xs_star, ep, xs_band, use_cleaned)
+            if wave_A is None:
                 continue
-            wave = np.asarray(data.get('wavelengths', data.get('wave', [])))
-            flux = np.asarray(data.get('normalized_flux', data.get('flux', [])))
-            if len(wave) == 0:
-                continue
-            wave_A = wave * 10.0  # nm → Å
+            if src == 'raw':
+                has_raw = True
             fig_norm.add_trace(go.Scattergl(
                 x=wave_A, y=flux, mode='lines',
                 line=dict(color=colors[i], width=1.2),
-                name=f'Epoch {ep}',
+                name=f'Epoch {ep}' + (' (raw)' if src == 'raw' else ''),
             ))
 
         if show_lines:
             _add_emission_bands(fig_norm, _get_emission_lines())
 
-        _show(fig_norm, 'Normalized spectra overlaid for all available epochs.')
+        caption = 'Normalized spectra overlaid for all available epochs.'
+        if has_raw:
+            caption += ' Some epochs show raw (unnormalized) FITS data.'
+        _show(fig_norm, caption)
 
         # Save button
         sv1, _ = st.columns([1, 3])
@@ -477,17 +514,20 @@ with tab_xshooter:
         with st.expander('2D Spectral Image', expanded=False):
             c1d, c2d, c3d = st.columns(3)
             img_star = c1d.selectbox('Star', specs.star_names, key='xsp_2d_star')
-            img_band = c2d.selectbox('Band', BANDS, key='xsp_2d_band')
+            img_band = c2d.selectbox('Band', ['UVB', 'VIS', 'NIR'], key='xsp_2d_band')
             img_epochs = _get_epochs(img_star)
             ep_2d = c3d.selectbox('Epoch', img_epochs, key='xsp_2d_ep')
 
             try:
                 obs_2d = get_obs_manager()
                 star_2d = obs_2d.load_star_instance(img_star, to_print=False)
+                # Load 1D FITS for wavelength axis (IC2D.py pattern)
+                fit_1d = star_2d.load_observation(ep_2d, img_band)
                 fit_2d = star_2d.load_2D_observation(ep_2d, img_band)
                 if fit_2d is not None and fit_2d.primary_data is not None:
                     img = fit_2d.primary_data
-                    raw_1d = _load_raw_spec(img_star, ep_2d, img_band)
+                    wave_2d = (np.asarray(fit_1d.data['WAVE'][0]) * 10.0
+                               if fit_1d is not None else None)
 
                     cv1, cv2 = st.columns(2)
                     vmin = cv1.number_input('ValMin', value=float(np.nanpercentile(img, 5)),
@@ -500,9 +540,8 @@ with tab_xshooter:
                         xaxis_title='Wavelength (Å)', yaxis_title='Spatial pixel',
                         title=dict(text=f'{img_star} — {img_band} — Epoch {ep_2d} (2D)'),
                     )
-                    x_vals = raw_1d[0] if raw_1d is not None else None
                     fig_2d.add_trace(go.Heatmap(
-                        z=img, x=x_vals, colorscale='Viridis',
+                        z=img, x=wave_2d, colorscale='Viridis',
                         zmin=vmin, zmax=vmax,
                         colorbar=dict(title='Counts'),
                     ))
@@ -528,13 +567,9 @@ with tab_xshooter:
                 wmin = cw1.number_input('λ min (Å)', value=5750, key='xsp_cons_wmin')
                 wmax = cw2.number_input('λ max (Å)', value=5950, key='xsp_cons_wmax')
 
-                d1 = _load_normalized_spec(cons_star, ep1, cons_band, use_cleaned)
-                d2 = _load_normalized_spec(cons_star, ep2, cons_band, use_cleaned)
-                if d1 is not None and d2 is not None:
-                    w1 = np.asarray(d1.get('wavelengths', [])) * 10.0
-                    f1 = np.asarray(d1.get('normalized_flux', []))
-                    w2 = np.asarray(d2.get('wavelengths', [])) * 10.0
-                    f2 = np.asarray(d2.get('normalized_flux', []))
+                w1, f1, _ = _load_spectrum(cons_star, ep1, cons_band, use_cleaned)
+                w2, f2, _ = _load_spectrum(cons_star, ep2, cons_band, use_cleaned)
+                if w1 is not None and w2 is not None:
 
                     mask1 = (w1 >= wmin) & (w1 <= wmax)
                     mask2 = (w2 >= wmin) & (w2 <= wmax)
@@ -593,19 +628,15 @@ with tab_xshooter:
                 ep_min = min(rv_by_ep, key=rv_by_ep.get)
                 ep_max = max(rv_by_ep, key=rv_by_ep.get)
 
-                d_min = _load_normalized_spec(ext_star, ep_min, ext_band, use_cleaned)
-                d_max = _load_normalized_spec(ext_star, ep_max, ext_band, use_cleaned)
+                w_min, f_min, _ = _load_spectrum(ext_star, ep_min, ext_band, use_cleaned)
+                w_max, f_max, _ = _load_spectrum(ext_star, ep_max, ext_band, use_cleaned)
 
-                if d_min is not None and d_max is not None:
+                if w_min is not None and w_max is not None:
                     fig_ext = _academic_fig(
                         height=450,
                         xaxis_title='Wavelength (Å)', yaxis_title='Normalised flux',
                         title=dict(text=f'{ext_star} — Extreme RV epochs'),
                     )
-                    w_min = np.asarray(d_min.get('wavelengths', [])) * 10.0
-                    f_min = np.asarray(d_min.get('normalized_flux', []))
-                    w_max = np.asarray(d_max.get('wavelengths', [])) * 10.0
-                    f_max = np.asarray(d_max.get('normalized_flux', []))
 
                     fig_ext.add_trace(go.Scattergl(
                         x=w_min, y=f_min, mode='lines',

@@ -206,45 +206,11 @@ def _run_page() -> None:  # noqa: C901 (page-level function, intentionally long)
             "🔬 Run Fit", type="primary", use_container_width=True,
         )
 
-    # ── preview (before run) ─────────────────────────────────────────────
-    if not run_btn and "rvm_results" not in st.session_state:
-        st.info(
-            "Configure simulation parameters in the sidebar and click "
-            "**Run Fit**."
-        )
-        fig_prev = go.Figure()
-        fig_prev.add_trace(go.Scatter(
-            x=t_full, y=f_obs, mode="markers",
-            marker=dict(size=3, color=COLOR_SINGLE),
-            name="Observed (significance-filtered)",
-        ))
-        fig_prev.add_trace(go.Scatter(
-            x=t_full, y=raw_frac, mode="markers",
-            marker=dict(size=3, color="grey", opacity=0.5),
-            name="Observed (raw)",
-        ))
-        fig_prev.update_layout(**{
-            **PLOTLY_THEME,
-            "title": dict(text="Observed Binary Fraction vs ΔRV Threshold"),
-            "xaxis": {
-                **PLOTLY_THEME.get("xaxis", {}),
-                "title": "ΔRV threshold (km/s)",
-            },
-            "yaxis": {
-                **PLOTLY_THEME.get("yaxis", {}),
-                "title": "Binary fraction",
-            },
-        })
-        st.plotly_chart(fig_prev, use_container_width=True)
-        st.caption(
-            "Observed binary fraction at each ΔRV threshold. "
-            "Blue: significance-filtered (ΔRV − 4σ > 0). "
-            "Grey: raw (no significance cut)."
-        )
-        return
-
     # ── run simulation & fitting ─────────────────────────────────────────
-    if run_btn:
+    # Auto-run on first load with default params; re-run on button click
+    should_run = run_btn or "rvm_results" not in st.session_state
+    if should_run:
+      with st.spinner("Running simulation and fitting model..."):
         # -- binary distribution -------------------------------------------
         binary_drvs = compute_binary_delta_rvs(
             n_sim=int(n_sim),

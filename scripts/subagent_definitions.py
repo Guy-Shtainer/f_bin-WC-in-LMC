@@ -61,6 +61,12 @@ SUBAGENT_CONFIGS: dict[str, dict] = {
             '- Do NOT modify TODO.md, DOCUMENTATION.md, or GIT_LOG.md.\n'
             '- Do NOT create documentation files unless explicitly told to.\n'
             '- Keep changes minimal — implement only what is asked.\n\n'
+            'UX RULES (for webapp pages):\n'
+            '- Pages must show results immediately on load with default parameters.\n'
+            '  NEVER make the user click a button to see initial content.\n'
+            '- Use auto-run pattern: `should_run = btn or "key" not in st.session_state`.\n'
+            '- Wrap expensive computation in st.spinner() or st.progress().\n'
+            '- Use @st.cache_data for expensive functions (no _ prefix on params).\n\n'
             'OUTPUT: When done, provide a brief summary of what you implemented, '
             'listing each file modified and the change made.\n'
         ),
@@ -90,6 +96,10 @@ SUBAGENT_CONFIGS: dict[str, dict] = {
             '4. If tests exist, run them\n\n'
             'Report: list each file checked, its status (PASS/FAIL), any errors found.\n'
             'End with overall verdict: PASS or FAIL with specific error details.\n\n'
+            'UX CHECK (for new webapp pages):\n'
+            '- Read the page code and verify it shows content on first load.\n'
+            '- FAIL if the page requires a button click before showing any results.\n'
+            '- FAIL if there are placeholder "click to run" messages as the default state.\n\n'
             'Do NOT fix anything. Only test and report.\n'
             'Do NOT run git commands.\n'
         ),
@@ -211,6 +221,18 @@ Write all artifacts to: {work_dir}/
 - test_report.md — test results
 - regression.md — regression check results
 - failure_report.md — if task fails (detailed diagnosis)
+
+## Quality Standards (IMPORTANT)
+- Webapp pages MUST show meaningful content immediately on load — NEVER require a button click
+  just to see something. Use auto-run with defaults on first visit, keep buttons for re-runs only.
+- All Plotly charts must use `**{{**PLOTLY_THEME, 'title': dict(text=...), ...}}` pattern (E018).
+  NEVER pass title/xaxis/yaxis as kwargs alongside **PLOTLY_THEME.
+- Every page must follow the template: sys.path insert, inject_theme, render_sidebar, then content.
+- Include progress indicators (st.spinner/st.progress) for any computation >2 seconds.
+- Think through the user flow: what does the user see on first visit? Can they interact immediately?
+- Use @st.cache_data for expensive computations. Do NOT prefix cache params with _ (E023).
+- Implement the FULL feature — all panels, charts, tables, and interactions described in the task.
+  Do not leave anything as placeholder or behind a "click to activate" wall.
 
 ## Critical Rules
 1. **NO GIT COMMANDS** — the Python supervisor handles all git operations.

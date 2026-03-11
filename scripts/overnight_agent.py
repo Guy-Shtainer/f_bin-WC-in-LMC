@@ -690,6 +690,8 @@ async def run_opus_manager(task: dict, timeout: int = 7200,
 
     result_text = ''
     rate_limited = False
+    inactivity_limit = 600  # 10 min with no messages = likely rate limited
+    start_time = datetime.now()
 
     try:
         gen = query(prompt=task_desc, options=options)
@@ -708,10 +710,53 @@ async def run_opus_manager(task: dict, timeout: int = 7200,
                     state['architecture'] = 'opus-manager'
                     save_state(state)
 
-            await asyncio.wait_for(consume(), timeout=timeout)
-        except asyncio.TimeoutError:
-            log(f'  Opus manager timed out after {timeout}s')
-            return f'TIMEOUT after {timeout}s'
+            # Watchdog: check for inactivity every 60s instead of waiting
+            # for the full timeout (which can be 2 hours).
+            consume_task = asyncio.ensure_future(consume())
+            while not consume_task.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(consume_task), timeout=60,
+                    )
+                except asyncio.TimeoutError:
+                    # Check inactivity via state['updated_at']
+                    state = load_state() or {}
+                    updated = state.get('updated_at', '')
+                    if updated:
+                        try:
+                            last = datetime.fromisoformat(updated)
+                            idle = (datetime.now() - last).total_seconds()
+                            if idle > inactivity_limit:
+                                log(f'  Opus manager idle for {int(idle)}s — '
+                                    f'treating as rate limit')
+                                rate_limited = True
+                                consume_task.cancel()
+                                try:
+                                    await consume_task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                                break
+                        except ValueError:
+                            pass
+                    # Check total timeout
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    if elapsed > timeout:
+                        log(f'  Opus manager timed out after {timeout}s')
+                        consume_task.cancel()
+                        try:
+                            await consume_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                        return f'TIMEOUT after {timeout}s'
+                except asyncio.CancelledError:
+                    break
+
+            # Check if consume_task raised an exception
+            if consume_task.done() and not consume_task.cancelled():
+                exc = consume_task.exception()
+                if exc is not None:
+                    raise exc
+
         finally:
             try:
                 await asyncio.shield(gen.aclose())
