@@ -314,6 +314,30 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 ---
 
+### E028 — Variable defined in UI section used before that section renders
+
+| | |
+|---|---|
+| **Bad** | `logPmax_scan_vals = np.array([float(logP_max_val)])` (when `logP_max_val` is defined in an expander that renders later) |
+| **Fix** | `logPmax_scan_vals = np.array([float(st.session_state[f'{p}_logP_max'])])` (read from session_state which is pre-initialized) |
+| **Grep** | N/A — requires manual review when moving UI sections between columns |
+| **Why** | When reorganizing Streamlit layouts (e.g., moving an expander from left to right column), variables defined inside widgets may be referenced earlier in the render order than where they're now defined. Session state defaults are pre-initialized and always available. |
+| **Found in** | `app/pages/05_bias_correction.py` — `_render_dsilva_tab()` line ~1488, after moving orbital params expander to right column |
+
+---
+
+### E029 — Rebuilding config objects from session_state instead of passing constructed ones
+
+| | |
+|---|---|
+| **Bad** | `bin_cfg = BinaryParameterConfig(e_model=st.session_state.get('e_model', 'flat'), ...)` inside a results renderer |
+| **Fix** | Pass the already-constructed `bin_cfg` object from the tab UI as a function parameter |
+| **Grep** | *(not greppable — requires code review: check if config objects are rebuilt downstream instead of passed)* |
+| **Why** | When a config dataclass has many fields (e.g., `BinaryParameterConfig` with `langer_period_params`, `q_flipped`, `e_model`, etc.), rebuilding it from `session_state` in a different function risks using wrong default values or wrong session_state key names. The tab UI already constructs the correct config — pass it through rather than reconstructing. Similar to E024 (missing fields in cache checks) but applies to runtime config construction, not cache validation. |
+| **Found in** | `app/pages/05_bias_correction.py` — `_render_cadence_results()` was rebuilding `BinaryParameterConfig` with `e_model='flat'` (wrong for Langer which uses `'zero'`), missing `langer_period_params` entirely |
+
+---
+
 ## Adding New Errors
 
 When you encounter a new recurring error, add it here with:

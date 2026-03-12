@@ -586,4 +586,96 @@ strength of this analysis compared to the prior work.
 
 ---
 
-*Last updated: 2026-03-11*
+### 2026-03-12 — Cadence methodology: weighted K-S scoring, bin_cfg fix; agent reliability; TODO webapp
+
+**What was done:**
+
+*Methodology (paper-relevant):*
+
+- **Cadence-aware grouped simulation confirmed working.** The `simulate_delta_rv_cadence_aware()`
+  function (implemented in a prior session from agent/99 branch) runs N_sets (default 10k)
+  groups of 25 simulated stars, each matching one real star's MJD cadence. This replaces
+  the previous independent-star approach described in the 2026-03-10 meeting entry. The
+  binned CDF comparison (`ks_two_sample_binned()`) discretizes ΔRV into ~10 km/s bins
+  up to ~350 km/s, regularizing the comparison and avoiding sparse-tail noise. Both
+  functions are in `wr_bias_simulation.py` and are now confirmed operational after today's
+  bug fixes.
+
+- **Inverse-variance weighted K-S scoring.** Added `ks_weighted_D()` to
+  `wr_bias_simulation.py` as an alternative to the standard K-S D statistic for
+  cadence-aware runs. The weighted statistic is:
+  D_w = Σ(|F_obs(x_i) - F_sim(x_i)| × w_i) / Σ(w_i),
+  where w_i = 1/σ_i² and σ_i is the standard deviation of the simulated CDF at bin i
+  across the N_sets realizations. This gives less weight to CDF bins where the simulation
+  outcome is uncertain (high variance). D_w remains in [0,1], so the standard Kolmogorov
+  p-value series applies as an approximation. A UI radio selector in both cadence tabs
+  lets the user choose between "K-S (standard)" and "K-S (variance-weighted)". The scoring
+  method is threaded through `_init_worker` → worker → `run_bias_grid_cadence_aware`.
+
+- **Cadence diagnostic histogram bin_cfg fix (E029).** The `_render_cadence_results()`
+  function was rebuilding a fresh `BinaryParameterConfig` from session_state keys with
+  incorrect defaults — missing `langer_period_params` (empty dict → wrong logP
+  distribution), missing `q_flipped`, wrong `e_model` default ('flat' instead of 'zero'
+  for Langer), wrong logP range, wrong q_model session_state key. Fix: pass the
+  already-constructed `_bin_cfg` object from the tab UI as a function parameter. This
+  ensures the diagnostic histograms use the exact same orbital parameter distributions
+  as the grid simulation.
+
+*Infrastructure:*
+
+- **Overnight agent git safety.** Diagnosed that `git_commit_all()` in
+  `scripts/overnight_agent.py` was doing `git add -A` on the main working tree, sweeping
+  the user's uncommitted files (e.g., newly created slash commands) into agent commits.
+  Replaced with `git_commit_files()` that only stages specified files. Added stash
+  push/pop safety in the finally block to preserve user uncommitted work across agent runs.
+
+- **Git worktree isolation for overnight agent.** Converted the entire overnight agent
+  from branch-checkout to worktree isolation. Agent work now happens in
+  `../agent-worktree/` (a sibling directory created via `git worktree add`). All
+  `run_pipeline`, `run_freeform_task`, and `agent_loop` functions updated (~20 edits).
+  Added DONE status to `agent_app/app.py`. Added `[T]est` option to `--stop` interactive
+  branch review that creates a temporary worktree for inspection before merge/discard.
+
+- **Standalone TODO webapp.** Extracted all TODO logic from `app/pages/10_todo.py` (798
+  lines) into `app/todo_core.py` as a shared module with `render_todo_page()`. The
+  original page is now a 27-line thin wrapper. Created `todo_app.py` as a standalone
+  Streamlit entry point on port 8502. Both apps read/write the same `TODO.md`.
+
+- **EndConv/EnDay daily logging system.** Created `/EndConv` slash command that appends
+  structured conversation summaries to `daily_logs/YYYY-MM-DD.md`. Updated `/EnDay`
+  workflow to read daily logs as its first step, cross-referencing with git history for
+  complete work inventory.
+
+**Key results:**
+- Cadence-aware pipeline (grouped sets + binned CDF + optional variance weighting) is
+  now fully operational with correct orbital parameter passthrough.
+- Overnight agent can no longer destroy user's uncommitted work.
+
+**Methodology notes for paper:**
+- The inverse-variance weighted K-S statistic should be described in the Methods section
+  as a refinement for cadence-aware runs. It addresses the heteroscedasticity inherent
+  in grouped-set simulation: bins with fewer contributing stars have higher variance.
+  The weighting ensures the fit is driven by bins where the simulation gives reliable
+  predictions.
+- The cadence-matched Monte-Carlo method (10k sets × 25 stars) and binned CDF should
+  be described as the primary simulation approach, contrasted with Dsilva et al. (2023)
+  independent-star method. Paper section `bias_correction.tex` has TODO markers at
+  lines 71–73 for these additions.
+
+**Bugs found and fixed:**
+- E029: Config object rebuilt from session_state with wrong defaults instead of passing
+  constructed object (cadence diagnostic histograms).
+- Overnight agent `git add -A` sweeping user files into agent commits (workflow bug,
+  not a code pattern — fixed by replacing with targeted `git_commit_files()`).
+
+**Open questions:**
+- Is the Kolmogorov p-value series valid for the weighted D_w statistic? D_w is a
+  weighted mean of per-bin |diffs|, not a supremum. This is an approximation — may
+  need validation via permutation test or simulation study.
+- Task #92 (per-star cadence simulation with median CDF + error band display) remains
+  open — the backend computes per-set CDFs but the UI does not yet show the 68%
+  error band as a shaded region.
+
+---
+
+*Last updated: 2026-03-12*
