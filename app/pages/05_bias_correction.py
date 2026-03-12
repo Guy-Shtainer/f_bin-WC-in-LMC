@@ -182,7 +182,7 @@ def _scan_result_metadata(model: str | None = None) -> pd.DataFrame:
     model : str or None
         'dsilva', 'langer', or None (both).
     """
-    models = [model] if model else ['dsilva', 'langer']
+    models = [model] if model else ['dsilva', 'langer', 'cadence_dsilva', 'cadence_langer']
     rows: list[dict] = []
     for mdl in models:
         for name, path in _list_saved_results(mdl):
@@ -4830,7 +4830,8 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         result['timestamp'] = datetime.datetime.now().isoformat()
         result['settings'] = json.dumps(save_params, default=str)
 
-        _desc = (f"cadence_fb{fbin_grid[0]:.1f}-{fbin_grid[-1]:.1f}x{n_fb}"
+        _cad_model = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
+        _desc = (f"{_cad_model}_fb{fbin_grid[0]:.1f}-{fbin_grid[-1]:.1f}x{n_fb}"
                  f"_pi{pi_grid[0]:.1f}-{pi_grid[-1]:.1f}x{n_pi}"
                  f"_N{n_sets}"
                  f"_sig{sigma_grid[0]:.1f}")
@@ -4849,6 +4850,13 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                 _save_dict[k] = np.array(v, dtype=object)
         np.savez_compressed(_save_path, **_save_dict)
         result['save_path'] = _save_path
+        _scan_result_metadata.clear()
+
+        # Clean up partial checkpoint
+        _p_tag = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
+        _partial_cleanup = os.path.join(_RESULT_DIR, f'{_p_tag}_result.npz.partial')
+        if os.path.exists(_partial_cleanup):
+            os.remove(_partial_cleanup)
 
         job['result'] = result
         job['status'] = 'done'
@@ -4964,20 +4972,13 @@ def _render_cadence_results(p: str, _is_dsilva: bool) -> None:
 
         fig_hm = _make_heatmap_fig(
             hm_z, fbin_grid.tolist(), np.asarray(_x_vals).tolist(),
-            title='K-S p-value (cadence-aware)',
+            title=f'K-S p-value  (cadence-aware, {"Dsilva" if _is_dsilva else "Langer 2020"})',
             height=_ch, width=_cw,
             x_label=_x_label, x_name=_x_name,
         )
-        # Best point marker
+        # Star marker + contours are already added by make_heatmap_fig (live=False)
         _bi = np.unravel_index(np.argmax(hm_z), hm_z.shape)
         _best_x_val = float(np.asarray(_x_vals)[_bi[1]])
-        fig_hm.add_trace(go.Scatter(
-            x=[_best_x_val], y=[float(fbin_grid[_bi[0]])],
-            mode='markers',
-            marker=dict(symbol='star', size=16, color='#DAA520',
-                        line=dict(width=1.5, color='black')),
-            name='Best fit', showlegend=True,
-        ))
         st.plotly_chart(fig_hm, use_container_width=_use_cw, key=f'{p}_heatmap')
 
         # Summary
@@ -5084,6 +5085,82 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
                               n_sets, sigma_vals, _bin_cfg,
                               _sigma_meas, settings, sm) -> None:
     """Shared action buttons + right column for cadence tabs."""
+    _cad_tag = 'cadence_dsilva' if _is_dsilva else 'cadence_langer'
+
+    # ── Load / Save saved results ─────────────────────────────────────────
+    _cad_load_col, _cad_save_col = st.columns(2)
+    with _cad_load_col:
+        _cad_meta = _scan_result_metadata(_cad_tag)
+        if _cad_meta is not None and len(_cad_meta) > 0:
+            with st.expander(f'📂 Load saved result ({len(_cad_meta)})', expanded=False):
+                _cad_disp = _cad_meta.drop(columns=['_path'], errors='ignore')
+                _cad_sel = st.dataframe(
+                    _cad_disp, use_container_width=True,
+                    selection_mode='single-row', on_select='rerun',
+                    key=f'{p}_load_table',
+                )
+                _cad_sel_rows = _cad_sel.selection.rows if _cad_sel.selection else []
+                if _cad_sel_rows:
+                    _cad_idx = _cad_sel_rows[0]
+                    _cad_sel_path = _cad_meta.iloc[_cad_idx]['_path']
+                    if st.session_state.get(f'{p}_loaded_path') != _cad_sel_path:
+                        _cad_loaded = dict(np.load(_cad_sel_path, allow_pickle=True))
+                        st.session_state[f'{p}_result'] = _cad_loaded
+                        st.session_state[f'{p}_loaded_path'] = _cad_sel_path
+                        st.toast(f"Loaded: {_cad_meta.iloc[_cad_idx]['File']}")
+                        st.rerun()
+        else:
+            _cad_load_col.caption('No saved results yet.')
+
+    if _cad_save_col.button('💾 Save result', key=f'{p}_save_btn'):
+        _cad_cur_res = st.session_state.get(f'{p}_result')
+        if _cad_cur_res is not None:
+            _cad_save_kw = dict(
+                **{k: v for k, v in _cad_cur_res.items()},
+                config_hash=np.array('manual_save'),
+                timestamp=np.array(_dt.datetime.now().isoformat()),
+            )
+            _cad_desc = _build_descriptive_filename(
+                _cad_tag,
+                float(fb_min), float(fb_max), int(fb_steps),
+                float(sigma_vals[0]) if len(sigma_vals) > 0 else 1.0,
+                float(sigma_vals[-1]) if len(sigma_vals) > 0 else 15.0,
+                len(sigma_vals),
+                int(n_sets), np.array(sigma_vals),
+                0.5, 3.5,  # logP range defaults
+                x_label='sig',
+            )
+            _cad_save_path = os.path.join(_RESULT_DIR, _cad_desc)
+            os.makedirs(_RESULT_DIR, exist_ok=True)
+            np.savez(_cad_save_path, **_cad_save_kw)
+            cached_load_grid_result.clear()
+            _scan_result_metadata.clear()
+            st.toast(f'Saved: {_cad_desc}')
+        else:
+            _cad_save_col.warning('No result to save. Run first.')
+
+    # ── Detect partial checkpoint ─────────────────────────────────────────
+    _cad_partial_path = os.path.join(_RESULT_DIR, f'{_cad_tag}_result.npz.partial')
+    _cad_has_partial = os.path.exists(_cad_partial_path)
+    _cad_job_running = (st.session_state.get(f'{p}_job', {}).get('status') == 'running')
+    if _cad_has_partial and not _cad_job_running and f'{p}_result' not in st.session_state:
+        try:
+            _cad_ptl = np.load(_cad_partial_path, allow_pickle=True)
+            _cad_pct = float(_cad_ptl.get('progress_pct', 0)) * 100
+            st.warning(
+                f'Interrupted run detected ({_cad_pct:.0f}% complete).  \n'
+                f'Click **Load partial** to view, or **Run** to start fresh.'
+            )
+            if st.button('📋 Load partial result', key=f'{p}_load_partial'):
+                st.session_state[f'{p}_result'] = {
+                    k: _cad_ptl[k] for k in _cad_ptl.files
+                }
+                st.success(f'Loaded partial result ({_cad_pct:.0f}% complete)')
+                st.rerun()
+            _cad_ptl.close()
+        except Exception:
+            pass
+
     # Workers
     _n_proc = os.cpu_count() - 1
 

@@ -57,6 +57,7 @@
 | 109 | RV Errors tab refinements: histogram fix, fit history, auto-fit, flat dist, scores | Fixed histogram x-axis cutoff (removed max(0,...)), added persistent fit history table, made Auto-Fit All persistent with best-fit PDF overlay, added Flat (uniform) distribution, added AIC/BIC/logL score explanations expander. | high | bias-correction, rv-errors | to-test | Claude | Guy | 2026-03-12T12:00:00 | N | Y |  |
 | 110 | Auto-commit hook for incremental rollback | PostToolUse hook on Edit/Write that auto-commits each file change with [AUTO] Save: filename message. Added to .claude/settings.json. | medium | automation, git | to-test | Claude | Guy | 2026-03-12T12:00:00 | N | N |  |
 | 111 | Langer partial checkpoint UI + resume partial computation | Added Langer partial checkpoint detection + Load partial button (matching Dsilva). Both Dsilva and Langer now resume from .partial.npz checkpoint on Run (skip already-computed f_bin rows). | high | bias-correction, feature | to-test | Claude | Guy | 2026-03-12T12:00:00 | N | Y |  |
+| 112 | Cadence tabs: heatmap contours, save/load table, partial load/cleanup | Fixed cadence heatmap quality (removed duplicate star, contours now appear on final render). Added save/load results table to both cadence tabs. Added partial checkpoint load UI + cleanup on success. Cadence results now save with cadence_dsilva/cadence_langer prefix for proper filtering. | high | bias-correction, cadence | to-test | Claude | Guy | 2026-03-12T14:00:00 | N | Y |  |
 
 ## Done
 
