@@ -647,11 +647,27 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
         n_sigma   = len(sigma_vals)
         n_fbin    = len(fbin_vals)
         n_pi      = len(pi_vals)
-        accumulated_ks_p = np.full((n_logPmax, n_sigma, n_fbin, n_pi), np.nan)
-        accumulated_ks_D = np.full_like(accumulated_ks_p, np.nan)
+
+        # Support resuming from partial checkpoint
+        _prefilled_p = params.get('prefilled_ks_p')
+        _prefilled_D = params.get('prefilled_ks_D')
+        if (_prefilled_p is not None and _prefilled_D is not None
+                and _prefilled_p.shape == (n_logPmax, n_sigma, n_fbin, n_pi)):
+            accumulated_ks_p = _prefilled_p.copy()
+            accumulated_ks_D = _prefilled_D.copy()
+        else:
+            accumulated_ks_p = np.full((n_logPmax, n_sigma, n_fbin, n_pi), np.nan)
+            accumulated_ks_D = np.full_like(accumulated_ks_p, np.nan)
 
         n_rows_total = n_logPmax * n_sigma * n_fbin
-        rows_done    = 0
+        # Count already-completed rows (from partial resume)
+        _pre_done = 0
+        for i_lp in range(n_logPmax):
+            for i_s in range(n_sigma):
+                for gj in range(n_fbin):
+                    if not np.any(np.isnan(accumulated_ks_p[i_lp, i_s, gj, :])):
+                        _pre_done += 1
+        rows_done = _pre_done
         t_start      = time.time()
 
         if n_rows_total == 0:
@@ -684,7 +700,13 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                             job['status'] = 'cancelled'
                             return
                         tasks = []
+                        _skip_fbin = set()
                         for gj in range(n_fbin):
+                            # Skip fbin rows already complete (from partial resume)
+                            if not np.any(np.isnan(
+                                    accumulated_ks_p[i_lp, i_sigma, gj, :])):
+                                _skip_fbin.add(gj)
+                                continue
                             for i_pi, pv in enumerate(pi_vals):
                                 tasks.append((
                                     float(fbin_vals[gj]), float(pv),
@@ -693,7 +715,12 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                                 ))
                                 seed_base += 1
 
-                        completed_per_fbin = {gj: 0 for gj in range(n_fbin)}
+                        completed_per_fbin = {gj: 0 for gj in range(n_fbin)
+                                              if gj not in _skip_fbin}
+
+                        if not tasks:
+                            # All fbin rows already complete for this slice
+                            continue
 
                         for fb, pi_ret, sigma_ret, D, p_val in pool.imap_unordered(
                                 _single_grid_task_lite, tasks,
@@ -1496,6 +1523,33 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 'logP_max': float(logP_max_val),
             },
         }
+        # ── Check partial checkpoint for resume ──────────────────────────
+        _ds_partial_path = _result_path('dsilva') + '.partial.npz'
+        if os.path.exists(_ds_partial_path):
+            try:
+                _ds_ptl = np.load(_ds_partial_path, allow_pickle=True)
+                _ds_ptl_cfg = json.loads(str(_ds_ptl.get('settings', '{}')))
+                # Verify grids match
+                _grids_match = (
+                    np.allclose(np.asarray(_ds_ptl['fbin_grid']), fbin_vals, atol=1e-6)
+                    and np.allclose(np.asarray(_ds_ptl['pi_grid']), pi_vals, atol=1e-6)
+                    and np.allclose(np.asarray(_ds_ptl['sigma_grid']), sigma_vals, atol=1e-6)
+                    and np.allclose(np.asarray(_ds_ptl['logPmax_grid']),
+                                    logPmax_scan_vals, atol=1e-6)
+                )
+                if _grids_match:
+                    _params['prefilled_ks_p'] = np.asarray(_ds_ptl['ks_p'])
+                    _params['prefilled_ks_D'] = np.asarray(_ds_ptl['ks_D'])
+                    _n_pre = int(np.count_nonzero(
+                        ~np.isnan(_params['prefilled_ks_p'])))
+                    _n_tot = _params['prefilled_ks_p'].size
+                    status_slot.info(
+                        f'♻️ Resuming from checkpoint '
+                        f'({_n_pre}/{_n_tot} cells, '
+                        f'{_n_pre/_n_tot*100:.0f}%).')
+                _ds_ptl.close()
+            except Exception:
+                pass
         _t = threading.Thread(target=_run_dsilva_bg, args=(_job, _params),
                               daemon=True)
         _t.start()
@@ -3357,6 +3411,35 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         lg_heatmap_slot  = st.empty()
         lg_result_slot   = st.empty()
 
+    # ── Detect partial checkpoint (interrupted Langer run) ────────────────────
+    _lg_partial_path = _result_path('langer') + '.partial.npz'
+    _lg_has_partial = os.path.exists(_lg_partial_path) and not lg_run_btn
+    if _lg_has_partial and f'{p}_result' not in st.session_state:
+        try:
+            _lg_ptl = np.load(_lg_partial_path, allow_pickle=True)
+            _lg_ptl_ks_p = np.asarray(_lg_ptl['ks_p'])
+            _lg_n_done = int(np.count_nonzero(~np.isnan(_lg_ptl_ks_p)))
+            _lg_n_total = _lg_ptl_ks_p.size
+            _lg_pct = _lg_n_done / _lg_n_total * 100 if _lg_n_total > 0 else 0
+            _lg_ptl_ts = str(_lg_ptl.get('timestamp', 'unknown'))
+            lg_status_slot.warning(
+                f'Interrupted run detected ({_lg_pct:.0f}% complete, {_lg_ptl_ts}).  \n'
+                f'Click **Load partial** to view the incomplete result, '
+                f'or **Run** to start fresh (will resume from checkpoint).'
+            )
+            _lg_load_partial_btn = st.button(
+                '📋 Load partial result', key=f'{p}_load_partial')
+            if _lg_load_partial_btn:
+                st.session_state[f'{p}_result'] = {
+                    k: _lg_ptl[k] for k in _lg_ptl.files
+                }
+                lg_status_slot.success(
+                    f'Loaded partial result ({_lg_pct:.0f}% complete)')
+                st.rerun()
+            _lg_ptl.close()
+        except Exception:
+            pass  # corrupt partial — ignore
+
     # ── Stable config ─────────────────────────────────────────────────────────
     lg_period_params = {
         'dist_A': str(lg_dist_A), 'mu_A': float(lg_mu_A), 'sigma_A': float(lg_sigma_A),
@@ -3438,6 +3521,34 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         else:
             lg_reuse_new_idx, lg_reuse_cache_idx = [], []
             lg_n_reused = 0
+
+        # ── Also check partial checkpoint for resume ─────────────────────────
+        _lg_partial_resume_path = _result_path('langer') + '.partial.npz'
+        if os.path.exists(_lg_partial_resume_path) and lg_n_reused == 0:
+            try:
+                _lg_ptl_data = dict(np.load(_lg_partial_resume_path, allow_pickle=True))
+                _lg_ptl_reuse = _find_reusable_fbin_langer(
+                    _lg_ptl_data, lg_fbin_vals, lg_sigma_vals, lg_stable_cfg)
+                if _lg_ptl_reuse:
+                    lg_reuse_new_idx, lg_reuse_cache_idx = _lg_ptl_reuse
+                    lg_cached_existing = _lg_ptl_data
+                    lg_reuse_info = _lg_ptl_reuse
+                    # Only count rows where ALL sigma values are non-NaN
+                    _ptl_ks_p = np.asarray(_lg_ptl_data['ks_p'])
+                    _complete_rows = []
+                    for ni, ci in zip(lg_reuse_new_idx, lg_reuse_cache_idx):
+                        if not np.any(np.isnan(_ptl_ks_p[ci, :])):
+                            _complete_rows.append(ni)
+                    lg_reuse_new_idx = _complete_rows
+                    lg_reuse_cache_idx = [ci for ni, ci in
+                        zip(_lg_ptl_reuse[0], _lg_ptl_reuse[1])
+                        if ni in set(_complete_rows)]
+                    lg_n_reused = len(_complete_rows)
+                    lg_status_slot.info(
+                        f'♻️ Resuming from checkpoint: '
+                        f'{lg_n_reused}/{len(lg_fbin_vals)} f_bin rows complete.')
+            except Exception:
+                pass
 
         # Pre-allocate and fill reused rows
         lg_n_fbin  = len(lg_fbin_vals)
