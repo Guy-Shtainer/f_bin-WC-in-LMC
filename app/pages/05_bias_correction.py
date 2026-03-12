@@ -432,6 +432,175 @@ def _append_run_history(entry: dict) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CDF Sanity Check (cadence tabs only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_cdf_sanity_check(best_fbin, best_x, sigma_single,
+                              obs_delta_rv, period_model, result,
+                              settings, p_prefix: str) -> None:
+    """Render 5 random CDF draws vs observed for cadence sanity check.
+
+    Generates 5 independent sets of 25 simulated stars at the best-fit
+    parameters, overlaid on the observed CDF. This verifies the cadence-aware
+    pipeline produces sensible ΔRV distributions.
+    """
+    from wr_bias_simulation import (
+        simulate_delta_rv_sample, BinaryParameterConfig,
+        binned_cdf, DEFAULT_DRV_BIN_EDGES,
+    )
+
+    cadence_library = result.get('cadence_library')
+    if cadence_library is None:
+        return
+
+    _bin_edges = DEFAULT_DRV_BIN_EDGES
+    obs_cdf_b = binned_cdf(obs_delta_rv, _bin_edges)
+
+    st.markdown('### CDF Sanity Check')
+    st.caption(
+        '5 random draws of 25 simulated stars at the best-fit parameters, '
+        'compared to the observed CDF. Each draw uses different random seeds '
+        'but identical cadence assignments.'
+    )
+
+    # Build BinaryParameterConfig from result metadata
+    _bcfg_dict = result.get('bin_cfg', {})
+    bcfg = BinaryParameterConfig(**_bcfg_dict) if _bcfg_dict else BinaryParameterConfig()
+
+    fig = go.Figure()
+
+    # Observed CDF
+    fig.add_trace(go.Scatter(
+        x=_bin_edges, y=obs_cdf_b,
+        mode='lines', name='Observed',
+        line=dict(color='#4A90D9', width=3, shape='hv'),
+    ))
+
+    # 5 random draws
+    _draw_colors = ['#E25A53', '#50C878', '#9B59B6', '#F39C12', '#1ABC9C']
+    for i, seed in enumerate([42, 43, 44, 45, 46]):
+        try:
+            drv = simulate_delta_rv_sample(
+                n_stars=25,
+                f_bin=best_fbin,
+                sigma_single=sigma_single,
+                sigma_measure=float(result.get('sigma_meas', 1.622)),
+                binary_config=bcfg,
+                rng_seed=seed,
+                period_model=period_model,
+                cadence_library=cadence_library,
+            )
+            sim_cdf = binned_cdf(drv, _bin_edges)
+            fig.add_trace(go.Scatter(
+                x=_bin_edges, y=sim_cdf,
+                mode='lines', name=f'Draw {i+1} (seed={seed})',
+                line=dict(color=_draw_colors[i], width=1.5,
+                          dash='dash', shape='hv'),
+                opacity=0.7,
+            ))
+        except Exception:
+            pass
+
+    fig.update_layout(**{
+        **PLOTLY_THEME,
+        'title': dict(
+            text=f'CDF Sanity Check  (f_bin={best_fbin:.3f}, 25 stars × 5 draws)',
+            font=dict(size=14)),
+        'xaxis_title': 'ΔRV (km/s)',
+        'yaxis_title': 'Cumulative fraction',
+        'height': 420,
+        'legend': dict(x=0.55, y=0.35, font=dict(size=10)),
+    })
+    st.plotly_chart(fig, use_container_width=True, key=f'{p_prefix}_cdf_sanity')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Methodology Explainer (all tabs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LANGER_EXPLAINER = r'''
+**Langer 2020 period model** — uses physically motivated orbital parameter
+distributions from binary population synthesis (Langer et al. 2020, A&A 638, A39).
+
+1. **Draw N systems** (default 3,000). Each is binary with probability f_bin,
+   or single with probability 1 − f_bin.
+
+2. **Single stars:** draw RV at each epoch from
+   N(v_sys, σ_total) where σ_total = √(σ_single² + σ_measure²).
+   ΔRV = max(v) − min(v).
+
+3. **Binary stars — period distribution:**
+   Two-component mixture of Case A (short-period) and Case B (long-period)
+   mass transfer channels:
+   - **Case A:** Gaussian in log₁₀P with μ_A and σ_A
+   - **Case B:** Log-normal in log₁₀P with mode μ_B and width σ_B
+   - **Mixture weight:** w_A for Case A, (1 − w_A) for Case B
+
+4. **Mass ratio q = M₂/M₁:** sampled from a Gaussian centered on μ_q
+   with width σ_q (based on Langer+2020 Fig. 4, BH companion masses).
+
+5. **Eccentricity e = 0** (post-RLOF circularization).
+
+6. **Remaining steps** (K₁ computation, Kepler equation, K-S test)
+   are identical to the power-law (Dsilva) model — see that tab for equations.
+
+7. **Grid search** over f_bin × σ_single to find the best-fit parameters
+   that maximize the K-S p-value.
+'''
+
+_CADENCE_EXPLAINER = r'''
+**Cadence-aware modification:**
+
+Unlike the basic simulation which draws random observation times, the
+cadence-aware mode preserves the **exact observation timestamps** from the
+real survey:
+
+1. Each of **N_sets** iterations (default 10,000) generates a complete
+   set of 25 simulated stars.
+2. Each simulated star is assigned the **exact MJD sequence** of a randomly
+   chosen real star (with replacement, weighted by epoch count).
+3. RV curves are computed at those specific times, producing one ΔRV per star.
+4. The 25-star ΔRV sample is compared to the observed via binned K-S test.
+5. The **median, 16th, and 84th percentile** CDFs across all N_sets are
+   stored — the median CDF is used for the K-S statistic, while the
+   percentiles define the 68% confidence band.
+
+This approach captures the effects of:
+- Uneven time sampling between stars
+- Varying number of epochs per star
+- Correlated observation windows (multi-star campaigns)
+'''
+
+
+def _render_methodology_expander(tab_type: str) -> None:
+    """Render a methodology expander for the given tab type.
+
+    Parameters
+    ----------
+    tab_type : str
+        One of 'dsilva', 'langer', 'cadence_dsilva', 'cadence_langer'.
+    """
+    if tab_type == 'dsilva':
+        # Dsilva already has its own inline expander (lines 2704-2781)
+        return
+
+    st.markdown('---')
+    with st.expander('📖 How this bias correction works', expanded=False):
+        if tab_type == 'langer':
+            st.markdown(_LANGER_EXPLAINER)
+        elif tab_type == 'cadence_dsilva':
+            st.markdown(
+                'This tab uses the **power-law period model** (Dsilva 2023) '
+                'with cadence-aware sampling. See the Dsilva tab for the full '
+                'methodology equations.'
+            )
+            st.markdown(_CADENCE_EXPLAINER)
+        elif tab_type == 'cadence_langer':
+            st.markdown(_LANGER_EXPLAINER)
+            st.markdown(_CADENCE_EXPLAINER)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Background simulation runners (execute in daemon threads)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -970,12 +1139,8 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 key=f'{p}_n_stars',
                 on_change=lambda: sm.save(['grid_dsilva', 'n_stars_sim'],
                                           value=st.session_state[f'{p}_n_stars']))
-            sigma_meas = st.number_input(
-                'σ_measure (km/s)', 0.001, 20.0,
-                float(simcfg.get('sigma_measure', 1.622)), 0.001,
-                format='%.3f', key=f'{p}_sigma_meas',
-                on_change=lambda: sm.save(['simulation', 'sigma_measure'],
-                                          value=st.session_state[f'{p}_sigma_meas']))
+            _err_info = _render_error_model_selector(p, simcfg, sm)
+            sigma_meas = _err_info['sigma_measure']
 
         with st.expander('🔧 Orbital parameters (Kepler)', expanded=False):
             st.caption('Parameters of the Kepler orbit randomization in the simulation.')
@@ -2881,10 +3046,8 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 key=f'{p}_n_stars',
                 on_change=lambda: sm.save(['grid_langer', 'n_stars_sim'],
                                           value=st.session_state[f'{p}_n_stars']))
-            lg_sigma_meas = st.number_input(
-                'σ_measure (km/s)', 0.001, 20.0,
-                float(lg_sim.get('sigma_measure', 1.622)), 0.001,
-                format='%.3f', key=f'{p}_sigma_meas')
+            _lg_err_info = _render_error_model_selector(p, lg_sim, sm)
+            lg_sigma_meas = _lg_err_info['sigma_measure']
 
         with st.expander('🔧 Orbital parameters (Langer 2020)', expanded=False):
             st.caption('Period distribution: two-component mixture in log₁₀(P/days), '
@@ -4323,6 +4486,8 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             st.markdown('### Best Grid Point')
             st.dataframe(pd.DataFrame(lg_summary_rows), use_container_width=True)
 
+        # ── Methodology Expander (Langer) ────────────────────────────────────
+        _render_methodology_expander('langer')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4395,6 +4560,22 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             for res in pool.imap_unordered(_single_grid_task_cadence_aware, tasks):
                 if job.get('cancel'):
                     pool.terminate()
+                    # Save partial results before returning
+                    if completed > 0:
+                        _p_tag = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
+                        _partial_path = os.path.join(_RESULT_DIR, f'{_p_tag}_result.npz.partial')
+                        os.makedirs(_RESULT_DIR, exist_ok=True)
+                        np.savez(
+                            _partial_path,
+                            ks_p=ks_p, ks_D=ks_D,
+                            fbin_grid=fbin_grid, pi_grid=pi_grid,
+                            sigma_grid=sigma_grid,
+                            timestamp=_dt.datetime.now().isoformat(),
+                            progress_pct=completed / n_tasks,
+                            rows_done=completed, total_rows=n_tasks,
+                            period_model=period_model,
+                        )
+                        job['partial_saved'] = True
                     job['status'] = 'cancelled'
                     return
                 fb, pi_val, sigma, D, p, med_cdf, lo_cdf, hi_cdf = res
@@ -4622,7 +4803,11 @@ def _render_cadence_results(p: str, _is_dsilva: bool) -> None:
         del st.session_state[f'{p}_job']
 
     elif status == 'cancelled':
-        st.warning('Simulation was cancelled.')
+        _partial_saved = _job.get('partial_saved', False) if _job else False
+        if _partial_saved:
+            st.warning('Simulation cancelled — partial progress saved to disk.')
+        else:
+            st.warning('Simulation was cancelled.')
         del st.session_state[f'{p}_job']
 
     elif status == 'done':
@@ -4763,6 +4948,23 @@ def _render_cadence_results(p: str, _is_dsilva: bool) -> None:
                 f'contains exactly 25 simulated stars with observation cadences matching '
                 f'the real sample. The shaded band shows the 68% confidence interval across sets.'
             )
+
+        # ── CDF Sanity Check (5 random draws) ──────────────────────────────────
+        _render_cdf_sanity_check(
+            best_fbin=_best_fb,
+            best_x=_best_x_val,
+            sigma_single=float(result.get('best_sigma_single',
+                                result.get('sigma_single', 15.0))),
+            obs_delta_rv=obs_drv if obs_drv is not None else np.array([]),
+            period_model='powerlaw' if _is_dsilva else 'langer2020',
+            result=result,
+            settings={},
+            p_prefix=p,
+        )
+
+        # ── Methodology Expander ────────────────────────────────────────────────
+        _tab_type = 'cadence_dsilva' if _is_dsilva else 'cadence_langer'
+        _render_methodology_expander(_tab_type)
 
 
 def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
@@ -4907,11 +5109,8 @@ def _render_cadence_dsilva_tab(p: str, settings: dict, sm) -> None:
                 int(gcfg.get('n_sets', 10000)), 100, key=f'{p}_n_sets',
                 on_change=lambda: sm.save([_sec, 'n_sets'],
                                           value=st.session_state[f'{p}_n_sets']))
-            _sigma_meas = st.number_input('σ_measure (km/s)', 0.001, 20.0,
-                float(simcfg.get('sigma_measure', 1.622)), 0.001,
-                format='%.3f', key=f'{p}_sigma_meas',
-                on_change=lambda: sm.save([_sec, 'sigma_meas'],
-                                          value=st.session_state[f'{p}_sigma_meas']))
+            _cad_err_info = _render_error_model_selector(p, simcfg, sm)
+            _sigma_meas = _cad_err_info['sigma_measure']
 
         with st.expander('Sigma scan', expanded=False):
             _scan_sigma = st.checkbox('Scan σ_single', key=f'{p}_scan_sigma',
@@ -5129,12 +5328,8 @@ def _render_cadence_langer_tab(p: str, settings: dict, sm) -> None:
                 int(lg_cfg.get('n_sets', 10000)), 100, key=f'{p}_n_sets',
                 on_change=lambda: sm.save([_sec, 'n_sets'],
                                           value=st.session_state[f'{p}_n_sets']))
-            _sigma_meas = st.number_input('σ_measure (km/s)', 0.001, 20.0,
-                float(lg_cfg.get('sigma_meas',
-                      float(simcfg.get('sigma_measure', 1.622)))), 0.001,
-                format='%.3f', key=f'{p}_sigma_meas',
-                on_change=lambda: sm.save([_sec, 'sigma_meas'],
-                                          value=st.session_state[f'{p}_sigma_meas']))
+            _cl_err_info = _render_error_model_selector(p, simcfg, sm)
+            _sigma_meas = _cl_err_info['sigma_measure']
 
         with st.expander('Sigma scan', expanded=False):
             _scan_sigma = st.checkbox('Scan σ_single', key=f'{p}_scan_sigma',
@@ -5400,6 +5595,582 @@ def _render_cadence_langer_tab(p: str, settings: dict, sm) -> None:
 
     # NOTE: Auto-refresh handled by global @st.fragment(run_every=3) at page bottom
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RV Errors tab: helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+import warnings as _warnings
+
+_RVE_DISTRIBUTIONS = {
+    'Normal': 'norm',
+    'Log-normal': 'lognorm',
+    'Gamma': 'gamma',
+    'Weibull': 'weibull_min',
+    'Exponential': 'expon',
+    'Flat (uniform)': 'uniform',
+}
+
+# Parameter metadata: name -> list of (label, default, min, max, step)
+_RVE_PARAM_META = {
+    'Normal': [('μ (loc)', 2.0, -50.0, 50.0, 0.01),
+               ('σ (scale)', 1.0, 0.01, 50.0, 0.01)],
+    'Log-normal': [('s (shape)', 0.5, 0.01, 5.0, 0.01),
+                   ('loc', 0.0, -50.0, 50.0, 0.01),
+                   ('scale', 1.0, 0.01, 50.0, 0.01)],
+    'Gamma': [('a (shape)', 2.0, 0.01, 20.0, 0.01),
+              ('loc', 0.0, -50.0, 50.0, 0.01),
+              ('scale', 1.0, 0.01, 50.0, 0.01)],
+    'Weibull': [('c (shape)', 1.5, 0.01, 10.0, 0.01),
+                ('loc', 0.0, -50.0, 50.0, 0.01),
+                ('scale', 1.0, 0.01, 50.0, 0.01)],
+    'Exponential': [('loc', 0.0, -50.0, 50.0, 0.01),
+                    ('scale', 1.0, 0.01, 50.0, 0.01)],
+    'Flat (uniform)': [('loc (start)', 0.0, -50.0, 50.0, 0.01),
+                       ('scale (width)', 5.0, 0.01, 100.0, 0.01)],
+}
+
+
+@st.cache_data
+def _rve_check_contamination(star_names: tuple) -> dict:
+    """Check which stars have spatial contamination (cleaned_normalized_flux)."""
+    from shared import get_obs_manager
+    obs = get_obs_manager()
+    result = {}
+    for sn in star_names:
+        has_cleaned = False
+        try:
+            star = obs.load_star_instance(sn, to_print=False)
+            for ep in star.get_all_epoch_numbers():
+                d = star.load_property('cleaned_normalized_flux', ep, 'COMBINED')
+                if d is not None and isinstance(d, dict):
+                    has_cleaned = True
+                    break
+        except Exception:
+            pass
+        result[sn] = has_cleaned
+    return result
+
+
+def _rve_collect_errors(stars: dict) -> np.ndarray:
+    """Collect all per-epoch rv_err values from a group of stars."""
+    all_err = []
+    for d in stars.values():
+        errs = np.asarray(d.get('rv_err', []), dtype=float)
+        errs = errs[errs > 0]
+        all_err.extend(errs.tolist())
+    return np.array(all_err, dtype=float)
+
+
+def _rve_fit_distribution(data: np.ndarray, dist_name: str) -> dict | None:
+    """Fit a named distribution via MLE. Returns params + AIC/BIC."""
+    import scipy.stats as st_stats
+    if len(data) < 5:
+        return None
+    scipy_name = _RVE_DISTRIBUTIONS.get(dist_name)
+    if scipy_name is None:
+        return None
+    dist = getattr(st_stats, scipy_name, None)
+    if dist is None:
+        return None
+    try:
+        with _warnings.catch_warnings():
+            _warnings.simplefilter('ignore')
+            params = dist.fit(data)
+        k = len(params)
+        n = len(data)
+        log_lik = float(np.sum(dist.logpdf(data, *params)))
+        if not np.isfinite(log_lik):
+            return None
+        aic = 2 * k - 2 * log_lik
+        bic = k * np.log(n) - 2 * log_lik
+        return {
+            'dist_name': dist_name, 'scipy_name': scipy_name,
+            'params': params, 'k': k, 'n': n,
+            'log_lik': log_lik, 'aic': aic, 'bic': bic,
+        }
+    except Exception:
+        return None
+
+
+def _rve_compute_aic_bic(data: np.ndarray, scipy_name: str,
+                          params: tuple) -> dict:
+    """Compute AIC/BIC for given params (for manual adjustment)."""
+    import scipy.stats as st_stats
+    dist = getattr(st_stats, scipy_name)
+    k = len(params)
+    n = len(data)
+    try:
+        log_lik = float(np.sum(dist.logpdf(data, *params)))
+    except Exception:
+        log_lik = float('-inf')
+    if not np.isfinite(log_lik):
+        return {'aic': float('inf'), 'bic': float('inf'), 'log_lik': float('-inf')}
+    aic = 2 * k - 2 * log_lik
+    bic = k * np.log(n) - 2 * log_lik
+    return {'aic': aic, 'bic': bic, 'log_lik': log_lik}
+
+
+def _rve_fit_all(data: np.ndarray) -> list[dict]:
+    """Fit all distributions, sort by AIC."""
+    results = []
+    for name in _RVE_DISTRIBUTIONS:
+        r = _rve_fit_distribution(data, name)
+        if r is not None:
+            results.append(r)
+    results.sort(key=lambda x: x['aic'])
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RV Errors tab: renderer
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_rv_errors_tab(p: str, settings: dict, sm) -> None:
+    """Render the RV Error Explorer tab."""
+    import scipy.stats as st_stats
+
+    pal = get_palette()
+    _sh = settings_hash(settings)
+    obs_delta_rv, detail = cached_load_observed_delta_rvs(_sh)
+
+    contamination = _rve_check_contamination(tuple(detail.keys()))
+
+    # ── Controls ──────────────────────────────────────────────────────────
+    _c1, _c2, _c3 = st.columns([0.3, 0.3, 0.4])
+    threshold = _c1.slider(
+        'ΔRV threshold (km/s)', 0.0, 200.0, 45.5, 0.5,
+        key=f'{p}_threshold',
+        help='Stars with ΔRV above this AND significance > 4σ are binary.',
+    )
+    star_filter = _c2.radio(
+        'Star filter', ['All', 'Clean only', 'Contaminated only'],
+        key=f'{p}_filter', horizontal=True,
+    )
+    normalize = _c3.checkbox('Normalize (probability density)', value=True,
+                              key=f'{p}_normalize')
+
+    # ── Reclassify ────────────────────────────────────────────────────────
+    single_stars: dict = {}
+    binary_stars: dict = {}
+    for star_name, d in detail.items():
+        is_contaminated = contamination.get(star_name, False)
+        if star_filter == 'Clean only' and is_contaminated:
+            continue
+        if star_filter == 'Contaminated only' and not is_contaminated:
+            continue
+        dRV = float(d['best_dRV'])
+        sigma = float(d['best_sigma']) if not np.isnan(d['best_sigma']) else 0.0
+        is_binary = (dRV > threshold) and (dRV - 4 * sigma > 0)
+        (binary_stars if is_binary else single_stars)[star_name] = d
+
+    single_errs = _rve_collect_errors(single_stars)
+    binary_errs = _rve_collect_errors(binary_stars)
+
+    # ── Two-column layout ─────────────────────────────────────────────────
+    st.markdown('---')
+    col_s, col_b = st.columns(2)
+
+    for _label, _errs, _col, _key in [
+        ('Single', single_errs, col_s, 'single'),
+        ('Binary', binary_errs, col_b, 'binary'),
+    ]:
+        _star_count = len(single_stars) if _key == 'single' else len(binary_stars)
+        with _col:
+            st.markdown(f'### {_label} Stars ({_star_count})')
+            st.caption(f'{len(_errs)} per-epoch error measurements')
+
+            if len(_errs) < 2:
+                st.info(f'Not enough data for {_label.lower()} stars.')
+                continue
+
+            # Distribution selector + auto-fit
+            _dist_name = st.selectbox(
+                'Distribution', list(_RVE_DISTRIBUTIONS.keys()),
+                key=f'{p}_{_key}_dist',
+            )
+
+            _fc1, _fc2 = st.columns(2)
+            _fit_btn = _fc1.button('Auto-fit', key=f'{p}_{_key}_fit_btn')
+            if _fit_btn:
+                _fit_result = _rve_fit_distribution(_errs, _dist_name)
+                if _fit_result is not None:
+                    for i, val in enumerate(_fit_result['params']):
+                        st.session_state[f'{p}_{_key}_param_{i}'] = float(val)
+                    # Auto-record to fit history
+                    _hist_key = f'{p}_{_key}_fit_history'
+                    if _hist_key not in st.session_state:
+                        st.session_state[_hist_key] = []
+                    st.session_state[_hist_key].append({
+                        '#': len(st.session_state[_hist_key]) + 1,
+                        'Distribution': _dist_name,
+                        'Params': ', '.join(f'{v:.4f}' for v in _fit_result['params']),
+                        'AIC': round(_fit_result['aic'], 1),
+                        'BIC': round(_fit_result['bic'], 1),
+                        'log L': round(_fit_result['log_lik'], 1),
+                    })
+
+            # Parameter inputs
+            _param_meta = _RVE_PARAM_META.get(_dist_name, [])
+            _current_params = []
+            _param_cols = st.columns(len(_param_meta)) if _param_meta else []
+            for i, (label, default, pmin, pmax, step) in enumerate(_param_meta):
+                _sk = f'{p}_{_key}_param_{i}'
+                _val = st.session_state.get(_sk, default)
+                with _param_cols[i]:
+                    _val = st.number_input(
+                        label, min_value=pmin, max_value=pmax,
+                        value=float(_val), step=step,
+                        format='%.4f', key=_sk,
+                    )
+                _current_params.append(_val)
+
+            _scipy_name = _RVE_DISTRIBUTIONS[_dist_name]
+            _scipy_dist = getattr(st_stats, _scipy_name)
+            _params_tuple = tuple(_current_params)
+
+            # Record manual params button
+            _record_btn = _fc2.button('📝 Record fit', key=f'{p}_{_key}_record_btn')
+            if _record_btn and len(_current_params) > 0:
+                _man_stats = _rve_compute_aic_bic(_errs, _scipy_name, _params_tuple)
+                _hist_key = f'{p}_{_key}_fit_history'
+                if _hist_key not in st.session_state:
+                    st.session_state[_hist_key] = []
+                st.session_state[_hist_key].append({
+                    '#': len(st.session_state[_hist_key]) + 1,
+                    'Distribution': _dist_name,
+                    'Params': ', '.join(f'{v:.4f}' for v in _current_params),
+                    'AIC': round(_man_stats['aic'], 1),
+                    'BIC': round(_man_stats['bic'], 1),
+                    'log L': round(_man_stats['log_lik'], 1),
+                })
+
+            # Histogram + PDF overlay
+            fig = go.Figure()
+            histnorm = 'probability density' if normalize else ''
+            fig.add_trace(go.Histogram(
+                x=_errs, nbinsx=40, histnorm=histnorm,
+                marker_color='#4A90D9', opacity=0.6,
+                name='RV errors',
+            ))
+
+            if normalize and len(_current_params) > 0:
+                try:
+                    _x_lo = float(_errs.min()) - 0.5
+                    _x_hi = float(_errs.max()) + 0.5
+                    # Positive-only distributions: clamp lower bound to 0
+                    _positive_only = {'lognorm', 'gamma', 'weibull_min', 'expon'}
+                    if _scipy_name in _positive_only:
+                        _x_lo = max(0.001, _x_lo)
+                    x_range = np.linspace(_x_lo, _x_hi, 200)
+                    pdf = _scipy_dist.pdf(x_range, *_params_tuple)
+                    if np.all(np.isfinite(pdf)):
+                        fig.add_trace(go.Scatter(
+                            x=x_range, y=pdf, mode='lines',
+                            line=dict(color='#E25A53', width=2.5),
+                            name=f'{_dist_name} fit',
+                        ))
+                except Exception:
+                    pass
+
+            fig.update_layout(**{
+                **PLOTLY_THEME,
+                'title': dict(
+                    text=f'{_label} RV errors (N={len(_errs)})',
+                    font=dict(size=14)),
+                'xaxis_title': 'σ_RV (km/s)',
+                'yaxis_title': 'Density' if normalize else 'Count',
+                'height': 380,
+                'showlegend': True,
+                'legend': dict(x=0.65, y=0.95),
+            })
+            st.plotly_chart(fig, use_container_width=True,
+                            key=f'{p}_{_key}_hist')
+
+            # AIC / BIC for current params
+            if len(_current_params) > 0:
+                _stats = _rve_compute_aic_bic(_errs, _scipy_name, _params_tuple)
+                st.markdown(
+                    f'**{_dist_name}** — '
+                    f'AIC: {_stats["aic"]:.1f} · '
+                    f'BIC: {_stats["bic"]:.1f} · '
+                    f'log L: {_stats["log_lik"]:.1f}'
+                )
+
+            # Summary stats
+            st.markdown(
+                f'**Data:** mean={np.mean(_errs):.3f}, '
+                f'median={np.median(_errs):.3f}, '
+                f'std={np.std(_errs):.3f} km/s'
+            )
+
+            # ── Fit history table ──
+            _hist_key = f'{p}_{_key}_fit_history'
+            if st.session_state.get(_hist_key):
+                st.markdown('#### Fit History')
+                st.dataframe(
+                    pd.DataFrame(st.session_state[_hist_key]),
+                    use_container_width=True, hide_index=True,
+                )
+                if st.button('🗑️ Clear history', key=f'{p}_{_key}_clear_hist'):
+                    st.session_state[_hist_key] = []
+                    st.rerun()
+
+    # ── Auto-Fit All ──────────────────────────────────────────────────────
+    st.markdown('---')
+    st.markdown('### Auto-Fit All Distributions')
+
+    if st.button('🔍 Run Auto-Fit', key=f'{p}_autofit_btn', type='primary'):
+        _af_results = {}
+        for _lbl, _errs_af, _key_af in [
+            ('Single', single_errs, 'single'),
+            ('Binary', binary_errs, 'binary'),
+        ]:
+            if len(_errs_af) < 5:
+                _af_results[_key_af] = None
+                continue
+            fits = _rve_fit_all(_errs_af)
+            _af_results[_key_af] = fits if fits else None
+            # Also add all fits to the per-column fit history
+            _hist_key = f'{p}_{_key_af}_fit_history'
+            if _hist_key not in st.session_state:
+                st.session_state[_hist_key] = []
+            for f in (fits or []):
+                st.session_state[_hist_key].append({
+                    '#': len(st.session_state[_hist_key]) + 1,
+                    'Distribution': f['dist_name'],
+                    'Params': ', '.join(f'{v:.4f}' for v in f['params']),
+                    'AIC': round(f['aic'], 1),
+                    'BIC': round(f['bic'], 1),
+                    'log L': round(f['log_lik'], 1),
+                })
+        st.session_state[f'{p}_autofit_results'] = _af_results
+
+    # Render persistent auto-fit results from session_state
+    _af_results = st.session_state.get(f'{p}_autofit_results')
+    if _af_results:
+        _af_c1, _af_c2 = st.columns(2)
+        for _lbl, _errs_af, _col, _key_af in [
+            ('Single', single_errs, _af_c1, 'single'),
+            ('Binary', binary_errs, _af_c2, 'binary'),
+        ]:
+            fits = _af_results.get(_key_af)
+            with _col:
+                st.markdown(f'#### {_lbl} Stars')
+                if fits is None or len(fits) == 0:
+                    st.warning('Not enough data or all fits failed.')
+                    continue
+                rows = []
+                for i, f in enumerate(fits):
+                    rows.append({
+                        'Rank': i + 1,
+                        'Distribution': f['dist_name'],
+                        'AIC': round(f['aic'], 1),
+                        'BIC': round(f['bic'], 1),
+                        'log L': round(f['log_lik'], 1),
+                        'Params': ', '.join(f'{v:.4f}' for v in f['params']),
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True,
+                             hide_index=True)
+                best = fits[0]
+                st.success(f'Best: **{best["dist_name"]}** '
+                           f'(AIC={best["aic"]:.1f})')
+
+                # Best-fit PDF overlay on histogram
+                if len(_errs_af) >= 2:
+                    _best_dist = getattr(st_stats, best['scipy_name'])
+                    _positive_only = {'lognorm', 'gamma', 'weibull_min', 'expon'}
+                    _xlo_af = float(_errs_af.min()) - 0.5
+                    if best['scipy_name'] in _positive_only:
+                        _xlo_af = max(0.001, _xlo_af)
+                    _xr_af = np.linspace(_xlo_af, float(_errs_af.max()) + 0.5, 200)
+                    _pdf_af = _best_dist.pdf(_xr_af, *best['params'])
+                    fig_af = go.Figure()
+                    fig_af.add_trace(go.Histogram(
+                        x=_errs_af, nbinsx=40, histnorm='probability density',
+                        marker_color='#4A90D9', opacity=0.5,
+                        name='RV errors',
+                    ))
+                    if np.all(np.isfinite(_pdf_af)):
+                        fig_af.add_trace(go.Scatter(
+                            x=_xr_af, y=_pdf_af, mode='lines',
+                            line=dict(color='#E25A53', width=2.5),
+                            name=f'{best["dist_name"]} (best)',
+                        ))
+                    fig_af.update_layout(**{
+                        **PLOTLY_THEME,
+                        'title': dict(
+                            text=f'Best fit: {best["dist_name"]} ({_lbl})',
+                            font=dict(size=13)),
+                        'xaxis_title': 'σ_RV (km/s)',
+                        'yaxis_title': 'Density',
+                        'height': 340, 'showlegend': True,
+                        'legend': dict(x=0.6, y=0.95),
+                    })
+                    st.plotly_chart(fig_af, use_container_width=True,
+                                    key=f'{p}_af_hist_{_key_af}')
+
+                # Q-Q plot
+                sorted_data = np.sort(_errs_af)
+                n = len(sorted_data)
+                _best_dist = getattr(st_stats, best['scipy_name'])
+                theor_q = _best_dist.ppf(
+                    np.linspace(0.5/n, 1-0.5/n, n), *best['params'])
+                fig_qq = go.Figure()
+                fig_qq.add_trace(go.Scatter(
+                    x=theor_q, y=sorted_data, mode='markers',
+                    marker=dict(size=4, color='#4A90D9', opacity=0.6),
+                    name='Data',
+                ))
+                _qmin = min(float(theor_q.min()), float(sorted_data.min()))
+                _qmax = max(float(theor_q.max()), float(sorted_data.max()))
+                fig_qq.add_trace(go.Scatter(
+                    x=[_qmin, _qmax], y=[_qmin, _qmax], mode='lines',
+                    line=dict(color='#E25A53', dash='dash', width=1.5),
+                    name='y=x',
+                ))
+                fig_qq.update_layout(**{
+                    **PLOTLY_THEME,
+                    'title': dict(
+                        text=f'Q-Q: {best["dist_name"]} ({_lbl})',
+                        font=dict(size=13)),
+                    'xaxis_title': 'Theoretical quantiles',
+                    'yaxis_title': 'Sample quantiles',
+                    'height': 320, 'showlegend': False,
+                })
+                st.plotly_chart(fig_qq, use_container_width=True,
+                                key=f'{p}_qq_{_key_af}')
+
+    # ── Score explanations ──────────────────────────────────────────────
+    with st.expander('ℹ️ What do the scores mean?', expanded=False):
+        st.markdown(
+            '**AIC** (Akaike Information Criterion): *Lower is better.* '
+            'Measures how well the model fits the data while penalizing complexity. '
+            'Formula: AIC = 2k − 2·ln(L), where k = number of parameters, L = likelihood.\n\n'
+            '**BIC** (Bayesian Information Criterion): *Lower is better.* '
+            'Similar to AIC but with a stronger penalty for extra parameters, '
+            'especially for larger sample sizes. '
+            'Formula: BIC = k·ln(n) − 2·ln(L).\n\n'
+            '**log L** (Log-likelihood): *Higher is better.* '
+            'The raw measure of how probable the data is under the fitted model. '
+            'Unlike AIC/BIC, it does not penalize complexity — a model with more '
+            'parameters will almost always have a higher log L.\n\n'
+            '**Practical guidance:** Compare distributions using AIC or BIC. '
+            'They balance goodness-of-fit against model complexity. '
+            'If AIC and BIC disagree, BIC tends to favor simpler models.'
+        )
+
+    # ── Combined overlay + K-S test ───────────────────────────────────────
+    st.markdown('---')
+    st.markdown('### Combined Population Comparison')
+
+    if len(single_errs) > 0 and len(binary_errs) > 0:
+        fig_comb = go.Figure()
+        _hn = 'probability density' if normalize else ''
+        fig_comb.add_trace(go.Histogram(
+            x=single_errs, nbinsx=40, histnorm=_hn,
+            marker_color='#4A90D9', opacity=0.5,
+            name=f'Single ({len(single_errs)})',
+        ))
+        fig_comb.add_trace(go.Histogram(
+            x=binary_errs, nbinsx=40, histnorm=_hn,
+            marker_color='#E25A53', opacity=0.5,
+            name=f'Binary ({len(binary_errs)})',
+        ))
+        fig_comb.update_layout(**{
+            **PLOTLY_THEME,
+            'title': dict(text='RV Error Distributions: Single vs Binary',
+                           font=dict(size=14)),
+            'xaxis_title': 'σ_RV (km/s)',
+            'yaxis_title': 'Density' if normalize else 'Count',
+            'barmode': 'overlay', 'height': 420,
+            'legend': dict(x=0.65, y=0.95),
+        })
+        st.plotly_chart(fig_comb, use_container_width=True,
+                        key=f'{p}_combined')
+
+        ks_stat, ks_pval = st_stats.ks_2samp(single_errs, binary_errs)
+        st.markdown(
+            f'**Two-sample K-S test:** D = {ks_stat:.4f}, p = {ks_pval:.4e}  \n'
+            f'{"Populations are **significantly different**" if ks_pval < 0.05 else "No significant difference detected"} '
+            f'(α = 0.05)'
+        )
+    else:
+        st.info('Need both populations to compare.')
+
+    # ── Current error model reference ─────────────────────────────────────
+    st.markdown('---')
+    with st.expander('📋 Current Simulation Error Model', expanded=False):
+        _sigma_m = float(settings.get('simulation', {}).get('sigma_measure', 1.622))
+        _sigma_s = float(settings.get('grid', {}).get('sigma_single', 15.0))
+        st.markdown(
+            f'**Fixed model:** σ_measure = {_sigma_m:.3f} km/s, '
+            f'σ_single = {_sigma_s:.1f} km/s  \n'
+            f'**σ_total** = √(σ_single² + σ_measure²) = '
+            f'{np.sqrt(_sigma_s**2 + _sigma_m**2):.2f} km/s  \n\n'
+            f'The distributions explored above could replace the fixed σ_measure '
+            f'with per-epoch draws from the best-fit distribution.'
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Error Model Selector (shared by all simulation tabs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_error_model_selector(p: str, simcfg: dict, sm) -> dict:
+    """Render error model UI. Returns {'type': str, 'sigma_measure': float, 'params': tuple}.
+
+    For 'Fixed': sigma_measure is the user-entered value.
+    For distributions: sigma_measure is set to the distribution mean as fallback.
+    """
+    import scipy.stats as st_stats
+
+    _err_options = ['Fixed', 'Normal', 'Log-normal', 'Gamma', 'Weibull', 'Exponential', 'Flat (uniform)']
+    _err_model = st.selectbox(
+        'Error model', _err_options,
+        key=f'{p}_err_model',
+        help='Fixed = constant σ_measure. Distribution = per-epoch error drawn from fitted model.',
+    )
+
+    if _err_model == 'Fixed':
+        sigma_meas = st.number_input(
+            'σ_measure (km/s)', 0.001, 20.0,
+            float(simcfg.get('sigma_measure', 1.622)), 0.001,
+            format='%.3f', key=f'{p}_sigma_meas',
+        )
+        return {'type': 'fixed', 'sigma_measure': float(sigma_meas), 'params': ()}
+
+    # Distribution-based error model
+    _param_meta = _RVE_PARAM_META.get(_err_model, [])
+    _params = []
+    if _param_meta:
+        _pcols = st.columns(len(_param_meta))
+        for i, (label, default, pmin, pmax, step) in enumerate(_param_meta):
+            with _pcols[i]:
+                _val = st.number_input(
+                    label, min_value=pmin, max_value=pmax,
+                    value=float(st.session_state.get(f'{p}_errp_{i}', default)),
+                    step=step, format='%.4f', key=f'{p}_errp_{i}',
+                )
+            _params.append(_val)
+
+    # Compute distribution mean as sigma_measure fallback
+    _scipy_name = _RVE_DISTRIBUTIONS.get(_err_model, 'norm')
+    try:
+        _dist = getattr(st_stats, _scipy_name)
+        _mean = float(_dist.mean(*_params))
+        if not np.isfinite(_mean) or _mean <= 0:
+            _mean = 1.622
+    except Exception:
+        _mean = 1.622
+
+    st.caption(
+        f'Distribution mean = {_mean:.3f} km/s '
+        f'(used as σ_measure fallback until sim engine supports per-epoch draws)'
+    )
+
+    return {'type': _err_model, 'sigma_measure': _mean, 'params': tuple(_params)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5981,6 +6752,7 @@ if 'bc_tabs' not in st.session_state:
         {'type': 'langer', 'name': 'Langer 2020', 'prefix': 'lg'},
         {'type': 'cadence_dsilva', 'name': 'Cadence (Dsilva)', 'prefix': 'cad'},
         {'type': 'cadence_langer', 'name': 'Cadence (Langer)', 'prefix': 'cal'},
+        {'type': 'rv_errors', 'name': 'RV Errors', 'prefix': 'rve'},
         {'type': 'compare', 'name': 'Compare', 'prefix': 'cmp'},
     ]
 
@@ -5990,7 +6762,7 @@ with _tab_mgmt_cols[1]:
     with st.popover('➕ Add tab'):
         _add_type = st.radio(
             'Tab type',
-            ['Dsilva', 'Langer', 'Cadence (Dsilva)', 'Cadence (Langer)', 'Compare'],
+            ['Dsilva', 'Langer', 'Cadence (Dsilva)', 'Cadence (Langer)', 'RV Errors', 'Compare'],
             key='_bc_add_tab_type',
         )
         _add_name = st.text_input('Tab name (optional)', key='_bc_add_tab_name')
@@ -6000,6 +6772,7 @@ with _tab_mgmt_cols[1]:
             _type_map = {'dsilva': 'dsilva', 'langer': 'langer',
                          'cadence (dsilva)': 'cadence_dsilva',
                          'cadence (langer)': 'cadence_langer',
+                         'rv errors': 'rv_errors',
                          'compare': 'compare'}
             _type_lower = _type_map.get(_add_type.lower(), _add_type.lower())
             _pfx = f'{_type_lower[:3]}{_idx}'
@@ -6030,6 +6803,8 @@ for _tw, _ti in zip(_tab_widgets, st.session_state['bc_tabs']):
             _render_cadence_dsilva_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'cadence_langer':
             _render_cadence_langer_tab(_ti['prefix'], settings, sm)
+        elif _ti['type'] == 'rv_errors':
+            _render_rv_errors_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'compare':
             _render_compare_tab(_ti['prefix'])
 
