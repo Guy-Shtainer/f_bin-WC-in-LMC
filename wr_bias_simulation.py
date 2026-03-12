@@ -840,11 +840,13 @@ def simulate_delta_rv_cadence_aware(
     median_cdf = np.median(all_cdfs, axis=0)
     lo_cdf = np.percentile(all_cdfs, 16, axis=0)
     hi_cdf = np.percentile(all_cdfs, 84, axis=0)
+    cdf_var = np.var(all_cdfs, axis=0)
 
     return {
         'median_cdf': median_cdf,
         'lo_cdf': lo_cdf,
         'hi_cdf': hi_cdf,
+        'cdf_var': cdf_var,
         'all_delta_rv': all_drv,
     }
 
@@ -1066,6 +1068,35 @@ def ks_two_sample_binned(
     return D, p_value
 
 
+def ks_weighted_D(
+    sim_median_cdf: np.ndarray,
+    obs_cdf: np.ndarray,
+    sim_cdf_var: np.ndarray,
+) -> float:
+    """Inverse-variance weighted K-S D statistic.
+
+    D_w = Σ(|sim_i - obs_i| × w_i) / Σ(w_i)
+
+    where w_i = 1/σ_i² and σ_i² is the simulation CDF variance at bin i
+    (across all N_sets repetitions).  Bins where σ_i² ≈ 0 are skipped.
+
+    This down-weights bins where the simulation is uncertain (wide 16-84%
+    band), giving more influence to bins with tightly constrained CDFs.
+    The result stays in [0, 1] so the standard Kolmogorov p-value applies.
+    """
+    sim_median_cdf = np.asarray(sim_median_cdf, dtype=float)
+    obs_cdf = np.asarray(obs_cdf, dtype=float)
+    sim_cdf_var = np.asarray(sim_cdf_var, dtype=float)
+
+    valid = sim_cdf_var > 1e-12
+    if valid.sum() < 2:
+        # Fallback to standard D if too few informative bins
+        return float(np.max(np.abs(sim_median_cdf - obs_cdf)))
+    w = 1.0 / sim_cdf_var[valid]
+    diffs = np.abs(sim_median_cdf[valid] - obs_cdf[valid])
+    return float(np.sum(diffs * w) / np.sum(w))
+
+
 # ---------------------------------------------------------------------------
 # Marginalization & HDI68 credible intervals (Dsilva et al. 2023 style)
 # ---------------------------------------------------------------------------
@@ -1212,7 +1243,7 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
                  n_stars, sigma_measure,
                  n_epochs=6, time_span=3650.0,
                  observation_times=None, v_sys=0.0,
-                 bin_edges=None):
+                 bin_edges=None, scoring_method='ks'):
     """Pool initializer: store shared data as process-level globals."""
     global _WORKER_GLOBALS
     _WORKER_GLOBALS = {
@@ -1226,6 +1257,7 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
         'observation_times': observation_times,
         'v_sys': v_sys,
         'bin_edges': bin_edges,
+        'scoring_method': scoring_method,
     }
 
 
@@ -1434,11 +1466,16 @@ def _single_grid_task_cadence_aware(args):
     obs_cdf = binned_cdf(g['obs_delta_rv'],
                          _bin_edges if _bin_edges is not None else DEFAULT_DRV_BIN_EDGES)
     median_cdf = result['median_cdf']
-    D = float(np.max(np.abs(median_cdf - obs_cdf)))
-
-    # Approximate p-value
-    n1 = n_sets * len(g['cadence_library'])
     n2 = len(g['obs_delta_rv'])
+
+    scoring = g.get('scoring_method', 'ks')
+    if scoring == 'weighted':
+        D = ks_weighted_D(median_cdf, obs_cdf, result['cdf_var'])
+    else:
+        D = float(np.max(np.abs(median_cdf - obs_cdf)))
+
+    # Approximate p-value (Kolmogorov series) — same formula for both modes
+    n1 = n_sets * len(g['cadence_library'])
     en = math.sqrt(n1 * n2 / (n1 + n2))
     x = (en + 0.12 + 0.11 / en) * D
     term_sum = 0.0
@@ -1466,6 +1503,7 @@ def run_bias_grid_cadence_aware(
     seed_base: int = 1234,
     use_multiprocessing: bool = True,
     callback=None,
+    scoring_method: str = 'ks',
 ) -> Dict[str, np.ndarray]:
     """Cadence-aware grid search over (f_bin, pi[, sigma_single]).
 
@@ -1517,6 +1555,7 @@ def run_bias_grid_cadence_aware(
         sim_cfg.observation_times,
         sim_cfg.v_sys,
         DEFAULT_DRV_BIN_EDGES,
+        scoring_method,
     )
 
     # Storage for best-fit CDF band

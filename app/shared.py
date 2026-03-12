@@ -97,7 +97,7 @@ def _build_plotly_theme(palette: dict) -> dict:
         font=dict(family='serif', size=13, color=palette['font_color']),
         xaxis=dict(**ax),
         yaxis=dict(**ax),
-        title=dict(font=dict(size=15, family='serif', color=palette['title_color'])),
+        title=dict(text='', font=dict(size=15, family='serif', color=palette['title_color'])),
         legend=dict(
             bgcolor=palette['legend_bg'],
             bordercolor=palette['legend_border'], borderwidth=1,
@@ -477,7 +477,7 @@ def make_heatmap_fig(
     colorbar_title = 'K-S D' if show_d else 'K-S p-value'
 
     valid = z[~np.isnan(z)]
-    z_max = float(np.percentile(valid, 98)) if valid.size > 0 else 1.0
+    z_max = float(np.nanmax(valid)) if valid.size > 0 else 1.0
     z_min = 0.0
 
     best_fbin, best_x, best_pval = find_best_grid_point(ks_p_2d, fbin_vals, x_vals)
@@ -501,10 +501,10 @@ def make_heatmap_fig(
             contours=dict(
                 coloring='none',
                 showlabels=True,
-                labelfont=dict(size=10, color=pal['contour_label']),
+                labelfont=dict(size=10, color='black'),
                 start=0.05, end=0.30, size=0.05,
             ),
-            line=dict(color=pal['contour_color'], width=1, dash='dot'),
+            line=dict(color='black', width=1, dash='dot'),
             showscale=False,
             hoverinfo='skip',
         ))
