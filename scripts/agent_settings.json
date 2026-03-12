@@ -7,6 +7,7 @@
   "max_fix_attempts": 2,
   "opus_timeout": 7200,
   "opus_max_turns": 200,
+  "opus_inactivity_limit": 900,
   "subagent_model": "sonnet",
   "timeouts": {
     "planner": 1200,

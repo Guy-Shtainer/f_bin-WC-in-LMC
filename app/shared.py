@@ -487,7 +487,7 @@ def make_heatmap_fig(
             z=z, x=x_vals, y=fbin_vals,
             colorscale='RdBu_r',
             zmin=z_min, zmax=z_max,
-            zsmooth=False,
+            zsmooth='best',
             colorbar=dict(title=colorbar_title, thickness=14, len=0.9),
             hovertemplate=f'{x_name}=%{{x:.3f}}<br>f_bin=%{{y:.4f}}<br>' + colorbar_title +
                           '=%{z:.4f}<extra></extra>',

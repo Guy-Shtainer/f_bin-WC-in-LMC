@@ -5765,6 +5765,7 @@ def _render_compare_tab(p: str) -> None:
                     z=info_a['heatmap'],
                     x=info_a['x_vals'], y=info_a['fbin_vals'],
                     colorscale='Blues', opacity=0.6,
+                    zsmooth='best',
                     name=info_a['label'],
                     colorbar=dict(title='A p-val', x=1.0),
                 ))

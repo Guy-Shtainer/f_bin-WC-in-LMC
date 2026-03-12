@@ -123,7 +123,7 @@
     "sigma_meas": 1.622,
     "orbital": {
       "logP_min": 0.15,
-      "logP_max": 5.0,
+      "logP_max": 4.0,
       "e_model": "flat",
       "e_max": 0.9,
       "mass_primary_model": "fixed",

@@ -48,6 +48,7 @@ _PID_PATH = _HERE / '.agent.pid'
 _WORK_DIR = _HERE / '.agent_work'
 _NOTES_DIR = _HERE / '.agent_notes'
 _SETTINGS_PATH = _HERE / 'agent_settings.json'
+_COMPLETED_PATH = _HERE / '.agent_completed.json'
 
 # Ensure scripts/ is on sys.path so subagent_definitions is importable
 # even after git checkout changes the working tree
@@ -280,7 +281,25 @@ def git_safe_checkout(branch: str) -> None:
     has_stash = git_safe_stash()
     git('checkout', branch)
     if has_stash:
-        git('stash', 'pop', check=False)  # ignore pop conflicts
+        result = subprocess.run(
+            ['git', 'stash', 'pop'],
+            cwd=str(_ROOT), capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            log(f'  Warning: stash pop failed on {branch}: '
+                f'{result.stderr.strip()[:100]}')
+            # Drop the unapplyable stash to prevent accumulation
+            git('stash', 'drop', check=False)
+
+
+def git_cleanup_stashes() -> None:
+    """Clear stale stashes if too many have accumulated."""
+    stash_list = git('stash', 'list', check=False)
+    if stash_list.strip():
+        stash_count = len([l for l in stash_list.split('\n') if l.strip()])
+        if stash_count > 5:
+            log(f'Clearing {stash_count} stale stashes from previous sessions.')
+            git('stash', 'clear', check=False)
 
 
 def git_checkpoint() -> str:
@@ -385,10 +404,17 @@ def _blocking_sleep(total_seconds: float, chunk: float = 60.0) -> None:
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 _daemon_mode = False  # Set True when stdout is redirected to _LOG_PATH
+_last_log_msg = ''
+_last_log_ts = ''
 
 
 def log(msg: str) -> None:
+    global _last_log_msg, _last_log_ts
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # Dedup: skip identical message at the same second (caffeinate double-exec)
+    if msg == _last_log_msg and ts == _last_log_ts:
+        return
+    _last_log_msg, _last_log_ts = msg, ts
     line = f'[{ts}] {msg}'
     if _daemon_mode:
         # stdout IS the log file — only write once
@@ -424,6 +450,10 @@ def log_task_result(task: dict, branch: str, status: str, summary: str) -> None:
     entry = (
         f'### Task #{task["id"]}: {task["title"]}\n'
         f'- **Branch:** `{branch}`\n'
+    )
+    if task.get('description'):
+        entry += f'- **Prompt:** {task["description"][:300]}\n'
+    entry += (
         f'- **Status:** {status}\n'
         f'- **Summary:** {summary}\n'
         f'- **UNSUPERVISED — needs human review and testing**\n\n'
@@ -447,20 +477,60 @@ def clear_state() -> None:
     _STATE_PATH.unlink(missing_ok=True)
 
 
+# ── Completed task persistence (survives crashes) ────────────────────────────
+def _load_completed_ids() -> list[int]:
+    """Load completed task IDs from persistent file."""
+    if _COMPLETED_PATH.exists():
+        try:
+            data = json.loads(_COMPLETED_PATH.read_text(encoding='utf-8'))
+            return data.get('completed_ids', [])
+        except (json.JSONDecodeError, OSError):
+            pass
+    return []
+
+
+def _save_completed_id(task_id: int) -> None:
+    """Append a completed task ID to persistent file."""
+    ids = _load_completed_ids()
+    if task_id not in ids:
+        ids.append(task_id)
+    _COMPLETED_PATH.write_text(
+        json.dumps({'completed_ids': ids, 'updated': datetime.now().isoformat()},
+                   indent=2),
+        encoding='utf-8'
+    )
+
+
+def _clear_completed_ids() -> None:
+    """Clear completed IDs at start of a new session."""
+    _COMPLETED_PATH.unlink(missing_ok=True)
+
+
 # ── Task selection ────────────────────────────────────────────────────────────
 def select_tasks(quadrant: str, include_critical: bool = False,
                   task_ids: list[int] | None = None) -> list[dict]:
     open_tasks, _ = load_todos()
-    open_only = [t for t in open_tasks if t.get('status', 'open') == 'open']
 
-    # Direct task ID selection (from webapp checkboxes)
+    # Direct task ID selection — trust the user's explicit choice
     if task_ids:
         id_set = set(task_ids)
-        selected = [t for t in open_only if t['id'] in id_set]
+        actionable_statuses = {'open', 'in-progress', 'to-test'}
+        selected = [t for t in open_tasks if t['id'] in id_set
+                    and t.get('status', 'open') in actionable_statuses]
+        if not selected:
+            # Diagnostic: show why tasks were filtered out
+            all_matching = [t for t in open_tasks if t['id'] in id_set]
+            if all_matching:
+                for t in all_matching:
+                    log(f'  Task #{t["id"]} skipped: status={t.get("status","?")}')
+            else:
+                log(f'  Warning: task_ids={list(task_ids)} not found in TODO.md')
         # Preserve the order from task_ids
         id_order = {tid: i for i, tid in enumerate(task_ids)}
         selected.sort(key=lambda t: id_order.get(t['id'], 999))
         return selected
+
+    open_only = [t for t in open_tasks if t.get('status', 'open') == 'open']
 
     if quadrant == 'all':
         order = list(QUADRANT_ORDER)
@@ -714,7 +784,7 @@ async def run_opus_manager(task: dict, timeout: int = 7200,
 
     result_text = ''
     rate_limited = False
-    inactivity_limit = 600  # 10 min with no messages = likely rate limited
+    inactivity_limit = settings.get('opus_inactivity_limit', 900)  # 15 min default
     start_time = datetime.now()
 
     try:
@@ -844,6 +914,15 @@ async def run_opus_with_retry(task: dict) -> str:
             state['rate_limit_resume_at'] = None
             save_state(state)
             log('  Resuming Opus manager after rate limit wait...')
+
+            # Log progress state for diagnostics
+            work_dir = create_work_dir(task)
+            progress_file = work_dir / 'progress.md'
+            if progress_file.exists():
+                progress = progress_file.read_text(encoding='utf-8')
+                stages_done = [l for l in progress.lower().split('\n')
+                               if 'status: done' in l]
+                log(f'  Resume state: {len(stages_done)} stage(s) done in progress.md')
 
             # Next iteration will use resume prompt
             is_resume = True
@@ -1220,8 +1299,12 @@ async def run_pipeline(task: dict) -> tuple[str, str]:
         test_text = test_path.read_text(encoding='utf-8')
         git_commit_all(f'[AGENT] Test report {attempt} for #{task["id"]}')
 
-        if 'PASS' in test_text.upper().split('\n')[-5:]:
-            # Check last 5 lines for PASS verdict
+        # Check last 5 lines for PASS/FAIL verdict (substring, not list membership)
+        last_lines = test_text.upper().strip().split('\n')[-5:]
+        has_pass = any('PASS' in line and 'FAIL' not in line for line in last_lines)
+        has_fail = any('FAIL' in line for line in last_lines)
+
+        if has_pass and not has_fail:
             test_passed = True
             log_pipeline_stage(task, 'tester', 'PASS')
             break
@@ -1307,7 +1390,8 @@ async def run_pipeline(task: dict) -> tuple[str, str]:
     regression_text = regression_path.read_text(encoding='utf-8')
     git_commit_all(f'[AGENT] Regression report for #{task["id"]}')
 
-    regression_passed = 'PASS' in regression_text.upper().split('\n')[-5:]
+    reg_last = regression_text.upper().strip().split('\n')[-5:]
+    regression_passed = any('PASS' in l and 'FAIL' not in l for l in reg_last)
     log_pipeline_stage(task, 'regression', 'PASS' if regression_passed else 'FAIL')
 
     stages_done.append('regression')
@@ -1435,8 +1519,10 @@ async def run_freeform_task(task_prompt: str, dry_run: bool,
                            architecture: str = 'pipeline') -> None:
     """Run a single free-form task through the pipeline."""
     commit_pending_log()
+    git_cleanup_stashes()
     checkpoint = git_checkpoint()
     log(f'Agent starting — free-form task (architecture={architecture})')
+    log(f'  Prompt: {task_prompt[:300]}')
     log(f'Git checkpoint: {checkpoint}')
     log_session_start(checkpoint, 'freeform')
 
@@ -1448,10 +1534,15 @@ async def run_freeform_task(task_prompt: str, dry_run: bool,
 
     # Pre-import subagent definitions before any git checkout may remove the file
     if architecture == 'opus':
-        import subagent_definitions  # noqa: F811 — cached in sys.modules
+        try:
+            import subagent_definitions  # noqa: F811 — cached in sys.modules
+        except ImportError as e:
+            log(f'Cannot import subagent_definitions: {e} — falling back to pipeline')
+            architecture = 'pipeline'
 
     freeform_id = int(datetime.now().strftime('%y%m%d%H%M'))
-    task = {'id': freeform_id, 'title': 'Free-form task', 'description': task_prompt, 'tags': ''}
+    short_title = task_prompt[:80].replace('\n', ' ').strip()
+    task = {'id': freeform_id, 'title': f'Free-form: {short_title}', 'description': task_prompt, 'tags': ''}
     branch = f'agent/freeform-{datetime.now().strftime("%Y%m%d-%H%M")}'
 
     # Save source branch so we can return to it
@@ -1483,6 +1574,7 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
                      architecture: str = 'pipeline') -> None:
     """Main loop: pick tasks, run pipeline, repeat."""
     commit_pending_log()
+    git_cleanup_stashes()
     checkpoint = git_checkpoint()
     mode_desc = f'task_ids={task_ids}' if task_ids else f'quadrant={quadrant}'
     log(f'Agent starting — {mode_desc}, max_tasks={max_tasks}, architecture={architecture}')
@@ -1491,10 +1583,18 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
 
     # Pre-import subagent definitions before any git checkout may remove the file
     if architecture == 'opus':
-        import subagent_definitions  # noqa: F811 — cached in sys.modules
+        try:
+            import subagent_definitions  # noqa: F811 — cached in sys.modules
+        except ImportError as e:
+            log(f'Cannot import subagent_definitions: {e} — falling back to pipeline')
+            architecture = 'pipeline'
 
+    # Merge completed IDs from both state file and persistent file
     state = load_state()
-    completed_ids: list[int] = state.get('completed_tasks', []) if state else []
+    state_ids = state.get('completed_tasks', []) if state else []
+    persistent_ids = _load_completed_ids()
+    completed_ids: list[int] = list(set(state_ids + persistent_ids))
+    _clear_completed_ids()  # Fresh session — will re-persist as tasks complete
     tasks_done = len(completed_ids)
 
     while True:
@@ -1578,6 +1678,7 @@ async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
         git_back_to_main(source_branch)
 
         completed_ids.append(task['id'])
+        _save_completed_id(task['id'])  # Persist across crashes
         tasks_done += 1
 
         save_state({
@@ -1821,6 +1922,18 @@ def main() -> None:
     # Wrap with caffeinate to prevent macOS sleep
     if sys.platform == 'darwin' and not os.environ.get('_CAFFEINATE_ACTIVE'):
         os.environ['_CAFFEINATE_ACTIVE'] = '1'
+        # PID-file guard: prevent duplicate instances (conda env isolation
+        # can lose the env var, causing the script to run twice)
+        _caffeinate_marker = _HERE / '.caffeinate_pid'
+        if _caffeinate_marker.exists():
+            try:
+                old_pid = int(_caffeinate_marker.read_text().strip())
+                os.kill(old_pid, 0)  # Check if still alive
+                # Another instance is running — exit silently
+                sys.exit(0)
+            except (ProcessLookupError, ValueError, OSError):
+                pass  # Old process is dead, proceed
+        _caffeinate_marker.write_text(str(os.getpid()))
         os.execvp('caffeinate', ['caffeinate', '-i', sys.executable] + sys.argv)
 
     # Clear stale rate-limit state from previous runs — don't block a fresh launch.
@@ -1857,6 +1970,7 @@ def main() -> None:
         log('Agent stopped by user (Ctrl+C).')
     finally:
         _PID_PATH.unlink(missing_ok=True)
+        (_HERE / '.caffeinate_pid').unlink(missing_ok=True)
 
 
 if __name__ == '__main__':
