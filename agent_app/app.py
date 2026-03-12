@@ -60,6 +60,9 @@ if state and state.get('awaiting_intervention'):
 elif running:
     status_val = 'RUNNING'
     status_color = COLOR_RUNNING
+elif state and state.get('completed'):
+    status_val = 'DONE'
+    status_color = COLOR_DONE
 else:
     status_val = 'STOPPED'
     status_color = COLOR_FAILED

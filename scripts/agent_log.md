@@ -1002,8 +1002,6 @@ The Spectrum Browser page (`app/pages/02_spectrum.py`) has been significantly en
 **Quadrant:** eliminate
 
 [2026-03-12 10:53:14] --- Starting task #52: Statistical RV modeling page — f_bin vs DeltaRV threshold fitting ---
-<<<<<<< Updated upstream
-=======
 [2026-03-12 10:53:14] Working on branch: agent/52-statistical-rv-modeling-page-f-bin-vs-de (will return to main)
 [2026-03-12 10:53:14]   [OPUS] Starting manager agent...
 [2026-03-12 11:05:56]   [REGRESSION] Running Python-level regression check...
@@ -1024,5 +1022,4 @@ The overnight agent's implementation of `app/pages/12_rv_modeling.py` (811 lines
 [2026-03-12 11:06:20] Task #52 finished: completed
 [2026-03-12 11:06:20]   [AUTO-LEARN] Running reflection...
 [2026-03-12 11:08:05]   [AUTO-LEARN] Reflection complete.
-[2026-03-12 11:08:06]   Warning: git commit failed: git commit -m [AGENT] Auto-save before switching back failed: 
->>>>>>> Stashed changes
+[2026-03-12 11:08:06]   Warning: git commit failed: git commit -m [AGENT] Auto-save before switching back failed:
