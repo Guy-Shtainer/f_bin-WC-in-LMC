@@ -992,3 +992,4 @@ The Spectrum Browser page (`app/pages/02_spectrum.py`) has been significantly en
 **Rollback:** `git reset --hard pre-agent-20260311-1847`
 **Quadrant:** freeform
 
+[2026-03-12 10:53:14] Architecture: opus
