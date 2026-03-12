@@ -6,6 +6,27 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-12 — Agent worktree isolation, TODO webapp, weighted K-S scoring, cadence fixes
+
+| Hash | Summary |
+|------|---------|
+| `5898b56` | Add EndConv/EnDay daily logging system |
+| `cf84d17` | Add git worktree isolation + stash safety to overnight agent |
+| `42eb9e1` | Extract TODO logic into shared module + standalone webapp |
+| `165f894` | Add inverse-variance weighted K-S scoring + fix cadence diagnostic histogram |
+| `ddab1ca` | Update settings and simulation results |
+| `5767006` | Update documentation: COMMON_ERRORS E029, DOCUMENTATION.md work log, TODO.md +6 tasks |
+| `aa3dd0a` | Add cadence + Langer simulation result files from today's runs |
+
+Major changes: overnight agent now uses git worktrees (no more branch checkout + stash
+that could destroy user files). TODO webapp extracted into reusable module with standalone
+entry point. Cadence tabs got inverse-variance weighted K-S scoring and a critical fix
+for diagnostic histograms using wrong orbital parameters. 6 new TODO tasks (#113-#118).
+
+Tagged: `v260312-working`
+
+---
+
 ## 2026-03-11 — Flicker fix + Langer cadence display
 
 | Hash | Summary |
