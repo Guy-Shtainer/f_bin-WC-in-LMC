@@ -1835,5 +1835,79 @@
     "elapsed_s": 18.4,
     "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/langer_result.npz",
     "descriptive_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/langer_fb0.00-1.00x100_sig1.0-9.0x100_N10000_logP0.50-3.50_260311-1450_wA0.08.npz"
+  },
+  {
+    "timestamp": "2026-03-12T18:01:47.080581",
+    "model": "langer2020",
+    "config_hash": "d992606d3fcf1a46",
+    "config": {
+      "n_stars_sim": 10000,
+      "sigma_measure": 1.622,
+      "logP_min": 0.5,
+      "logP_max": 3.5,
+      "period_model": "langer2020",
+      "e_model": "zero",
+      "e_max": 0.0,
+      "mass_primary_model": "fixed",
+      "mass_primary_fixed": 10.0,
+      "q_model": "empirical",
+      "q_min": 0.1,
+      "q_max": 2.0,
+      "q_flipped": false,
+      "langer_q_mu": 0.65,
+      "langer_q_sigma": 0.3,
+      "langer_period_params": {
+        "dist_A": "empirical",
+        "mu_A": 0.8,
+        "sigma_A": 0.35,
+        "dist_B": "empirical",
+        "mu_B": 2.0,
+        "sigma_B": 0.45,
+        "weight_A": 0.08
+      },
+      "primary_line": "C IV 5808-5812",
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0
+    },
+    "elapsed_s": 0.0,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/langer_result.npz",
+    "descriptive_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/langer_fb0.00-1.00x100_sig1.0-9.0x100_N10000_logP0.50-3.50_120326-1801_wA0.08.npz"
+  },
+  {
+    "timestamp": "2026-03-12T18:02:25.628289",
+    "model": "langer2020",
+    "config_hash": "798e9010b1f46604",
+    "config": {
+      "n_stars_sim": 10000,
+      "sigma_measure": 1.622,
+      "logP_min": 0.5,
+      "logP_max": 3.5,
+      "period_model": "langer2020",
+      "e_model": "zero",
+      "e_max": 0.0,
+      "mass_primary_model": "fixed",
+      "mass_primary_fixed": 10.0,
+      "q_model": "empirical",
+      "q_min": 0.1,
+      "q_max": 2.0,
+      "q_flipped": false,
+      "langer_q_mu": 0.65,
+      "langer_q_sigma": 0.3,
+      "langer_period_params": {
+        "dist_A": "empirical",
+        "mu_A": 0.8,
+        "sigma_A": 0.35,
+        "dist_B": "empirical",
+        "mu_B": 2.0,
+        "sigma_B": 0.45,
+        "weight_A": 0.08
+      },
+      "primary_line": "C IV 5808-5812",
+      "threshold_dRV": 45.5,
+      "sigma_factor": 4.0
+    },
+    "elapsed_s": 13.2,
+    "result_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/langer_result.npz",
+    "descriptive_file": "/Users/guyshtainer/Library/CloudStorage/OneDrive-Tel-AvivUniversity/\u05ea\u05d5\u05d0\u05e8 \u05e9\u05e0\u05d9!/Thesis/Thesis-codes/results/langer_fb0.00-1.00x99_sig1.0-9.0x100_N10000_logP0.50-3.50_120326-1802_wA0.08.npz"
   }
 ]

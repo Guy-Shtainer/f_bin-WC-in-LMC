@@ -81,7 +81,7 @@
   "grid_langer": {
     "fbin_min": 0.0,
     "fbin_max": 1.0,
-    "fbin_steps": 100,
+    "fbin_steps": 99,
     "sigma_min": 1.0,
     "sigma_max": 9.0,
     "sigma_steps": 100,
@@ -139,7 +139,13 @@
       ],
       "langer_q_mu": 0.7,
       "langer_q_sigma": 0.2
-    }
+    },
+    "drv_bin_width": 0.1,
+    "drv_max": 370.0,
+    "error_model_type": "Weibull",
+    "errp_2": 0.8982,
+    "errp_1": 0.7935,
+    "errp_0": 1.328
   },
   "grid_cadence_langer": {
     "fbin_min": 0.0,
@@ -148,8 +154,8 @@
     "n_sets": 10000,
     "scan_sigma": true,
     "sigma_single": 15.0,
-    "sigma_min": 3.0,
-    "sigma_max": 13.0,
+    "sigma_min": 0.1,
+    "sigma_max": 9.0,
     "sigma_steps": 100,
     "sigma_meas": 1.622,
     "logP_min": 0.5,
@@ -176,7 +182,13 @@
     "mass_primary_range": [
       10.0,
       20.0
-    ]
+    ],
+    "drv_max": 370.0,
+    "drv_bin_width": 0.1,
+    "error_model_type": "Weibull",
+    "errp_0": 1.328,
+    "errp_1": 0.7935,
+    "errp_2": 0.8982
   },
   "ui": {
     "last_star": "MNM2014 LMC195-1",
