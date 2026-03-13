@@ -6,6 +6,21 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-13 — Variance-weighted scoring debugging (WIP)
+
+| Hash | Summary |
+|------|---------|
+| `6234a8d` | WIP: variance-weighted scoring — 3 approaches (avg/max/chi2), none working yet |
+| `bdabafa` | Update docs: weighted scoring attempts log, TODO #117 status, daily log |
+
+Debugged why weighted KS scoring produced all p≈1.0. Tried 3 approaches: weighted average
+(D too small), weighted max (same as standard), chi-squared (σ² from 10k reps is ~1e-4,
+χ² explodes to ~1e44). Needs variance normalization fix. Task #117 reverted to `open`.
+
+Tagged: `v260313-working`
+
+---
+
 ## 2026-03-12 — Agent worktree isolation, TODO webapp, weighted K-S scoring, cadence fixes
 
 | Hash | Summary |
