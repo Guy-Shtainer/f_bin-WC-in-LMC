@@ -758,12 +758,10 @@ This approach captures the effects of:
 
 - **K-S (standard):** D = max|CDF_sim − CDF_obs| across all ΔRV bins.
   All bins contribute equally to the statistic.
-- **K-S (variance-weighted):** D_w = Σ(|diff_i| × w_i) / Σ(w_i), where
-  w_i = 1/σ_i² and σ_i² is the variance of the simulated CDF at bin i
-  across all N_sets repetitions. This down-weights bins where the simulation
-  is uncertain (wide 16–84% band), giving more influence to bins where the
-  simulated CDF is tightly constrained. The p-value is computed from D_w
-  using the standard Kolmogorov approximation.
+- **K-S (variance-weighted):** χ² = Σ (sim_i − obs_i)² / σ²_i, where σ²_i
+  is the variance of the simulated CDF at bin i across all N_sets repetitions.
+  Bins with high simulation variance contribute less to the statistic.
+  The p-value is the chi-squared survival function (higher = better fit).
 '''
 
 

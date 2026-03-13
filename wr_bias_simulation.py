@@ -1075,14 +1075,14 @@ def ks_weighted_D(
 ) -> float:
     """Inverse-variance weighted K-S D statistic.
 
-    D_w = Σ(|sim_i - obs_i| × w_i) / Σ(w_i)
+    D_w = max(|sim_i - obs_i| × w_i)
 
-    where w_i = 1/σ_i² and σ_i² is the simulation CDF variance at bin i
-    (across all N_sets repetitions).  Bins where σ_i² ≈ 0 are skipped.
+    where w_i = (1/σ_i²) / max(1/σ_j²) — normalized so the best-constrained
+    bin (lowest variance) has weight 1.0.  High-variance bins get weight < 1,
+    suppressing their contribution to the supremum.
 
-    This down-weights bins where the simulation is uncertain (wide 16-84%
-    band), giving more influence to bins with tightly constrained CDFs.
-    The result stays in [0, 1] so the standard Kolmogorov p-value applies.
+    This preserves the max-based nature of the KS statistic while
+    down-weighting bins where the simulation CDF is uncertain.
     """
     sim_median_cdf = np.asarray(sim_median_cdf, dtype=float)
     obs_cdf = np.asarray(obs_cdf, dtype=float)
@@ -1093,8 +1093,41 @@ def ks_weighted_D(
         # Fallback to standard D if too few informative bins
         return float(np.max(np.abs(sim_median_cdf - obs_cdf)))
     w = 1.0 / sim_cdf_var[valid]
+    w /= w.max()  # normalize: best-constrained bin = 1.0, others < 1.0
     diffs = np.abs(sim_median_cdf[valid] - obs_cdf[valid])
-    return float(np.sum(diffs * w) / np.sum(w))
+    return float(np.max(diffs * w))
+
+
+def chi2_weighted_score(
+    sim_median_cdf: np.ndarray,
+    obs_cdf: np.ndarray,
+    sim_cdf_var: np.ndarray,
+) -> Tuple[float, float]:
+    """Chi-squared goodness-of-fit between simulated and observed CDFs.
+
+    χ² = Σ (sim_i - obs_i)² / σ²_i
+
+    Bins with high simulation variance (σ²_i) contribute less to the
+    statistic.  Returns ``(chi2_value, p_value)`` where the p-value is
+    the survival function of the chi-squared distribution.
+    """
+    sim_median_cdf = np.asarray(sim_median_cdf, dtype=float)
+    obs_cdf = np.asarray(obs_cdf, dtype=float)
+    sim_cdf_var = np.asarray(sim_cdf_var, dtype=float)
+
+    valid = sim_cdf_var > 1e-12
+    n_valid = int(valid.sum())
+    if n_valid < 2:
+        D = float(np.max(np.abs(sim_median_cdf - obs_cdf)))
+        return D, 1.0 - D
+
+    diffs = sim_median_cdf[valid] - obs_cdf[valid]
+    chi2_val = float(np.sum(diffs ** 2 / sim_cdf_var[valid]))
+    n_dof = max(n_valid - 1, 1)
+
+    from scipy.stats import chi2 as chi2_dist
+    p_value = float(chi2_dist.sf(chi2_val, n_dof))
+    return chi2_val, p_value
 
 
 # ---------------------------------------------------------------------------
@@ -1470,21 +1503,20 @@ def _single_grid_task_cadence_aware(args):
 
     scoring = g.get('scoring_method', 'ks')
     if scoring == 'weighted':
-        D = ks_weighted_D(median_cdf, obs_cdf, result['cdf_var'])
+        D, p_value = chi2_weighted_score(median_cdf, obs_cdf, result['cdf_var'])
     else:
         D = float(np.max(np.abs(median_cdf - obs_cdf)))
-
-    # Approximate p-value (Kolmogorov series) — same formula for both modes
-    n1 = n_sets * len(g['cadence_library'])
-    en = math.sqrt(n1 * n2 / (n1 + n2))
-    x = (en + 0.12 + 0.11 / en) * D
-    term_sum = 0.0
-    for j in range(1, 101):
-        term = 2.0 * ((-1) ** (j - 1)) * math.exp(-2.0 * (j ** 2) * (x ** 2))
-        term_sum += term
-        if abs(term) < 1e-8:
-            break
-    p_value = max(0.0, min(1.0, term_sum))
+        # Approximate p-value (Kolmogorov series)
+        n1 = n_sets * len(g['cadence_library'])
+        en = math.sqrt(n1 * n2 / (n1 + n2))
+        x = (en + 0.12 + 0.11 / en) * D
+        term_sum = 0.0
+        for j in range(1, 101):
+            term = 2.0 * ((-1) ** (j - 1)) * math.exp(-2.0 * (j ** 2) * (x ** 2))
+            term_sum += term
+            if abs(term) < 1e-8:
+                break
+        p_value = max(0.0, min(1.0, term_sum))
 
     return (f_bin, pi, sigma_single, D, p_value,
             result['median_cdf'], result['lo_cdf'], result['hi_cdf'])
