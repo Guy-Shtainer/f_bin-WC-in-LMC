@@ -676,6 +676,53 @@ strength of this analysis compared to the prior work.
   open — the backend computes per-set CDFs but the UI does not yet show the 68%
   error band as a shaded region.
 
+### 2026-03-13 — Variance-weighted scoring: three approaches tested, not yet resolved
+
+**What was done:**
+
+*Methodology (paper-relevant):*
+
+- **Variance-weighted KS scoring revisited.** The original `ks_weighted_D()` (implemented
+  2026-03-12) used a weighted average D_w = Σ(|diff_i| × w_i)/Σ(w_i). Testing revealed
+  this produces p-values ≈ 1.0 everywhere because the weighted average D is inherently
+  much smaller than max|diff| (~0.01–0.05 vs ~0.2–0.3), and the Kolmogorov p-value
+  formula is calibrated for the supremum statistic.
+
+- **Three approaches attempted, none fully satisfactory:**
+  1. **Weighted average + linear score** (1 − D_w): D_w too small → scores all ≈ 0.95–0.99,
+     no dynamic range.
+  2. **Weighted max** D_w = max(|diff_i| × w_norm_i) with w_norm ∈ [0,1]: The max-diff bin
+     typically also has the lowest variance, so weights ≈ 1 → D_w ≈ standard D, and the
+     linear 1−D score lacks the nonlinear amplification of the Kolmogorov series.
+  3. **Chi-squared goodness-of-fit** χ² = Σ(diff_i² / σ²_i) with scipy chi2.sf() p-value:
+     Conceptually correct (standard method for per-bin uncertainties), but σ² from 10,000
+     repetitions is ~10⁻⁴, producing astronomical χ² values → p ≈ 10⁻⁴⁴.
+
+- **Root cause identified for attempt 3:** The per-bin CDF variance σ²_i reflects the
+  variance of the *median* over N_sets repetitions, which scales as ~1/N_sets. With
+  N_sets = 10,000, σ² ≈ 10⁻⁴ even for well-behaved bins. Dividing diff² by this tiny
+  number inflates χ² far beyond the expected range for n_dof ≈ 35 bins. Possible fixes:
+  (a) multiply σ² by N_sets to recover per-single-realization variance,
+  (b) use a reduced chi-squared χ²_red = χ²/n_dof with a custom score mapping,
+  (c) use Anderson–Darling or Cramér–von Mises weighted statistics instead.
+
+- **Web research conducted:** scipy issue #12315 (weighted ks_2samp proposal), hep_ml
+  ks_2samp_weighted, R package Ecume (Monahan 2011 effective sample sizes). Standard
+  weighted KS tests weight *observations* (to build weighted CDFs), not CDF bins — our
+  use case (per-bin simulation uncertainty) is less standard.
+
+**Key results:**
+- No working variance-weighted scoring yet. Standard KS scoring remains the operational method.
+- All three implementations are in `wr_bias_simulation.py` (`ks_weighted_D`, `chi2_weighted_score`).
+  Current code calls `chi2_weighted_score` when weighted mode is selected.
+
+**Open questions:**
+- Best normalization for the chi-squared approach: scale variance by N_sets?
+- Alternative: use the per-set D values (compute D for each of N_sets repetitions) and
+  report the median D with uncertainty, bypassing the need for per-bin weighting entirely.
+- Should the weighted scoring be abandoned in favor of reporting the 68% CDF band visually
+  and relying on standard KS for the p-value?
+
 ---
 
-*Last updated: 2026-03-12*
+*Last updated: 2026-03-13*
