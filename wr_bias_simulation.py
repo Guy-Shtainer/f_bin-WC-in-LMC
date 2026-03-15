@@ -1376,7 +1376,7 @@ def _single_grid_task_lite(args):
     if scoring == 'cvm':
         # CvM requires multiple sets to compute variance
         n_sets = g.get('n_sets_cvm', 1000)
-        _be = g.get('bin_edges', DEFAULT_DRV_BIN_EDGES)
+        _be = g.get('bin_edges') or DEFAULT_DRV_BIN_EDGES
         all_drv = np.empty((n_sets, sim_cfg_local.n_stars))
         for s in range(n_sets):
             all_drv[s] = simulate_delta_rv_sample(
