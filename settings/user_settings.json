@@ -151,7 +151,7 @@
     "fbin_min": 0.0,
     "fbin_max": 1.0,
     "fbin_steps": 100,
-    "n_sets": 10000,
+    "n_sets": 1000,
     "scan_sigma": true,
     "sigma_single": 15.0,
     "sigma_min": 0.1,

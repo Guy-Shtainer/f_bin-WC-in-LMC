@@ -100,12 +100,11 @@ with tab_heatmap:
         marker=dict(symbol='star', size=14, color='gold', line=dict(width=1, color='black')),
         name=f'Best: f_bin={best_fbin:.3f}, π={best_pi:.2f}',
     ))
-    fig.update_layout(
-        title=f'{model_choice} — K-S p-value heatmap',
-        xaxis_title='π  (period power-law index)',
-        yaxis_title='f_bin  (intrinsic binary fraction)',
-        **PLOTLY_THEME, height=520,
-    )
+    fig.update_layout(**{**PLOTLY_THEME, 'height': 520,
+        'title': dict(text=f'{model_choice} — K-S p-value heatmap'),
+        'xaxis': {**PLOTLY_THEME.get('xaxis', {}), 'title': 'π  (period power-law index)'},
+        'yaxis': {**PLOTLY_THEME.get('yaxis', {}), 'title': 'f_bin  (intrinsic binary fraction)'},
+    })
     st.plotly_chart(fig, use_container_width=True)
 
 with tab_cdf:
@@ -138,11 +137,11 @@ with tab_cdf:
     fig2.add_trace(go.Scatter(x=sim_s, y=sim_c, mode='lines',
                               line=dict(color=COLOR_SINGLE, width=2),
                               name=f'Simulated (f_bin={best_fbin:.3f}, π={best_pi:.2f})'))
-    fig2.update_layout(
-        xaxis_title='ΔRV (km/s)', yaxis_title='Cumulative fraction',
-        title=f'Best-fit CDF comparison — K-S p = {best_pval:.4f}',
-        **PLOTLY_THEME, height=420,
-    )
+    fig2.update_layout(**{**PLOTLY_THEME, 'height': 420,
+        'title': dict(text=f'Best-fit CDF comparison — K-S p = {best_pval:.4f}'),
+        'xaxis': {**PLOTLY_THEME.get('xaxis', {}), 'title': 'ΔRV (km/s)'},
+        'yaxis': {**PLOTLY_THEME.get('yaxis', {}), 'title': 'Cumulative fraction'},
+    })
     st.plotly_chart(fig2, use_container_width=True)
 
 with tab_slice:
@@ -151,11 +150,11 @@ with tab_slice:
         line=dict(color='#4A90D9', width=2)))
     fig3.add_vline(x=best_fbin, line_dash='dash', line_color='gold',
                    annotation_text=f'Best f_bin={best_fbin:.3f}')
-    fig3.update_layout(
-        xaxis_title='f_bin', yaxis_title='K-S p-value (log)', yaxis_type='log',
-        title=f'p-value vs f_bin at π = {best_pi:.2f}',
-        **PLOTLY_THEME, height=380,
-    )
+    fig3.update_layout(**{**PLOTLY_THEME, 'height': 380,
+        'title': dict(text=f'p-value vs f_bin at π = {best_pi:.2f}'),
+        'xaxis': {**PLOTLY_THEME.get('xaxis', {}), 'title': 'f_bin'},
+        'yaxis': {**PLOTLY_THEME.get('yaxis', {}), 'title': 'K-S p-value (log)', 'type': 'log'},
+    })
     st.plotly_chart(fig3, use_container_width=True)
 
 st.markdown('---')

@@ -762,6 +762,13 @@ This approach captures the effects of:
   is the variance of the simulated CDF at bin i across all N_sets repetitions.
   Bins with high simulation variance contribute less to the statistic.
   The p-value is the chi-squared survival function (higher = better fit).
+- **CvM (S-score):** S = Σ (sim_i − obs_i)² / σ²_i (variance-weighted Cramér–von Mises).
+  Unlike K-S, uses ALL bins — the full CDF shape matters, not just the single worst bin.
+  Bins with high simulation variance contribute less (inverse-variance weighting).
+  The p-value is **empirical**: for each of the N_sets simulated star sets, we compute
+  S against the median CDF. The p-value = fraction with S ≥ S_obs.
+  Models with p outside [0.05, 0.95] are masked as implausible (white on heatmap).
+  The true minimum is found via spline interpolation over the valid region.
 '''
 
 
@@ -820,6 +827,8 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
         stable_cfg       = params['stable_cfg']
         save_params      = params['save_params']
         bcfg             = params['bin_cfg_params']
+        scoring_method   = params.get('scoring_method', 'ks')
+        n_sets_cvm       = params.get('n_sets_cvm', 1000)
 
         _scan_logPmax = len(logPmax_scan_vals) > 1
 
@@ -880,7 +889,8 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                 initializer=_init_worker,
                 initargs=(cadence_list, cadence_weights, obs_delta_rv,
                           int(n_stars_sim), float(sigma_meas),
-                          6, 3650.0, None, 0.0, None),
+                          6, 3650.0, None, 0.0, None,
+                          scoring_method, n_sets_cvm),
             ) as pool:
                 def _save_partial_dsilva():
                     """Save accumulated results as a partial checkpoint."""
@@ -1132,6 +1142,8 @@ def _run_langer_bg(job: dict, params: dict) -> None:
         bin_cfg         = params['bin_cfg']
         stable_cfg      = params['stable_cfg']
         save_params     = params['save_params']
+        scoring_method  = params.get('scoring_method', 'ks')
+        n_sets_cvm      = params.get('n_sets_cvm', 1000)
         # Pre-filled arrays (from partial cache reuse)
         acc_ks_p        = params['acc_ks_p']
         acc_ks_D        = params['acc_ks_D']
@@ -1168,7 +1180,8 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                 initializer=_init_worker,
                 initargs=(cadence_list, cadence_weights, obs_delta_rv,
                           int(n_stars), float(sigma_meas),
-                          6, 3650.0, None, 0.0, None),
+                          6, 3650.0, None, 0.0, None,
+                          scoring_method, n_sets_cvm),
             ) as pool:
                 def _save_partial_langer():
                     """Save accumulated Langer results as partial."""
@@ -1324,6 +1337,377 @@ def _run_langer_bg(job: dict, params: dict) -> None:
     except Exception:
         job['error']  = _tb.format_exc()
         job['status'] = 'error'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CvM S-score visualization helper (shared across all tabs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_cvm_analysis(
+    ks_D_2d: np.ndarray,
+    ks_p_2d: np.ndarray,
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    x_label: str = 'f_bin',
+    y_label: str = 'π',
+    sigma_grid: np.ndarray | None = None,
+    ks_D_3d: np.ndarray | None = None,
+    ks_p_3d: np.ndarray | None = None,
+    height: int = 400,
+    width: int | None = None,
+) -> None:
+    """Render CvM S-score heatmaps, p-value mask, interpolation, and 1D slices.
+
+    Parameters
+    ----------
+    ks_D_2d : (nx, ny) S-score values for a single sigma slice
+    ks_p_2d : (nx, ny) empirical p-values for same slice
+    x_grid, y_grid : 1D grid axes
+    x_label, y_label : axis labels
+    sigma_grid : if provided, enables 3D interpolation
+    ks_D_3d, ks_p_3d : full (n_sig, nx, ny) arrays for 3D interpolation
+    """
+    import plotly.graph_objects as go
+    from scipy.interpolate import RectBivariateSpline, RegularGridInterpolator
+
+    _theme = PLOTLY_THEME
+
+    # ── 1. Three heatmaps side-by-side ────────────────────────────────────
+    st.markdown('#### CvM S-score Analysis')
+    hc1, hc2, hc3 = st.columns(3)
+
+    # Convention: x_grid = fbin (rows of z), y_grid = π/σ (cols of z)
+    # Display: y-axis = f_bin, x-axis = π/σ (matching make_heatmap_fig)
+    # Plotly Heatmap: z[i,j] → y=y_vals[i], x=x_vals[j]
+    # So pass: z=data, x=y_grid (π/σ on x-axis), y=x_grid (fbin on y-axis)
+
+    # Raw S-score
+    fig_raw = go.Figure(go.Heatmap(
+        z=ks_D_2d, x=y_grid, y=x_grid,
+        colorscale='Viridis_r', colorbar=dict(title='S'),
+        hovertemplate=f'{y_label}: %{{x:.3f}}<br>{x_label}: %{{y:.3f}}<br>S: %{{z:.2f}}<extra></extra>',
+    ))
+    fig_raw.update_layout(**{**_theme, 'title': dict(text='S-score (raw)'),
+                             'xaxis': dict(title=y_label), 'yaxis': dict(title=x_label),
+                             'height': height, 'width': width})
+    hc1.plotly_chart(fig_raw, use_container_width=(width is None))
+    hc1.caption('Lower S = better fit. All models shown.')
+
+    # P-value masked S-score
+    S_masked = ks_D_2d.copy().astype(float)
+    p_mask = (ks_p_2d < 0.05) | (ks_p_2d > 0.95)
+    S_masked[p_mask] = np.nan
+    fig_masked = go.Figure(go.Heatmap(
+        z=S_masked, x=y_grid, y=x_grid,
+        colorscale='Viridis_r', colorbar=dict(title='S'),
+        hovertemplate=f'{y_label}: %{{x:.3f}}<br>{x_label}: %{{y:.3f}}<br>S: %{{z:.2f}}<extra></extra>',
+    ))
+    fig_masked.update_layout(**{**_theme, 'title': dict(text='S-score (p ∈ [0.05, 0.95])'),
+                                'xaxis': dict(title=y_label), 'yaxis': dict(title=x_label),
+                                'height': height, 'width': width})
+    hc2.plotly_chart(fig_masked, use_container_width=(width is None))
+    hc2.caption('White = models outside p ∈ [0.05, 0.95] (implausible).')
+
+    # P-value heatmap
+    fig_p = go.Figure(go.Heatmap(
+        z=ks_p_2d, x=y_grid, y=x_grid,
+        colorscale='RdYlGn', zmin=0, zmax=1,
+        colorbar=dict(title='p-value'),
+        hovertemplate=f'{y_label}: %{{x:.3f}}<br>{x_label}: %{{y:.3f}}<br>p: %{{z:.3f}}<extra></extra>',
+    ))
+    fig_p.update_layout(**{**_theme, 'title': dict(text='Empirical p-value'),
+                           'xaxis': dict(title=y_label), 'yaxis': dict(title=x_label),
+                           'height': height, 'width': width})
+    hc3.plotly_chart(fig_p, use_container_width=(width is None))
+    hc3.caption('Fraction of simulated sets with S ≥ S_obs.')
+
+    # ── 2. Interpolation ──────────────────────────────────────────────────
+    n_valid = int(np.sum(~p_mask))
+    if n_valid < 4:
+        st.warning('Too few valid (non-masked) cells for interpolation.')
+        return
+
+    # Decide 2D or 3D interpolation
+    do_3d = (sigma_grid is not None and ks_D_3d is not None
+             and ks_p_3d is not None and len(sigma_grid) > 1)
+
+    if do_3d:
+        # 3D interpolation over (sigma, x, y)
+        S_3d = ks_D_3d.copy().astype(float)
+        p_3d = ks_p_3d
+        mask_3d = (p_3d < 0.05) | (p_3d > 0.95)
+        _valid_vals = S_3d[~mask_3d]
+        if len(_valid_vals) == 0:
+            st.warning('No valid cells across all sigma slices.')
+            return
+        _penalty = float(np.max(_valid_vals)) * 10
+        S_3d[mask_3d] = _penalty
+
+        try:
+            interp_3d = RegularGridInterpolator(
+                (sigma_grid, x_grid, y_grid), S_3d, method='cubic',
+                bounds_error=False, fill_value=_penalty)
+        except Exception:
+            interp_3d = RegularGridInterpolator(
+                (sigma_grid, x_grid, y_grid), S_3d, method='linear',
+                bounds_error=False, fill_value=_penalty)
+
+        n_fine = 200
+        sig_fine = np.linspace(sigma_grid.min(), sigma_grid.max(), n_fine)
+        x_fine = np.linspace(x_grid.min(), x_grid.max(), n_fine)
+        y_fine = np.linspace(y_grid.min(), y_grid.max(), n_fine)
+        mg = np.meshgrid(sig_fine, x_fine, y_fine, indexing='ij')
+        pts = np.column_stack([m.ravel() for m in mg])
+        S_fine_3d = interp_3d(pts).reshape(n_fine, n_fine, n_fine)
+
+        idx_3d = np.unravel_index(np.argmin(S_fine_3d), S_fine_3d.shape)
+        best_sig = float(sig_fine[idx_3d[0]])
+        best_x = float(x_fine[idx_3d[1]])
+        best_y = float(y_fine[idx_3d[2]])
+        best_S = float(S_fine_3d[idx_3d])
+
+        # Add gold star to masked heatmap (axes swapped: x=y_grid, y=x_grid)
+        fig_masked.add_trace(go.Scatter(
+            x=[best_y], y=[best_x], mode='markers',
+            marker=dict(symbol='star', size=16, color='#DAA520',
+                        line=dict(width=1, color='black')),
+            name=f'Best fit (interpolated)',
+            hovertemplate=(f'{x_label}={best_x:.4f}<br>{y_label}={best_y:.3f}'
+                           f'<br>σ={best_sig:.2f}<br>S={best_S:.2f}<extra></extra>'),
+        ))
+        hc2.plotly_chart(fig_masked, use_container_width=(width is None))
+
+        st.success(
+            f'**Interpolated minimum:** {x_label} = {best_x:.4f}, '
+            f'{y_label} = {best_y:.3f}, σ = {best_sig:.2f} km/s, '
+            f'S = {best_S:.2f}')
+
+        # 1D slices
+        _render_cvm_1d_slices(
+            interp_3d, sig_fine, x_fine, y_fine,
+            best_sig, best_x, best_y,
+            sigma_grid, x_grid, y_grid,
+            ks_D_3d, p_3d,
+            'σ_single', x_label, y_label,
+            height=300)
+
+    else:
+        # 2D interpolation over (x, y) only
+        _valid_vals_2d = ks_D_2d[~p_mask]
+        _penalty_2d = float(np.max(_valid_vals_2d)) * 10
+        S_for_interp = np.where(p_mask, _penalty_2d, ks_D_2d)
+
+        try:
+            spline = RectBivariateSpline(x_grid, y_grid, S_for_interp)
+        except Exception:
+            st.warning('Interpolation failed — grid may be too small.')
+            return
+
+        n_fine = 500
+        x_fine = np.linspace(x_grid.min(), x_grid.max(), n_fine)
+        y_fine = np.linspace(y_grid.min(), y_grid.max(), n_fine)
+        S_fine = spline(x_fine, y_fine)
+
+        idx_2d = np.unravel_index(np.argmin(S_fine), S_fine.shape)
+        best_x = float(x_fine[idx_2d[0]])
+        best_y = float(y_fine[idx_2d[1]])
+        best_S = float(S_fine[idx_2d])
+
+        # Add gold star to masked heatmap (axes swapped: x=y_grid, y=x_grid)
+        fig_masked.add_trace(go.Scatter(
+            x=[best_y], y=[best_x], mode='markers',
+            marker=dict(symbol='star', size=16, color='#DAA520',
+                        line=dict(width=1, color='black')),
+            name='Best fit (interpolated)',
+            hovertemplate=(f'{x_label}={best_x:.4f}<br>{y_label}={best_y:.3f}'
+                           f'<br>S={best_S:.2f}<extra></extra>'),
+        ))
+        hc2.plotly_chart(fig_masked, use_container_width=(width is None))
+
+        st.success(
+            f'**Interpolated minimum:** {x_label} = {best_x:.4f}, '
+            f'{y_label} = {best_y:.3f}, S = {best_S:.2f}')
+
+        # 1D slices (2D case — pass None for sigma)
+        _render_cvm_1d_slices_2d(
+            spline, x_fine, y_fine,
+            best_x, best_y,
+            x_grid, y_grid,
+            ks_D_2d, p_mask,
+            x_label, y_label,
+            height=300)
+
+
+def _render_cvm_1d_slices(
+    interp_3d, sig_fine, x_fine, y_fine,
+    best_sig, best_x, best_y,
+    sigma_grid, x_grid, y_grid,
+    ks_D_3d, p_mask_3d,
+    sig_label, x_label, y_label,
+    height=300,
+):
+    """Render three 1D interpolation slices through the 3D minimum."""
+    import plotly.graph_objects as go
+
+    _theme = PLOTLY_THEME
+    sc1, sc2, sc3 = st.columns(3)
+
+    # Slice along x (fix sigma=best_sig, y=best_y)
+    S_x = np.array([interp_3d([[best_sig, xv, best_y]])[0] for xv in x_fine])
+    # Grid points at closest sigma/y
+    i_sig = int(np.argmin(np.abs(sigma_grid - best_sig)))
+    i_y = int(np.argmin(np.abs(y_grid - best_y)))
+    S_x_grid = ks_D_3d[i_sig, :, i_y]
+    p_x_grid = p_mask_3d[i_sig, :, i_y]
+    valid_x = ~((p_x_grid < 0.05) | (p_x_grid > 0.95))
+
+    fig_x = go.Figure()
+    fig_x.add_trace(go.Scatter(x=x_fine, y=S_x, mode='lines',
+                               line=dict(color='#4A90D9'), name='Spline'))
+    fig_x.add_trace(go.Scatter(
+        x=x_grid[valid_x], y=S_x_grid[valid_x], mode='markers',
+        marker=dict(color='#4A90D9', size=6), name='Grid points'))
+    if np.any(~valid_x):
+        fig_x.add_trace(go.Scatter(
+            x=x_grid[~valid_x], y=S_x_grid[~valid_x], mode='markers',
+            marker=dict(color='lightgrey', size=5, symbol='x'), name='Masked'))
+    fig_x.add_trace(go.Scatter(
+        x=[best_x], y=[float(interp_3d([[best_sig, best_x, best_y]])[0])],
+        mode='markers', marker=dict(symbol='star', size=14, color='#DAA520',
+                                    line=dict(width=1, color='black')),
+        name='Minimum'))
+    fig_x.update_layout(**{**_theme, 'title': dict(text=f'S vs {x_label}'),
+                           'xaxis': dict(title=x_label), 'yaxis': dict(title='S'),
+                           'height': height, 'showlegend': False})
+    sc1.plotly_chart(fig_x, use_container_width=True)
+    sc1.caption(f'Slice at {y_label}={best_y:.3f}, σ={best_sig:.2f}')
+
+    # Slice along y (fix sigma=best_sig, x=best_x)
+    S_y = np.array([interp_3d([[best_sig, best_x, yv]])[0] for yv in y_fine])
+    i_x = int(np.argmin(np.abs(x_grid - best_x)))
+    S_y_grid = ks_D_3d[i_sig, i_x, :]
+    p_y_grid = p_mask_3d[i_sig, i_x, :]
+    valid_y = ~((p_y_grid < 0.05) | (p_y_grid > 0.95))
+
+    fig_y = go.Figure()
+    fig_y.add_trace(go.Scatter(x=y_fine, y=S_y, mode='lines',
+                               line=dict(color='#4A90D9'), name='Spline'))
+    fig_y.add_trace(go.Scatter(
+        x=y_grid[valid_y], y=S_y_grid[valid_y], mode='markers',
+        marker=dict(color='#4A90D9', size=6), name='Grid points'))
+    if np.any(~valid_y):
+        fig_y.add_trace(go.Scatter(
+            x=y_grid[~valid_y], y=S_y_grid[~valid_y], mode='markers',
+            marker=dict(color='lightgrey', size=5, symbol='x'), name='Masked'))
+    fig_y.add_trace(go.Scatter(
+        x=[best_y], y=[float(interp_3d([[best_sig, best_x, best_y]])[0])],
+        mode='markers', marker=dict(symbol='star', size=14, color='#DAA520',
+                                    line=dict(width=1, color='black')),
+        name='Minimum'))
+    fig_y.update_layout(**{**_theme, 'title': dict(text=f'S vs {y_label}'),
+                           'xaxis': dict(title=y_label), 'yaxis': dict(title='S'),
+                           'height': height, 'showlegend': False})
+    sc2.plotly_chart(fig_y, use_container_width=True)
+    sc2.caption(f'Slice at {x_label}={best_x:.4f}, σ={best_sig:.2f}')
+
+    # Slice along sigma (fix x=best_x, y=best_y)
+    S_sig = np.array([interp_3d([[sv, best_x, best_y]])[0] for sv in sig_fine])
+    i_x2 = int(np.argmin(np.abs(x_grid - best_x)))
+    i_y2 = int(np.argmin(np.abs(y_grid - best_y)))
+    S_sig_grid = ks_D_3d[:, i_x2, i_y2]
+    p_sig_grid = p_mask_3d[:, i_x2, i_y2]
+    valid_sig = ~((p_sig_grid < 0.05) | (p_sig_grid > 0.95))
+
+    fig_sig = go.Figure()
+    fig_sig.add_trace(go.Scatter(x=sig_fine, y=S_sig, mode='lines',
+                                 line=dict(color='#4A90D9'), name='Spline'))
+    fig_sig.add_trace(go.Scatter(
+        x=sigma_grid[valid_sig], y=S_sig_grid[valid_sig], mode='markers',
+        marker=dict(color='#4A90D9', size=6), name='Grid points'))
+    if np.any(~valid_sig):
+        fig_sig.add_trace(go.Scatter(
+            x=sigma_grid[~valid_sig], y=S_sig_grid[~valid_sig], mode='markers',
+            marker=dict(color='lightgrey', size=5, symbol='x'), name='Masked'))
+    fig_sig.add_trace(go.Scatter(
+        x=[best_sig], y=[float(interp_3d([[best_sig, best_x, best_y]])[0])],
+        mode='markers', marker=dict(symbol='star', size=14, color='#DAA520',
+                                    line=dict(width=1, color='black')),
+        name='Minimum'))
+    fig_sig.update_layout(**{**_theme, 'title': dict(text=f'S vs {sig_label}'),
+                             'xaxis': dict(title=f'{sig_label} (km/s)'),
+                             'yaxis': dict(title='S'),
+                             'height': height, 'showlegend': False})
+    sc3.plotly_chart(fig_sig, use_container_width=True)
+    sc3.caption(f'Slice at {x_label}={best_x:.4f}, {y_label}={best_y:.3f}')
+
+
+def _render_cvm_1d_slices_2d(
+    spline, x_fine, y_fine,
+    best_x, best_y,
+    x_grid, y_grid,
+    ks_D_2d, p_mask,
+    x_label, y_label,
+    height=300,
+):
+    """Render two 1D interpolation slices through the 2D minimum."""
+    import plotly.graph_objects as go
+
+    _theme = PLOTLY_THEME
+    sc1, sc2 = st.columns(2)
+
+    # Slice along x (fix y=best_y)
+    S_x = spline(x_fine, [best_y]).ravel()
+    i_y = int(np.argmin(np.abs(y_grid - best_y)))
+    S_x_grid = ks_D_2d[:, i_y]
+    valid_x = ~p_mask[:, i_y]
+
+    fig_x = go.Figure()
+    fig_x.add_trace(go.Scatter(x=x_fine, y=S_x, mode='lines',
+                               line=dict(color='#4A90D9'), name='Spline'))
+    fig_x.add_trace(go.Scatter(
+        x=x_grid[valid_x], y=S_x_grid[valid_x], mode='markers',
+        marker=dict(color='#4A90D9', size=6), name='Grid points'))
+    if np.any(~valid_x):
+        fig_x.add_trace(go.Scatter(
+            x=x_grid[~valid_x], y=S_x_grid[~valid_x], mode='markers',
+            marker=dict(color='lightgrey', size=5, symbol='x'), name='Masked'))
+    fig_x.add_trace(go.Scatter(
+        x=[best_x], y=[float(spline(best_x, best_y)[0, 0])],
+        mode='markers', marker=dict(symbol='star', size=14, color='#DAA520',
+                                    line=dict(width=1, color='black')),
+        name='Minimum'))
+    fig_x.update_layout(**{**_theme, 'title': dict(text=f'S vs {x_label}'),
+                           'xaxis': dict(title=x_label), 'yaxis': dict(title='S'),
+                           'height': height, 'showlegend': False})
+    sc1.plotly_chart(fig_x, use_container_width=True)
+    sc1.caption(f'Slice at {y_label}={best_y:.3f}')
+
+    # Slice along y (fix x=best_x)
+    S_y = spline([best_x], y_fine).ravel()
+    i_x = int(np.argmin(np.abs(x_grid - best_x)))
+    S_y_grid = ks_D_2d[i_x, :]
+    valid_y = ~p_mask[i_x, :]
+
+    fig_y = go.Figure()
+    fig_y.add_trace(go.Scatter(x=y_fine, y=S_y, mode='lines',
+                               line=dict(color='#4A90D9'), name='Spline'))
+    fig_y.add_trace(go.Scatter(
+        x=y_grid[valid_y], y=S_y_grid[valid_y], mode='markers',
+        marker=dict(color='#4A90D9', size=6), name='Grid points'))
+    if np.any(~valid_y):
+        fig_y.add_trace(go.Scatter(
+            x=y_grid[~valid_y], y=S_y_grid[~valid_y], mode='markers',
+            marker=dict(color='lightgrey', size=5, symbol='x'), name='Masked'))
+    fig_y.add_trace(go.Scatter(
+        x=[best_y], y=[float(spline(best_x, best_y)[0, 0])],
+        mode='markers', marker=dict(symbol='star', size=14, color='#DAA520',
+                                    line=dict(width=1, color='black')),
+        name='Minimum'))
+    fig_y.update_layout(**{**_theme, 'title': dict(text=f'S vs {y_label}'),
+                           'xaxis': dict(title=y_label), 'yaxis': dict(title='S'),
+                           'height': height, 'showlegend': False})
+    sc2.plotly_chart(fig_y, use_container_width=True)
+    sc2.caption(f'Slice at {x_label}={best_x:.4f}')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1605,6 +1989,19 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
         view_mode = _ac2.radio('View', ['K-S p-value', 'K-S D-statistic'],
                                horizontal=True, key=f'{p}_view_mode')
         show_d = view_mode == 'K-S D-statistic'
+        _scoring_label_ds = st.radio(
+            'Scoring method',
+            ['K-S (standard)', 'CvM (S-score)'],
+            key=f'{p}_scoring', horizontal=True)
+        scoring_method = 'cvm' if 'CvM' in _scoring_label_ds else 'ks'
+        if scoring_method == 'cvm':
+            _cvm_cols = st.columns([0.3, 0.7])
+            n_sets_cvm = _cvm_cols[0].number_input(
+                'N sets (CvM)', 100, 50000, 1000, step=100,
+                key=f'{p}_n_sets_cvm',
+                help='Number of simulation sets per grid point for CvM variance estimation')
+        else:
+            n_sets_cvm = 1000
         _run_col, _load_col, _save_col = _ac3.columns(3)
         _job_running = bool(
             st.session_state.get(f'{p}_job', {}).get('status') == 'running')
@@ -1746,6 +2143,8 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             'fbin_vals': fbin_vals, 'pi_vals': pi_vals,
             'sigma_vals': sigma_vals, 'logPmax_scan_vals': logPmax_scan_vals,
             'stable_cfg': stable_cfg,
+            'scoring_method': scoring_method,
+            'n_sets_cvm': int(n_sets_cvm),
             'bin_cfg_params': {
                 'logP_min': float(logP_min_val), 'logP_max': float(logP_max_val),
                 'e_model': str(e_model), 'e_max': float(e_max),
@@ -2023,6 +2422,25 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             delta=f'K-S p = {best_pval_v:.6f}',
             delta_color='off',
         )
+
+        # ── CvM S-score analysis (when CvM scoring was used) ─────────────
+        if scoring_method == 'cvm':
+            with st.expander('📊 CvM S-score Analysis', expanded=True):
+                # For Dsilva: ks_D_4d is (n_lp, n_sig, n_fb, n_pi)
+                # Current 2D slice:
+                _cvm_2d_D = ks_D_4d[disp_lp_idx, disp_sig_idx]
+                _cvm_2d_p = ks_p_4d[disp_lp_idx, disp_sig_idx]
+                # Full 3D for 3D interpolation (sigma × fbin × pi):
+                _cvm_3d_D = ks_D_4d[disp_lp_idx]  # (n_sig, n_fb, n_pi)
+                _cvm_3d_p = ks_p_4d[disp_lp_idx]
+                _render_cvm_analysis(
+                    _cvm_2d_D, _cvm_2d_p,
+                    fbin_g, pi_g,
+                    x_label='f_bin', y_label='π',
+                    sigma_grid=sigma_g if len(sigma_g) > 1 else None,
+                    ks_D_3d=_cvm_3d_D if len(sigma_g) > 1 else None,
+                    ks_p_3d=_cvm_3d_p if len(sigma_g) > 1 else None,
+                    height=_ch, width=_cw)
 
         # Toggle: use current slice for downstream analysis
         _use_slice = st.checkbox(
@@ -3573,6 +3991,19 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         lg_view_mode = _lg_ac2.radio('View', ['K-S p-value', 'K-S D-statistic'],
                                       horizontal=True, key=f'{p}_view_mode')
         lg_show_d = lg_view_mode == 'K-S D-statistic'
+        _lg_scoring_label = st.radio(
+            'Scoring method',
+            ['K-S (standard)', 'CvM (S-score)'],
+            key=f'{p}_scoring', horizontal=True)
+        lg_scoring_method = 'cvm' if 'CvM' in _lg_scoring_label else 'ks'
+        if lg_scoring_method == 'cvm':
+            _lg_cvm_cols = st.columns([0.3, 0.7])
+            lg_n_sets_cvm = _lg_cvm_cols[0].number_input(
+                'N sets (CvM)', 100, 50000, 1000, step=100,
+                key=f'{p}_n_sets_cvm',
+                help='Number of simulation sets per grid point for CvM variance estimation')
+        else:
+            lg_n_sets_cvm = 1000
         _lg_run_col, _lg_load_col, _lg_save_col = _lg_ac3.columns(3)
         _lg_job_running = bool(
             st.session_state.get(f'{p}_job', {}).get('status') == 'running')
@@ -3813,6 +4244,8 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             'bin_cfg': lg_bin_cfg, 'stable_cfg': lg_stable_cfg,
             'acc_ks_p': lg_acc_ks_p, 'acc_ks_D': lg_acc_ks_D,
             'missing_fbin_idx': lg_missing_fbin_idx,
+            'scoring_method': lg_scoring_method,
+            'n_sets_cvm': int(lg_n_sets_cvm),
             'save_params': {
                 'fbin_min': float(lg_fbin_min), 'fbin_max': float(lg_fbin_max),
                 'fbin_steps': int(lg_fbin_steps),
@@ -3911,6 +4344,15 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         # Best-fit point
         best_fbin_lg, best_sigma_lg, best_pval_lg = _best_point(
             lg_ks_p_2d, lg_fbin_g, lg_sigma_g)
+
+        # ── CvM S-score analysis (when CvM scoring was used) ─────────────
+        if lg_scoring_method == 'cvm':
+            with st.expander('📊 CvM S-score Analysis', expanded=True):
+                _render_cvm_analysis(
+                    lg_ks_D_2d, lg_ks_p_2d,
+                    lg_fbin_g, lg_sigma_g,
+                    x_label='f_bin', y_label='σ_single',
+                    height=_ch, width=_cw)
 
         lg_bartzakos = lg_cls.get('bartzakos_binaries', 3)
         lg_total_pop = lg_cls.get('total_population', 28)
@@ -5144,7 +5586,8 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
 # Cadence-Aware tab renderers (Dsilva variant + Langer variant)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
+def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
+                            scoring_method: str = 'ks') -> None:
     """Shared right-column results display for both cadence tabs."""
     pal = get_palette()
 
@@ -5272,9 +5715,49 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
             _rows.append({'Parameter': 'σ_single', 'Best': f'{_best_x_val:.1f} km/s',
                           'Mode (HDI68)': f"{result.get('mode_sigma', _best_x_val):.1f} "
                                           f"[{result.get('lo_sigma', '?')}, {result.get('hi_sigma', '?')}]"})
-        _rows.append({'Parameter': 'K-S p', 'Best': f'{_best_pval:.4f}', 'Mode (HDI68)': ''})
+        _p_label = 'CvM p' if scoring_method == 'cvm' else 'K-S p'
+        _rows.append({'Parameter': _p_label, 'Best': f'{_best_pval:.4f}', 'Mode (HDI68)': ''})
         _rows.append({'Parameter': 'N_sets', 'Best': str(result.get('n_sets', '?')), 'Mode (HDI68)': ''})
         st.table(pd.DataFrame(_rows))
+
+        # ── CvM S-score analysis (when CvM scoring was used) ─────────────
+        if scoring_method == 'cvm':
+            ks_d_arr = result.get('ks_D')
+            if ks_d_arr is not None:
+                with st.expander('📊 CvM S-score Analysis', expanded=True):
+                    if _is_langer_sigma:
+                        # Langer with sigma: 2D grid is (n_fb, n_sig)
+                        _cvm_D_2d = ks_d_arr[:, :, 0].T  # match hm_z shape
+                        _cvm_p_2d = ks_p_arr[:, :, 0].T
+                        _render_cvm_analysis(
+                            _cvm_D_2d, _cvm_p_2d,
+                            fbin_grid, sigma_grid,
+                            x_label='f_bin', y_label='σ_single',
+                            height=_ch, width=_cw)
+                    elif n_sig == 1:
+                        # Single sigma: 2D grid
+                        _cvm_D_2d = ks_d_arr[0]
+                        _cvm_p_2d = ks_p_arr[0]
+                        _y_lbl = 'π' if _is_dsilva else 'σ_single'
+                        _y_vals = pi_grid if _is_dsilva else sigma_grid
+                        _render_cvm_analysis(
+                            _cvm_D_2d, _cvm_p_2d,
+                            fbin_grid, _y_vals,
+                            x_label='f_bin', y_label=_y_lbl,
+                            height=_ch, width=_cw)
+                    else:
+                        # Dsilva with sigma scan: 3D — show best sigma slice
+                        _pmax_cvm = [float(np.nanmin(ks_d_arr[s])) for s in range(n_sig)]
+                        _best_s_cvm = int(np.argmin(_pmax_cvm))
+                        _cvm_2d_D = ks_d_arr[_best_s_cvm]
+                        _cvm_2d_p = ks_p_arr[_best_s_cvm]
+                        _render_cvm_analysis(
+                            _cvm_2d_D, _cvm_2d_p,
+                            fbin_grid, pi_grid,
+                            x_label='f_bin', y_label='π',
+                            sigma_grid=sigma_grid,
+                            ks_D_3d=ks_d_arr, ks_p_3d=ks_p_arr,
+                            height=_ch, width=_cw)
 
         # ── Grid-derived plots (corner, marginalized, animated, 3D) ────────────
         if n_sig > 1:
@@ -6252,9 +6735,11 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
     # Scoring method
     _scoring_label = st.radio(
         'Scoring method',
-        ['K-S (standard)', 'K-S (variance-weighted)'],
+        ['K-S (standard)', 'K-S (variance-weighted)', 'CvM (S-score)'],
         key=f'{p}_scoring', horizontal=True)
-    scoring_method = 'weighted' if 'variance' in _scoring_label else 'ks'
+    scoring_method = ('cvm' if 'CvM' in _scoring_label
+                      else 'weighted' if 'variance' in _scoring_label
+                      else 'ks')
 
     # Action buttons
     _a1, _a2, _a3, _a4 = st.columns(4)
@@ -6609,7 +7094,9 @@ def _render_cadence_dsilva_tab(p: str, settings: dict, sm) -> None:
             n_sets, sigma_vals, _bin_cfg, _sigma_meas,
             settings, sm)
 
-    _render_cadence_results(p, _is_dsilva, _bin_cfg)
+    _sc = st.session_state.get(f'{p}_scoring', 'K-S (standard)')
+    _scoring_method = 'cvm' if 'CvM' in _sc else 'weighted' if 'variance' in _sc else 'ks'
+    _render_cadence_results(p, _is_dsilva, _bin_cfg, scoring_method=_scoring_method)
 
     # NOTE: Auto-refresh handled by global @st.fragment(run_every=3) at page bottom
 
@@ -6957,7 +7444,9 @@ def _render_cadence_langer_tab(p: str, settings: dict, sm) -> None:
             n_sets, sigma_vals, _bin_cfg, _sigma_meas,
             settings, sm)
 
-    _render_cadence_results(p, _is_dsilva, _bin_cfg)
+    _sc = st.session_state.get(f'{p}_scoring', 'K-S (standard)')
+    _scoring_method = 'cvm' if 'CvM' in _sc else 'weighted' if 'variance' in _sc else 'ks'
+    _render_cadence_results(p, _is_dsilva, _bin_cfg, scoring_method=_scoring_method)
 
     # NOTE: Auto-refresh handled by global @st.fragment(run_every=3) at page bottom
 

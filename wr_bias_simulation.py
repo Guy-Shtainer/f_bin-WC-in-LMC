@@ -907,6 +907,8 @@ def simulate_with_params(
     out_K1 = np.array([])
     out_M1 = np.array([])
     out_case_A = None
+    omega = np.array([])
+    T0 = np.array([])
 
     if n_bin > 0:
         logP, case_A_mask = sample_logP(size=n_bin, rng=rng, pi=pi, cfg=bin_cfg,
@@ -1130,6 +1132,56 @@ def chi2_weighted_score(
     return chi2_val, p_value
 
 
+def cvm_weighted_score(
+    sim_median_cdf: np.ndarray,
+    obs_cdf: np.ndarray,
+    sim_cdf_var: np.ndarray,
+    all_delta_rv: np.ndarray,
+    bin_edges: np.ndarray,
+) -> Tuple[float, float]:
+    """Variance-weighted Cramér–von Mises score with empirical p-value.
+
+    S = Σ (F_obs(bᵢ) - F_sim_median(bᵢ))² / σ²ᵢ
+
+    Uses ALL bins (unlike KS which only uses the max).  Bins with high
+    simulation variance contribute less.  The p-value is empirical:
+    fraction of the simulated sets whose S score ≥ S_obs.
+
+    Parameters
+    ----------
+    sim_median_cdf : (n_bins,)  median CDF across simulation sets
+    obs_cdf        : (n_bins,)  observed empirical CDF
+    sim_cdf_var    : (n_bins,)  variance of simulated CDF across sets
+    all_delta_rv   : (n_sets, n_stars)  raw ΔRV per set (for empirical p)
+    bin_edges      : (n_bins,)  CDF evaluation points
+
+    Returns (S_obs, p_value).
+    """
+    sim_median_cdf = np.asarray(sim_median_cdf, dtype=float)
+    obs_cdf = np.asarray(obs_cdf, dtype=float)
+    sim_cdf_var = np.asarray(sim_cdf_var, dtype=float)
+
+    valid = sim_cdf_var > 1e-12
+    n_valid = int(valid.sum())
+    if n_valid < 2:
+        return float(np.max(np.abs(sim_median_cdf - obs_cdf))), 0.5
+
+    inv_var = 1.0 / sim_cdf_var[valid]
+    obs_diffs = obs_cdf[valid] - sim_median_cdf[valid]
+    S_obs = float(np.sum(obs_diffs ** 2 * inv_var))
+
+    # Empirical p-value: compute S for each simulated set vs the median
+    n_sets = all_delta_rv.shape[0]
+    all_cdfs = np.empty((n_sets, bin_edges.size), dtype=float)
+    for s in range(n_sets):
+        all_cdfs[s] = binned_cdf(all_delta_rv[s], bin_edges)
+    set_diffs = all_cdfs[:, valid] - sim_median_cdf[valid]   # (n_sets, n_valid)
+    S_all = np.sum(set_diffs ** 2 * inv_var, axis=1)         # (n_sets,)
+    p_value = float(np.mean(S_all >= S_obs))
+
+    return S_obs, p_value
+
+
 # ---------------------------------------------------------------------------
 # Marginalization & HDI68 credible intervals (Dsilva et al. 2023 style)
 # ---------------------------------------------------------------------------
@@ -1276,7 +1328,8 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
                  n_stars, sigma_measure,
                  n_epochs=6, time_span=3650.0,
                  observation_times=None, v_sys=0.0,
-                 bin_edges=None, scoring_method='ks'):
+                 bin_edges=None, scoring_method='ks',
+                 n_sets_cvm=1000):
     """Pool initializer: store shared data as process-level globals."""
     global _WORKER_GLOBALS
     _WORKER_GLOBALS = {
@@ -1291,6 +1344,7 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
         'v_sys': v_sys,
         'bin_edges': bin_edges,
         'scoring_method': scoring_method,
+        'n_sets_cvm': n_sets_cvm,
     }
 
 
@@ -1317,11 +1371,30 @@ def _single_grid_task_lite(args):
     bin_cfg_local.period_model = period_model
 
     rng = np.random.default_rng(seed)
-    delta_sim = simulate_delta_rv_sample(
-        f_bin=f_bin, pi=pi,
-        sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng,
-    )
-    D, p = ks_two_sample_binned(delta_sim, g['obs_delta_rv'], g.get('bin_edges'))
+    scoring = g.get('scoring_method', 'ks')
+
+    if scoring == 'cvm':
+        # CvM requires multiple sets to compute variance
+        n_sets = g.get('n_sets_cvm', 1000)
+        _be = g.get('bin_edges', DEFAULT_DRV_BIN_EDGES)
+        all_drv = np.empty((n_sets, sim_cfg_local.n_stars))
+        for s in range(n_sets):
+            all_drv[s] = simulate_delta_rv_sample(
+                f_bin=f_bin, pi=pi,
+                sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng)
+        all_cdfs = np.empty((n_sets, _be.size), dtype=float)
+        for s in range(n_sets):
+            all_cdfs[s] = binned_cdf(all_drv[s], _be)
+        median_cdf = np.median(all_cdfs, axis=0)
+        cdf_var = np.var(all_cdfs, axis=0)
+        obs_cdf = binned_cdf(g['obs_delta_rv'], _be)
+        D, p = cvm_weighted_score(median_cdf, obs_cdf, cdf_var, all_drv, _be)
+    else:
+        delta_sim = simulate_delta_rv_sample(
+            f_bin=f_bin, pi=pi,
+            sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng,
+        )
+        D, p = ks_two_sample_binned(delta_sim, g['obs_delta_rv'], g.get('bin_edges'))
     return f_bin, pi, sigma_single, D, p
 
 
@@ -1336,6 +1409,8 @@ def run_bias_grid(
     n_processes: Optional[int] = None,
     seed_base: int = 1234,
     use_multiprocessing: bool = True,
+    scoring_method: str = 'ks',
+    n_sets_cvm: int = 1000,
 ) -> Dict[str, np.ndarray]:
     """
     Run a (f_bin, pi[, sigma_single]) grid of simulations and K-S comparisons.
@@ -1415,6 +1490,8 @@ def run_bias_grid(
         sim_cfg.observation_times,
         sim_cfg.v_sys,
         DEFAULT_DRV_BIN_EDGES,
+        scoring_method,
+        n_sets_cvm,
     )
 
     if use_multiprocessing and n_tasks > 1:
@@ -1502,7 +1579,12 @@ def _single_grid_task_cadence_aware(args):
     n2 = len(g['obs_delta_rv'])
 
     scoring = g.get('scoring_method', 'ks')
-    if scoring == 'weighted':
+    if scoring == 'cvm':
+        _be = _bin_edges if _bin_edges is not None else DEFAULT_DRV_BIN_EDGES
+        D, p_value = cvm_weighted_score(
+            median_cdf, obs_cdf, result['cdf_var'],
+            result['all_delta_rv'], _be)
+    elif scoring == 'weighted':
         D, p_value = chi2_weighted_score(median_cdf, obs_cdf, result['cdf_var'])
     else:
         D = float(np.max(np.abs(median_cdf - obs_cdf)))

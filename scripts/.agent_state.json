@@ -1,0 +1,13 @@
+{
+  "current_task_id": 6,
+  "current_task_title": "Test full end-to-end webapp run",
+  "branch": "agent/6-test-full-end-to-end-webapp-run",
+  "architecture": "opus-manager",
+  "current_stage": "opus_running",
+  "started_at": "2026-03-12T18:55:00.055593",
+  "updated_at": "2026-03-12T19:14:15.493217",
+  "subagents_completed": [],
+  "awaiting_intervention": false,
+  "rate_limited": false,
+  "rate_limit_resume_at": null
+}
