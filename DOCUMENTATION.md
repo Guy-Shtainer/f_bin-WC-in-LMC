@@ -725,4 +725,71 @@ strength of this analysis compared to the prior work.
 
 ---
 
-*Last updated: 2026-03-13*
+### 2026-03-15 — CvM scoring implementation, grid exclusion, 3D interpolation, agent replacement
+
+**What was done:**
+
+*Methodology (paper-relevant):*
+
+- **Cramér–von Mises (CvM) inverse-variance-weighted scoring** implemented as the primary
+  alternative to standard K-S testing. The CvM statistic is defined as
+  S = Σ(F_obs,i − F_sim,median,i)² / σ²_i, where σ²_i is the per-bin variance across
+  N_sets simulation realizations. This replaces the three failed weighted-KS attempts
+  from 2026-03-13. The CvM approach uses all bins (not just the supremum), weights by
+  inverse variance (down-weighting noisy bins), and produces a scalar score where
+  lower S = better fit — analogous to minimum χ².
+
+- **Empirical p-value** computed alongside S: for each grid point, 10,000 simulated
+  datasets are scored and the p-value = fraction with S ≥ S_obs. Found that p ≈ 0
+  everywhere for N=25 stars (test is too sensitive), but S-score ranking remains valid
+  for model selection. Healthy p-value range defined as [0.05, 0.95] — models outside
+  this range are masked as implausible.
+
+- **Parabolic interpolation** replaced spline fitting for best-fit parameter estimation.
+  The S-score landscape spans 0 to ~3M+, causing splines to oscillate wildly. Instead,
+  use CCF-style 2D quadratic fit (6-coefficient) with configurable selection modes:
+  (a) height-based (S < threshold), (b) range-based (parameter within bounds), and
+  (c) neighbourhood (±N nearest points). Per-axis interpolation factors allow different
+  fit radii for f_bin vs σ_single.
+
+- **3D quadratic interpolation** for cadence results: 10-coefficient quadratic fit over
+  f_bin × π × σ_single simultaneously, producing 3 projected 2D surface plots.
+
+- **Grid exclusion UI**: per-axis range sliders and per-value dropdowns to exclude
+  implausible parameter regions before fitting. Exclusion masks propagate correctly
+  to CDF recomputation, summary table, and downstream plots.
+
+*Infrastructure (not paper-relevant):*
+
+- **Agent system replaced**: the 7,300-line overnight agent + 7-page webapp replaced
+  with ~300 lines: `.claude/commands/run-task.md` (slash command), `scripts/launch-agent.sh`
+  (tmux + caffeinate launcher), and simplified `agent_app/app.py`.
+
+**Key results:**
+- CvM S-score successfully differentiates models where KS p-value was flat. The
+  S-score heatmap shows clear minima in (f_bin, σ_single) space.
+- Empirical p-value ≈ 0 everywhere confirms the CvM test is very sensitive with
+  N=25. S-score ranking is the operational method; p-value is for visualization only.
+- Save/load for cadence results now working (fixed `_scan_result_metadata` accessing
+  closed numpy file, and `bin_edges` None fallback).
+
+**Bugs found and fixed:**
+- E030: `dict.get()` returns None when key exists with None value
+- E031: `dict(**unpacked, key=val)` duplicate key collision
+- E032: Hardcoded Streamlit widget keys in reusable function
+- E033: Variable defined inside `if n_bin > 0` used unconditionally in return
+- scoring_method NameError in cadence tab renderers (out-of-scope variable)
+- CvM heatmap axes flipped vs main heatmaps
+- Live heatmap title showing "K-S p-value" for CvM mode
+- `_scan_result_metadata` accessing `d['n_sets']` after `d.close()`
+- Exclusion mask shape mismatch between CvM grid and cadence array dimensions
+- Session_state key conflict between stored values and multiselect widget
+
+**Open questions:**
+- Cadence resume uses wrong scoring method (BUG — to investigate next session)
+- Need posterior edge error bars in summary table (±format, not just HDI range)
+- Dsilva cadence 1D sigma plot should show S-score not p-value
+
+---
+
+*Last updated: 2026-03-15*
