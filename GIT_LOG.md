@@ -6,6 +6,29 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-15 — CvM scoring, grid exclusion, 3D interpolation, agent replacement
+
+| Hash | Summary |
+|------|---------|
+| `717fb73` | Cadence Langer 100% working: exclusion propagation, CDF, save/load, load table |
+| `3e1f1ab` | Restore old sidebar + task picker UI in agent control panel |
+| `c2d1051` | Replace agent system: /run-task command + simplified webapp + launch script |
+| `8b65ffe` | Snapshot: pre-agent-rewrite — all current working state |
+| `96746fe` | CvM scoring, grid exclusion, 3D interpolation, parabolic fit, neighborhood mode |
+| `ffe392a` | Add E030-E033: dict.get None, dict unpack collision, widget keys, unbound var |
+| `a259c2d` | Update docs: CvM methodology work log, TODO #117-121, 3 new tasks |
+| `0fcac77` | Add weekly-prep command, daily log, update settings |
+| `ff3d30d` | Add cadence simulation results, remove stale partial checkpoints |
+
+Major session: implemented CvM inverse-variance-weighted scoring as alternative to KS
+(resolves the 3 failed approaches from 2026-03-13). Added grid exclusion UI, parabolic
+2D/3D interpolation, neighborhood fitting mode. Fixed 10 bugs (E030-E033 + 6 more).
+Replaced overnight agent system with ralph-loop + /run-task command.
+
+Tagged: `v260315-working`
+
+---
+
 ## 2026-03-13 — Variance-weighted scoring debugging (WIP)
 
 | Hash | Summary |
