@@ -415,8 +415,8 @@ def _scan_result_metadata(model: str | None = None) -> pd.DataFrame:
                 drv_bin = (f'{float(_be[1] - _be[0]):.0f}'
                            if _be is not None and len(_be) > 1 else '—')
                 drv_max_val = (f'{float(d["drv_max"]):.0f}' if 'drv_max' in d
-                               else (f'{float(_be[-1]):.0f}'
-                                     if _be is not None and len(_be) > 0
+                               else (f'{float(_be[-1] + (_be[1] - _be[0])):.0f}'
+                                     if _be is not None and len(_be) > 1
                                      else '—'))
 
                 # Scoring method
@@ -1489,6 +1489,84 @@ def _parabolic_min_2d(x_grid, y_grid, S_2d, mode='height',
     return best_x, best_y, best_S, tuple(coeffs), fit_bounds
 
 
+def _parabolic_min_3d(x_grid, y_grid, z_grid, S_3d,
+                      height_factor=2.0, n_neighbors=2):
+    """Find sub-grid minimum via 3D quadratic fit over (x, y, z).
+
+    Fits S = a·x² + b·y² + c·z² + d·xy + e·xz + f·yz + g·x + h·y + i·z + j
+    (10 coefficients).
+
+    Returns (best_x, best_y, best_z, best_S, coeffs_10, fit_bounds_6)
+    where fit_bounds_6 = (x_min, x_max, y_min, y_max, z_min, z_max).
+    """
+    finite = np.isfinite(S_3d)
+    if finite.sum() < 10:
+        idx = np.unravel_index(np.nanargmin(S_3d), S_3d.shape)
+        return (float(x_grid[idx[0]]), float(y_grid[idx[1]]), float(z_grid[idx[2]]),
+                float(S_3d[idx]), None, None)
+
+    idx = np.unravel_index(np.nanargmin(S_3d), S_3d.shape)
+    S_min = float(S_3d[idx])
+    x_min = float(x_grid[idx[0]])
+    y_min = float(y_grid[idx[1]])
+    z_min = float(z_grid[idx[2]])
+
+    xs, ys, zs = np.meshgrid(x_grid, y_grid, z_grid, indexing='ij')
+    xf, yf, zf, sf = xs.ravel(), ys.ravel(), zs.ravel(), S_3d.ravel()
+    fin = np.isfinite(sf)
+
+    # Select fitting region: points within height_factor × S_min
+    sel = fin & (sf <= S_min * max(height_factor, 1.01))
+
+    if sel.sum() < 10:
+        # Fallback: neighborhood
+        ix, iy, iz = idx
+        n = n_neighbors
+        mask_3d = np.zeros_like(S_3d, dtype=bool)
+        mask_3d[max(0, ix-n):min(len(x_grid), ix+n+1),
+                max(0, iy-n):min(len(y_grid), iy+n+1),
+                max(0, iz-n):min(len(z_grid), iz+n+1)] = True
+        sel = fin & mask_3d.ravel()
+
+    if sel.sum() < 10:
+        return x_min, y_min, z_min, S_min, None, None
+
+    xf, yf, zf, sf = xf[sel], yf[sel], zf[sel], sf[sel]
+    fit_bounds = (float(xf.min()), float(xf.max()),
+                  float(yf.min()), float(yf.max()),
+                  float(zf.min()), float(zf.max()))
+
+    # Design matrix: [x², y², z², xy, xz, yz, x, y, z, 1]
+    A = np.column_stack([xf**2, yf**2, zf**2, xf*yf, xf*zf, yf*zf,
+                         xf, yf, zf, np.ones_like(xf)])
+    coeffs, _, _, _ = np.linalg.lstsq(A, sf, rcond=None)
+    a, b, c, d_xy, e_xz, f_yz, g, h, i_c, j = coeffs
+
+    # Solve ∇S = 0: Hessian/2 · [x, y, z]ᵀ = -[g, h, i]ᵀ
+    M = np.array([[2*a, d_xy, e_xz],
+                   [d_xy, 2*b, f_yz],
+                   [e_xz, f_yz, 2*c]])
+    rhs = np.array([-g, -h, -i_c])
+    try:
+        sol = np.linalg.solve(M, rhs)
+        bx, by, bz = float(sol[0]), float(sol[1]), float(sol[2])
+        bS = float(a*bx**2 + b*by**2 + c*bz**2 + d_xy*bx*by + e_xz*bx*bz
+                    + f_yz*by*bz + g*bx + h*by + i_c*bz + j)
+        if bS < 0 or bS > S_min * 10:
+            bx, by, bz, bS = x_min, y_min, z_min, S_min
+    except np.linalg.LinAlgError:
+        bx, by, bz, bS = x_min, y_min, z_min, S_min
+
+    return bx, by, bz, bS, tuple(coeffs), fit_bounds
+
+
+def _eval_3d_quadratic(coeffs_10, x, y, z):
+    """Evaluate 3D quadratic at given coordinates."""
+    a, b, c, d, e, f, g, h, i, j = coeffs_10
+    return (a*x**2 + b*y**2 + c*z**2 + d*x*y + e*x*z + f*y*z
+            + g*x + h*y + i*z + j)
+
+
 def _render_cvm_1d_plot(col, t_grid, S_grid, label, best_t, best_S,
                         coeffs, fit_range, caption_text, height=300,
                         log_transform=False):
@@ -1838,7 +1916,130 @@ def _render_cvm_analysis(
                                borderwidth=1, font=dict(size=11)),
                 'height': 500,
             })
-            st.plotly_chart(fig_3d, use_container_width=True)
+            st.plotly_chart(fig_3d, use_container_width=True,
+                           key=f'{prefix}_3d_fbpi')
+
+    # ── 3c. 3D quadratic fit + projected surfaces (3-axis grids) ────────
+    _do_3d_fit = (sigma_grid is not None and ks_D_3d is not None
+                  and len(sigma_grid) > 1)
+    if _do_3d_fit:
+        _cam = _cam_presets.get(
+            _cam_choice if '_cam_choice' in dir() else 'Default',
+            dict(eye=dict(x=1.5, y=1.5, z=1.2)))
+
+        # Build working copy with exclusion applied
+        _S3d_work = ks_D_3d.copy().astype(float)
+        for _is3 in range(_S3d_work.shape[0]):
+            _S3d_work[_is3][_exc_mask_2d] = np.nan
+
+        # Single 3D quadratic fit over (x=fbin, y=pi, z=sigma)
+        # _S3d_work is (n_sig, n_fb, n_pi) → transpose to (n_fb, n_pi, n_sig)
+        _S3d_for_fit = _S3d_work.transpose(1, 2, 0)
+        _3d_bx, _3d_by, _3d_bz, _3d_bS, _3d_coeffs, _3d_bounds = \
+            _parabolic_min_3d(x_grid, y_grid, sigma_grid, _S3d_for_fit,
+                              height_factor=_h_factor, n_neighbors=max(_nn_x, _nn_y))
+
+        st.markdown('---')
+        st.markdown('#### 3D Quadratic Fit (all axes)')
+        st.success(
+            f'**3D minimum:** {x_label} = {_3d_bx:.4f}, '
+            f'{y_label} = {_3d_by:.3f}, σ_single = {_3d_bz:.2f} km/s, '
+            f'S = {_3d_bS:.2f}')
+
+        if _3d_coeffs is not None and _3d_bounds is not None:
+            xb0, xb1, yb0, yb1, zb0, zb1 = _3d_bounds
+            _ns3 = 50
+
+            # 3 projections: fix one variable at best, show surface for other two
+            _proj_configs = [
+                (x_grid, y_grid, x_label, y_label, 'σ_single',
+                 _3d_bx, _3d_by, _3d_bz,
+                 lambda xx, yy: _eval_3d_quadratic(_3d_coeffs, xx, yy, _3d_bz),
+                 f'{x_label} × {y_label}  (σ={_3d_bz:.1f})',
+                 xb0, xb1, yb0, yb1, _S3d_work[:, :, :]),
+                (x_grid, sigma_grid, x_label, 'σ_single', y_label,
+                 _3d_bx, _3d_bz, _3d_by,
+                 lambda xx, zz: _eval_3d_quadratic(_3d_coeffs, xx, _3d_by, zz),
+                 f'{x_label} × σ  (π={_3d_by:.3f})',
+                 xb0, xb1, zb0, zb1, None),
+                (y_grid, sigma_grid, y_label, 'σ_single', x_label,
+                 _3d_by, _3d_bz, _3d_bx,
+                 lambda yy, zz: _eval_3d_quadratic(_3d_coeffs, _3d_bx, yy, zz),
+                 f'{y_label} × σ  (f_bin={_3d_bx:.4f})',
+                 yb0, yb1, zb0, zb1, None),
+            ]
+
+            for _ip, (_gA, _gB, _lA, _lB, _lC, _bA, _bB, _bC, _eval_fn,
+                       _ttl, _ab0, _ab1, _bb0, _bb1, _) in enumerate(_proj_configs):
+                _xp = np.linspace(_ab0, _ab1, _ns3)
+                _yp = np.linspace(_bb0, _bb1, _ns3)
+                _Xp, _Yp = np.meshgrid(_xp, _yp, indexing='ij')
+                _Zp = _eval_fn(_Xp, _Yp)
+
+                # Grid data in fit region
+                if _ip == 0:
+                    # f_bin × pi: need best sigma slice from 3D data
+                    _iz_best = int(np.argmin(np.abs(sigma_grid - _3d_bz)))
+                    _sl_data = _S3d_work[_iz_best]  # (n_fb, n_pi)
+                elif _ip == 1:
+                    # f_bin × sigma: fix pi at best
+                    _iy_best = int(np.argmin(np.abs(y_grid - _3d_by)))
+                    _sl_data = _S3d_work[:, :, _iy_best].T  # (n_sig, n_fb) → (n_fb, n_sig)
+                else:
+                    # pi × sigma: fix fbin at best
+                    _ix_best = int(np.argmin(np.abs(x_grid - _3d_bx)))
+                    _sl_data = _S3d_work[:, _ix_best, :].T  # (n_sig, n_pi) → (n_pi, n_sig)
+
+                _xg3, _yg3 = np.meshgrid(_gA, _gB, indexing='ij')
+                _xgf3, _ygf3, _zgf3 = _xg3.ravel(), _yg3.ravel(), _sl_data.ravel()
+                _ib3 = (np.isfinite(_zgf3)
+                        & (_xgf3 >= _ab0) & (_xgf3 <= _ab1)
+                        & (_ygf3 >= _bb0) & (_ygf3 <= _bb1))
+
+                _Zpd = _to_display(_Zp)
+                _zgf3d = _to_display(_zgf3)
+                _bSd = float(_to_display(np.array([_3d_bS]))[0])
+
+                _hov3 = (f'{_lB}: %{{x:.3f}}<br>{_lA}: %{{y:.3f}}<br>'
+                         f'{_cbar_title}: %{{z:.2f}}')
+
+                fig_proj = go.Figure()
+                fig_proj.add_trace(go.Surface(
+                    x=_yp, y=_xp, z=_Zpd,
+                    colorscale='Viridis_r', opacity=0.7,
+                    colorbar=dict(title=f'{_cbar_title} (3D fit)', x=1.05),
+                    name='3D quadratic projection',
+                    hovertemplate=_hov3 + '<extra>3D fit projection</extra>'))
+                if _ib3.sum() > 0:
+                    fig_proj.add_trace(go.Scatter3d(
+                        x=_ygf3[_ib3], y=_xgf3[_ib3], z=_zgf3d[_ib3],
+                        mode='markers',
+                        marker=dict(size=3, color='#4A90D9'),
+                        name='Grid points',
+                        hovertemplate=_hov3 + '<extra>Grid points</extra>'))
+                fig_proj.add_trace(go.Scatter3d(
+                    x=[_bB], y=[_bA], z=[_bSd],
+                    mode='markers',
+                    marker=dict(size=8, color='#DAA520', symbol='diamond'),
+                    name='3D Minimum',
+                    hovertemplate=_hov3 + '<extra>3D Minimum</extra>'))
+                fig_proj.update_layout(**{
+                    **_theme,
+                    'title': dict(text=f'3D Fit Projection: {_ttl}'),
+                    'scene': dict(
+                        xaxis_title=_lB,
+                        yaxis_title=_lA,
+                        zaxis_title=_cbar_title,
+                        dragmode='orbit',
+                    ),
+                    'scene_camera': _cam,
+                    'legend': dict(x=0.01, y=0.99, xanchor='left', yanchor='top',
+                                   bgcolor='rgba(0,0,0,0.5)', bordercolor='gray',
+                                   borderwidth=1, font=dict(size=11)),
+                    'height': 500,
+                })
+                st.plotly_chart(fig_proj, use_container_width=True,
+                               key=f'{prefix}_3d_proj_{_ip}')
 
     # ── 4. 1D slices ─────────────────────────────────────────────────────
     i_x_best = int(np.argmin(np.abs(x_grid - best_x)))
@@ -1887,7 +2088,7 @@ def _render_cvm_analysis(
     st.session_state[f'{prefix}_exc_mask_2d'] = _exc_mask_2d
     st.session_state[f'{prefix}_exc_x_mask_1d'] = _x_exc      # 1D bool per x-axis point
     st.session_state[f'{prefix}_exc_y_mask_1d'] = _y_exc      # 1D bool per y-axis point
-    st.session_state[f'{prefix}_exc_sig_vals'] = list(_exc_sig_vals) if _has_sigma else []
+    st.session_state[f'{prefix}_stored_exc_sig_vals'] = list(_exc_sig_vals) if _has_sigma else []
     return _exc_mask_2d
 
 
@@ -5734,9 +5935,24 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             'd': cur_D_disp.copy(),
                             'fbin': fbin_grid.copy(),
                             'x': pi_grid.copy(),
+                            'x_label': 'π  (period power-law index)',
+                            'x_name': 'π',
                             'title': f'{"CvM p" if scoring_method == "cvm" else "K-S p-value"}  (cadence-aware, {_sig_label} km/s)',
                             'is_final': _is_final,
                         }
+                        # Live 1D σ graph (max p per sigma slice)
+                        if n_sig > 1:
+                            _live_sig_pvals = []
+                            for _ls in range(n_sig):
+                                _lsp = ks_p[_ls]
+                                if np.any(~np.isnan(_lsp)):
+                                    _live_sig_pvals.append(float(np.nanmax(_lsp)))
+                                else:
+                                    _live_sig_pvals.append(0.0)
+                            job['live_sigma_1d'] = {
+                                'sigma_vals': sigma_grid.tolist(),
+                                'max_pvals': _live_sig_pvals,
+                            }
                         _bp_idx = np.unravel_index(
                             np.argmax(cur_p_disp), cur_p_disp.shape)
                         _bf = float(fbin_grid[_bp_idx[0]])
@@ -5918,6 +6134,18 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                     pass
             if _j.get('live_status'):
                 st.markdown(_j['live_status'])
+            # Live 1D σ graph (Dsilva with multi-sigma)
+            _lsig = _j.get('live_sigma_1d')
+            if _lsig and len(_lsig.get('sigma_vals', [])) > 1:
+                _stat_lbl = 'CvM' if 'CvM' in st.session_state.get(f'{p}_scoring', '') else 'K-S'
+                st.plotly_chart(
+                    _make_max_pval_fig(
+                        np.array(_lsig['sigma_vals']),
+                        _lsig['max_pvals'],
+                        height=250,
+                        x_label='σ_single (km/s)',
+                        stat_label=_stat_lbl,
+                    ), use_container_width=True)
         _cadence_live_poll()
 
     elif status == 'error':
@@ -6096,6 +6324,13 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                                           f"[{result.get('lo_sigma', '?')}, {result.get('hi_sigma', '?')}]"})
         _p_label = 'CvM p' if scoring_method == 'cvm' else 'K-S p'
         _rows.append({'Parameter': _p_label, 'Best': f'{_best_pval:.4f}', 'Mode (HDI68)': ''})
+        # S-score (CvM D-statistic) at best-fit point
+        _ks_d_arr = _cad_ks_d if _cad_ks_d is not None else result.get('ks_D')
+        if _ks_d_arr is not None:
+            _ks_d_arr = np.asarray(_ks_d_arr)
+            _best_S = float(np.nanmin(_ks_d_arr))
+            _s_label = 'CvM S' if scoring_method == 'cvm' else 'K-S D'
+            _rows.append({'Parameter': _s_label, 'Best': f'{_best_S:.4f}', 'Mode (HDI68)': ''})
         _rows.append({'Parameter': 'N_sets', 'Best': str(result.get('n_sets', '?')), 'Mode (HDI68)': ''})
         st.table(pd.DataFrame(_rows))
 
