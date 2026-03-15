@@ -338,6 +338,46 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 ---
 
+### E030 — `dict.get()` returns `None` when key exists with `None` value
+
+| | |
+|---|---|
+| **Bad** | `_be = g.get('bin_edges', DEFAULT_DRV_BIN_EDGES)` — returns `None` when `g['bin_edges']` is `None` |
+| **Fix** | `_be = g.get('bin_edges') or DEFAULT_DRV_BIN_EDGES` |
+| **Grep** | `g\.get\(.*,\s*DEFAULT` |
+| **Why** | `dict.get(key, default)` only uses the default when the key is **missing**, not when the value is `None`. Use `or` to fall back on `None` values. |
+| **Found in** | `wr_bias_simulation.py` — `_single_grid_task_lite` CvM branch |
+
+### E031 — `dict(**unpacked, key=val)` fails when unpacked dict already contains `key`
+
+| | |
+|---|---|
+| **Bad** | `dict(**result.items(), timestamp=np.array(...))` — crashes if `result` already has `'timestamp'` |
+| **Fix** | Filter out conflicting keys: `{**{k: v for k, v in result.items() if k not in ('timestamp',)}, 'timestamp': ...}` |
+| **Grep** | `dict\(\s*\*\*` |
+| **Why** | Python raises `TypeError: got multiple values for keyword argument`. When unpacking a dict into `dict()`, any explicit keyword that also exists in the unpacked dict causes a collision. |
+| **Found in** | `app/pages/05_bias_correction.py` — cadence save result handler |
+
+### E032 — Hardcoded Streamlit widget keys in reusable functions
+
+| | |
+|---|---|
+| **Bad** | `st.radio(..., key='cvm_fit_mode')` in a function called from multiple tabs |
+| **Fix** | Accept a `prefix` parameter and use `key=f'{prefix}_fit_mode'` |
+| **Grep** | `key='cvm_` |
+| **Why** | Streamlit requires globally unique widget keys. A function called from multiple tabs/columns will create duplicate keys, crashing with `StreamlitDuplicateElementKey`. Always parameterize keys with a tab/context prefix. |
+| **Found in** | `app/pages/05_bias_correction.py` — `_render_cvm_analysis()` |
+
+### E033 — Variable defined inside `if n_bin > 0` used in return dict outside the block
+
+| | |
+|---|---|
+| **Bad** | `omega` assigned inside `if n_bin > 0:` but used in `return {'omega': omega}` outside |
+| **Fix** | Initialize `omega = np.array([])` before the `if` block |
+| **Grep** | — (not greppable, requires control-flow analysis) |
+| **Why** | When `n_bin == 0` (no binaries drawn), the variable is never assigned, causing `UnboundLocalError`. Always initialize variables before conditional blocks that assign them. |
+| **Found in** | `wr_bias_simulation.py` — `simulate_with_params()` (`omega`, `T0`) |
+
 ## Adding New Errors
 
 When you encounter a new recurring error, add it here with:
