@@ -61,6 +61,27 @@ DAY_S = 86400.0           # s/day
 DEFAULT_DRV_BIN_EDGES = np.arange(0.0, 360.0, 10.0)  # [0, 10, 20, ..., 350]
 
 
+def adaptive_bin_edges(obs_delta_rv: np.ndarray, min_gap: float = 1.0) -> np.ndarray:
+    """Bin edges from observed ΔRV order statistics, merging points closer than *min_gap*.
+
+    Sorts *obs_delta_rv*, walks through adjacent values, and merges groups
+    whose spacing is < *min_gap* km/s (replaces each group with its mean).
+    Returns a 1-D array of ~20-22 evaluation points for N=25 stars.
+    """
+    sorted_vals = np.sort(np.asarray(obs_delta_rv, dtype=float))
+    if sorted_vals.size == 0:
+        return DEFAULT_DRV_BIN_EDGES
+
+    groups: list[list[float]] = [[float(sorted_vals[0])]]
+    for v in sorted_vals[1:]:
+        if v - groups[-1][-1] < min_gap:
+            groups[-1].append(float(v))
+        else:
+            groups.append([float(v)])
+
+    return np.array([np.mean(g) for g in groups], dtype=float)
+
+
 # ---------------------------------------------------------------------------
 # Configuration dataclasses
 # ---------------------------------------------------------------------------
@@ -1138,7 +1159,7 @@ def cvm_weighted_score(
     sim_cdf_var: np.ndarray,
     all_delta_rv: np.ndarray,
     bin_edges: np.ndarray,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float]:
     """Variance-weighted Cramér–von Mises score with empirical p-value.
 
     S = Σ (F_obs(bᵢ) - F_sim_median(bᵢ))² / σ²ᵢ
@@ -1155,16 +1176,21 @@ def cvm_weighted_score(
     all_delta_rv   : (n_sets, n_stars)  raw ΔRV per set (for empirical p)
     bin_edges      : (n_bins,)  CDF evaluation points
 
-    Returns (S_obs, p_value).
+    Returns (S_obs, p_value, S_raw).
+        S_raw = Σ (F_obs - F_sim_median)² (unweighted, comparable across models).
     """
     sim_median_cdf = np.asarray(sim_median_cdf, dtype=float)
     obs_cdf = np.asarray(obs_cdf, dtype=float)
     sim_cdf_var = np.asarray(sim_cdf_var, dtype=float)
 
+    # Unweighted CvM distance (always computable, cross-model comparable)
+    all_diffs = obs_cdf - sim_median_cdf
+    S_raw = float(np.sum(all_diffs ** 2))
+
     valid = sim_cdf_var > 1e-12
     n_valid = int(valid.sum())
     if n_valid < 2:
-        return float(np.max(np.abs(sim_median_cdf - obs_cdf))), 0.5
+        return float(np.max(np.abs(sim_median_cdf - obs_cdf))), 0.5, S_raw
 
     inv_var = 1.0 / sim_cdf_var[valid]
     obs_diffs = obs_cdf[valid] - sim_median_cdf[valid]
@@ -1179,7 +1205,7 @@ def cvm_weighted_score(
     S_all = np.sum(set_diffs ** 2 * inv_var, axis=1)         # (n_sets,)
     p_value = float(np.mean(S_all >= S_obs))
 
-    return S_obs, p_value
+    return S_obs, p_value, S_raw
 
 
 # ---------------------------------------------------------------------------
@@ -1373,10 +1399,13 @@ def _single_grid_task_lite(args):
     rng = np.random.default_rng(seed)
     scoring = g.get('scoring_method', 'ks')
 
+    S_raw = np.nan
     if scoring == 'cvm':
         # CvM requires multiple sets to compute variance
         n_sets = g.get('n_sets_cvm', 1000)
-        _be = g.get('bin_edges') or DEFAULT_DRV_BIN_EDGES
+        _be = g.get('bin_edges')
+        if _be is None:
+            _be = DEFAULT_DRV_BIN_EDGES
         all_drv = np.empty((n_sets, sim_cfg_local.n_stars))
         for s in range(n_sets):
             all_drv[s] = simulate_delta_rv_sample(
@@ -1388,14 +1417,14 @@ def _single_grid_task_lite(args):
         median_cdf = np.median(all_cdfs, axis=0)
         cdf_var = np.var(all_cdfs, axis=0)
         obs_cdf = binned_cdf(g['obs_delta_rv'], _be)
-        D, p = cvm_weighted_score(median_cdf, obs_cdf, cdf_var, all_drv, _be)
+        D, p, S_raw = cvm_weighted_score(median_cdf, obs_cdf, cdf_var, all_drv, _be)
     else:
         delta_sim = simulate_delta_rv_sample(
             f_bin=f_bin, pi=pi,
             sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng,
         )
         D, p = ks_two_sample_binned(delta_sim, g['obs_delta_rv'], g.get('bin_edges'))
-    return f_bin, pi, sigma_single, D, p
+    return f_bin, pi, sigma_single, D, p, S_raw
 
 
 def run_bias_grid(
@@ -1411,6 +1440,7 @@ def run_bias_grid(
     use_multiprocessing: bool = True,
     scoring_method: str = 'ks',
     n_sets_cvm: int = 1000,
+    bin_edges: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Run a (f_bin, pi[, sigma_single]) grid of simulations and K-S comparisons.
@@ -1479,6 +1509,7 @@ def run_bias_grid(
     n_tasks = len(tasks)
     desc = f"Bias grid ({period_model}, {len(sigma_grid)} σ slice(s))"
 
+    _used_bin_edges = bin_edges if bin_edges is not None else DEFAULT_DRV_BIN_EDGES
     _initargs = (
         sim_cfg.cadence_library,
         getattr(sim_cfg, 'cadence_weights', None),
@@ -1489,7 +1520,7 @@ def run_bias_grid(
         sim_cfg.time_span,
         sim_cfg.observation_times,
         sim_cfg.v_sys,
-        DEFAULT_DRV_BIN_EDGES,
+        _used_bin_edges,
         scoring_method,
         n_sets_cvm,
     )
@@ -1519,15 +1550,17 @@ def run_bias_grid(
     n_sig = sigma_grid.size
     n_fb  = fbin_grid.size
     n_pi  = pi_grid.size
-    ks_D  = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    ks_p  = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    ks_D     = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    ks_p     = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    ks_S_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
 
-    for idx, (fb, pi, sigma, D, p) in enumerate(results):
+    for idx, (fb, pi, sigma, D, p, s_raw) in enumerate(results):
         i_sig = idx // (n_fb * n_pi)
         i_fb  = (idx % (n_fb * n_pi)) // n_pi
         i_pi  = idx % n_pi
         ks_D[i_sig, i_fb, i_pi] = D
         ks_p[i_sig, i_fb, i_pi] = p
+        ks_S_raw[i_sig, i_fb, i_pi] = s_raw
 
     return {
         "fbin_grid":  fbin_grid,
@@ -1535,6 +1568,7 @@ def run_bias_grid(
         "sigma_grid": sigma_grid,
         "ks_D":       ks_D,
         "ks_p":       ks_p,
+        "ks_S_raw":   ks_S_raw,
     }
 
 
@@ -1579,9 +1613,10 @@ def _single_grid_task_cadence_aware(args):
     n2 = len(g['obs_delta_rv'])
 
     scoring = g.get('scoring_method', 'ks')
+    S_raw = np.nan
     if scoring == 'cvm':
         _be = _bin_edges if _bin_edges is not None else DEFAULT_DRV_BIN_EDGES
-        D, p_value = cvm_weighted_score(
+        D, p_value, S_raw = cvm_weighted_score(
             median_cdf, obs_cdf, result['cdf_var'],
             result['all_delta_rv'], _be)
     elif scoring == 'weighted':
@@ -1600,7 +1635,7 @@ def _single_grid_task_cadence_aware(args):
                 break
         p_value = max(0.0, min(1.0, term_sum))
 
-    return (f_bin, pi, sigma_single, D, p_value,
+    return (f_bin, pi, sigma_single, D, p_value, S_raw,
             result['median_cdf'], result['lo_cdf'], result['hi_cdf'])
 
 
@@ -1618,6 +1653,7 @@ def run_bias_grid_cadence_aware(
     use_multiprocessing: bool = True,
     callback=None,
     scoring_method: str = 'ks',
+    bin_edges: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
     """Cadence-aware grid search over (f_bin, pi[, sigma_single]).
 
@@ -1658,6 +1694,7 @@ def run_bias_grid_cadence_aware(
 
     n_tasks = len(tasks)
 
+    _used_bin_edges = bin_edges if bin_edges is not None else DEFAULT_DRV_BIN_EDGES
     _initargs = (
         sim_cfg.cadence_library,
         getattr(sim_cfg, 'cadence_weights', None),
@@ -1668,7 +1705,7 @@ def run_bias_grid_cadence_aware(
         sim_cfg.time_span,
         sim_cfg.observation_times,
         sim_cfg.v_sys,
-        DEFAULT_DRV_BIN_EDGES,
+        _used_bin_edges,
         scoring_method,
     )
 
@@ -1681,18 +1718,20 @@ def run_bias_grid_cadence_aware(
     n_sig = sigma_grid.size
     n_fb  = fbin_grid.size
     n_pi  = pi_grid.size
-    ks_D  = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    ks_p  = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    ks_D     = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    ks_p     = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    ks_S_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
 
     def _process_result(res_tuple, completed):
         nonlocal best_p, best_median_cdf, best_lo_cdf, best_hi_cdf
-        fb, pi_val, sigma, D, p, med_cdf, lo_cdf, hi_cdf = res_tuple
+        fb, pi_val, sigma, D, p, s_raw, med_cdf, lo_cdf, hi_cdf = res_tuple
         i_sig = np.searchsorted(sigma_grid, sigma)
         i_fb  = np.searchsorted(fbin_grid, fb)
         i_pi  = np.searchsorted(pi_grid, pi_val)
         if i_sig < n_sig and i_fb < n_fb and i_pi < n_pi:
             ks_D[i_sig, i_fb, i_pi] = D
             ks_p[i_sig, i_fb, i_pi] = p
+            ks_S_raw[i_sig, i_fb, i_pi] = s_raw
         if p > best_p:
             best_p = p
             best_median_cdf = med_cdf
@@ -1720,6 +1759,7 @@ def run_bias_grid_cadence_aware(
         "sigma_grid":      sigma_grid,
         "ks_D":            ks_D,
         "ks_p":            ks_p,
+        "ks_S_raw":        ks_S_raw,
         "best_median_cdf": best_median_cdf,
         "best_lo_cdf":     best_lo_cdf,
         "best_hi_cdf":     best_hi_cdf,
@@ -1844,6 +1884,71 @@ def simulate_best_model(
         rng=rng,
     )
     return best_fbin, best_pi, delta_rv_sim
+
+
+def resimulate_at_point(
+    f_bin: float,
+    pi: float,
+    sigma_single: float,
+    obs_delta_rv: np.ndarray,
+    sim_cfg: SimulationConfig,
+    bin_cfg: BinaryParameterConfig,
+    period_model: str = "powerlaw",
+    bin_edges: Optional[np.ndarray] = None,
+    n_sets: int = 10_000,
+    seed: int = 9999,
+) -> Dict[str, float]:
+    """Re-simulate at exact (f_bin, pi, sigma) and compute S_weighted, S_raw, p-value.
+
+    Runs *n_sets* independent simulations and compares to *obs_delta_rv*.
+
+    Returns dict with keys: S_weighted, S_raw, p_value, median_cdf, lo_cdf, hi_cdf.
+    """
+    obs_delta_rv = np.asarray(obs_delta_rv, dtype=float)
+    _be = bin_edges if bin_edges is not None else DEFAULT_DRV_BIN_EDGES
+
+    sim_local = SimulationConfig(
+        n_stars=sim_cfg.n_stars,
+        n_epochs=sim_cfg.n_epochs,
+        time_span=sim_cfg.time_span,
+        sigma_single=sigma_single,
+        sigma_measure=sim_cfg.sigma_measure,
+        v_sys=sim_cfg.v_sys,
+        observation_times=sim_cfg.observation_times,
+        cadence_library=sim_cfg.cadence_library,
+        cadence_weights=getattr(sim_cfg, 'cadence_weights', None),
+    )
+    bin_local = BinaryParameterConfig(**vars(bin_cfg))
+    bin_local.period_model = period_model
+
+    rng = np.random.default_rng(seed)
+    all_drv = np.empty((n_sets, sim_local.n_stars), dtype=float)
+    for s in range(n_sets):
+        all_drv[s] = simulate_delta_rv_sample(
+            f_bin=f_bin, pi=pi,
+            sim_cfg=sim_local, bin_cfg=bin_local, rng=rng)
+
+    all_cdfs = np.empty((n_sets, _be.size), dtype=float)
+    for s in range(n_sets):
+        all_cdfs[s] = binned_cdf(all_drv[s], _be)
+
+    median_cdf = np.median(all_cdfs, axis=0)
+    lo_cdf = np.percentile(all_cdfs, 16, axis=0)
+    hi_cdf = np.percentile(all_cdfs, 84, axis=0)
+    cdf_var = np.var(all_cdfs, axis=0)
+    obs_cdf = binned_cdf(obs_delta_rv, _be)
+
+    S_weighted, p_value, S_raw = cvm_weighted_score(
+        median_cdf, obs_cdf, cdf_var, all_drv, _be)
+
+    return {
+        'S_weighted': S_weighted,
+        'S_raw': S_raw,
+        'p_value': p_value,
+        'median_cdf': median_cdf,
+        'lo_cdf': lo_cdf,
+        'hi_cdf': hi_cdf,
+    }
 
 
 def plot_best_cdf(
