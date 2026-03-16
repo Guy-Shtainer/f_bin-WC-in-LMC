@@ -6,6 +6,20 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-16 — Likelihood implementation (Dsilva+2023) + cadence fixes
+
+- `8fc7746` Add binned multinomial likelihood (Dsilva+2023) + heatmaps + corner plots
+  - multinomial_log_likelihood(): ln L = Σ n_i · ln(p_i) with epsilon floor
+  - 'Likelihood (Dsilva+23)' scoring option in all 4 tabs
+  - CvM bonus: computes likelihood alongside p-value from same data
+  - Likelihood heatmaps, corner plots (red/Hot_r), HDI68 columns
+  - Fixed cadence _initargs (11→13 args), ~20 title label ternaries
+  - Fixed numpy `or` on arrays crash (E037)
+  - Known: likelihood flat across sigma — needs investigation
+- `5d6df78` Update docs: likelihood methodology, E037, TODO #128
+- `19b08b0` Add daily log entries and session settings for 2026-03-16
+- Tag: `v260316-working`
+
 ## 2026-03-16 — Cadence bug fixes, NaN guards, live heatmap, table alignment
 
 - `d9c6bbe` Fix cadence bugs + add features: NaN guards, live heatmap, scoring labels, table alignment
