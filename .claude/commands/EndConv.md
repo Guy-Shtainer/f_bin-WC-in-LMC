@@ -33,7 +33,17 @@ Run this command before closing a conversation to preserve context for the end-o
    - Keep each field concise but specific enough for EnDay to reconstruct context.
    - The title should be scannable — e.g., "CCF threshold discussion", "Bias correction page bugfixes", "Paper methods section".
 
-5. **Confirm to the user:**
+5. **Auto-scan for new COMMON_ERRORS patterns:**
+   - Review bugs fixed in this conversation.
+   - For each bug: was it caused by a recurring, greppable code pattern?
+   - If yes and the pattern is NOT already in `COMMON_ERRORS.md`:
+     - Add it with the next available E-number (E034, E035, etc.)
+     - Include: Bad/Fix code, Grep regex, Why, Found in
+     - Update the Quick-Scan Regex at the top of `COMMON_ERRORS.md` if the pattern is greppable
+     - Commit the update
+   - If no new patterns were found, note "No new COMMON_ERRORS patterns" in the log entry.
+
+6. **Confirm to the user:**
    - Show the entry that was written.
    - Remind them to run `/EnDay` at the end of the day if they haven't already.
 

@@ -8,7 +8,7 @@ This file documents recurring bugs and deprecated patterns found in this project
 Combined grep pattern for all known bad patterns (copy-paste ready):
 
 ```bash
-grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.complex_\b|\.object_\b|\.str_\b|CLAUDECODE|allow_dangerously_skip_permissions|\.replace\(second=.*\.second\s*\+' --include='*.py' .
+grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.complex_\b|\.object_\b|\.str_\b|CLAUDECODE|allow_dangerously_skip_permissions|\.replace\(second=.*\.second\s*\+|nanargmax|nanargmin' --include='*.py' .
 ```
 
 ---
@@ -377,6 +377,18 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 | **Grep** | — (not greppable, requires control-flow analysis) |
 | **Why** | When `n_bin == 0` (no binaries drawn), the variable is never assigned, causing `UnboundLocalError`. Always initialize variables before conditional blocks that assign them. |
 | **Found in** | `wr_bias_simulation.py` — `simulate_with_params()` (`omega`, `T0`) |
+
+### E034 — `np.nanargmax`/`np.nanargmin` on all-NaN array raises ValueError
+
+| | |
+|---|---|
+| **Bad** | `np.nanargmax(arr)` or `np.nanargmin(arr)` without checking for finite values |
+| **Fix** | `if np.any(np.isfinite(arr)): idx = np.nanargmax(arr)` |
+| **Grep** | `nanargmax\|nanargmin` (then verify a finite-check guard exists nearby) |
+| **Why** | `np.nanargmax` / `np.nanargmin` raise `ValueError: All-NaN slice encountered` when the input has no finite values. This happens when exclusion masks set all grid points to NaN, or when loading partial/empty results. Always guard with `np.any(np.isfinite(arr))` before calling. |
+| **Found in** | `app/pages/05_bias_correction.py` — `_render_cadence_results()` (5 locations), `_parabolic_min_1d/2d/3d` |
+
+---
 
 ## Adding New Errors
 
