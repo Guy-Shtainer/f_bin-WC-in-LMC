@@ -792,4 +792,55 @@ strength of this analysis compared to the prior work.
 
 ---
 
-*Last updated: 2026-03-15*
+### 2026-03-16 — Binned multinomial likelihood implementation (Dsilva+2023)
+
+**What was done:**
+
+*Methodology (paper-relevant):*
+
+- **Binned multinomial likelihood** implemented following Dsilva et al. (2023) Section 4.2.
+  The previous approach used K-S or CvM p-values as pseudo-posterior weights for marginalization
+  and HDI68 error bar computation. While p-values correctly identify the best-fit location,
+  they are not proper likelihoods — a p-value asks "how extreme is this data?" while a
+  likelihood asks "how probable is this data given these parameters?" The shape difference
+  affects error bar calibration.
+
+- The likelihood is computed as ln L = Σ n_i · ln(p_i), where n_i is the observed count of
+  stars in ΔRV bin i, and p_i is the simulated probability of a star falling in bin i (estimated
+  from pooling all simulated sets at each grid point). The multiplicative constant N!/(n_1!...n_k!)
+  is dropped as it is independent of model parameters.
+
+- Bin edges for the likelihood are taken from the user's configured bins (adaptive or fixed grid),
+  matching the CvM/KS evaluation points. Initial implementation with Dsilva's 4 coarse bins
+  ([0, 50, 250, 650, ∞] km/s) was insensitive to σ_single because all single-star ΔRVs fell
+  within the first bin regardless of σ.
+
+- The likelihood surface is normalized across the grid as L = exp(ln L − max(ln L)), giving
+  values in [0, 1] with 1.0 at the best-fit point. Marginalization and HDI68 computation
+  follow the same procedure as for p-values.
+
+- Likelihood is computed as a **bonus** alongside CvM scoring (using the same simulated data),
+  and also available as a standalone scoring method. Both p-value and likelihood posteriors
+  are displayed simultaneously when CvM is selected.
+
+*Implementation:*
+
+- New function `multinomial_log_likelihood()` in `wr_bias_simulation.py`
+- Worker functions extended to return logL alongside existing D, p, S_raw
+- `run_bias_grid()` and `run_bias_grid_cadence_aware()` now return `likelihood` and `logL_raw` arrays
+- UI: "Likelihood (Dsilva+23)" scoring option added to all 4 simulation tabs
+- Visualization: likelihood heatmaps, corner plots (red color scheme), and HDI68 columns
+  added alongside existing p-value displays
+
+**Open questions:**
+
+- The likelihood surface appears nearly flat across σ_single even with fine bins. This may
+  indicate that the multinomial discretization fundamentally loses sensitivity to σ compared
+  to the continuous CvM comparison, or there may be a numerical issue with the pooling approach.
+  Needs investigation.
+- Whether to use Dsilva's coarse bins (for paper comparability) or fine bins (for σ sensitivity)
+  as the default — currently using the user's configured bins.
+
+---
+
+*Last updated: 2026-03-16*

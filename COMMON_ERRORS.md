@@ -408,6 +408,16 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 | **Why** | Solving ∇S=0 finds ANY extremum — minimum, maximum, or saddle point. Without checking the Hessian is positive definite (all eigenvalues > 0), the code may return a maximum, making the "best-fit" the worst point on the grid. |
 | **Found in** | `app/pages/05_bias_correction.py` — `_parabolic_min_2d()`, `_parabolic_min_3d()` |
 
+### E037 — Python `or` on numpy arrays raises ValueError
+
+| | |
+|---|---|
+| **Bad** | `result = arr_or_none or default_array` (where `arr_or_none` might be a numpy array) |
+| **Fix** | `result = arr_or_none if arr_or_none is not None else default_array` |
+| **Grep** | `.get(` followed by `or ` followed by another `.get(` or array name (manual check) |
+| **Why** | Python's `or` evaluates truthiness of the left operand. For numpy arrays with >1 element, `bool(array)` raises `ValueError: The truth value of an array with more than one element is ambiguous`. This happens when `dict.get()` returns a numpy array (truthy) and you chain with `or`. Use explicit `is None` checks instead. |
+| **Found in** | `wr_bias_simulation.py` — likelihood bin edges fallback chain |
+
 ---
 
 ## Adding New Errors
