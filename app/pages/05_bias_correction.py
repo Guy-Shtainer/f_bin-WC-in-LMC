@@ -260,16 +260,41 @@ def _scan_partial_metadata(model: str) -> pd.DataFrame:
             # Best-fit from completed cells
             best_p = float(np.nanmax(ks_p)) if n_done > 0 else 0.0
 
+            # Best f_bin from completed cells
+            best_fb = '—'
+            if n_done > 0 and fb.size > 0:
+                if ks_p.ndim == 3 and np.any(np.isfinite(ks_p)):
+                    _flat = int(np.nanargmax(ks_p))
+                    _idx = np.unravel_index(_flat, ks_p.shape)
+                    best_fb = f'{float(fb[_idx[1]]):.3f}'
+                elif ks_p.ndim == 2 and np.any(np.isfinite(ks_p)):
+                    _flat = int(np.nanargmax(ks_p))
+                    _idx = np.unravel_index(_flat, ks_p.shape)
+                    best_fb = f'{float(fb[_idx[0]]):.3f}'
+
             # Timestamp
             ts = str(d.get('timestamp', '\u2014'))
             ts = ts.replace('T', ' ')[:19]
 
-            d.close()
-
             n_sets_val = str(int(d['n_sets'])) if 'n_sets' in d.files else '—'
 
+            # ΔRV bin info
+            _be = d.get('bin_edges')
+            drv_bin = (f'{float(_be[1] - _be[0]):.0f}'
+                       if _be is not None and len(_be) > 1 else '—')
+            drv_bw = d.get('drv_bin_width')
+            if drv_bw is not None and drv_bin == '—':
+                drv_bin = f'{float(drv_bw):.0f}'
+            drv_max_val = (f'{float(d["drv_max"]):.0f}' if 'drv_max' in d
+                           else '—')
+
+            # Scoring method
+            scoring_val = str(d['scoring_method']) if 'scoring_method' in d else '—'
+
+            d.close()
+
             rows.append({
-                '% Done': f'{pct:.0f}%',
+                '% Done': f'{pct:.1f}%',
                 'Cells': f'{n_done}/{n_total}',
                 'Date': ts,
                 'f_bin': _range_str(fb),
@@ -278,7 +303,11 @@ def _scan_partial_metadata(model: str) -> pd.DataFrame:
                 'logP': _range_str(logP),
                 'N_stars': n_stars,
                 'N_sets': n_sets_val,
+                'ΔRV bin': drv_bin,
+                'ΔRV max': drv_max_val,
+                'Scoring': scoring_val,
                 'Best p': f'{best_p:.5f}',
+                'Best f_bin': best_fb,
                 'File': name,
                 '_path': path,
                 '_pct': pct,
@@ -310,7 +339,7 @@ def _render_partial_table(p: str, model: str, status_slot) -> None:
             ptl = np.load(_act_path, allow_pickle=True)
             st.session_state[f'{p}_result'] = {k: ptl[k] for k in ptl.files}
             ptl.close()
-            status_slot.success(f'Loaded partial ({_act_pct:.0f}% complete)')
+            status_slot.success(f'Loaded partial ({_act_pct:.1f}% complete)')
         elif _act == 'delete':
             try:
                 os.remove(_act_path)
@@ -488,6 +517,46 @@ def _make_max_pval_fig(
         'title': dict(text=f'Max {stat_label} p-value vs {x_label}', font=dict(size=14)),
         'xaxis_title': x_label,
         'yaxis_title': f'Max {stat_label} p-value',
+        'height': height,
+        'margin': dict(l=60, r=20, t=50, b=50),
+    })
+    return fig
+
+
+def _make_min_score_fig(
+    sigma_vals: np.ndarray,
+    min_scores: list[float],
+    height: int = 300,
+    x_label: str = 'σ_single',
+    stat_label: str = 'CvM',
+) -> go.Figure:
+    """Line chart: min weighted score (S) vs a scan variable. Lower = better fit."""
+    best_idx = int(np.argmin(min_scores))
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=sigma_vals, y=min_scores,
+        mode='lines+markers',
+        marker=dict(size=8, color='#E25A53'),
+        line=dict(color='#E25A53', width=2),
+        hovertemplate=f'{x_label}=%{{x:.2f}}<br>min weighted S=%{{y:.4f}}<extra></extra>',
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=[float(sigma_vals[best_idx])],
+        y=[min_scores[best_idx]],
+        mode='markers+text',
+        marker=dict(symbol='star', size=16, color='#DAA520',
+                    line=dict(color='black', width=1)),
+        text=[f'  {x_label}={float(sigma_vals[best_idx]):.2f}, S={min_scores[best_idx]:.4f}'],
+        textposition='middle right',
+        textfont=dict(color='#DAA520', size=11),
+        showlegend=False,
+    ))
+    fig.update_layout(**{
+        **PLOTLY_THEME,
+        'title': dict(text=f'Min {stat_label} weighted S-score vs {x_label}', font=dict(size=14)),
+        'xaxis_title': x_label,
+        'yaxis_title': f'Min {stat_label} weighted S-score',
         'height': height,
         'margin': dict(l=60, r=20, t=50, b=50),
     })
@@ -1389,8 +1458,10 @@ def _parabolic_min_1d(t_grid, S_vals, mode='height', fraction=0.1,
     Returns (best_t, best_S, coeffs, t_fit_range)
     """
     finite = np.isfinite(S_vals)
+    if finite.sum() == 0:
+        return None, None, None, None
     if finite.sum() < 3:
-        i_min = 0
+        i_min = int(np.nanargmin(S_vals))
         return float(t_grid[i_min]), float(S_vals[i_min]), None, None
 
     i_min = int(np.nanargmin(S_vals))
@@ -1436,6 +1507,8 @@ def _parabolic_min_2d(x_grid, y_grid, S_2d, mode='height',
     """
     _empty = (None, None, None, None, None)
     finite = np.isfinite(S_2d)
+    if finite.sum() == 0:
+        return _empty
     if finite.sum() < 6:
         idx = np.unravel_index(np.nanargmin(S_2d), S_2d.shape)
         return float(x_grid[idx[0]]), float(y_grid[idx[1]]), float(S_2d[idx]), None, None
@@ -1499,7 +1572,10 @@ def _parabolic_min_3d(x_grid, y_grid, z_grid, S_3d,
     Returns (best_x, best_y, best_z, best_S, coeffs_10, fit_bounds_6)
     where fit_bounds_6 = (x_min, x_max, y_min, y_max, z_min, z_max).
     """
+    _empty_3d = (None, None, None, None, None, None)
     finite = np.isfinite(S_3d)
+    if finite.sum() == 0:
+        return _empty_3d
     if finite.sum() < 10:
         idx = np.unravel_index(np.nanargmin(S_3d), S_3d.shape)
         return (float(x_grid[idx[0]]), float(y_grid[idx[1]]), float(z_grid[idx[2]]),
@@ -1816,6 +1892,17 @@ def _render_cvm_analysis(
             step=0.01, key=f'{prefix}_frac_y')
 
     # ── 3. Parabolic interpolation ────────────────────────────────────────
+    if not np.any(np.isfinite(_S_work)):
+        st.warning('All grid points are excluded — cannot fit. Adjust exclusion settings.')
+        # Store exclusion info before returning
+        st.session_state[f'{prefix}_exc_mask_2d'] = _exc_mask_2d
+        st.session_state[f'{prefix}_exc_x_mask_1d'] = _x_exc
+        st.session_state[f'{prefix}_exc_y_mask_1d'] = _y_exc
+        st.session_state[f'{prefix}_stored_exc_sig_vals'] = list(_exc_sig_vals) if _has_sigma else []
+        st.session_state[f'{prefix}_exc_x_val_set'] = set(float(x_grid[i]) for i, v in enumerate(_x_exc) if v)
+        st.session_state[f'{prefix}_exc_y_val_set'] = set(float(y_grid[i]) for i, v in enumerate(_y_exc) if v)
+        return _exc_mask_2d
+
     best_x, best_y, best_S, _fit_coeffs, _fit_bounds = _parabolic_min_2d(
         x_grid, y_grid, _S_work,
         mode=_mode, fraction_x=_frac_x, fraction_y=_frac_y,
@@ -2089,6 +2176,10 @@ def _render_cvm_analysis(
     st.session_state[f'{prefix}_exc_x_mask_1d'] = _x_exc      # 1D bool per x-axis point
     st.session_state[f'{prefix}_exc_y_mask_1d'] = _y_exc      # 1D bool per y-axis point
     st.session_state[f'{prefix}_stored_exc_sig_vals'] = list(_exc_sig_vals) if _has_sigma else []
+    # Store excluded VALUE SETS so downstream sections with different grid sizes
+    # can rebuild their own masks (cadence grids may differ from CvM grids)
+    st.session_state[f'{prefix}_exc_x_val_set'] = set(float(x_grid[i]) for i, v in enumerate(_x_exc) if v)
+    st.session_state[f'{prefix}_exc_y_val_set'] = set(float(y_grid[i]) for i, v in enumerate(_y_exc) if v)
     return _exc_mask_2d
 
 
@@ -5849,6 +5940,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             period_model=period_model,
                             drv_bin_width=float(params.get('drv_bin_width', 10.0)),
                             drv_max=float(params.get('drv_max', 360.0)),
+                            scoring_method=scoring_method,
                         )
                         job['partial_saved'] = True
                     job['status'] = 'cancelled'
@@ -5857,6 +5949,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                 i_sig = int(np.searchsorted(sigma_grid, sigma))
                 i_fb  = int(np.searchsorted(fbin_grid, fb))
                 i_pi  = int(np.searchsorted(pi_grid, pi_val))
+                _current_sig_idx = min(i_sig, n_sig - 1)
                 if i_sig < n_sig and i_fb < n_fb and i_pi < n_pi:
                     ks_D[i_sig, i_fb, i_pi] = D
                     ks_p[i_sig, i_fb, i_pi] = p
@@ -5914,22 +6007,25 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             f'σ_single = **{_bsig:.1f}** km/s, '
                             f'{_p_lbl} = **{_bpv:.4f}**')
                     else:
-                        # Dsilva (or single-sigma Langer): show best sigma slice as f_bin × π
-                        _best_sig_idx = 0
+                        # Dsilva (or single-sigma Langer): show CURRENT sigma slice as f_bin x pi
+                        _display_sig_idx = _current_sig_idx if n_sig > 1 else 0
+                        # Also compute overall best for status text
+                        _overall_best_sig = 0
                         if n_sig > 1:
                             _pmax_per_sig = [
                                 float(np.nanmax(ks_p[s]))
-                                for s in range(n_sig)
                                 if np.any(~np.isnan(ks_p[s]))
+                                else -1.0
+                                for s in range(n_sig)
                             ]
-                            if _pmax_per_sig:
-                                _best_sig_idx = int(np.argmax(_pmax_per_sig))
-                        _sig_label = f'σ={sigma_grid[_best_sig_idx]:.1f}'
-                        cur_p = ks_p[_best_sig_idx]
+                            if any(v > -1.0 for v in _pmax_per_sig):
+                                _overall_best_sig = int(np.argmax(_pmax_per_sig))
+                        _sig_label = f'σ={sigma_grid[_display_sig_idx]:.1f}'
+                        cur_p = ks_p[_display_sig_idx]
                         cur_p_disp = np.where(np.isnan(cur_p), 0.0, cur_p)
                         cur_D_disp = np.where(
-                            np.isnan(ks_D[_best_sig_idx]),
-                            0.0, ks_D[_best_sig_idx])
+                            np.isnan(ks_D[_display_sig_idx]),
+                            0.0, ks_D[_display_sig_idx])
                         job['live_heatmap'] = {
                             'p': cur_p_disp.copy(),
                             'd': cur_D_disp.copy(),
@@ -5943,26 +6039,40 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                         # Live 1D σ graph (max p per sigma slice)
                         if n_sig > 1:
                             _live_sig_pvals = []
+                            _live_sig_scores = []
                             for _ls in range(n_sig):
                                 _lsp = ks_p[_ls]
+                                _lsd = ks_D[_ls]
                                 if np.any(~np.isnan(_lsp)):
                                     _live_sig_pvals.append(float(np.nanmax(_lsp)))
                                 else:
                                     _live_sig_pvals.append(0.0)
+                                if np.any(~np.isnan(_lsd)):
+                                    _live_sig_scores.append(float(np.nanmin(_lsd)))
+                                else:
+                                    _live_sig_scores.append(float('inf'))
                             job['live_sigma_1d'] = {
                                 'sigma_vals': sigma_grid.tolist(),
                                 'max_pvals': _live_sig_pvals,
+                                'min_scores': _live_sig_scores,
                             }
                         _bp_idx = np.unravel_index(
                             np.argmax(cur_p_disp), cur_p_disp.shape)
                         _bf = float(fbin_grid[_bp_idx[0]])
                         _bpi = float(pi_grid[_bp_idx[1]])
                         _bpv = float(cur_p_disp[_bp_idx])
-                        job['live_status'] = (
-                            f'{_sig_label} km/s  →  '
-                            f'best f_bin = **{_bf:.4f}**, '
+                        _status_parts = [
+                            f'Showing {_sig_label} km/s  →  '
+                            f'f_bin = **{_bf:.4f}**, '
                             f'π = **{_bpi:.3f}**, '
-                            f'{"CvM p" if scoring_method == "cvm" else "K-S p"} = **{_bpv:.4f}**')
+                            f'{"CvM p" if scoring_method == "cvm" else "K-S p"} = **{_bpv:.4f}**',
+                        ]
+                        if n_sig > 1:
+                            _obs = sigma_grid[_overall_best_sig]
+                            _obp = _pmax_per_sig[_overall_best_sig] if _pmax_per_sig[_overall_best_sig] > -1 else 0
+                            _status_parts.append(
+                                f'Overall best: σ=**{_obs:.1f}** km/s, p=**{_obp:.4f}**')
+                        job['live_status'] = '  |  '.join(_status_parts)
 
         # Build result
         result = {
@@ -5978,6 +6088,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             'n_sets': n_sets,
             'mode': 'cadence_aware',
             'bin_edges': _cad_bin_edges,
+            'scoring_method': scoring_method,
         }
 
         # HDI68
@@ -6134,18 +6245,29 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                     pass
             if _j.get('live_status'):
                 st.markdown(_j['live_status'])
-            # Live 1D σ graph (Dsilva with multi-sigma)
+            # Live 1D σ graph (Dsilva with multi-sigma) — show score (S)
             _lsig = _j.get('live_sigma_1d')
             if _lsig and len(_lsig.get('sigma_vals', [])) > 1:
                 _stat_lbl = 'CvM' if 'CvM' in st.session_state.get(f'{p}_scoring', '') else 'K-S'
-                st.plotly_chart(
-                    _make_max_pval_fig(
-                        np.array(_lsig['sigma_vals']),
-                        _lsig['max_pvals'],
-                        height=250,
-                        x_label='σ_single (km/s)',
-                        stat_label=_stat_lbl,
-                    ), use_container_width=True)
+                _lsig_scores = _lsig.get('min_scores')
+                if _lsig_scores and any(s != float('inf') for s in _lsig_scores):
+                    st.plotly_chart(
+                        _make_min_score_fig(
+                            np.array(_lsig['sigma_vals']),
+                            _lsig_scores,
+                            height=250,
+                            x_label='σ_single (km/s)',
+                            stat_label=_stat_lbl,
+                        ), use_container_width=True)
+                else:
+                    st.plotly_chart(
+                        _make_max_pval_fig(
+                            np.array(_lsig['sigma_vals']),
+                            _lsig['max_pvals'],
+                            height=250,
+                            x_label='σ_single (km/s)',
+                            stat_label=_stat_lbl,
+                        ), use_container_width=True)
         _cadence_live_poll()
 
     elif status == 'error':
@@ -6261,27 +6383,32 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                             height=_ch, width=_cw, prefix=f'{p}_cvm')
 
         # Apply grid exclusion mask to cadence arrays for downstream sections
-        # Use stored 1D per-axis masks (includes range sliders + per-value exclusions)
-        _cvm_fb_exc = st.session_state.get(f'{p}_cvm_exc_x_mask_1d')  # shape (n_fb,)
-        _cvm_y_exc = st.session_state.get(f'{p}_cvm_exc_y_mask_1d')   # shape varies
+        # Rebuild masks from excluded VALUE SETS (not stored 1D masks which may
+        # have a different length than the cadence grid)
+        _exc_fb_vals = st.session_state.get(f'{p}_cvm_exc_x_val_set', set())
+        _exc_y_vals = st.session_state.get(f'{p}_cvm_exc_y_val_set', set())
+        _exc_sig_list = st.session_state.get(f'{p}_cvm_stored_exc_sig_vals', [])
         _cad_ks_d = result.get('ks_D')
-        _has_fb_exc = _cvm_fb_exc is not None and np.any(_cvm_fb_exc)
-        _has_y_exc = _cvm_y_exc is not None and np.any(_cvm_y_exc)
-        if _has_fb_exc or _has_y_exc:
-            # ks_p_arr shape: (n_sig, n_fb, n_pi)
-            # CvM x-axis = fbin_grid → maps to axis 1 (n_fb)
-            _fb_exc_1d = _cvm_fb_exc if _has_fb_exc else np.zeros(len(fbin_grid), dtype=bool)
-            # CvM y-axis may be pi_grid or sigma_grid; ks_p_arr axis 2 = pi_grid
-            # Only apply y exclusion if CvM y_grid matches the local pi axis
-            if _has_y_exc and len(_cvm_y_exc) == len(pi_grid):
-                _pi_exc_1d = _cvm_y_exc
-            else:
-                _pi_exc_1d = np.zeros(len(pi_grid), dtype=bool)
+        _has_fb_exc = len(_exc_fb_vals) > 0
+        _has_y_exc = len(_exc_y_vals) > 0
+        _has_sig_exc = len(_exc_sig_list) > 0
+        if _has_fb_exc or _has_y_exc or _has_sig_exc:
+            # Rebuild 1D masks matching cadence grid dimensions
+            _fb_exc_1d = np.array([float(v) in _exc_fb_vals for v in fbin_grid])
+            _pi_exc_1d = np.array([float(v) in _exc_y_vals for v in pi_grid])
             _cad_exc_2d = _fb_exc_1d[:, None] | _pi_exc_1d[None, :]
-            # If CvM y was sigma_grid, exclude entire sigma slices
-            _sig_exc_slices = set()
-            if _has_y_exc and len(_cvm_y_exc) == len(sigma_grid) and len(_cvm_y_exc) != len(pi_grid):
-                _sig_exc_slices = {i for i, v in enumerate(_cvm_y_exc) if v}
+            # Sigma exclusion: exclude entire sigma slices
+            _exc_sig_set = set(float(v) for v in _exc_sig_list)
+            _sig_exc_slices = {i for i, v in enumerate(sigma_grid) if float(v) in _exc_sig_set}
+            # Also check if CvM y-axis was sigma (Langer case) — those values
+            # should exclude sigma slices, not pi axis
+            if _is_langer_sigma and _has_y_exc:
+                for i, v in enumerate(sigma_grid):
+                    if float(v) in _exc_y_vals:
+                        _sig_exc_slices.add(i)
+                # Reset pi exclusion since y-axis was sigma, not pi
+                _pi_exc_1d = np.zeros(len(pi_grid), dtype=bool)
+                _cad_exc_2d = _fb_exc_1d[:, None] | _pi_exc_1d[None, :]
             ks_p_arr = ks_p_arr.copy()
             if _cad_ks_d is not None:
                 _cad_ks_d = np.array(_cad_ks_d).copy()
@@ -6303,35 +6430,63 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                 _pmax = [float(np.nanmax(ks_p_arr[s])) for s in range(n_sig)]
                 _best_s = int(np.argmax(_pmax))
                 hm_z = ks_p_arr[_best_s]
-            _bi = np.unravel_index(np.nanargmax(hm_z), hm_z.shape)
-            _best_fb = float(fbin_grid[_bi[0]])
-            _best_x_val = float(np.asarray(_x_vals)[_bi[1]])
-            _best_pval = float(hm_z[_bi])
+            if np.any(np.isfinite(hm_z)):
+                _bi = np.unravel_index(np.nanargmax(hm_z), hm_z.shape)
+                _best_fb = float(fbin_grid[_bi[0]])
+                _best_x_val = float(np.asarray(_x_vals)[_bi[1]])
+                _best_pval = float(hm_z[_bi])
 
         # ── Best-fit summary (after exclusion so values reflect filtered grid) ──
         st.markdown('### Best-fit summary')
+
+        def _fmt_hdi(mode_val, lo_val, hi_val, fmt='.3f'):
+            """Format mode ± asymmetric HDI68 errors."""
+            if lo_val == '?' or hi_val == '?':
+                return f'{mode_val:{fmt}}'
+            m, lo, hi = float(mode_val), float(lo_val), float(hi_val)
+            return f'{m:{fmt}} +{hi - m:{fmt}}/−{m - lo:{fmt}}'
+
         _rows = []
+        _m_fb = result.get('mode_fbin', _best_fb)
         _rows.append({'Parameter': 'f_bin', 'Best': f'{_best_fb:.3f}',
-                      'Mode (HDI68)': f"{result.get('mode_fbin', _best_fb):.3f} "
-                                      f"[{result.get('lo_fbin', '?')}, {result.get('hi_fbin', '?')}]"})
+                      'Mode ± HDI68': _fmt_hdi(_m_fb,
+                                               result.get('lo_fbin', '?'),
+                                               result.get('hi_fbin', '?'))})
         if _is_dsilva:
+            _m_pi = result.get('mode_pi', _best_x_val)
             _rows.append({'Parameter': 'π', 'Best': f'{_best_x_val:.2f}',
-                          'Mode (HDI68)': f"{result.get('mode_pi', _best_x_val):.2f} "
-                                          f"[{result.get('lo_pi', '?')}, {result.get('hi_pi', '?')}]"})
+                          'Mode ± HDI68': _fmt_hdi(_m_pi,
+                                                   result.get('lo_pi', '?'),
+                                                   result.get('hi_pi', '?'),
+                                                   fmt='.2f')})
         elif _is_langer_sigma:
+            _m_sig = result.get('mode_sigma', _best_x_val)
             _rows.append({'Parameter': 'σ_single', 'Best': f'{_best_x_val:.1f} km/s',
-                          'Mode (HDI68)': f"{result.get('mode_sigma', _best_x_val):.1f} "
-                                          f"[{result.get('lo_sigma', '?')}, {result.get('hi_sigma', '?')}]"})
+                          'Mode ± HDI68': _fmt_hdi(_m_sig,
+                                                   result.get('lo_sigma', '?'),
+                                                   result.get('hi_sigma', '?'),
+                                                   fmt='.1f')})
+        if n_sig > 1 and 'mode_sigma' in result and np.any(np.isfinite(ks_p_arr)):
+            # Best sigma from overall 3D argmax
+            _best_sig_idx_3d = int(np.unravel_index(
+                np.nanargmax(ks_p_arr), ks_p_arr.shape)[0])
+            _rows.append({
+                'Parameter': 'σ_single',
+                'Best': f'{float(sigma_grid[_best_sig_idx_3d]):.1f} km/s',
+                'Mode ± HDI68': _fmt_hdi(result['mode_sigma'],
+                                         result.get('lo_sigma', '?'),
+                                         result.get('hi_sigma', '?'),
+                                         fmt='.1f')})
         _p_label = 'CvM p' if scoring_method == 'cvm' else 'K-S p'
-        _rows.append({'Parameter': _p_label, 'Best': f'{_best_pval:.4f}', 'Mode (HDI68)': ''})
+        _rows.append({'Parameter': _p_label, 'Best': f'{_best_pval:.4f}', 'Mode ± HDI68': ''})
         # S-score (CvM D-statistic) at best-fit point
         _ks_d_arr = _cad_ks_d if _cad_ks_d is not None else result.get('ks_D')
         if _ks_d_arr is not None:
             _ks_d_arr = np.asarray(_ks_d_arr)
             _best_S = float(np.nanmin(_ks_d_arr))
-            _s_label = 'CvM S' if scoring_method == 'cvm' else 'K-S D'
-            _rows.append({'Parameter': _s_label, 'Best': f'{_best_S:.4f}', 'Mode (HDI68)': ''})
-        _rows.append({'Parameter': 'N_sets', 'Best': str(result.get('n_sets', '?')), 'Mode (HDI68)': ''})
+            _s_label = 'CvM weighted S' if scoring_method == 'cvm' else 'K-S D'
+            _rows.append({'Parameter': _s_label, 'Best': f'{_best_S:.4f}', 'Mode ± HDI68': ''})
+        _rows.append({'Parameter': 'N_sets', 'Best': str(result.get('n_sets', '?')), 'Mode ± HDI68': ''})
         st.table(pd.DataFrame(_rows))
 
         # ── Grid-derived plots (corner, marginalized, animated, 3D) ────────────
@@ -6351,6 +6506,9 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                 _cad_param_posts = [_cad_post_fb]
 
                 # Best-fit values
+                if not np.any(np.isfinite(ks_p_arr)):
+                    st.info('No finite values in result grid — cannot compute corner plot.')
+                    return
                 _cad_best_idx_full = np.unravel_index(
                     np.nanargmax(ks_p_arr), ks_p_arr.shape)
                 _cad_best_sigma = float(sigma_grid[_cad_best_idx_full[0]])
@@ -6580,6 +6738,8 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                 _cad_frames = []
                 for i_s, sv in enumerate(sigma_grid):
                     _zf = ks_p_arr[i_s]
+                    if not np.any(np.isfinite(_zf)):
+                        continue
                     _bf_idx = np.unravel_index(np.nanargmax(_zf), _zf.shape)
                     _bf_f = float(fbin_grid[_bf_idx[0]])
                     _bp_f = float(_anim_x[_bf_idx[1]]) if _zf.ndim > 1 else 0.0
@@ -6676,16 +6836,50 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
             # ── Per-sigma summary table ───────────────────────────────────────
             with st.expander('Per-sigma summary table', expanded=True):
                 _cad_summary = []
+                _ks_d_for_sig = _cad_ks_d if _cad_ks_d is not None else result.get('ks_D')
                 for i_s, sv in enumerate(sigma_grid):
                     _sl = ks_p_arr[i_s]
+                    if not np.any(np.isfinite(_sl)):
+                        _row_dict = {
+                            'σ_single (km/s)': round(float(sv), 2),
+                            'Best f_bin': '—', 'Best π': '—',
+                            f'{"CvM" if scoring_method == "cvm" else "K-S"} p': '—',
+                        }
+                        if _ks_d_for_sig is not None:
+                            _row_dict['Min weighted S'] = '—'
+                        _cad_summary.append(_row_dict)
+                        continue
                     _sl_idx = np.unravel_index(np.nanargmax(_sl), _sl.shape)
-                    _cad_summary.append({
-                        'sigma_single (km/s)': round(float(sv), 2),
+                    _row_dict = {
+                        'σ_single (km/s)': round(float(sv), 2),
                         'Best f_bin': round(float(fbin_grid[_sl_idx[0]]), 4),
-                        'Best pi': round(float(pi_grid[_sl_idx[1]]), 4) if _is_dsilva else '-',
+                        'Best π': round(float(pi_grid[_sl_idx[1]]), 4) if _is_dsilva else '-',
                         f'{"CvM" if scoring_method == "cvm" else "K-S"} p': round(float(_sl[_sl_idx]), 5),
-                    })
+                    }
+                    if _ks_d_for_sig is not None:
+                        _d_sl = np.asarray(_ks_d_for_sig)[i_s]
+                        _row_dict['Min weighted S'] = round(float(np.nanmin(_d_sl)), 5) if np.any(np.isfinite(_d_sl)) else '—'
+                    _cad_summary.append(_row_dict)
                 st.dataframe(pd.DataFrame(_cad_summary), use_container_width=True)
+
+                # 1D score (S) vs sigma_single plot
+                if _ks_d_for_sig is not None:
+                    _sig_min_scores = []
+                    for i_s in range(len(sigma_grid)):
+                        _d_sl = np.asarray(_ks_d_for_sig)[i_s]
+                        if np.any(np.isfinite(_d_sl)):
+                            _sig_min_scores.append(float(np.nanmin(_d_sl)))
+                        else:
+                            _sig_min_scores.append(float('inf'))
+                    _stat_lbl = 'CvM' if scoring_method == 'cvm' else 'K-S'
+                    st.plotly_chart(
+                        _make_min_score_fig(
+                            sigma_grid, _sig_min_scores,
+                            height=300,
+                            x_label='σ_single (km/s)',
+                            stat_label=_stat_lbl,
+                        ), use_container_width=True)
+                    st.caption('Lower weighted S-score = better fit. Gold star marks the optimal σ_single.')
 
         # ── Diagnostic analysis (requires simulation at best-fit) ─────────────
         # ── Diagnostic Analysis (auto-trigger at best-fit) ─────────────
@@ -6696,6 +6890,9 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
 
         _diag_key = f'{p}_gap_sim'
         _diag_fp_key = f'{p}_gap_fingerprint'
+        if not np.any(np.isfinite(ks_p_arr)):
+            st.info('No finite values — cannot run diagnostic analysis.')
+            return
         _cad_best_sigma_diag = float(sigma_grid[
             np.unravel_index(np.nanargmax(ks_p_arr), ks_p_arr.shape)[0]])
 
@@ -7245,7 +7442,7 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                 mode='lines', name=_sim_label,
                 line=dict(color='#E25A53', width=2.5, dash='dash', shape='hv'),
             ))
-            _stat_label = 'CvM S' if scoring_method == 'cvm' else 'K-S D'
+            _stat_label = 'CvM weighted S' if scoring_method == 'cvm' else 'K-S D'
             _D_val = float(np.max(np.abs(med_cdf - obs_cdf_b)))
             fig_cdf.update_layout(**{
                 **PLOTLY_THEME,
@@ -7381,7 +7578,7 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
             cached_load_grid_result.clear()
             _scan_result_metadata.clear()
             st.toast(f'Saved: {_cad_desc}')
-            st.rerun()
+            st.success(f'Result saved as `{_cad_desc}`. Refresh the page to see it in the load table.')
         else:
             st.warning('No result to save. Run first.')
 
@@ -7448,6 +7645,19 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
                 _n_pre = int(np.count_nonzero(
                     ~np.isnan(params['prefilled_ks_p'])))
                 _n_tot = params['prefilled_ks_p'].size
+                # Enforce scoring method consistency with checkpoint
+                _saved_scoring = (str(_cad_ptl['scoring_method'])
+                                  if 'scoring_method' in _cad_ptl
+                                  else None)
+                if (_saved_scoring is not None
+                        and _saved_scoring != scoring_method):
+                    st.warning(
+                        f'Checkpoint was computed with **{_saved_scoring}** '
+                        f'scoring, but UI shows **{scoring_method}**. '
+                        f'Overriding to **{_saved_scoring}** for consistency.')
+                    scoring_method = _saved_scoring
+                    params['scoring_method'] = _saved_scoring
+                    params['save_params']['scoring_method'] = _saved_scoring
                 st.info(
                     f'\u267b\ufe0f Resuming from checkpoint '
                     f'({_n_pre}/{_n_tot} cells, '
