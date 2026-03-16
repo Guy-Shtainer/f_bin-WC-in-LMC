@@ -113,13 +113,13 @@
     "fbin_steps": 99,
     "pi_min": -3.0,
     "pi_max": 3.0,
-    "pi_steps": 100,
+    "pi_steps": 10,
     "n_sets": 1000,
     "scan_sigma": true,
     "sigma_single": 15.0,
     "sigma_min": 3.0,
     "sigma_max": 13.0,
-    "sigma_steps": 100,
+    "sigma_steps": 10,
     "sigma_meas": 1.622,
     "orbital": {
       "logP_min": 0.15,
@@ -140,7 +140,7 @@
       "langer_q_mu": 0.7,
       "langer_q_sigma": 0.2
     },
-    "drv_bin_width": 10.0,
+    "drv_bin_width": 30.0,
     "drv_max": 370.0,
     "error_model_type": "Weibull",
     "errp_2": 0.8982,
@@ -148,10 +148,10 @@
     "errp_0": 1.328
   },
   "grid_cadence_langer": {
-    "fbin_min": 0.0,
+    "fbin_min": 0.01,
     "fbin_max": 1.0,
     "fbin_steps": 100,
-    "n_sets": 10000,
+    "n_sets": 1000,
     "scan_sigma": true,
     "sigma_single": 15.0,
     "sigma_min": 0.1,
