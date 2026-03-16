@@ -6,6 +6,24 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-16 — Cadence bug fixes, NaN guards, live heatmap, table alignment
+
+- `d9c6bbe` Fix cadence bugs + add features: NaN guards, live heatmap, scoring labels, table alignment
+  - BUG #119: scoring_method saved in partial checkpoints, enforced on resume
+  - BUG #1: exclusion masks rebuilt from value sets (not index arrays)
+  - BUG #2: removed st.rerun() after cadence save
+  - Feature #120: posterior ± error bars in cadence summary table
+  - Feature #121: 1D weighted S-score vs sigma_single plot
+  - 5 nanargmax/nanargmin all-NaN crash guards in _render_cadence_results
+  - Live heatmap shows current sigma being simulated, not just best
+  - S-score labels updated to "weighted S-score"
+  - Partial table: .1f precision, added ΔRV/Scoring/Best f_bin columns
+- `8a4281c` Add cadence simulation results and partial checkpoints from 2026-03-15/16
+- `f717d45` Update user_settings.json
+- `1cff912` Update TODO.md: mark #119-121 to-test, add #122-127
+
+---
+
 ## 2026-03-15 — CvM scoring, grid exclusion, 3D interpolation, agent replacement
 
 | Hash | Summary |
