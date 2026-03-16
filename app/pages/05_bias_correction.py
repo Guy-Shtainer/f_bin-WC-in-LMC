@@ -83,6 +83,24 @@ _HISTORY_PATH = os.path.join(_ROOT, 'settings', 'run_history.json')
 
 pal = get_palette()
 
+# ── N-result comparison palette ─────────────────────────────────────────────
+_CMP_COLORS = [
+    '#4A90D9', '#E25A53', '#50C878', '#9B59B6', '#F39C12',
+    '#1ABC9C', '#E67E22', '#3498DB', '#E74C3C', '#2ECC71',
+]
+_CMP_DASHES = [
+    'solid', 'dash', 'dot', 'dashdot', 'longdash',
+    'longdashdot', 'solid', 'dash', 'dot', 'dashdot',
+]
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    """Convert hex color to rgba string for Plotly shading."""
+    h = hex_color.lstrip('#')
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f'rgba({r},{g},{b},{alpha})'
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,14 +266,15 @@ def _scan_partial_metadata(model: str) -> pd.DataFrame:
             sig = np.asarray(d.get('sigma_grid', []))
             logP = np.asarray(d.get('logPmax_grid', []))
 
-            # N stars from settings
-            n_stars = '\u2014'
+            # Parse settings once
+            sett = {}
             if 'settings' in d:
                 try:
                     sett = json.loads(str(d['settings']))
-                    n_stars = str(sett.get('n_stars_sim', '\u2014'))
                 except Exception:
                     pass
+
+            n_stars = str(sett.get('n_stars_sim', '\u2014'))
 
             # Best-fit from completed cells
             best_p = float(np.nanmax(ks_p)) if n_done > 0 else 0.0
@@ -290,6 +309,48 @@ def _scan_partial_metadata(model: str) -> pd.DataFrame:
 
             # Scoring method
             scoring_val = str(d['scoring_method']) if 'scoring_method' in d else '—'
+            if scoring_val == '—':
+                scoring_val = str(sett.get('scoring_method', '—'))
+
+            # ── New fields from settings ──────────────────────────────
+            sigma_meas = sett.get('sigma_measure', '—')
+            if sigma_meas != '—':
+                sigma_meas = f'{float(sigma_meas):.2f}'
+            period_model = str(sett.get('period_model', '—'))
+            e_model = str(sett.get('e_model', '—'))
+            q_model = str(sett.get('q_model', '—'))
+            q_min_v = sett.get('q_min')
+            q_max_v = sett.get('q_max')
+            q_range_str = (f'{float(q_min_v):.2f}\u2013{float(q_max_v):.2f}'
+                           if q_min_v is not None and q_max_v is not None else '—')
+            logP_min_s = sett.get('logP_min', '—')
+            logP_max_s = sett.get('logP_max', '—')
+            logP_range_str = (f'{float(logP_min_s):.2f}\u2013{float(logP_max_s):.2f}'
+                              if logP_min_s != '—' and logP_max_s != '—' else '—')
+            mass_model = str(sett.get('mass_primary_model', '—'))
+            mass_fixed = sett.get('mass_primary_fixed', '—')
+            if mass_fixed != '—':
+                mass_fixed = f'{float(mass_fixed):.1f}'
+            threshold_drv = sett.get('threshold_dRV', '—')
+            if threshold_drv != '—':
+                threshold_drv = f'{float(threshold_drv):.1f}'
+            sigma_factor = sett.get('sigma_factor', '—')
+            if sigma_factor != '—':
+                sigma_factor = f'{float(sigma_factor):.1f}'
+            q_flipped = '—'
+            if 'q_flipped' in sett:
+                q_flipped = 'Yes' if sett['q_flipped'] else 'No'
+            lp = sett.get('langer_period_params', {})
+            langer_summary = '—'
+            if lp:
+                _wA = lp.get('weight_A', '—')
+                langer_summary = f"wA={_wA}"
+
+            adaptive_val = '—'
+            if 'adaptive_bins' in sett:
+                adaptive_val = 'Yes' if sett['adaptive_bins'] else 'No'
+            if adaptive_val == '—' and 'adaptive_bins' in d:
+                adaptive_val = 'Yes' if bool(d['adaptive_bins']) else 'No'
 
             d.close()
 
@@ -300,9 +361,22 @@ def _scan_partial_metadata(model: str) -> pd.DataFrame:
                 'f_bin': _range_str(fb),
                 'pi': _range_str(pi) if is_dsilva else '\u2014',
                 'sigma': _range_str(sig),
-                'logP': _range_str(logP),
+                'logP grid': _range_str(logP),
+                'logP range': logP_range_str,
                 'N_stars': n_stars,
                 'N_sets': n_sets_val,
+                'σ_meas': sigma_meas,
+                'Period': period_model,
+                'e_model': e_model,
+                'q_model': q_model,
+                'q range': q_range_str,
+                'q_flip': q_flipped,
+                'M₁ model': mass_model,
+                'M₁': mass_fixed,
+                'ΔRV thr': threshold_drv,
+                'σ_factor': sigma_factor,
+                'Langer': langer_summary,
+                'Adaptive': adaptive_val,
                 'ΔRV bin': drv_bin,
                 'ΔRV max': drv_max_val,
                 'Scoring': scoring_val,
@@ -419,14 +493,15 @@ def _scan_result_metadata(model: str | None = None) -> pd.DataFrame:
                 sig = d.get('sigma_grid', np.array([]))
                 logP = d.get('logPmax_grid', np.array([]))
 
-                # N stars from settings
-                n_stars = '—'
+                # Parse settings once
+                sett = {}
                 if 'settings' in d:
                     try:
                         sett = json.loads(str(d['settings']))
-                        n_stars = str(sett.get('n_stars_sim', '—'))
                     except Exception:
                         pass
+
+                n_stars = str(sett.get('n_stars_sim', '—'))
 
                 # Best-fit
                 ks_p = d.get('ks_p', np.array([0]))
@@ -448,14 +523,49 @@ def _scan_result_metadata(model: str | None = None) -> pd.DataFrame:
                                      if _be is not None and len(_be) > 1
                                      else '—'))
 
-                # Scoring method
-                scoring_val = '—'
-                if 'settings' in d:
-                    try:
-                        _s = json.loads(str(d['settings']))
-                        scoring_val = str(_s.get('scoring_method', '—'))
-                    except Exception:
-                        pass
+                # Scoring method + adaptive bins
+                scoring_val = str(sett.get('scoring_method', '—'))
+                adaptive_val = '—'
+                if 'adaptive_bins' in sett:
+                    adaptive_val = 'Yes' if sett['adaptive_bins'] else 'No'
+                # Fallback: check top-level key (older saves)
+                if adaptive_val == '—' and 'adaptive_bins' in d:
+                    adaptive_val = 'Yes' if bool(d['adaptive_bins']) else 'No'
+
+                # ── New fields from settings ──────────────────────────────
+                sigma_meas = sett.get('sigma_measure', '—')
+                if sigma_meas != '—':
+                    sigma_meas = f'{float(sigma_meas):.2f}'
+                period_model = str(sett.get('period_model', '—'))
+                e_model = str(sett.get('e_model', '—'))
+                q_model = str(sett.get('q_model', '—'))
+                q_min = sett.get('q_min')
+                q_max = sett.get('q_max')
+                q_range_str = (f'{float(q_min):.2f}–{float(q_max):.2f}'
+                               if q_min is not None and q_max is not None else '—')
+                logP_min_s = sett.get('logP_min', '—')
+                logP_max_s = sett.get('logP_max', '—')
+                logP_range_str = (f'{float(logP_min_s):.2f}–{float(logP_max_s):.2f}'
+                                  if logP_min_s != '—' and logP_max_s != '—' else '—')
+                mass_model = str(sett.get('mass_primary_model', '—'))
+                mass_fixed = sett.get('mass_primary_fixed', '—')
+                if mass_fixed != '—':
+                    mass_fixed = f'{float(mass_fixed):.1f}'
+                threshold_drv = sett.get('threshold_dRV', '—')
+                if threshold_drv != '—':
+                    threshold_drv = f'{float(threshold_drv):.1f}'
+                sigma_factor = sett.get('sigma_factor', '—')
+                if sigma_factor != '—':
+                    sigma_factor = f'{float(sigma_factor):.1f}'
+                q_flipped = '—'
+                if 'q_flipped' in sett:
+                    q_flipped = 'Yes' if sett['q_flipped'] else 'No'
+                # Langer period params summary
+                lp = sett.get('langer_period_params', {})
+                langer_summary = '—'
+                if lp:
+                    _wA = lp.get('weight_A', '—')
+                    langer_summary = f"wA={_wA}"
 
                 d.close()
 
@@ -465,9 +575,22 @@ def _scan_result_metadata(model: str | None = None) -> pd.DataFrame:
                     'f_bin': _range_str(fb),
                     'pi': _range_str(pi) if is_dsilva else '—',
                     'sigma': _range_str(sig),
-                    'logP': _range_str(logP),
+                    'logP grid': _range_str(logP),
+                    'logP range': logP_range_str,
                     'N_stars': n_stars,
                     'N_sets': n_sets_val,
+                    'σ_meas': sigma_meas,
+                    'Period': period_model,
+                    'e_model': e_model,
+                    'q_model': q_model,
+                    'q range': q_range_str,
+                    'q_flip': q_flipped,
+                    'M₁ model': mass_model,
+                    'M₁': mass_fixed,
+                    'ΔRV thr': threshold_drv,
+                    'σ_factor': sigma_factor,
+                    'Langer': langer_summary,
+                    'Adaptive': adaptive_val,
                     'ΔRV bin': drv_bin,
                     'ΔRV max': drv_max_val,
                     'Scoring': scoring_val,
@@ -1056,7 +1179,7 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                             # All fbin rows already complete for this slice
                             continue
 
-                        for fb, pi_ret, sigma_ret, D, p_val in pool.imap_unordered(
+                        for fb, pi_ret, sigma_ret, D, p_val, _s_raw in pool.imap_unordered(
                                 _single_grid_task_lite, tasks,
                                 chunksize=max(1, n_pi // 4)):
                             gj   = fbin_to_global[round(fb, 10)]
@@ -1311,7 +1434,7 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                     )
                     job['partial_saved'] = True
 
-                for fb, _pi_ret, sigma_ret, D, p_val in pool.imap_unordered(
+                for fb, _pi_ret, sigma_ret, D, p_val, _s_raw in pool.imap_unordered(
                         _single_grid_task_lite, tasks,
                         chunksize=max(1, n_sigma // 4)):
                     if job.get('cancel'):
@@ -1548,6 +1671,10 @@ def _parabolic_min_2d(x_grid, y_grid, S_2d, mode='height',
     a, b, c_xy, d, e, f = coeffs
 
     M = np.array([[2*a, c_xy], [c_xy, 2*b]])
+    # Check Hessian is positive definite → true minimum
+    eigvals = np.linalg.eigvalsh(M)
+    if not np.all(eigvals > 0):
+        return x_min, y_min, S_min, tuple(coeffs), fit_bounds
     rhs = np.array([-d, -e])
     try:
         sol = np.linalg.solve(M, rhs)
@@ -1622,6 +1749,11 @@ def _parabolic_min_3d(x_grid, y_grid, z_grid, S_3d,
     M = np.array([[2*a, d_xy, e_xz],
                    [d_xy, 2*b, f_yz],
                    [e_xz, f_yz, 2*c]])
+    # Check Hessian is positive definite (all eigenvalues > 0) → true minimum
+    eigvals = np.linalg.eigvalsh(M)
+    if not np.all(eigvals > 0):
+        # Not a minimum (saddle point or maximum) → fall back to grid minimum
+        return x_min, y_min, z_min, S_min, tuple(coeffs), fit_bounds
     rhs = np.array([-g, -h, -i_c])
     try:
         sol = np.linalg.solve(M, rhs)
@@ -1695,6 +1827,7 @@ def _render_cvm_analysis(
     sigma_grid: np.ndarray | None = None,
     ks_D_3d: np.ndarray | None = None,
     ks_p_3d: np.ndarray | None = None,
+    ks_S_raw_2d: np.ndarray | None = None,
     height: int = 400,
     width: int | None = None,
     prefix: str = 'cvm',
@@ -1709,7 +1842,7 @@ def _render_cvm_analysis(
     _theme = PLOTLY_THEME
 
     # ── 0. Log scale toggle ─────────────────────────────────────────────
-    _use_log = st.checkbox('Log₁₀(S) scale', value=True, key=f'{prefix}_log_s')
+    _use_log = st.checkbox('Log₁₀(S) scale', value=False, key=f'{prefix}_log_s')
 
     def _to_display(S_arr):
         """Transform S values for display (log or linear)."""
@@ -1816,7 +1949,7 @@ def _render_cvm_analysis(
         colorscale='Viridis_r', colorbar=dict(title=_cbar_title),
         hovertemplate=f'{y_label}: %{{x:.3f}}<br>{x_label}: %{{y:.3f}}<br>{_z_hover}: %{{z:.2f}}<extra></extra>',
     ))
-    fig_raw.update_layout(**{**_theme, 'title': dict(text=f'{_cbar_title} (raw)'),
+    fig_raw.update_layout(**{**_theme, 'title': dict(text=f'Weighted {_cbar_title} (all models)'),
                              'xaxis': dict(title=y_label), 'yaxis': dict(title=x_label),
                              'height': height, 'width': width})
     st.plotly_chart(fig_raw, use_container_width=(width is None))
@@ -1839,14 +1972,33 @@ def _render_cvm_analysis(
     st.caption('White = models outside p ∈ [0.05, 0.95] (implausible).')
 
     # P-value heatmap — standard style (uses _p_work for exclusion)
-    st.plotly_chart(
-        _make_heatmap_fig(
-            _p_work, x_grid, y_grid,
-            title='Empirical p-value',
-            show_d=False, height=height, width=width,
-            x_label=y_label, x_name=y_label,
-        ), use_container_width=(width is None))
+    _fig_pval = _make_heatmap_fig(
+        _p_work, x_grid, y_grid,
+        title='Empirical p-value',
+        show_d=False, height=height, width=width,
+        x_label=y_label, x_name=y_label,
+        scoring_label='CvM',
+    )
+    _pval_slot = st.empty()
+    _pval_slot.plotly_chart(_fig_pval, use_container_width=(width is None))
     st.caption('Fraction of simulated sets with S ≥ S_obs.')
+
+    # S_raw (unweighted) heatmap — cross-model comparable
+    if ks_S_raw_2d is not None and np.any(np.isfinite(ks_S_raw_2d)):
+        _Sraw_work = ks_S_raw_2d
+        fig_sraw = go.Figure(go.Heatmap(
+            z=_to_display(_Sraw_work), x=y_grid, y=x_grid,
+            colorscale='Viridis_r',
+            colorbar=dict(title='log₁₀(S_raw)' if _use_log else 'S_raw'),
+            hovertemplate=(f'{y_label}: %{{x:.3f}}<br>{x_label}: %{{y:.3f}}'
+                           f'<br>S_raw: %{{z:.4f}}<extra></extra>'),
+        ))
+        fig_sraw.update_layout(**{**_theme,
+            'title': dict(text='S_raw (unweighted, cross-model comparable)'),
+            'xaxis': dict(title=y_label), 'yaxis': dict(title=x_label),
+            'height': height, 'width': width})
+        st.plotly_chart(fig_sraw, use_container_width=(width is None))
+        st.caption('Lower S_raw = better fit. Directly comparable between Dsilva and Langer models.')
 
     # ── 2. Fit selection controls (per-axis) ─────────────────────────────
     _fc1, _fc2, _fc3 = st.columns([0.2, 0.4, 0.4])
@@ -2128,29 +2280,43 @@ def _render_cvm_analysis(
                 st.plotly_chart(fig_proj, use_container_width=True,
                                key=f'{prefix}_3d_proj_{_ip}')
 
-    # ── 4. 1D slices ─────────────────────────────────────────────────────
+    # ── 4. 1D slices (gold stars from unified 2D/3D fit, not independent 1D fits)
     i_x_best = int(np.argmin(np.abs(x_grid - best_x)))
     i_y_best = int(np.argmin(np.abs(y_grid - best_y)))
 
-    # Slice along x (fix y at best) — uses per-axis factor
+    # 1D slices through the best-fit point for visualization
     S_x_slice = _S_work[:, i_y_best]
-    bx, bS_x, cx, frx = _parabolic_min_1d(
+    S_y_slice = _S_work[i_x_best, :]
+
+    # Gold star positions come from the 2D/3D fit — we just need the parabolic
+    # curve coefficients for drawing the fit line on the 1D plots
+    _, _, cx, frx = _parabolic_min_1d(
         x_grid, S_x_slice, mode=_mode, fraction=_frac_x,
         height_factor=_h_factor_x, n_neighbors=_nn_x)
-
-    # Slice along y (fix x at best) — uses per-axis factor
-    S_y_slice = _S_work[i_x_best, :]
-    by, bS_y, cy, fry = _parabolic_min_1d(
+    _, _, cy, fry = _parabolic_min_1d(
         y_grid, S_y_slice, mode=_mode, fraction=_frac_y,
         height_factor=_h_factor_y, n_neighbors=_nn_y)
+    # Override gold star position with the unified fit result
+    bx = best_x
+    bS_x = best_S if best_S is not None else float(np.nanmin(S_x_slice))
+    by = best_y
+    bS_y = best_S if best_S is not None else float(np.nanmin(S_y_slice))
 
     # Check if we have a 3D grid (sigma scan)
     do_3d = (sigma_grid is not None and ks_D_3d is not None and len(sigma_grid) > 1)
     if do_3d:
         S_sig_slice = ks_D_3d[:, i_x_best, i_y_best]
-        bsig, bS_sig, csig, frsig = _parabolic_min_1d(
+        _, _, csig, frsig = _parabolic_min_1d(
             sigma_grid, S_sig_slice, mode=_mode, fraction=_frac_x,
             height_factor=_h_factor_x, n_neighbors=_nn_1d)
+        # Use 3D fit result for sigma gold star if available
+        if '_3d_bz' in dir() and _3d_bz is not None:
+            bsig = _3d_bz
+            bS_sig = _3d_bS if _3d_bS is not None else float(np.nanmin(S_sig_slice))
+        else:
+            bsig, bS_sig, _, _ = _parabolic_min_1d(
+                sigma_grid, S_sig_slice, mode=_mode, fraction=_frac_x,
+                height_factor=_h_factor_x, n_neighbors=_nn_1d)
         sc1, sc2, sc3 = st.columns(3)
         _render_cvm_1d_plot(sc1, x_grid, S_x_slice, x_label, bx, bS_x, cx, frx,
                             f'Slice at {y_label}={y_grid[i_y_best]:.3f}', height=300,
@@ -2163,6 +2329,7 @@ def _render_cvm_analysis(
                             height=300, log_transform=_use_log)
         st.info(f'**σ_single (parabolic):** {bsig:.2f} km/s')
     else:
+        bsig = None
         sc1, sc2 = st.columns(2)
         _render_cvm_1d_plot(sc1, x_grid, S_x_slice, x_label, bx, bS_x, cx, frx,
                             f'Slice at {y_label}={y_grid[i_y_best]:.3f}', height=300,
@@ -2170,6 +2337,35 @@ def _render_cvm_analysis(
         _render_cvm_1d_plot(sc2, y_grid, S_y_slice, y_label, by, bS_y, cy, fry,
                             f'Slice at {x_label}={x_grid[i_x_best]:.4f}', height=300,
                             log_transform=_use_log)
+
+    # ── Store unified fit results for summary table + re-simulation ──
+    _interp_result = {'f_bin': best_x, 'y_val': best_y, 'S': best_S}
+    if do_3d and '_3d_bx' in dir() and _3d_bx is not None:
+        _interp_result = {
+            'f_bin': _3d_bx, 'pi': _3d_by, 'sigma': _3d_bz, 'S': _3d_bS
+        }
+    elif bsig is not None:
+        _interp_result['sigma'] = bsig
+    st.session_state[f'{prefix}_interp'] = _interp_result
+
+    # Add green star for interpolated point on masked heatmap (distinct from gold grid-best)
+    _interp_fb_val = _interp_result.get('f_bin', best_x)
+    _interp_y_val = _interp_result.get('pi', _interp_result.get('sigma',
+                     _interp_result.get('y_val', best_y)))
+    if _interp_fb_val is not None and _interp_y_val is not None:
+        _star_trace = go.Scatter(
+            x=[_interp_y_val], y=[_interp_fb_val], mode='markers',
+            marker=dict(symbol='star', size=14, color='#00CC66',
+                        line=dict(width=1, color='black')),
+            name='Interpolated',
+            hovertemplate=(f'{x_label}={_interp_fb_val:.4f}<br>'
+                           f'{y_label}={_interp_y_val:.3f}<extra></extra>'),
+        )
+        fig_masked.add_trace(_star_trace)
+        _masked_slot.plotly_chart(fig_masked, use_container_width=(width is None))
+        # Also add to p-value heatmap
+        _fig_pval.add_trace(_star_trace)
+        _pval_slot.plotly_chart(_fig_pval, use_container_width=(width is None))
 
     # Store exclusion masks in session_state for downstream sections
     st.session_state[f'{prefix}_exc_mask_2d'] = _exc_mask_2d
@@ -5886,6 +6082,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         else:
             ks_D = np.full((n_sig, n_fb, n_pi), np.nan)
             ks_p = np.full((n_sig, n_fb, n_pi), np.nan)
+        ks_S_raw = np.full((n_sig, n_fb, n_pi), np.nan)
 
         # Filter out already-completed tasks
         if _pre_p is not None:
@@ -5931,7 +6128,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                         os.makedirs(_RESULT_DIR, exist_ok=True)
                         np.savez(
                             _partial_path,
-                            ks_p=ks_p, ks_D=ks_D,
+                            ks_p=ks_p, ks_D=ks_D, ks_S_raw=ks_S_raw,
                             fbin_grid=fbin_grid, pi_grid=pi_grid,
                             sigma_grid=sigma_grid,
                             timestamp=_dt.datetime.now().isoformat(),
@@ -5941,11 +6138,12 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             drv_bin_width=float(params.get('drv_bin_width', 10.0)),
                             drv_max=float(params.get('drv_max', 360.0)),
                             scoring_method=scoring_method,
+                            adaptive_bins=bool(params.get('adaptive_bins', False)),
                         )
                         job['partial_saved'] = True
                     job['status'] = 'cancelled'
                     return
-                fb, pi_val, sigma, D, p, med_cdf, lo_cdf, hi_cdf = res
+                fb, pi_val, sigma, D, p, s_raw, med_cdf, lo_cdf, hi_cdf = res
                 i_sig = int(np.searchsorted(sigma_grid, sigma))
                 i_fb  = int(np.searchsorted(fbin_grid, fb))
                 i_pi  = int(np.searchsorted(pi_grid, pi_val))
@@ -5953,6 +6151,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                 if i_sig < n_sig and i_fb < n_fb and i_pi < n_pi:
                     ks_D[i_sig, i_fb, i_pi] = D
                     ks_p[i_sig, i_fb, i_pi] = p
+                    ks_S_raw[i_sig, i_fb, i_pi] = s_raw
                 if p > best_p:
                     best_p = p
                     best_fb = fb
@@ -6081,6 +6280,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             'sigma_grid': sigma_grid,
             'ks_D': ks_D,
             'ks_p': ks_p,
+            'ks_S_raw': ks_S_raw,
             'obs_delta_rv': obs_delta_rv,
             'best_median_cdf': best_median_cdf,
             'best_lo_cdf': best_lo_cdf,
@@ -6202,11 +6402,11 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                         _lx = hd['x']
                         _lxl = hd.get('x_label', 'σ_single (km/s)')
                         _lc1, _lc2, _lc3 = st.columns(3)
-                        # Raw S-score
+                        # Weighted S-score (all models)
                         _lc1.plotly_chart(_lgo.Figure(_lgo.Heatmap(
                             z=_ld, x=_lx, y=_lfbin,
                             colorscale='Viridis_r', colorbar=dict(title='S'),
-                        )).update_layout(title='S-score (raw)', xaxis_title=_lxl,
+                        )).update_layout(title='Weighted S (all models)', xaxis_title=_lxl,
                                          yaxis_title='f_bin', height=_ch, width=_cw),
                             use_container_width=_use_cw)
                         # Masked S-score
@@ -6229,8 +6429,10 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                                 x_label=_lxl,
                                 x_name=hd.get('x_name', 'σ'),
                                 live=not hd.get('is_final', False),
+                                scoring_label='CvM',
                             ), use_container_width=_use_cw)
                     else:
+                        _live_sl = 'CvM' if 'CvM' in _sc_live else 'K-S'
                         st.plotly_chart(
                             _make_heatmap_fig(
                                 hd['p'], hd['fbin'], hd['x'],
@@ -6240,6 +6442,7 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                                 x_label=hd.get('x_label', 'π  (period power-law index)'),
                                 x_name=hd.get('x_name', 'π'),
                                 live=not hd.get('is_final', False),
+                                scoring_label=_live_sl,
                             ), use_container_width=_use_cw)
                 except Exception:
                     pass
@@ -6329,11 +6532,13 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
             st.info(f'Showing best σ_single slice: {sigma_grid[_best_s]:.1f} km/s')
 
         _score_label = 'CvM p' if scoring_method == 'cvm' else 'K-S p-value'
+        _sl = 'CvM' if scoring_method == 'cvm' else 'K-S'
         fig_hm = _make_heatmap_fig(
             hm_z, fbin_grid.tolist(), np.asarray(_x_vals).tolist(),
             title=f'{_score_label}  (cadence-aware, {"Dsilva" if _is_dsilva else "Langer 2020"})',
             height=_ch, width=_cw,
             x_label=_x_label, x_name=_x_name,
+            scoring_label=_sl,
         )
         # Star marker + contours are already added by make_heatmap_fig (live=False)
         _bi = np.unravel_index(np.argmax(hm_z), hm_z.shape)
@@ -6346,27 +6551,34 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
         # ── CvM S-score analysis (when CvM scoring was used) ─────────────
         if scoring_method == 'cvm':
             ks_d_arr = result.get('ks_D')
+            _sraw_arr = result.get('ks_S_raw')
+            if _sraw_arr is not None:
+                _sraw_arr = np.asarray(_sraw_arr, dtype=float)
             if ks_d_arr is not None:
                 with st.expander('📊 CvM S-score Analysis', expanded=True):
                     if _is_langer_sigma:
                         # Langer with sigma: 2D grid is (n_fb, n_sig)
                         _cvm_D_2d = ks_d_arr[:, :, 0].T  # match hm_z shape
                         _cvm_p_2d = ks_p_arr[:, :, 0].T
+                        _sraw_2d = _sraw_arr[:, :, 0].T if _sraw_arr is not None else None
                         _render_cvm_analysis(
                             _cvm_D_2d, _cvm_p_2d,
                             fbin_grid, sigma_grid,
                             x_label='f_bin', y_label='σ_single',
+                            ks_S_raw_2d=_sraw_2d,
                             height=_ch, width=_cw, prefix=f'{p}_cvm')
                     elif n_sig == 1:
                         # Single sigma: 2D grid
                         _cvm_D_2d = ks_d_arr[0]
                         _cvm_p_2d = ks_p_arr[0]
+                        _sraw_2d = _sraw_arr[0] if _sraw_arr is not None else None
                         _y_lbl = 'π' if _is_dsilva else 'σ_single'
                         _y_vals = pi_grid if _is_dsilva else sigma_grid
                         _render_cvm_analysis(
                             _cvm_D_2d, _cvm_p_2d,
                             fbin_grid, _y_vals,
                             x_label='f_bin', y_label=_y_lbl,
+                            ks_S_raw_2d=_sraw_2d,
                             height=_ch, width=_cw, prefix=f'{p}_cvm')
                     else:
                         # Dsilva with sigma scan: 3D — show best sigma slice
@@ -6374,12 +6586,14 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                         _best_s_cvm = int(np.argmin(_pmax_cvm))
                         _cvm_2d_D = ks_d_arr[_best_s_cvm]
                         _cvm_2d_p = ks_p_arr[_best_s_cvm]
+                        _sraw_2d = _sraw_arr[_best_s_cvm] if _sraw_arr is not None else None
                         _render_cvm_analysis(
                             _cvm_2d_D, _cvm_2d_p,
                             fbin_grid, pi_grid,
                             x_label='f_bin', y_label='π',
                             sigma_grid=sigma_grid,
                             ks_D_3d=ks_d_arr, ks_p_3d=ks_p_arr,
+                            ks_S_raw_2d=_sraw_2d,
                             height=_ch, width=_cw, prefix=f'{p}_cvm')
 
         # Apply grid exclusion mask to cadence arrays for downstream sections
@@ -6436,7 +6650,7 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                 _best_x_val = float(np.asarray(_x_vals)[_bi[1]])
                 _best_pval = float(hm_z[_bi])
 
-        # ── Best-fit summary (after exclusion so values reflect filtered grid) ──
+        # ── Best-fit summary (5-column table) ──────────────────────────────
         st.markdown('### Best-fit summary')
 
         def _fmt_hdi(mode_val, lo_val, hi_val, fmt='.3f'):
@@ -6446,48 +6660,208 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
             m, lo, hi = float(mode_val), float(lo_val), float(hi_val)
             return f'{m:{fmt}} +{hi - m:{fmt}}/−{m - lo:{fmt}}'
 
-        _rows = []
-        _m_fb = result.get('mode_fbin', _best_fb)
-        _rows.append({'Parameter': 'f_bin', 'Best': f'{_best_fb:.3f}',
-                      'Mode ± HDI68': _fmt_hdi(_m_fb,
-                                               result.get('lo_fbin', '?'),
-                                               result.get('hi_fbin', '?'))})
-        if _is_dsilva:
-            _m_pi = result.get('mode_pi', _best_x_val)
-            _rows.append({'Parameter': 'π', 'Best': f'{_best_x_val:.2f}',
-                          'Mode ± HDI68': _fmt_hdi(_m_pi,
-                                                   result.get('lo_pi', '?'),
-                                                   result.get('hi_pi', '?'),
-                                                   fmt='.2f')})
-        elif _is_langer_sigma:
-            _m_sig = result.get('mode_sigma', _best_x_val)
-            _rows.append({'Parameter': 'σ_single', 'Best': f'{_best_x_val:.1f} km/s',
-                          'Mode ± HDI68': _fmt_hdi(_m_sig,
-                                                   result.get('lo_sigma', '?'),
-                                                   result.get('hi_sigma', '?'),
-                                                   fmt='.1f')})
-        if n_sig > 1 and 'mode_sigma' in result and np.any(np.isfinite(ks_p_arr)):
-            # Best sigma from overall 3D argmax
-            _best_sig_idx_3d = int(np.unravel_index(
-                np.nanargmax(ks_p_arr), ks_p_arr.shape)[0])
-            _rows.append({
-                'Parameter': 'σ_single',
-                'Best': f'{float(sigma_grid[_best_sig_idx_3d]):.1f} km/s',
-                'Mode ± HDI68': _fmt_hdi(result['mode_sigma'],
-                                         result.get('lo_sigma', '?'),
-                                         result.get('hi_sigma', '?'),
-                                         fmt='.1f')})
-        _p_label = 'CvM p' if scoring_method == 'cvm' else 'K-S p'
-        _rows.append({'Parameter': _p_label, 'Best': f'{_best_pval:.4f}', 'Mode ± HDI68': ''})
-        # S-score (CvM D-statistic) at best-fit point
+        # --- Compute grid-best values (non-interpolated) ---
+        _grid_fb = f'{_best_fb:.3f}'
+        _grid_x = f'{_best_x_val:.2f}' if _is_dsilva else f'{_best_x_val:.1f} km/s'
+        _grid_pval = f'{_best_pval:.4f}'
+        _grid_S = '—'
+        _grid_S_raw = '—'
         _ks_d_arr = _cad_ks_d if _cad_ks_d is not None else result.get('ks_D')
         if _ks_d_arr is not None:
             _ks_d_arr = np.asarray(_ks_d_arr)
             _best_S = float(np.nanmin(_ks_d_arr))
-            _s_label = 'CvM weighted S' if scoring_method == 'cvm' else 'K-S D'
-            _rows.append({'Parameter': _s_label, 'Best': f'{_best_S:.4f}', 'Mode ± HDI68': ''})
-        _rows.append({'Parameter': 'N_sets', 'Best': str(result.get('n_sets', '?')), 'Mode ± HDI68': ''})
+            _grid_S = f'{_best_S:.4f}'
+        _ks_sraw_arr = result.get('ks_S_raw')
+        if _ks_sraw_arr is not None:
+            _ks_sraw_arr = np.asarray(_ks_sraw_arr, dtype=float)
+            if np.any(np.isfinite(_ks_sraw_arr)):
+                # S_raw at same grid point as best p-value
+                _best_idx_flat = np.unravel_index(np.nanargmax(ks_p_arr), ks_p_arr.shape)
+                if _ks_sraw_arr.shape == ks_p_arr.shape:
+                    _grid_S_raw = f'{float(_ks_sraw_arr[_best_idx_flat]):.6f}'
+                else:
+                    _grid_S_raw = f'{float(np.nanmin(_ks_sraw_arr)):.6f}'
+        _grid_sigma = '—'
+        _best_sig_idx_3d = 0
+        if n_sig > 1 and np.any(np.isfinite(ks_p_arr)):
+            _best_sig_idx_3d = int(np.unravel_index(
+                np.nanargmax(ks_p_arr), ks_p_arr.shape)[0])
+            _grid_sigma = f'{float(sigma_grid[_best_sig_idx_3d]):.1f} km/s'
+
+        # --- Read interpolated best-fit from unified CvM analysis fit ---
+        _interp_data = st.session_state.get(f'{p}_cvm_interp', {})
+        _interp_fb = float(_interp_data.get('f_bin', _best_fb))
+        _interp_S = _interp_data.get('S')
+        if _interp_S is not None:
+            _interp_S = float(_interp_S)
+        # Second axis: pi for Dsilva, sigma for Langer
+        if _is_dsilva:
+            _interp_x = float(_interp_data.get('pi', _interp_data.get('y_val', _best_x_val)))
+        else:
+            _interp_x = float(_interp_data.get('sigma', _interp_data.get('y_val', _best_x_val)))
+        # Sigma: for Langer, _interp_x IS sigma. For Dsilva 3D, from 'sigma' key.
+        if not _is_dsilva:
+            _interp_sigma = float(_interp_x)  # Langer: second axis is sigma
+        else:
+            _interp_sigma = _interp_data.get('sigma')
+            if _interp_sigma is not None:
+                _interp_sigma = float(_interp_sigma)
+
+        # --- Re-simulation at interpolated params (on display, not background) ---
+        _resim_key = f'{p}_resim_result'
+        # Build a hashable key from interpolated params to detect when they change
+        _resim_param_key = (round(_interp_fb, 6),
+                            round(_interp_x, 6),
+                            round(_interp_sigma, 6) if _interp_sigma is not None else None)
+        _resim = st.session_state.get(_resim_key)
+        # Invalidate cached resim if interpolated params changed
+        if _resim is not None and _resim.get('_param_key') != _resim_param_key:
+            _resim = None
+        if _resim is None:
+            try:
+                from wr_bias_simulation import (
+                    resimulate_at_point, SimulationConfig, BinaryParameterConfig,
+                    DEFAULT_DRV_BIN_EDGES,
+                )
+                _bin_e = result.get('bin_edges')
+                if _bin_e is None:
+                    _bin_e = DEFAULT_DRV_BIN_EDGES
+                _obs_resim = result.get('obs_delta_rv')
+                if _obs_resim is None:
+                    try:
+                        _sh_r = settings_hash(settings)
+                        _obs_resim, _ = cached_load_observed_delta_rvs(_sh_r)
+                    except Exception:
+                        _obs_resim = None
+                _pm = 'powerlaw' if _is_dsilva else 'langer2020'
+                _resim_sigma_val = _interp_sigma if _interp_sigma is not None else float(
+                    result.get('sigma_single', 15.0))
+                _pi_val = _interp_x if _is_dsilva else 0.0
+                _resim_nsets_val = int(st.session_state.get(f'{p}_resim_nsets', 10000))
+                if _obs_resim is not None:
+                    # Load cadence data — CRITICAL: must match what grid used
+                    try:
+                        _sh_cad = settings_hash(settings)
+                        _resim_cad_list, _resim_cad_wts = cached_load_cadence(_sh_cad)
+                    except Exception:
+                        _resim_cad_list, _resim_cad_wts = None, None
+                    _resim_simcfg = SimulationConfig(
+                        n_stars=int(result.get('n_stars', len(_resim_cad_list) if _resim_cad_list else 25)),
+                        sigma_measure=float(result.get('sigma_measure',
+                            st.session_state.get(f'{p}_sigma_meas', 1.622))),
+                        cadence_library=_resim_cad_list,
+                        cadence_weights=_resim_cad_wts,
+                    )
+                    _resim_bincfg = bin_cfg if bin_cfg is not None else BinaryParameterConfig()
+                    _resim_out = resimulate_at_point(
+                        f_bin=float(_interp_fb), pi=float(_pi_val),
+                        sigma_single=float(_resim_sigma_val),
+                        obs_delta_rv=_obs_resim, sim_cfg=_resim_simcfg,
+                        bin_cfg=_resim_bincfg, period_model=_pm,
+                        bin_edges=np.asarray(_bin_e, dtype=float),
+                        n_sets=_resim_nsets_val,
+                    )
+                    _resim = {
+                        'S_weighted': _resim_out['S_weighted'],
+                        'S_raw': _resim_out['S_raw'],
+                        'p_value': _resim_out['p_value'],
+                        '_param_key': _resim_param_key,
+                    }
+                    # p-value check: if outside [0.05, 0.95], interpolation is unreliable
+                    if not (0.05 <= _resim_out['p_value'] <= 0.95):
+                        _resim['_p_rejected'] = True
+                        # Save rejected values for display before falling back
+                        _resim['_rejected_fb'] = float(_interp_fb)
+                        _resim['_rejected_x'] = float(_interp_x)
+                        _resim['_rejected_sigma'] = float(_resim_sigma_val)
+                        _resim['_rejected_S'] = float(_resim_out['S_weighted'])
+                        _resim['_rejected_S_raw'] = float(_resim_out['S_raw'])
+                        _resim['_rejected_p'] = float(_resim_out['p_value'])
+                        # Fall back to grid best for display
+                        _interp_fb = _best_fb
+                        _interp_x = _best_x_val
+                        _interp_S = _best_S if '_best_S' in dir() else None
+                        _interp_sigma = float(sigma_grid[_best_sig_idx_3d]) if n_sig > 1 else None
+                    st.session_state[_resim_key] = _resim
+            except Exception:
+                _resim = None
+
+        # --- N_sets chooser for re-simulation ---
+        _resim_nsets = st.number_input(
+            'Re-sim N_sets', 1000, 100000,
+            int(st.session_state.get(f'{p}_resim_nsets', 10000)), 1000,
+            key=f'{p}_resim_nsets',
+            help='Number of 25-star sets for re-simulation at best-fit point.')
+
+        # --- Build table ---
+        _resim_col = f'Re-simulated ({_resim_nsets // 1000}k)'
+        _p_rejected = _resim is not None and _resim.get('_p_rejected', False)
+        _rows = []
+
+        def _add_row(param, grid, interp, resim_val, hdi, rejected_val=''):
+            row = {'Parameter': param, 'Grid best': grid,
+                   'Interpolated': interp, _resim_col: resim_val,
+                   'Mode ± HDI68': hdi}
+            if _p_rejected:
+                row['Rejected interp'] = rejected_val
+            return row
+
+        # f_bin
+        _m_fb = result.get('mode_fbin', _best_fb)
+        _rej_fb = f'{_resim.get("_rejected_fb", 0):.3f}' if _p_rejected else ''
+        _rows.append(_add_row('f_bin', _grid_fb, f'{_interp_fb:.3f}',
+            f'{_interp_fb:.3f}' if _resim else '—',
+            _fmt_hdi(_m_fb, result.get('lo_fbin', '?'), result.get('hi_fbin', '?')),
+            _rej_fb))
+        # π
+        if _is_dsilva:
+            _m_pi = result.get('mode_pi', _best_x_val)
+            _rej_x = f'{_resim.get("_rejected_x", 0):.2f}' if _p_rejected else ''
+            _rows.append(_add_row('π', f'{_best_x_val:.2f}', f'{_interp_x:.2f}',
+                f'{_interp_x:.2f}' if _resim else '—',
+                _fmt_hdi(_m_pi, result.get('lo_pi', '?'), result.get('hi_pi', '?'), fmt='.2f'),
+                _rej_x))
+        # σ_single
+        if _is_langer_sigma or (n_sig > 1 and 'mode_sigma' in result):
+            _sig_grid_val = _grid_sigma if n_sig > 1 else f'{_best_x_val:.1f} km/s'
+            if _is_langer_sigma:
+                _sig_interp = f'{_interp_x:.1f} km/s'
+            elif '_interp_sigma' in dir() and _interp_sigma is not None:
+                _sig_interp = f'{_interp_sigma:.1f} km/s'
+            else:
+                _sig_interp = _sig_grid_val
+            _m_sig = result.get('mode_sigma', _best_x_val)
+            _rej_sig = f'{_resim.get("_rejected_sigma", 0):.1f} km/s' if _p_rejected else ''
+            _rows.append(_add_row('σ_single', _sig_grid_val, _sig_interp,
+                _sig_interp if _resim else '—',
+                _fmt_hdi(_m_sig, result.get('lo_sigma', '?'), result.get('hi_sigma', '?'), fmt='.1f'),
+                _rej_sig))
+
+        # Scores
+        _p_label = 'CvM p' if scoring_method == 'cvm' else 'K-S p'
+        _s_label = 'CvM weighted S' if scoring_method == 'cvm' else 'K-S D'
+        _interp_S_str = f'{_interp_S:.4f}' if _interp_S is not None else '—'
+        _rows.append(_add_row(_p_label, _grid_pval, '—',
+            f'{_resim["p_value"]:.4f}' if _resim else '—', '',
+            f'{_resim.get("_rejected_p", 0):.4f}' if _p_rejected else ''))
+        _rows.append(_add_row(_s_label, _grid_S, _interp_S_str,
+            f'{_resim["S_weighted"]:.4f}' if _resim else '—', '',
+            f'{_resim.get("_rejected_S", 0):.4f}' if _p_rejected else ''))
+        _rows.append(_add_row('S_raw (cross-model)', _grid_S_raw, '—',
+            f'{_resim["S_raw"]:.6f}' if _resim else '—', '',
+            f'{_resim.get("_rejected_S_raw", 0):.6f}' if _p_rejected else ''))
+        _rows.append(_add_row('N_sets (grid)', str(result.get('n_sets', '?')), '',
+            str(_resim_nsets) if _resim else '—', '', ''))
+
         st.table(pd.DataFrame(_rows))
+        if _resim is not None and _resim.get('_p_rejected'):
+            st.warning('Interpolated model rejected (p outside [0.05, 0.95]). Showing grid best instead.')
+        st.caption(
+            'S_raw is the unweighted CvM distance — directly comparable between Dsilva and Langer models. '
+            'Re-simulated scores differ from Grid best due to Monte Carlo noise (different random seed). '
+            'Large differences indicate N_sets is too low for stable estimates.')
+
+
 
         # ── Grid-derived plots (corner, marginalized, animated, 3D) ────────────
         if n_sig > 1:
@@ -7463,6 +7837,35 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                     borderpad=6, xanchor='right',
                 )],
             })
+            # Bin edges toggle
+            _show_bins = st.checkbox('Show bin edges', key=f'{p}_show_bins')
+            if _show_bins:
+                # Detect adaptive bins: check if edges are unevenly spaced
+                _edges_arr = np.asarray(_bin_edges, dtype=float)
+                _is_adaptive = False
+                if len(_edges_arr) > 2:
+                    _diffs = np.diff(_edges_arr)
+                    _is_adaptive = not np.allclose(_diffs, _diffs[0], rtol=0.01)
+                for _ev in _edges_arr:
+                    fig_cdf.add_vline(
+                        x=float(_ev), line_dash='dot',
+                        line_color='#DAA520' if _is_adaptive else '#888888',
+                        line_width=0.8,
+                        annotation_text='', opacity=0.6)
+                # If adaptive, also show fixed edges for comparison
+                if _is_adaptive:
+                    for _fv in DEFAULT_DRV_BIN_EDGES:
+                        if float(_fv) <= float(_edges_arr[-1]) * 1.1:
+                            fig_cdf.add_vline(
+                                x=float(_fv), line_dash='dot',
+                                line_color='#888888', line_width=0.5,
+                                opacity=0.3)
+                    st.caption(
+                        f'Gold lines: {len(_edges_arr)} adaptive bin edges. '
+                        f'Grey lines: fixed 10 km/s bins (for comparison).')
+                else:
+                    st.caption(f'Grey lines: {len(_edges_arr)} fixed bin edges.')
+
             st.plotly_chart(fig_cdf, use_container_width=True, key=f'{p}_cdf')
             st.caption(
                 f'Cadence-aware CDF comparison. Each of {result.get("n_sets", "?")} sets '
@@ -7496,10 +7899,23 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
     """Shared action buttons + right column for cadence tabs."""
     _cad_tag = 'cadence_dsilva' if _is_dsilva else 'cadence_langer'
 
-    # K-S bin edges (user-configurable)
-    _drv_bin_width = float(st.session_state.get(f'{p}_drv_bin_width', 5.0))
-    _drv_max = float(st.session_state.get(f'{p}_drv_max', 360.0))
-    _cad_bin_edges = np.arange(0.0, _drv_max, _drv_bin_width)
+    # K-S bin edges (user-configurable or adaptive)
+    _use_adaptive = bool(st.session_state.get(f'{p}_adaptive_bins', True))
+    if _use_adaptive:
+        from wr_bias_simulation import adaptive_bin_edges as _abe, DEFAULT_DRV_BIN_EDGES
+        try:
+            _sh_bins = settings_hash(settings) if 'settings' in dir() else ''
+            _obs_drv_bins, _ = cached_load_observed_delta_rvs(_sh_bins)
+        except Exception:
+            _obs_drv_bins = None
+        if _obs_drv_bins is not None and len(_obs_drv_bins) > 0:
+            _cad_bin_edges = _abe(_obs_drv_bins, min_gap=1.0)
+        else:
+            _cad_bin_edges = DEFAULT_DRV_BIN_EDGES
+    else:
+        _drv_bin_width = float(st.session_state.get(f'{p}_drv_bin_width', 5.0))
+        _drv_max = float(st.session_state.get(f'{p}_drv_max', 360.0))
+        _cad_bin_edges = np.arange(0.0, _drv_max, _drv_bin_width)
 
     # ── Load saved results (full width) ──────────────────────────────────
     _cad_meta = _scan_result_metadata(_cad_tag)
@@ -7625,13 +8041,15 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
             'sigma_meas': _sigma_meas,
             'scoring_method': scoring_method,
             'bin_edges': _cad_bin_edges,
-            'drv_bin_width': _drv_bin_width,
-            'drv_max': _drv_max,
+            'adaptive_bins': _use_adaptive,
+            'drv_bin_width': float(st.session_state.get(f'{p}_drv_bin_width', 5.0)),
+            'drv_max': float(st.session_state.get(f'{p}_drv_max', 360.0)),
             'save_params': {
                 'mode': 'cadence_aware',
                 'period_model': _period_model,
                 'n_sets': n_sets,
                 'scoring_method': scoring_method,
+                'adaptive_bins': _use_adaptive,
             },
         }
 
@@ -7708,6 +8126,7 @@ def _render_cadence_dsilva_tab(p: str, settings: dict, sm) -> None:
         f'{p}_sigma_meas':  float(simcfg.get('sigma_measure', 1.622)),
         f'{p}_drv_bin_width': float(gcfg.get('drv_bin_width', 5.0)),
         f'{p}_drv_max':       float(gcfg.get('drv_max', 360.0)),
+        f'{p}_adaptive_bins': bool(gcfg.get('adaptive_bins', True)),
     }
     for _k, _v in _defaults.items():
         if _k not in st.session_state:
@@ -7753,23 +8172,47 @@ def _render_cadence_dsilva_tab(p: str, settings: dict, sm) -> None:
                 int(gcfg.get('n_sets', 10000)), 100, key=f'{p}_n_sets',
                 on_change=lambda: sm.save([_sec, 'n_sets'],
                                           value=st.session_state[f'{p}_n_sets']))
-            _bin_c1, _bin_c2 = st.columns(2)
-            drv_bin_width = _bin_c1.number_input(
-                '\u0394RV bin width (km/s)', 0.1, 50.0,
-                float(gcfg.get('drv_bin_width', 5.0)), 0.1,
-                key=f'{p}_drv_bin_width',
+            _use_adaptive = st.checkbox(
+                'Adaptive bins (recommended)', value=bool(gcfg.get('adaptive_bins', True)),
+                key=f'{p}_adaptive_bins',
                 on_change=lambda: sm.save(
-                    [_sec, 'drv_bin_width'],
-                    value=st.session_state[f'{p}_drv_bin_width']))
-            drv_max = _bin_c2.number_input(
-                'Max \u0394RV (km/s)', 50.0, 1000.0,
-                float(gcfg.get('drv_max', 360.0)), 10.0,
-                key=f'{p}_drv_max',
-                on_change=lambda: sm.save(
-                    [_sec, 'drv_max'],
-                    value=st.session_state[f'{p}_drv_max']))
-            _n_bins = int(drv_max / drv_bin_width)
-            st.caption(f'{_n_bins} bins')
+                    [_sec, 'adaptive_bins'],
+                    value=st.session_state[f'{p}_adaptive_bins']),
+                help='Use observed ΔRV values as CDF evaluation points — eliminates bin-width parameter.')
+            if _use_adaptive:
+                from wr_bias_simulation import adaptive_bin_edges as _abe
+                try:
+                    _sh_d = settings_hash(settings)
+                    _obs_drv_d, _ = cached_load_observed_delta_rvs(_sh_d)
+                except Exception:
+                    _obs_drv_d = None
+                if _obs_drv_d is not None and len(_obs_drv_d) > 0:
+                    _cad_bin_edges_d = _abe(_obs_drv_d, min_gap=1.0)
+                    st.caption(f'{len(_cad_bin_edges_d)} adaptive bins from observed ΔRVs')
+                else:
+                    _cad_bin_edges_d = None
+                    st.caption('Observed ΔRVs not loaded yet — will compute on run')
+                drv_bin_width = None
+                drv_max = None
+            else:
+                _cad_bin_edges_d = None
+                _bin_c1, _bin_c2 = st.columns(2)
+                drv_bin_width = _bin_c1.number_input(
+                    '\u0394RV bin width (km/s)', 0.1, 50.0,
+                    float(gcfg.get('drv_bin_width', 5.0)), 0.1,
+                    key=f'{p}_drv_bin_width',
+                    on_change=lambda: sm.save(
+                        [_sec, 'drv_bin_width'],
+                        value=st.session_state[f'{p}_drv_bin_width']))
+                drv_max = _bin_c2.number_input(
+                    'Max \u0394RV (km/s)', 50.0, 1000.0,
+                    float(gcfg.get('drv_max', 360.0)), 10.0,
+                    key=f'{p}_drv_max',
+                    on_change=lambda: sm.save(
+                        [_sec, 'drv_max'],
+                        value=st.session_state[f'{p}_drv_max']))
+                _n_bins = int(drv_max / drv_bin_width)
+                st.caption(f'{_n_bins} bins')
             _cad_err_info = _render_error_model_selector(p, gcfg, sm, 'grid_cadence_dsilva')
             _sigma_meas = _cad_err_info['sigma_measure']
 
@@ -7962,6 +8405,7 @@ def _render_cadence_langer_tab(p: str, settings: dict, sm) -> None:
         f'{p}_q_flipped':   bool(lg_cfg.get('q_flipped', False)),
         f'{p}_drv_bin_width': float(lg_cfg.get('drv_bin_width', 5.0)),
         f'{p}_drv_max':       float(lg_cfg.get('drv_max', 360.0)),
+        f'{p}_adaptive_bins': bool(lg_cfg.get('adaptive_bins', True)),
     }
     for _k, _v in _defaults.items():
         if _k not in st.session_state:
@@ -7993,23 +8437,47 @@ def _render_cadence_langer_tab(p: str, settings: dict, sm) -> None:
                 int(lg_cfg.get('n_sets', 10000)), 100, key=f'{p}_n_sets',
                 on_change=lambda: sm.save([_sec, 'n_sets'],
                                           value=st.session_state[f'{p}_n_sets']))
-            _bin_c1, _bin_c2 = st.columns(2)
-            drv_bin_width = _bin_c1.number_input(
-                '\u0394RV bin width (km/s)', 0.1, 50.0,
-                float(lg_cfg.get('drv_bin_width', 5.0)), 0.1,
-                key=f'{p}_drv_bin_width',
+            _use_adaptive = st.checkbox(
+                'Adaptive bins (recommended)', value=bool(lg_cfg.get('adaptive_bins', True)),
+                key=f'{p}_adaptive_bins',
                 on_change=lambda: sm.save(
-                    [_sec, 'drv_bin_width'],
-                    value=st.session_state[f'{p}_drv_bin_width']))
-            drv_max = _bin_c2.number_input(
-                'Max \u0394RV (km/s)', 50.0, 1000.0,
-                float(lg_cfg.get('drv_max', 360.0)), 10.0,
-                key=f'{p}_drv_max',
-                on_change=lambda: sm.save(
-                    [_sec, 'drv_max'],
-                    value=st.session_state[f'{p}_drv_max']))
-            _n_bins = int(drv_max / drv_bin_width)
-            st.caption(f'{_n_bins} bins')
+                    [_sec, 'adaptive_bins'],
+                    value=st.session_state[f'{p}_adaptive_bins']),
+                help='Use observed ΔRV values as CDF evaluation points — eliminates bin-width parameter.')
+            if _use_adaptive:
+                from wr_bias_simulation import adaptive_bin_edges as _abe
+                try:
+                    _sh_l = settings_hash(settings)
+                    _obs_drv_l, _ = cached_load_observed_delta_rvs(_sh_l)
+                except Exception:
+                    _obs_drv_l = None
+                if _obs_drv_l is not None and len(_obs_drv_l) > 0:
+                    _cad_bin_edges_l = _abe(_obs_drv_l, min_gap=1.0)
+                    st.caption(f'{len(_cad_bin_edges_l)} adaptive bins from observed ΔRVs')
+                else:
+                    _cad_bin_edges_l = None
+                    st.caption('Observed ΔRVs not loaded yet — will compute on run')
+                drv_bin_width = None
+                drv_max = None
+            else:
+                _cad_bin_edges_l = None
+                _bin_c1, _bin_c2 = st.columns(2)
+                drv_bin_width = _bin_c1.number_input(
+                    '\u0394RV bin width (km/s)', 0.1, 50.0,
+                    float(lg_cfg.get('drv_bin_width', 5.0)), 0.1,
+                    key=f'{p}_drv_bin_width',
+                    on_change=lambda: sm.save(
+                        [_sec, 'drv_bin_width'],
+                        value=st.session_state[f'{p}_drv_bin_width']))
+                drv_max = _bin_c2.number_input(
+                    'Max \u0394RV (km/s)', 50.0, 1000.0,
+                    float(lg_cfg.get('drv_max', 360.0)), 10.0,
+                    key=f'{p}_drv_max',
+                    on_change=lambda: sm.save(
+                        [_sec, 'drv_max'],
+                        value=st.session_state[f'{p}_drv_max']))
+                _n_bins = int(drv_max / drv_bin_width)
+                st.caption(f'{_n_bins} bins')
             _cl_err_info = _render_error_model_selector(p, lg_cfg, sm, 'grid_cadence_langer')
             _sigma_meas = _cl_err_info['sigma_measure']
 
@@ -8864,17 +9332,17 @@ def _render_error_model_selector(p: str, simcfg: dict, sm,
 # Compare tab renderer
 # ─────────────────────────────────────────────────────────────────────────────
 def _render_compare_tab(p: str) -> None:
-    """Render a comparison tab for two saved bias correction results.
+    """Render a comparison tab for N saved bias correction results.
 
     Parameters
     ----------
     p : str
         Unique prefix for session-state keys (e.g. 'cmp', 'cmp2').
     """
-    pal = get_palette()
+    import math as _math
 
-    st.markdown('### Compare two saved results')
-    st.caption('Select 2 rows from the table below to compare them.')
+    st.markdown('### Compare saved results')
+    st.caption('Select 2 or more rows from the table below to compare them.')
 
     # ── Clickable multi-select table ─────────────────────────────────────
     _cmp_meta = _scan_result_metadata()  # both models
@@ -8893,24 +9361,44 @@ def _render_compare_tab(p: str) -> None:
     )
     _cmp_rows = _cmp_sel.selection.rows if _cmp_sel.selection else []
     if len(_cmp_rows) < 2:
-        st.info('Select 2 results from the table above to compare.')
+        st.info('Select 2 or more results from the table above to compare.')
         return
-    if len(_cmp_rows) > 2:
-        st.warning('Only the first 2 selected results will be compared.')
-        _cmp_rows = _cmp_rows[:2]
 
-    sel_a = _cmp_meta.iloc[_cmp_rows[0]]['File']
-    sel_b = _cmp_meta.iloc[_cmp_rows[1]]['File']
-    _path_a = _cmp_meta.iloc[_cmp_rows[0]]['_path']
-    _path_b = _cmp_meta.iloc[_cmp_rows[1]]['_path']
-
-    # Load both results
-    try:
-        res_a = dict(np.load(_path_a, allow_pickle=True))
-        res_b = dict(np.load(_path_b, allow_pickle=True))
-    except Exception as e:
-        st.error(f'Error loading results: {e}')
+    # ── Load all selected results ─────────────────────────────────────────
+    results = []  # list of dicts with label, short, res, info, color, dash
+    for _i, _row_idx in enumerate(_cmp_rows):
+        _row = _cmp_meta.iloc[_row_idx]
+        _label = f"#{_i + 1}: {_row['File'][:30]}"
+        _fpath = _row['_path']
+        try:
+            _res = dict(np.load(_fpath, allow_pickle=True))
+        except Exception as _e:
+            st.error(f'Error loading {_row["File"]}: {_e}')
+            continue
+        results.append({
+            'label': _label,
+            'short': f'#{_i + 1}',
+            'res': _res,
+            'info': None,  # filled below
+            'color': _CMP_COLORS[_i % len(_CMP_COLORS)],
+            'dash': _CMP_DASHES[_i % len(_CMP_DASHES)],
+            'hdi': {},
+        })
+    if len(results) < 2:
+        st.warning('Could not load enough results for comparison.')
         return
+
+    # ── Selected-results confirmation table ───────────────────────────────
+    _sel_rows = []
+    for _r in results:
+        _sel_rows.append({
+            'Label': _r['short'],
+            'Color': _r['color'],
+            'File': _r['label'].split(': ', 1)[-1] if ': ' in _r['label'] else _r['label'],
+        })
+    st.dataframe(pd.DataFrame(_sel_rows), hide_index=True, use_container_width=True)
+    if len(results) > 6:
+        st.caption('More than 6 results selected — plots may be crowded. Consider narrowing your selection.')
 
     # ── View mode toggle ─────────────────────────────────────────────────
     view_mode = st.radio(
@@ -8920,14 +9408,9 @@ def _render_compare_tab(p: str) -> None:
 
     st.markdown('---')
 
-    # ── Extract common arrays ────────────────────────────────────────────
+    # ── Extract common arrays (per-result) ────────────────────────────────
     def _get_arrays(res, label):
-        """Extract heatmap arrays and axis values from a result dict.
-
-        Handles both stored key naming conventions:
-          Dsilva: ks_p shape (logPmax, sigma, fbin, pi) or (sigma, fbin, pi)
-          Langer: ks_p shape (fbin, sigma)
-        """
+        """Extract heatmap arrays and axis values from a result dict."""
         info = {'label': label, 'settings': {}, 'heatmap': None, 'type': 'unknown'}
         ks_p = res.get('ks_p', None)
         if ks_p is None:
@@ -8939,7 +9422,6 @@ def _render_compare_tab(p: str) -> None:
         logPmax_vals = res.get('logPmax_grid', np.array([]))
 
         if pi_vals.size > 0:
-            # Dsilva-style: has pi dimension
             info['type'] = 'dsilva'
             info['fbin_vals'] = fbin_vals
             info['pi_vals'] = pi_vals
@@ -8947,21 +9429,23 @@ def _render_compare_tab(p: str) -> None:
             info['logPmax_vals'] = logPmax_vals
             info['ks_p_full'] = ks_p
 
-            # Collapse to best 2D slice (fbin × pi) for heatmap display
+            if not np.any(np.isfinite(ks_p)):
+                info['x_vals'] = pi_vals
+                info['x_label'] = 'π'
+                return info
+
             if ks_p.ndim == 4:
-                # shape: (logPmax, sigma, fbin, pi) — find global best
                 flat_idx = int(np.nanargmax(ks_p))
                 idx = np.unravel_index(flat_idx, ks_p.shape)
                 info['best_logPmax_idx'] = idx[0]
                 info['best_sigma_idx'] = idx[1]
-                info['heatmap'] = ks_p[idx[0], idx[1]]  # (fbin, pi)
+                info['heatmap'] = ks_p[idx[0], idx[1]]
                 info['best_fbin'] = float(fbin_vals[idx[2]])
                 info['best_pi'] = float(pi_vals[idx[3]])
                 info['best_sigma'] = float(sigma_vals[idx[1]]) if sigma_vals.size > 0 else None
                 info['best_logPmax'] = float(logPmax_vals[idx[0]]) if logPmax_vals.size > 0 else None
                 info['best_pval'] = float(ks_p[idx])
             elif ks_p.ndim == 3:
-                # shape: (sigma, fbin, pi)
                 flat_idx = int(np.nanargmax(ks_p))
                 idx = np.unravel_index(flat_idx, ks_p.shape)
                 info['best_sigma_idx'] = idx[0]
@@ -8980,14 +9464,13 @@ def _render_compare_tab(p: str) -> None:
             info['x_vals'] = pi_vals
             info['x_label'] = 'π'
         else:
-            # Langer-style: 2D (fbin × sigma)
             info['type'] = 'langer'
             info['fbin_vals'] = fbin_vals
             info['sigma_vals'] = sigma_vals
             info['x_vals'] = sigma_vals
             info['x_label'] = 'σ_single'
             info['ks_p_full'] = ks_p
-            if ks_p.ndim == 2:
+            if ks_p.ndim == 2 and np.any(np.isfinite(ks_p)):
                 info['heatmap'] = ks_p
                 flat_idx = int(np.nanargmax(ks_p))
                 idx = np.unravel_index(flat_idx, ks_p.shape)
@@ -8995,7 +9478,6 @@ def _render_compare_tab(p: str) -> None:
                 info['best_sigma'] = float(sigma_vals[idx[1]])
                 info['best_pval'] = float(ks_p[idx])
 
-        # Pre-computed HDI68 values (if saved in .npz)
         for _hk in ('mode_fbin', 'lo_fbin', 'hi_fbin',
                      'mode_pi', 'lo_pi', 'hi_pi',
                      'mode_sigma', 'lo_sigma', 'hi_sigma',
@@ -9003,7 +9485,6 @@ def _render_compare_tab(p: str) -> None:
             if _hk in res:
                 info[_hk] = float(res[_hk])
 
-        # Settings JSON
         if 'settings' in res:
             try:
                 info['settings'] = json.loads(str(res['settings']))
@@ -9011,15 +9492,14 @@ def _render_compare_tab(p: str) -> None:
                 info['settings'] = {}
         return info
 
-    info_a = _get_arrays(res_a, sel_a)
-    info_b = _get_arrays(res_b, sel_b)
+    for _r in results:
+        _r['info'] = _get_arrays(_r['res'], _r['label'])
 
     # ── Run parameters for each result ───────────────────────────────────
     def _format_run_params(info, res):
         """Build a markdown summary of run parameters."""
         s = info.get('settings', {})
         fbin = info.get('fbin_vals', np.array([]))
-        x = info.get('x_vals', np.array([]))
         sigma = info.get('sigma_vals', np.array([]))
         logPmax = info.get('logPmax_vals', np.array([]))
         ts = str(res.get('timestamp', '—'))
@@ -9032,9 +9512,9 @@ def _render_compare_tab(p: str) -> None:
         if fbin.size > 0:
             lines.append(f"**f_bin:** [{fbin[0]:.3f}, {fbin[-1]:.3f}] × {fbin.size} steps")
         if info['type'] == 'dsilva':
-            pi = info.get('pi_vals', np.array([]))
-            if pi.size > 0:
-                lines.append(f"**π:** [{pi[0]:.2f}, {pi[-1]:.2f}] × {pi.size} steps")
+            _pi = info.get('pi_vals', np.array([]))
+            if _pi.size > 0:
+                lines.append(f"**π:** [{_pi[0]:.2f}, {_pi[-1]:.2f}] × {_pi.size} steps")
         if sigma.size > 0:
             if sigma.size == 1:
                 lines.append(f"**σ_single:** {sigma[0]:.2f} km/s")
@@ -9047,14 +9527,12 @@ def _render_compare_tab(p: str) -> None:
                 lines.append(f"**logP_max:** [{logPmax[0]:.2f}, {logPmax[-1]:.2f}] × {logPmax.size} steps")
         lines.append(f"**logP range:** [{s.get('logP_min', '—')}, {s.get('logP_max', '—')}]")
 
-        # Orbital params if present
         orb = s.get('orbital', {})
         if orb:
             lines.append(f"**e_model:** {orb.get('e_model', '—')}, e_max={orb.get('e_max', '—')}")
             lines.append(f"**q_model:** {orb.get('q_model', '—')}, range=[{orb.get('q_range', '—')}]")
             lines.append(f"**M₁:** {orb.get('mass_primary_model', '—')}, {orb.get('mass_primary_fixed', '—')} M⊙")
 
-        # Langer period params
         lp = s.get('langer_period_params', {})
         if lp:
             lines.append(
@@ -9064,15 +9542,19 @@ def _render_compare_tab(p: str) -> None:
 
         return '\n\n'.join(lines)
 
-    _pc1, _pc2 = st.columns(2)
-    with _pc1:
-        with st.expander(f'📋 Run A parameters', expanded=True):
-            st.markdown(_format_run_params(info_a, res_a))
-    with _pc2:
-        with st.expander(f'📋 Run B parameters', expanded=True):
-            st.markdown(_format_run_params(info_b, res_b))
+    _n = len(results)
+    if _n <= 4:
+        _param_cols = st.columns(_n)
+        for _ci, (_col, _r) in enumerate(zip(_param_cols, results)):
+            with _col:
+                with st.expander(f'{_r["short"]} parameters', expanded=True):
+                    st.markdown(_format_run_params(_r['info'], _r['res']))
+    else:
+        for _r in results:
+            with st.expander(f'{_r["short"]}: {_r["label"]} parameters', expanded=False):
+                st.markdown(_format_run_params(_r['info'], _r['res']))
 
-    # ── Pre-compute HDI68 for table (needs heatmaps) ────────────────────
+    # ── Pre-compute HDI68 for all results ─────────────────────────────────
     from wr_bias_simulation import compute_hdi68 as _cmp_hdi68
 
     def _marginalize_1d(heatmap_2d, axis_vals, axis=1):
@@ -9092,88 +9574,115 @@ def _render_compare_tab(p: str) -> None:
         return _cmp_hdi68(grid, post)
 
     def _fmt_mode_err(mode, lo, hi, fmt='.4f'):
-        return f'`{mode:{fmt}}` +{hi - mode:{fmt}} −{mode - lo:{fmt}}'
+        return f'{mode:{fmt}} +{hi - mode:{fmt}} -{mode - lo:{fmt}}'
 
-    # Compute posteriors + HDI for both results
-    _hdi_a = _hdi_b = {}
-    if info_a['heatmap'] is not None:
-        _post_fb_a = _marginalize_1d(info_a['heatmap'], info_a['x_vals'], axis=1)
-        _post_x_a  = _marginalize_1d(info_a['heatmap'], info_a['fbin_vals'], axis=0)
-        _xp_a = 'pi' if info_a['type'] == 'dsilva' else 'sigma'
-        _m_fb_a, _lo_fb_a, _hi_fb_a = _get_hdi(info_a, 'fbin', info_a['fbin_vals'], _post_fb_a)
-        _m_x_a, _lo_x_a, _hi_x_a   = _get_hdi(info_a, _xp_a, info_a['x_vals'], _post_x_a)
-        _hdi_a = {'fbin': (_m_fb_a, _lo_fb_a, _hi_fb_a),
-                  'x': (_m_x_a, _lo_x_a, _hi_x_a),
-                  'post_fbin': _post_fb_a, 'post_x': _post_x_a}
-    if info_b['heatmap'] is not None:
-        _post_fb_b = _marginalize_1d(info_b['heatmap'], info_b['x_vals'], axis=1)
-        _post_x_b  = _marginalize_1d(info_b['heatmap'], info_b['fbin_vals'], axis=0)
-        _xp_b = 'pi' if info_b['type'] == 'dsilva' else 'sigma'
-        _m_fb_b, _lo_fb_b, _hi_fb_b = _get_hdi(info_b, 'fbin', info_b['fbin_vals'], _post_fb_b)
-        _m_x_b, _lo_x_b, _hi_x_b   = _get_hdi(info_b, _xp_b, info_b['x_vals'], _post_x_b)
-        _hdi_b = {'fbin': (_m_fb_b, _lo_fb_b, _hi_fb_b),
-                  'x': (_m_x_b, _lo_x_b, _hi_x_b),
-                  'post_fbin': _post_fb_b, 'post_x': _post_x_b}
+    for _r in results:
+        _inf = _r['info']
+        if _inf['heatmap'] is not None:
+            _post_fb = _marginalize_1d(_inf['heatmap'], _inf['x_vals'], axis=1)
+            _post_x = _marginalize_1d(_inf['heatmap'], _inf['fbin_vals'], axis=0)
+            _xp = 'pi' if _inf['type'] == 'dsilva' else 'sigma'
+            _m_fb, _lo_fb, _hi_fb = _get_hdi(_inf, 'fbin', _inf['fbin_vals'], _post_fb)
+            _m_x, _lo_x, _hi_x = _get_hdi(_inf, _xp, _inf['x_vals'], _post_x)
+            _r['hdi'] = {
+                'fbin': (_m_fb, _lo_fb, _hi_fb),
+                'x': (_m_x, _lo_x, _hi_x),
+                'post_fbin': _post_fb, 'post_x': _post_x,
+            }
 
-    # ── Best-fit comparison table (with HDI68 errors) ─────────────────
+    # ── Best-fit comparison table (dynamic N columns) ─────────────────────
     st.markdown('### Best-fit comparison')
-    _tbl = '| Parameter | Best-fit A | Mode ± 1σ A | Best-fit B | Mode ± 1σ B |\n'
-    _tbl += '|---|---|---|---|---|\n'
 
-    # f_bin
-    _bf_a = f"`{info_a.get('best_fbin', 0):.4f}`" if 'best_fbin' in info_a else '—'
-    _bf_b = f"`{info_b.get('best_fbin', 0):.4f}`" if 'best_fbin' in info_b else '—'
-    _hdi_a_fb = _fmt_mode_err(*_hdi_a['fbin']) if 'fbin' in _hdi_a else '—'
-    _hdi_b_fb = _fmt_mode_err(*_hdi_b['fbin']) if 'fbin' in _hdi_b else '—'
-    _tbl += f'| f_bin | {_bf_a} | {_hdi_a_fb} | {_bf_b} | {_hdi_b_fb} |\n'
+    _bf_rows = []
 
-    # π (Dsilva only)
-    if 'best_pi' in info_a or 'best_pi' in info_b:
-        _bp_a = f"`{info_a['best_pi']:.4f}`" if 'best_pi' in info_a else '—'
-        _bp_b = f"`{info_b['best_pi']:.4f}`" if 'best_pi' in info_b else '—'
-        _hp_a = _fmt_mode_err(*_hdi_a['x']) if ('x' in _hdi_a and info_a['type'] == 'dsilva') else '—'
-        _hp_b = _fmt_mode_err(*_hdi_b['x']) if ('x' in _hdi_b and info_b['type'] == 'dsilva') else '—'
-        _tbl += f'| π | {_bp_a} | {_hp_a} | {_bp_b} | {_hp_b} |\n'
+    # f_bin row
+    _fb_row = {'Parameter': 'f_bin'}
+    for _r in results:
+        _inf = _r['info']
+        _fb_row[f'{_r["short"]} Best-fit'] = f'{_inf["best_fbin"]:.4f}' if 'best_fbin' in _inf else '—'
+        _fb_row[f'{_r["short"]} Mode +/- 1σ'] = _fmt_mode_err(*_r['hdi']['fbin']) if 'fbin' in _r['hdi'] else '—'
+    _bf_rows.append(_fb_row)
 
-    # σ_single
-    if 'best_sigma' in info_a or 'best_sigma' in info_b:
-        _bs_a = f"`{info_a['best_sigma']:.2f}`" if info_a.get('best_sigma') is not None else '—'
-        _bs_b = f"`{info_b['best_sigma']:.2f}`" if info_b.get('best_sigma') is not None else '—'
-        _hs_a = _fmt_mode_err(*_hdi_a['x'], fmt='.2f') if ('x' in _hdi_a and info_a['type'] == 'langer') else '—'
-        _hs_b = _fmt_mode_err(*_hdi_b['x'], fmt='.2f') if ('x' in _hdi_b and info_b['type'] == 'langer') else '—'
-        _tbl += f'| σ_single | {_bs_a} | {_hs_a} | {_bs_b} | {_hs_b} |\n'
+    # π row (if any result has it)
+    if any('best_pi' in _r['info'] for _r in results):
+        _pi_row = {'Parameter': 'π'}
+        for _r in results:
+            _inf = _r['info']
+            _pi_row[f'{_r["short"]} Best-fit'] = f'{_inf["best_pi"]:.4f}' if 'best_pi' in _inf else '—'
+            _pi_row[f'{_r["short"]} Mode +/- 1σ'] = (
+                _fmt_mode_err(*_r['hdi']['x']) if ('x' in _r['hdi'] and _inf['type'] == 'dsilva') else '—')
+        _bf_rows.append(_pi_row)
 
-    # logP_max
-    if 'best_logPmax' in info_a or 'best_logPmax' in info_b:
-        _bl_a = f"`{info_a['best_logPmax']:.2f}`" if info_a.get('best_logPmax') is not None else '—'
-        _bl_b = f"`{info_b['best_logPmax']:.2f}`" if info_b.get('best_logPmax') is not None else '—'
-        _tbl += f'| logP_max | {_bl_a} | — | {_bl_b} | — |\n'
+    # σ_single row (if any result has it)
+    if any(_r['info'].get('best_sigma') is not None for _r in results):
+        _sig_row = {'Parameter': 'σ_single'}
+        for _r in results:
+            _inf = _r['info']
+            _sig_row[f'{_r["short"]} Best-fit'] = f'{_inf["best_sigma"]:.2f}' if _inf.get('best_sigma') is not None else '—'
+            _sig_row[f'{_r["short"]} Mode +/- 1σ'] = (
+                _fmt_mode_err(*_r['hdi']['x'], fmt='.2f') if ('x' in _r['hdi'] and _inf['type'] == 'langer') else '—')
+        _bf_rows.append(_sig_row)
 
-    # p-value (K-S or CvM depending on scoring method used)
-    _pv_a = f"`{info_a.get('best_pval', 0):.5f}`" if 'best_pval' in info_a else '—'
-    _pv_b = f"`{info_b.get('best_pval', 0):.5f}`" if 'best_pval' in info_b else '—'
-    _tbl += f'| p-value | {_pv_a} | — | {_pv_b} | — |\n'
+    # logP_max row
+    if any(_r['info'].get('best_logPmax') is not None for _r in results):
+        _lp_row = {'Parameter': 'logP_max'}
+        for _r in results:
+            _inf = _r['info']
+            _lp_row[f'{_r["short"]} Best-fit'] = f'{_inf["best_logPmax"]:.2f}' if _inf.get('best_logPmax') is not None else '—'
+            _lp_row[f'{_r["short"]} Mode +/- 1σ'] = '—'
+        _bf_rows.append(_lp_row)
 
-    # Model
-    _tbl += f"| Model | {info_a['type']} | — | {info_b['type']} | — |\n"
+    # p-value row
+    _pv_row = {'Parameter': 'p-value'}
+    for _r in results:
+        _inf = _r['info']
+        _pv_row[f'{_r["short"]} Best-fit'] = f'{_inf["best_pval"]:.5f}' if 'best_pval' in _inf else '—'
+        _pv_row[f'{_r["short"]} Mode +/- 1σ'] = '—'
+    _bf_rows.append(_pv_row)
 
-    st.markdown(_tbl)
+    # Re-simulation S_raw (if any result has it)
+    if any(_r['res'].get('resim_S_raw') is not None for _r in results):
+        _sr_row = {'Parameter': 'S_raw (resim)'}
+        for _r in results:
+            _v = _r['res'].get('resim_S_raw')
+            _sr_row[f'{_r["short"]} Best-fit'] = f'{float(_v):.6f}' if _v is not None else '—'
+            _sr_row[f'{_r["short"]} Mode +/- 1σ'] = '—'
+        _bf_rows.append(_sr_row)
 
-    # ── Parameter comparison table with diff highlighting ───────────────
+    if any(_r['res'].get('resim_p_value') is not None for _r in results):
+        _rp_row = {'Parameter': 'p-value (resim)'}
+        for _r in results:
+            _v = _r['res'].get('resim_p_value')
+            _rp_row[f'{_r["short"]} Best-fit'] = f'{float(_v):.4f}' if _v is not None else '—'
+            _rp_row[f'{_r["short"]} Mode +/- 1σ'] = '—'
+        _bf_rows.append(_rp_row)
+
+    # Model row
+    _mod_row = {'Parameter': 'Model'}
+    for _r in results:
+        _mod_row[f'{_r["short"]} Best-fit'] = _r['info']['type']
+        _mod_row[f'{_r["short"]} Mode +/- 1σ'] = '—'
+    _bf_rows.append(_mod_row)
+
+    _bf_df = pd.DataFrame(_bf_rows)
+    st.dataframe(_bf_df, use_container_width=True, hide_index=True)
+
+    if any(_r['res'].get('resim_S_raw') is not None for _r in results):
+        st.caption('**S_raw (resim)** is the unweighted CvM distance — directly comparable across models. Lower = better fit.')
+
+    # ── Parameter differences table ───────────────────────────────────────
     st.markdown('### Parameter differences')
-    _diff_rows = []
     _all_sett_keys = sorted(set(
-        list(info_a['settings'].keys()) + list(info_b['settings'].keys())))
+        k for _r in results for k in _r['info']['settings'].keys()))
+    _diff_rows = []
     for _sk in _all_sett_keys:
-        _va = info_a['settings'].get(_sk, '—')
-        _vb = info_b['settings'].get(_sk, '—')
-        _differs = str(_va) != str(_vb)
-        _diff_rows.append({
-            'Parameter': _sk,
-            'Result A': str(_va),
-            'Result B': str(_vb),
-            'Differs': 'Yes' if _differs else '',
-        })
+        _vals = [str(_r['info']['settings'].get(_sk, '—')) for _r in results]
+        _differs = len(set(_vals)) > 1
+        _row_d = {'Parameter': _sk}
+        for _r, _v in zip(results, _vals):
+            _row_d[_r['short']] = _v
+        _row_d['Differs'] = 'Yes' if _differs else ''
+        _diff_rows.append(_row_d)
     if _diff_rows:
         _diff_df = pd.DataFrame(_diff_rows)
 
@@ -9189,99 +9698,71 @@ def _render_compare_tab(p: str) -> None:
         )
 
     # ── Heatmaps ─────────────────────────────────────────────────────────
-    if info_a['heatmap'] is not None and info_b['heatmap'] is not None:
+    _hm_results = [_r for _r in results if _r['info']['heatmap'] is not None]
+    if _hm_results:
         st.markdown('### p-value heatmaps')
 
-        if view_mode == 'Side-by-side':
-            hc1, hc2 = st.columns(2)
-            with hc1:
-                st.markdown(f'**A: {info_a["label"][:40]}**')
-                fig_a = _make_heatmap_fig(
-                    info_a['heatmap'],
-                    info_a['fbin_vals'], info_a['x_vals'],
-                    title=f'p-value — A ({info_a["type"]})',
-                    x_label=info_a['x_label'],
-                    height=400,
-                )
-                st.plotly_chart(fig_a, use_container_width=True, key=f'{p}_hm_a')
-            with hc2:
-                st.markdown(f'**B: {info_b["label"][:40]}**')
-                fig_b = _make_heatmap_fig(
-                    info_b['heatmap'],
-                    info_b['fbin_vals'], info_b['x_vals'],
-                    title=f'p-value — B ({info_b["type"]})',
-                    x_label=info_b['x_label'],
-                    height=400,
-                )
-                st.plotly_chart(fig_b, use_container_width=True, key=f'{p}_hm_b')
+        _all_same_type = len(set(_r['info']['type'] for _r in _hm_results)) == 1
+        _all_same_shape = len(set(_r['info']['heatmap'].shape for _r in _hm_results)) == 1
+        _can_overlay = _all_same_type and _all_same_shape and len(_hm_results) == 2
 
-        else:  # Overlay — contour overlay on same axes if compatible
-            if (info_a['type'] == info_b['type']
-                    and info_a['heatmap'].shape == info_b['heatmap'].shape):
-                fig = go.Figure()
-                fig.add_trace(go.Heatmap(
-                    z=info_a['heatmap'],
-                    x=info_a['x_vals'], y=info_a['fbin_vals'],
-                    colorscale='Blues', opacity=0.6,
-                    zsmooth='best',
-                    name=info_a['label'],
-                    colorbar=dict(title='A p-val', x=1.0),
-                ))
-                fig.add_trace(go.Contour(
-                    z=info_b['heatmap'],
-                    x=info_b['x_vals'], y=info_b['fbin_vals'],
-                    contours=dict(coloring='lines', showlabels=True),
-                    line=dict(color='red', width=2, dash='dot'),
-                    name=info_b['label'],
-                    colorbar=dict(title='B p-val', x=1.12),
-                    showscale=True,
-                ))
-                fig.update_layout(**{
-                    **PLOTLY_THEME,
-                    'title': dict(text='p-value overlay'),
-                    'xaxis_title': info_a['x_label'],
-                    'yaxis_title': 'f_bin',
-                    'height': 500,
-                })
-                st.plotly_chart(fig, use_container_width=True, key=f'{p}_hm_overlay')
-            else:
-                st.info('Overlay requires same model type and grid dimensions. Showing side-by-side.')
-                hc1, hc2 = st.columns(2)
-                with hc1:
-                    st.markdown(f'**A: {info_a["label"][:40]}**')
-                    fig_a = _make_heatmap_fig(
-                        info_a['heatmap'],
-                        info_a['fbin_vals'], info_a['x_vals'],
-                        title=f'p-value — A ({info_a["type"]})',
-                        x_label=info_a['x_label'], height=400,
-                    )
-                    st.plotly_chart(fig_a, use_container_width=True, key=f'{p}_hm_a2')
-                with hc2:
-                    st.markdown(f'**B: {info_b["label"][:40]}**')
-                    fig_b = _make_heatmap_fig(
-                        info_b['heatmap'],
-                        info_b['fbin_vals'], info_b['x_vals'],
-                        title=f'p-value — B ({info_b["type"]})',
-                        x_label=info_b['x_label'], height=400,
-                    )
-                    st.plotly_chart(fig_b, use_container_width=True, key=f'{p}_hm_b2')
+        if view_mode == 'Overlay' and _can_overlay:
+            _ra, _rb = _hm_results[0], _hm_results[1]
+            fig = go.Figure()
+            fig.add_trace(go.Heatmap(
+                z=_ra['info']['heatmap'],
+                x=_ra['info']['x_vals'], y=_ra['info']['fbin_vals'],
+                colorscale='Blues', opacity=0.6, zsmooth='best',
+                name=_ra['label'],
+                colorbar=dict(title=f'{_ra["short"]} p-val', x=1.0),
+            ))
+            fig.add_trace(go.Contour(
+                z=_rb['info']['heatmap'],
+                x=_rb['info']['x_vals'], y=_rb['info']['fbin_vals'],
+                contours=dict(coloring='lines', showlabels=True),
+                line=dict(color=_rb['color'], width=2, dash='dot'),
+                name=_rb['label'],
+                colorbar=dict(title=f'{_rb["short"]} p-val', x=1.12),
+                showscale=True,
+            ))
+            fig.update_layout(**{
+                **PLOTLY_THEME,
+                'title': dict(text='p-value overlay'),
+                'xaxis_title': _ra['info']['x_label'],
+                'yaxis_title': 'f_bin',
+                'height': 500,
+            })
+            st.plotly_chart(fig, use_container_width=True, key=f'{p}_hm_overlay')
+        else:
+            if view_mode == 'Overlay' and not _can_overlay:
+                st.info('Overlay requires exactly 2 results with same model type and grid dimensions. Showing side-by-side.')
+            _ncols = min(len(_hm_results), 3)
+            _nrows = _math.ceil(len(_hm_results) / _ncols)
+            for _ri in range(_nrows):
+                _cols = st.columns(_ncols)
+                for _ci, _col in enumerate(_cols):
+                    _idx = _ri * _ncols + _ci
+                    if _idx >= len(_hm_results):
+                        break
+                    _r = _hm_results[_idx]
+                    with _col:
+                        st.markdown(f'**{_r["short"]}: {_r["info"]["type"]}**')
+                        _hm_fig = _make_heatmap_fig(
+                            _r['info']['heatmap'],
+                            _r['info']['fbin_vals'], _r['info']['x_vals'],
+                            title=f'p-value — {_r["short"]} ({_r["info"]["type"]})',
+                            x_label=_r['info']['x_label'],
+                            height=350,
+                        )
+                        st.plotly_chart(_hm_fig, use_container_width=True,
+                                        key=f'{p}_hm_{_idx}')
 
-    # ── 1D Posteriors with HDI68 errors ─────────────────────────────────
-    if info_a['heatmap'] is not None and info_b['heatmap'] is not None:
+    # ── 1D Posteriors with HDI68 errors ───────────────────────────────────
+    _post_results = [_r for _r in results if 'post_fbin' in _r['hdi']]
+    if _post_results:
         st.markdown('### 1D Posteriors (with 68% HDI errors)')
 
-        # Reuse posteriors + HDI computed above for the best-fit table
-        post_fbin_a = _hdi_a.get('post_fbin', np.array([]))
-        post_fbin_b = _hdi_b.get('post_fbin', np.array([]))
-        post_x_a    = _hdi_a.get('post_x', np.array([]))
-        post_x_b    = _hdi_b.get('post_x', np.array([]))
-        mode_fbin_a, lo_fbin_a, hi_fbin_a = _hdi_a.get('fbin', (0, 0, 0))
-        mode_fbin_b, lo_fbin_b, hi_fbin_b = _hdi_b.get('fbin', (0, 0, 0))
-        mode_x_a, lo_x_a, hi_x_a = _hdi_a.get('x', (0, 0, 0))
-        mode_x_b, lo_x_b, hi_x_b = _hdi_b.get('x', (0, 0, 0))
-
         def _add_hdi_shading(fig, grid, post, lo, hi, color, opacity=0.15):
-            """Add HDI68 shaded region to a posterior plot."""
             mask = (grid >= lo) & (grid <= hi)
             x_hdi = grid[mask]
             y_hdi = post[mask]
@@ -9295,118 +9776,83 @@ def _render_compare_tab(p: str) -> None:
                 ))
 
         def _add_mode_line(fig, mode_val, color):
-            """Add vertical dashed line at posterior mode."""
             fig.add_vline(x=mode_val, line=dict(color=color, width=1.5, dash='dash'))
 
-        if view_mode == 'Side-by-side':
-            pc1, pc2 = st.columns(2)
-            with pc1:
-                st.markdown('**f_bin**')
-                fig_pa = go.Figure()
-                fig_pa.add_trace(go.Scatter(
-                    x=info_a['fbin_vals'], y=post_fbin_a,
-                    mode='lines', line=dict(color='#4A90D9', width=2),
-                    name='A',
-                ))
-                _add_hdi_shading(fig_pa, info_a['fbin_vals'], post_fbin_a,
-                                 lo_fbin_a, hi_fbin_a, 'rgba(74,144,217,0.2)')
-                _add_mode_line(fig_pa, mode_fbin_a, '#4A90D9')
-                fig_pa.add_trace(go.Scatter(
-                    x=info_b['fbin_vals'], y=post_fbin_b,
-                    mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
-                    name='B',
-                ))
-                _add_hdi_shading(fig_pa, info_b['fbin_vals'], post_fbin_b,
-                                 lo_fbin_b, hi_fbin_b, 'rgba(226,90,83,0.2)')
-                _add_mode_line(fig_pa, mode_fbin_b, '#E25A53')
-                fig_pa.update_layout(**{**PLOTLY_THEME, 'title': dict(text='f_bin posterior'), 'height': 350,
-                                        'xaxis_title': 'f_bin', 'yaxis_title': 'Posterior density'})
-                st.plotly_chart(fig_pa, use_container_width=True, key=f'{p}_post_fbin')
-            with pc2:
-                st.markdown(f'**{info_a["x_label"]} / {info_b["x_label"]}**')
-                fig_pb = go.Figure()
-                fig_pb.add_trace(go.Scatter(
-                    x=info_a['x_vals'], y=post_x_a,
-                    mode='lines', line=dict(color='#4A90D9', width=2),
-                    name='A',
-                ))
-                _add_hdi_shading(fig_pb, info_a['x_vals'], post_x_a,
-                                 lo_x_a, hi_x_a, 'rgba(74,144,217,0.2)')
-                _add_mode_line(fig_pb, mode_x_a, '#4A90D9')
-                fig_pb.add_trace(go.Scatter(
-                    x=info_b['x_vals'], y=post_x_b,
-                    mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
-                    name='B',
-                ))
-                _add_hdi_shading(fig_pb, info_b['x_vals'], post_x_b,
-                                 lo_x_b, hi_x_b, 'rgba(226,90,83,0.2)')
-                _add_mode_line(fig_pb, mode_x_b, '#E25A53')
-                fig_pb.update_layout(**{**PLOTLY_THEME, 'title': dict(text=f'{info_a["x_label"]} posterior'), 'height': 350,
-                                        'xaxis_title': info_a['x_label'], 'yaxis_title': 'Posterior density'})
-                st.plotly_chart(fig_pb, use_container_width=True, key=f'{p}_post_x')
-        else:  # Overlay — both posteriors on single plots
-            fig_po = go.Figure()
-            fig_po.add_trace(go.Scatter(
-                x=info_a['fbin_vals'], y=post_fbin_a,
-                mode='lines', line=dict(color='#4A90D9', width=2),
-                name=f'A: f_bin',
+        # f_bin posterior — all results overlaid
+        fig_fb = go.Figure()
+        for _r in _post_results:
+            _inf = _r['info']
+            _hdi = _r['hdi']
+            fig_fb.add_trace(go.Scatter(
+                x=_inf['fbin_vals'], y=_hdi['post_fbin'],
+                mode='lines', line=dict(color=_r['color'], width=2, dash=_r['dash']),
+                name=_r['short'],
             ))
-            _add_hdi_shading(fig_po, info_a['fbin_vals'], post_fbin_a,
-                             lo_fbin_a, hi_fbin_a, 'rgba(74,144,217,0.2)')
-            _add_mode_line(fig_po, mode_fbin_a, '#4A90D9')
-            fig_po.add_trace(go.Scatter(
-                x=info_b['fbin_vals'], y=post_fbin_b,
-                mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
-                name=f'B: f_bin',
-            ))
-            _add_hdi_shading(fig_po, info_b['fbin_vals'], post_fbin_b,
-                             lo_fbin_b, hi_fbin_b, 'rgba(226,90,83,0.2)')
-            _add_mode_line(fig_po, mode_fbin_b, '#E25A53')
-            fig_po.update_layout(**{
-                **PLOTLY_THEME,
-                'title': dict(text='f_bin posterior comparison'),
-                'xaxis_title': 'f_bin',
-                'yaxis_title': 'Posterior density',
-                'height': 400,
-            })
-            st.plotly_chart(fig_po, use_container_width=True, key=f'{p}_post_overlay')
+            _m, _lo, _hi = _hdi['fbin']
+            _add_hdi_shading(fig_fb, _inf['fbin_vals'], _hdi['post_fbin'],
+                             _lo, _hi, _hex_to_rgba(_r['color'], 0.12))
+            _add_mode_line(fig_fb, _m, _r['color'])
+        fig_fb.update_layout(**{
+            **PLOTLY_THEME,
+            'title': dict(text='f_bin posterior comparison'),
+            'xaxis_title': 'f_bin',
+            'yaxis_title': 'Posterior density',
+            'height': 400,
+        })
+        st.plotly_chart(fig_fb, use_container_width=True, key=f'{p}_post_fbin')
 
-            # Second-axis overlay
-            if info_a['x_label'] == info_b['x_label']:
-                fig_xo = go.Figure()
-                fig_xo.add_trace(go.Scatter(
-                    x=info_a['x_vals'], y=post_x_a,
-                    mode='lines', line=dict(color='#4A90D9', width=2),
-                    name='A',
-                ))
-                _add_hdi_shading(fig_xo, info_a['x_vals'], post_x_a,
-                                 lo_x_a, hi_x_a, 'rgba(74,144,217,0.2)')
-                _add_mode_line(fig_xo, mode_x_a, '#4A90D9')
-                fig_xo.add_trace(go.Scatter(
-                    x=info_b['x_vals'], y=post_x_b,
-                    mode='lines', line=dict(color='#E25A53', width=2, dash='dash'),
-                    name='B',
-                ))
-                _add_hdi_shading(fig_xo, info_b['x_vals'], post_x_b,
-                                 lo_x_b, hi_x_b, 'rgba(226,90,83,0.2)')
-                _add_mode_line(fig_xo, mode_x_b, '#E25A53')
-                fig_xo.update_layout(**{
+        # Second-axis posteriors — grouped by model type
+        _dsilva_results = [_r for _r in _post_results if _r['info']['type'] == 'dsilva']
+        _langer_results = [_r for _r in _post_results if _r['info']['type'] == 'langer']
+
+        _x_groups = []
+        if _dsilva_results:
+            _x_groups.append(('π', _dsilva_results))
+        if _langer_results:
+            _x_groups.append(('σ_single', _langer_results))
+
+        if len(_x_groups) == 2:
+            _xcols = st.columns(2)
+        elif len(_x_groups) == 1:
+            _xcols = [st.container()]
+        else:
+            _xcols = []
+
+        for (_xlabel, _group), _container in zip(_x_groups, _xcols):
+            with _container:
+                fig_x = go.Figure()
+                for _r in _group:
+                    _inf = _r['info']
+                    _hdi = _r['hdi']
+                    fig_x.add_trace(go.Scatter(
+                        x=_inf['x_vals'], y=_hdi['post_x'],
+                        mode='lines', line=dict(color=_r['color'], width=2, dash=_r['dash']),
+                        name=_r['short'],
+                    ))
+                    _m, _lo, _hi = _hdi['x']
+                    _add_hdi_shading(fig_x, _inf['x_vals'], _hdi['post_x'],
+                                     _lo, _hi, _hex_to_rgba(_r['color'], 0.12))
+                    _add_mode_line(fig_x, _m, _r['color'])
+                fig_x.update_layout(**{
                     **PLOTLY_THEME,
-                    'title': dict(text=f'{info_a["x_label"]} posterior comparison'),
-                    'xaxis_title': info_a['x_label'],
+                    'title': dict(text=f'{_xlabel} posterior comparison'),
+                    'xaxis_title': _xlabel,
                     'yaxis_title': 'Posterior density',
                     'height': 400,
                 })
-                st.plotly_chart(fig_xo, use_container_width=True, key=f'{p}_post_x_overlay')
+                st.plotly_chart(fig_x, use_container_width=True,
+                                key=f'{p}_post_x_{_xlabel}')
 
     # ── Observed ΔRV CDF comparison ──────────────────────────────────────
     st.markdown('### Observed ΔRV CDF')
-    st.caption('The observed ΔRV distribution is the same for both results (same dataset).')
-    obs_drv_a = res_a.get('obs_delta_rv', None)
-    obs_drv_b = res_b.get('obs_delta_rv', None)
-    _has_obs = obs_drv_a is not None
-    if _has_obs:
-        obs_sorted = np.sort(obs_drv_a)
+    st.caption('The observed ΔRV distribution is the same for all results (same dataset).')
+    _obs = None
+    for _r in results:
+        _obs = _r['res'].get('obs_delta_rv', None)
+        if _obs is not None:
+            break
+    if _obs is not None:
+        obs_sorted = np.sort(_obs)
         obs_cdf_y = np.arange(1, len(obs_sorted) + 1) / len(obs_sorted)
         fig_cdf = go.Figure()
         fig_cdf.add_trace(go.Scatter(
@@ -9415,6 +9861,16 @@ def _render_compare_tab(p: str) -> None:
             marker=dict(size=5),
             name='Observed ΔRV',
         ))
+        # Overlay best-fit simulated CDFs if available (cadence-aware results)
+        for _r in results:
+            _bcdf = _r['res'].get('best_median_cdf')
+            _be = _r['res'].get('bin_edges')
+            if _bcdf is not None and _be is not None:
+                fig_cdf.add_trace(go.Scatter(
+                    x=np.asarray(_be), y=np.asarray(_bcdf),
+                    mode='lines', line=dict(color=_r['color'], width=2, dash=_r['dash']),
+                    name=f'{_r["short"]} sim CDF',
+                ))
         fig_cdf.update_layout(**{
             **PLOTLY_THEME,
             'title': dict(text='Observed ΔRV CDF'),
