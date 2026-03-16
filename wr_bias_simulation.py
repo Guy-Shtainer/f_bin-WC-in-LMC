@@ -1209,6 +1209,59 @@ def cvm_weighted_score(
 
 
 # ---------------------------------------------------------------------------
+# Binned multinomial likelihood (Dsilva et al. 2023 Sec 4.2)
+# ---------------------------------------------------------------------------
+
+# Default coarse ΔRV bins for likelihood (Dsilva+2023 style: <50, 50-250, 250-650, ≥650)
+DSILVA_LIKELIHOOD_BINS = np.array([0.0, 50.0, 250.0, 650.0, np.inf])
+
+
+def multinomial_log_likelihood(
+    obs_delta_rv: np.ndarray,
+    sim_delta_rv_pooled: np.ndarray,
+    bin_edges: np.ndarray,
+) -> float:
+    """Binned multinomial log-likelihood following Dsilva et al. (2023) Sec 4.2.
+
+    Bins observed and simulated ΔRV values into coarse categories, estimates
+    bin probabilities from the simulation, and computes:
+
+        ln L = Σ n_i · ln(p_i)
+
+    where n_i = observed count in bin i, p_i = simulated probability for bin i.
+    The constant N!/(n_1!…n_k!) is dropped (independent of model parameters).
+
+    Parameters
+    ----------
+    obs_delta_rv       : (N_obs,) observed ΔRV values
+    sim_delta_rv_pooled: (N_total,) all simulated ΔRVs pooled across sets
+    bin_edges          : (n_bins+1,) bin edges including 0 and inf
+
+    Returns
+    -------
+    log_likelihood : float (always ≤ 0)
+    """
+    obs_delta_rv = np.asarray(obs_delta_rv, dtype=float)
+    sim_delta_rv_pooled = np.asarray(sim_delta_rv_pooled, dtype=float)
+    bin_edges = np.asarray(bin_edges, dtype=float)
+
+    # Count observed stars per bin
+    n_obs = np.histogram(obs_delta_rv, bins=bin_edges)[0]
+
+    # Estimate bin probabilities from pooled simulation
+    n_sim = np.histogram(sim_delta_rv_pooled, bins=bin_edges)[0]
+    total_sim = max(int(n_sim.sum()), 1)
+    p_bins = n_sim.astype(float) / total_sim
+
+    # Floor to avoid log(0) — epsilon = 1/N_total (one pseudo-count)
+    eps = 1.0 / max(sim_delta_rv_pooled.size, 1)
+    p_bins = np.maximum(p_bins, eps)
+
+    # ln L = Σ n_i · ln(p_i)  (bins with n_obs=0 contribute 0)
+    return float(np.sum(n_obs * np.log(p_bins)))
+
+
+# ---------------------------------------------------------------------------
 # Marginalization & HDI68 credible intervals (Dsilva et al. 2023 style)
 # ---------------------------------------------------------------------------
 
@@ -1219,10 +1272,12 @@ def compute_hdi68(
     """
     Compute the mode and 68% Highest Density Interval from a 1D posterior.
 
-    Following Dsilva et al. (2023): the posterior is the marginalized K-S
-    p-value curve (summed over other dimensions and normalized). The HDI
-    is found by lowering a horizontal line from the mode until the enclosed
-    area under the curve equals 68% of the total area.
+    Following Dsilva et al. (2023): the posterior is the marginalized
+    likelihood (or p-value) curve, summed over other dimensions and
+    normalized. Works for both p-value-based and likelihood-based
+    posteriors. The HDI is found by lowering a horizontal line from the
+    mode until the enclosed area under the curve equals 68% of the total
+    area.
 
     Parameters
     ----------
@@ -1355,7 +1410,7 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
                  n_epochs=6, time_span=3650.0,
                  observation_times=None, v_sys=0.0,
                  bin_edges=None, scoring_method='ks',
-                 n_sets_cvm=1000):
+                 n_sets_cvm=1000, likelihood_bin_edges=None):
     """Pool initializer: store shared data as process-level globals."""
     global _WORKER_GLOBALS
     _WORKER_GLOBALS = {
@@ -1371,6 +1426,7 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
         'bin_edges': bin_edges,
         'scoring_method': scoring_method,
         'n_sets_cvm': n_sets_cvm,
+        'likelihood_bin_edges': likelihood_bin_edges,
     }
 
 
@@ -1400,6 +1456,13 @@ def _single_grid_task_lite(args):
     scoring = g.get('scoring_method', 'ks')
 
     S_raw = np.nan
+    logL = np.nan
+    _lbe = g.get('likelihood_bin_edges')
+    if _lbe is None:
+        _lbe = g.get('bin_edges')
+    if _lbe is None:
+        _lbe = DEFAULT_DRV_BIN_EDGES
+
     if scoring == 'cvm':
         # CvM requires multiple sets to compute variance
         n_sets = g.get('n_sets_cvm', 1000)
@@ -1418,13 +1481,26 @@ def _single_grid_task_lite(args):
         cdf_var = np.var(all_cdfs, axis=0)
         obs_cdf = binned_cdf(g['obs_delta_rv'], _be)
         D, p, S_raw = cvm_weighted_score(median_cdf, obs_cdf, cdf_var, all_drv, _be)
+        # Bonus: also compute likelihood from the same pooled sim data
+        logL = multinomial_log_likelihood(g['obs_delta_rv'], all_drv.ravel(), _lbe)
+    elif scoring == 'likelihood':
+        # Likelihood-only: simulate multiple sets, compute binned likelihood
+        n_sets = g.get('n_sets_cvm', 1000)
+        all_drv = np.empty((n_sets, sim_cfg_local.n_stars))
+        for s in range(n_sets):
+            all_drv[s] = simulate_delta_rv_sample(
+                f_bin=f_bin, pi=pi,
+                sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng)
+        logL = multinomial_log_likelihood(g['obs_delta_rv'], all_drv.ravel(), _lbe)
+        D = -logL   # D-stat view: negative log-likelihood (lower = better)
+        p = logL    # Will be normalized to [0,1] post-grid
     else:
         delta_sim = simulate_delta_rv_sample(
             f_bin=f_bin, pi=pi,
             sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng,
         )
         D, p = ks_two_sample_binned(delta_sim, g['obs_delta_rv'], g.get('bin_edges'))
-    return f_bin, pi, sigma_single, D, p, S_raw
+    return f_bin, pi, sigma_single, D, p, S_raw, logL
 
 
 def run_bias_grid(
@@ -1441,6 +1517,7 @@ def run_bias_grid(
     scoring_method: str = 'ks',
     n_sets_cvm: int = 1000,
     bin_edges: Optional[np.ndarray] = None,
+    likelihood_bin_edges: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Run a (f_bin, pi[, sigma_single]) grid of simulations and K-S comparisons.
@@ -1469,6 +1546,9 @@ def run_bias_grid(
         Base seed; each grid point gets seed = seed_base + idx.
     use_multiprocessing : bool
         If False, run everything serially (useful for debugging).
+    likelihood_bin_edges : array or None
+        Coarse bin edges for multinomial likelihood (Dsilva+2023).
+        If None, uses DSILVA_LIKELIHOOD_BINS.
 
     Returns
     -------
@@ -1478,6 +1558,8 @@ def run_bias_grid(
         "sigma_grid" : 1D array of sigma_single values (length 1 if not scanned).
         "ks_D"       : 3D array [n_sigma, n_fbin, n_pi] of K-S D.
         "ks_p"       : 3D array of corresponding p-values.
+        "likelihood" : 3D array of normalized likelihood (when CvM or likelihood scoring).
+        "logL_raw"   : 3D array of raw log-likelihood values.
     """
     if sim_cfg is None:
         sim_cfg = SimulationConfig()
@@ -1523,6 +1605,7 @@ def run_bias_grid(
         _used_bin_edges,
         scoring_method,
         n_sets_cvm,
+        likelihood_bin_edges,
     )
 
     if use_multiprocessing and n_tasks > 1:
@@ -1553,14 +1636,28 @@ def run_bias_grid(
     ks_D     = np.empty((n_sig, n_fb, n_pi), dtype=float)
     ks_p     = np.empty((n_sig, n_fb, n_pi), dtype=float)
     ks_S_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
+    logL_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
 
-    for idx, (fb, pi, sigma, D, p, s_raw) in enumerate(results):
+    for idx, (fb, pi, sigma, D, p, s_raw, _logL) in enumerate(results):
         i_sig = idx // (n_fb * n_pi)
         i_fb  = (idx % (n_fb * n_pi)) // n_pi
         i_pi  = idx % n_pi
         ks_D[i_sig, i_fb, i_pi] = D
         ks_p[i_sig, i_fb, i_pi] = p
         ks_S_raw[i_sig, i_fb, i_pi] = s_raw
+        logL_raw[i_sig, i_fb, i_pi] = _logL
+
+    # Normalize logL → likelihood [0, 1] (Dsilva+2023 style posterior weight)
+    logL_max = np.nanmax(logL_raw)
+    if np.isfinite(logL_max):
+        likelihood = np.exp(logL_raw - logL_max)
+    else:
+        likelihood = np.zeros_like(logL_raw)
+
+    # For 'likelihood' scoring, use normalized likelihood as the primary heatmap
+    if scoring_method == 'likelihood':
+        ks_p = likelihood.copy()
+        ks_D = np.where(np.isfinite(logL_raw), -logL_raw, np.nan)
 
     return {
         "fbin_grid":  fbin_grid,
@@ -1569,6 +1666,8 @@ def run_bias_grid(
         "ks_D":       ks_D,
         "ks_p":       ks_p,
         "ks_S_raw":   ks_S_raw,
+        "likelihood": likelihood,
+        "logL_raw":   logL_raw,
     }
 
 
@@ -1614,11 +1713,27 @@ def _single_grid_task_cadence_aware(args):
 
     scoring = g.get('scoring_method', 'ks')
     S_raw = np.nan
+    logL = np.nan
+    _lbe = g.get('likelihood_bin_edges')
+    if _lbe is None:
+        _lbe = g.get('bin_edges')
+    if _lbe is None:
+        _lbe = DEFAULT_DRV_BIN_EDGES
+
     if scoring == 'cvm':
         _be = _bin_edges if _bin_edges is not None else DEFAULT_DRV_BIN_EDGES
         D, p_value, S_raw = cvm_weighted_score(
             median_cdf, obs_cdf, result['cdf_var'],
             result['all_delta_rv'], _be)
+        # Bonus: also compute likelihood from the same pooled sim data
+        logL = multinomial_log_likelihood(
+            g['obs_delta_rv'], result['all_delta_rv'].ravel(), _lbe)
+    elif scoring == 'likelihood':
+        # Likelihood-only: compute binned likelihood from pooled sim data
+        logL = multinomial_log_likelihood(
+            g['obs_delta_rv'], result['all_delta_rv'].ravel(), _lbe)
+        D = -logL   # D-stat view: negative log-likelihood (lower = better)
+        p_value = logL  # Will be normalized to [0,1] post-grid
     elif scoring == 'weighted':
         D, p_value = chi2_weighted_score(median_cdf, obs_cdf, result['cdf_var'])
     else:
@@ -1635,7 +1750,7 @@ def _single_grid_task_cadence_aware(args):
                 break
         p_value = max(0.0, min(1.0, term_sum))
 
-    return (f_bin, pi, sigma_single, D, p_value, S_raw,
+    return (f_bin, pi, sigma_single, D, p_value, S_raw, logL,
             result['median_cdf'], result['lo_cdf'], result['hi_cdf'])
 
 
@@ -1654,6 +1769,7 @@ def run_bias_grid_cadence_aware(
     callback=None,
     scoring_method: str = 'ks',
     bin_edges: Optional[np.ndarray] = None,
+    likelihood_bin_edges: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
     """Cadence-aware grid search over (f_bin, pi[, sigma_single]).
 
@@ -1707,6 +1823,8 @@ def run_bias_grid_cadence_aware(
         sim_cfg.v_sys,
         _used_bin_edges,
         scoring_method,
+        n_sets,              # n_sets_cvm positional slot
+        likelihood_bin_edges,
     )
 
     # Storage for best-fit CDF band
@@ -1721,10 +1839,11 @@ def run_bias_grid_cadence_aware(
     ks_D     = np.empty((n_sig, n_fb, n_pi), dtype=float)
     ks_p     = np.empty((n_sig, n_fb, n_pi), dtype=float)
     ks_S_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
+    logL_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
 
     def _process_result(res_tuple, completed):
         nonlocal best_p, best_median_cdf, best_lo_cdf, best_hi_cdf
-        fb, pi_val, sigma, D, p, s_raw, med_cdf, lo_cdf, hi_cdf = res_tuple
+        fb, pi_val, sigma, D, p, s_raw, _logL, med_cdf, lo_cdf, hi_cdf = res_tuple
         i_sig = np.searchsorted(sigma_grid, sigma)
         i_fb  = np.searchsorted(fbin_grid, fb)
         i_pi  = np.searchsorted(pi_grid, pi_val)
@@ -1732,6 +1851,7 @@ def run_bias_grid_cadence_aware(
             ks_D[i_sig, i_fb, i_pi] = D
             ks_p[i_sig, i_fb, i_pi] = p
             ks_S_raw[i_sig, i_fb, i_pi] = s_raw
+            logL_raw[i_sig, i_fb, i_pi] = _logL
         if p > best_p:
             best_p = p
             best_median_cdf = med_cdf
@@ -1753,6 +1873,18 @@ def run_bias_grid_cadence_aware(
             res = _single_grid_task_cadence_aware(t)
             _process_result(res, completed)
 
+    # Normalize logL → likelihood [0, 1]
+    logL_max = np.nanmax(logL_raw)
+    if np.isfinite(logL_max):
+        likelihood = np.exp(logL_raw - logL_max)
+    else:
+        likelihood = np.zeros_like(logL_raw)
+
+    # For 'likelihood' scoring, use normalized likelihood as the primary heatmap
+    if scoring_method == 'likelihood':
+        ks_p = likelihood.copy()
+        ks_D = np.where(np.isfinite(logL_raw), -logL_raw, np.nan)
+
     return {
         "fbin_grid":       fbin_grid,
         "pi_grid":         pi_grid,
@@ -1760,6 +1892,8 @@ def run_bias_grid_cadence_aware(
         "ks_D":            ks_D,
         "ks_p":            ks_p,
         "ks_S_raw":        ks_S_raw,
+        "likelihood":      likelihood,
+        "logL_raw":        logL_raw,
         "best_median_cdf": best_median_cdf,
         "best_lo_cdf":     best_lo_cdf,
         "best_hi_cdf":     best_hi_cdf,
