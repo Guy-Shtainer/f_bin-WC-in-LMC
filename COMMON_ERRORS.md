@@ -388,6 +388,26 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 | **Why** | `np.nanargmax` / `np.nanargmin` raise `ValueError: All-NaN slice encountered` when the input has no finite values. This happens when exclusion masks set all grid points to NaN, or when loading partial/empty results. Always guard with `np.any(np.isfinite(arr))` before calling. |
 | **Found in** | `app/pages/05_bias_correction.py` — `_render_cadence_results()` (5 locations), `_parabolic_min_1d/2d/3d` |
 
+### E035 — New function missing parameters from original code path (silent wrong results)
+
+| | |
+|---|---|
+| **Bad** | `SimulationConfig(n_stars=25, sigma_measure=1.6)` — missing `cadence_library`, `cadence_weights`, `n_epochs`, `time_span` |
+| **Fix** | Copy ALL parameters from the original code path: `SimulationConfig(n_stars=..., sigma_measure=..., cadence_library=..., cadence_weights=..., n_epochs=..., time_span=...)` |
+| **Grep** | `SimulationConfig(` (then verify all fields are passed) |
+| **Why** | When creating a new function that re-does a computation from an existing code path, missing parameters silently use defaults. The `resimulate_at_point()` function ran non-cadence simulations for a week because `cadence_library` was missing from its `SimulationConfig` — producing wrong p-values that looked plausible. Always LIST every parameter the original uses and verify each one is passed. |
+| **Found in** | `app/pages/05_bias_correction.py` — re-simulation block; `wr_bias_simulation.py` — `resimulate_at_point()` |
+
+### E036 — Parabolic extremum without Hessian positive-definite check
+
+| | |
+|---|---|
+| **Bad** | Solve ∇S=0 and accept the result without checking if it's a minimum |
+| **Fix** | Check `np.all(np.linalg.eigvalsh(Hessian) > 0)` before accepting; fall back to grid min if not positive definite |
+| **Grep** | `np.linalg.solve` near `parabolic_min` (then verify Hessian eigenvalue check exists) |
+| **Why** | Solving ∇S=0 finds ANY extremum — minimum, maximum, or saddle point. Without checking the Hessian is positive definite (all eigenvalues > 0), the code may return a maximum, making the "best-fit" the worst point on the grid. |
+| **Found in** | `app/pages/05_bias_correction.py` — `_parabolic_min_2d()`, `_parabolic_min_3d()` |
+
 ---
 
 ## Adding New Errors
