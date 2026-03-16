@@ -110,16 +110,16 @@
   "grid_cadence_dsilva": {
     "fbin_min": 0.01,
     "fbin_max": 1.0,
-    "fbin_steps": 99,
+    "fbin_steps": 49,
     "pi_min": -3.0,
     "pi_max": 3.0,
-    "pi_steps": 10,
-    "n_sets": 1000,
+    "pi_steps": 30,
+    "n_sets": 500,
     "scan_sigma": true,
     "sigma_single": 15.0,
     "sigma_min": 3.0,
     "sigma_max": 13.0,
-    "sigma_steps": 10,
+    "sigma_steps": 30,
     "sigma_meas": 1.622,
     "orbital": {
       "logP_min": 0.15,
@@ -188,7 +188,8 @@
     "error_model_type": "Weibull",
     "errp_0": 1.328,
     "errp_1": 0.7935,
-    "errp_2": 0.8982
+    "errp_2": 0.8982,
+    "adaptive_bins": true
   },
   "ui": {
     "last_star": "MNM2014 LMC195-1",
