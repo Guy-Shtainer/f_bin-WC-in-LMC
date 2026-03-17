@@ -28,6 +28,11 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+# Public alias so subpackages (plots/, nres/, rv_modeling/) can do:
+#   from shared import ROOT
+# instead of computing _ROOT themselves.
+ROOT = _ROOT
+
 import specs
 from ObservationClass import ObservationManager as _OM
 
