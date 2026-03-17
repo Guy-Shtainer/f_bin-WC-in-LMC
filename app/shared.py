@@ -475,12 +475,14 @@ def make_heatmap_fig(
     best_label_fmt: str = '  f={fbin:.3f}, {x_name}={x:.2f}, p={p:.3f}',
     live: bool = False,
     scoring_label: str = 'K-S',
+    colorbar_title_override: str | None = None,
 ) -> 'go.Figure':
     """Plotly heatmap of p-value (or D/S-stat) with contour lines and best-fit star."""
     import plotly.graph_objects as go
 
     z = ks_d_2d if (show_d and ks_d_2d is not None) else ks_p_2d
-    colorbar_title = f'{scoring_label} D' if show_d else f'{scoring_label} p-value'
+    colorbar_title = colorbar_title_override or (
+        f'{scoring_label} D' if show_d else f'{scoring_label} p-value')
 
     valid = z[~np.isnan(z)]
     z_max = float(np.nanmax(valid)) if valid.size > 0 else 1.0

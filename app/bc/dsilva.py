@@ -25,7 +25,7 @@ from shared import (
 )
 
 from bc.helpers import (
-    SCORING_METHODS, _METHOD_COLORS, _METHOD_SCORING_LABELS,
+    SCORING_METHODS, _METHOD_COLORS, _METHOD_SCORING_LABELS, _METHOD_COLORBAR_OVERRIDE,
     _RESULT_DIR, _HISTORY_PATH, _FILENAME_FORMAT_HELP,
     _hex_to_rgba, _fmt_eta, _result_path, _stable_cfg_hash,
     _build_descriptive_filename, _list_saved_results,
@@ -488,10 +488,13 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                         hd = _lhm[_mk]
                         with _col:
                             st.plotly_chart(
-                                _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
+                                _make_heatmap_fig(
+                                    hd['p'] if _mk == 'likelihood' else hd['d'],
+                                    hd['fbin'], hd['x'],
                                     title=hd['title'], height=300,
                                     live=not hd['is_final'],
-                                    scoring_label=_METHOD_SCORING_LABELS[_mk]),
+                                    scoring_label=_METHOD_SCORING_LABELS[_mk],
+                                    colorbar_title_override=_METHOD_COLORBAR_OVERRIDE.get(_mk)),
                                 use_container_width=True)
                 _lc3, _lc4 = st.columns(2)
                 for _mk, _col in [('cvm', _lc3), ('likelihood', _lc4)]:
@@ -499,10 +502,13 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                         hd = _lhm[_mk]
                         with _col:
                             st.plotly_chart(
-                                _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
+                                _make_heatmap_fig(
+                                    hd['p'] if _mk == 'likelihood' else hd['d'],
+                                    hd['fbin'], hd['x'],
                                     title=hd['title'], height=300,
                                     live=not hd['is_final'],
-                                    scoring_label=_METHOD_SCORING_LABELS[_mk]),
+                                    scoring_label=_METHOD_SCORING_LABELS[_mk],
+                                    colorbar_title_override=_METHOD_COLORBAR_OVERRIDE.get(_mk)),
                                 use_container_width=True)
             if _j.get('live_outer_heatmap'):
                 ohd = _j['live_outer_heatmap']
@@ -561,9 +567,12 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 hd = _final_lhm[_mk]
                 with _col:
                     st.plotly_chart(
-                        _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
+                        _make_heatmap_fig(
+                            hd['p'] if _mk == 'likelihood' else hd['d'],
+                            hd['fbin'], hd['x'],
                             title=hd['title'], height=300, live=False,
-                            scoring_label=_METHOD_SCORING_LABELS[_mk]),
+                            scoring_label=_METHOD_SCORING_LABELS[_mk],
+                            colorbar_title_override=_METHOD_COLORBAR_OVERRIDE.get(_mk)),
                         use_container_width=True)
         _lc3, _lc4 = st.columns(2)
         for _mk, _col in [('cvm', _lc3), ('likelihood', _lc4)]:
@@ -571,9 +580,12 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 hd = _final_lhm[_mk]
                 with _col:
                     st.plotly_chart(
-                        _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
+                        _make_heatmap_fig(
+                            hd['p'] if _mk == 'likelihood' else hd['d'],
+                            hd['fbin'], hd['x'],
                             title=hd['title'], height=300, live=False,
-                            scoring_label=_METHOD_SCORING_LABELS[_mk]),
+                            scoring_label=_METHOD_SCORING_LABELS[_mk],
+                            colorbar_title_override=_METHOD_COLORBAR_OVERRIDE.get(_mk)),
                         use_container_width=True)
 
     # ── Display result (always shown when result exists) ─────────────────────

@@ -59,6 +59,14 @@ _METHOD_SCORING_LABELS = {
     'likelihood': 'Likelihood',
 }
 
+# Colorbar title override for score display (not p-values)
+_METHOD_COLORBAR_OVERRIDE = {
+    'ks': 'K-S D-statistic',
+    'weighted': 'χ² statistic',
+    'cvm': 'CvM S-score',
+    'likelihood': 'Normalized Likelihood',
+}
+
 
 def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     """Convert hex color to rgba string for Plotly shading."""
