@@ -1269,15 +1269,21 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                                             'is_final': _is_final,
                                         }
                                     job['live_heatmaps'] = _method_live
-                                    # Primary status from KS p-value
+                                    # Build per-method status summary
+                                    _status_items = []
+                                    for _smk in ('ks', 'weighted', 'cvm', 'likelihood'):
+                                        if _smk in _method_live:
+                                            _sp = _method_live[_smk]['p']
+                                            _, _, _spv = _best_point(_sp, fbin_vals, pi_vals)
+                                            _status_items.append(f'{_smk}: **{_spv:.4f}**')
                                     _ks_disp = _method_live['ks']['p']
                                     bf, bp, bpv = _best_point(
                                         _ks_disp, fbin_vals, pi_vals)
                                     job['live_status'] = (
                                         f'{_lp_label}σ = **{sigma:.1f}** km/s  →  '
                                         f'best f_bin = **{bf:.4f}**, '
-                                        f'π = **{bp:.3f}**, '
-                                        f'K-S p = **{bpv:.4f}**')
+                                        f'π = **{bp:.3f}**  |  '
+                                        + '  |  '.join(_status_items))
 
                         # Update outer max-p (use KS p-value as primary)
                         _slice_p = acc_ks_p[i_lp, i_sigma]
@@ -1565,13 +1571,20 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                                 'is_final': _is_final,
                             }
                         job['live_heatmaps'] = _method_live
+                        # Build per-method status summary
+                        _status_items = []
+                        for _smk in ('ks', 'weighted', 'cvm', 'likelihood'):
+                            if _smk in _method_live:
+                                _sp = _method_live[_smk]['p']
+                                _, _, _spv = _best_point(_sp, fbin_vals, sigma_vals)
+                                _status_items.append(f'{_smk}: **{_spv:.4f}**')
                         _ks_disp = _method_live['ks']['p']
                         bf, bsig, bpv = _best_point(
                             _ks_disp, fbin_vals, sigma_vals)
                         job['live_status'] = (
                             f'best f_bin = **{bf:.4f}**, '
-                            f'σ_single = **{bsig:.1f}** km/s, '
-                            f'K-S p = **{bpv:.4f}**')
+                            f'σ_single = **{bsig:.1f}** km/s  |  '
+                            + '  |  '.join(_status_items))
 
             # Checkpoint
             if cells_done > 0:
@@ -2344,19 +2357,30 @@ def _render_method_expander(
                     key=f'{prefix}_{method_key}_hm')
 
     # ── Slice vs Global metrics ──────────────────────────────────
-    mc1, mc2 = st.columns(2)
-    mc1.metric(
-        label=f'Current slice best ({display_name})',
-        value=f'f_bin={slice_best_fb:.4f}, {x_label}={slice_best_x:.3f}',
-        delta=f'{score_label} = {slice_best_score:.6f}',
-        delta_color='off',
-    )
-    mc2.metric(
-        label=f'Global best ({display_name})',
-        value=f'f_bin={g_fb:.4f}, {x_label}={g_x:.3f}',
-        delta=f'{score_label} = {global_best_score:.6f}',
-        delta_color='off',
-    )
+    # For 2D arrays (Langer, cadence_langer) the slice IS the global — show
+    # a single "Best fit" card instead of the redundant slice-vs-global pair.
+    _is_2d_mode = ndim_mode in ('langer', 'cadence_langer') or p_nd.ndim <= 2
+    if _is_2d_mode:
+        st.metric(
+            label=f'Best fit ({display_name})',
+            value=f'f_bin={g_fb:.4f}, {x_label}={g_x:.3f}',
+            delta=f'{score_label} = {global_best_score:.6f}',
+            delta_color='off',
+        )
+    else:
+        mc1, mc2 = st.columns(2)
+        mc1.metric(
+            label=f'Current slice best ({display_name})',
+            value=f'f_bin={slice_best_fb:.4f}, {x_label}={slice_best_x:.3f}',
+            delta=f'{score_label} = {slice_best_score:.6f}',
+            delta_color='off',
+        )
+        mc2.metric(
+            label=f'Global best ({display_name})',
+            value=f'f_bin={g_fb:.4f}, {x_label}={g_x:.3f}',
+            delta=f'{score_label} = {global_best_score:.6f}',
+            delta_color='off',
+        )
 
     # ── Scoring analysis (reuse _render_cvm_analysis) ────────────
     _obs_drv = result.get('obs_delta_rv')
@@ -2472,10 +2496,10 @@ def _render_method_expander(
                             line_color='#E25A53', line_width=1.5,
                             row=2, col=2)
 
-            # [1,0] 2D heatmap
+            # [1,0] 2D heatmap — x-axis=fbin (col 1), y-axis=x (row 2)
             _z_max = float(np.nanmax(_z_corner)) if np.any(np.isfinite(_z_corner)) else 1.0
             fig_c.add_trace(go.Heatmap(
-                x=x_g, y=fbin_g, z=_z_corner,
+                x=fbin_g, y=x_g, z=_z_corner.T,
                 colorscale='RdBu_r', zmin=0, zmax=_z_max,
                 zsmooth='best', showscale=False,
             ), row=2, col=1)
@@ -2491,7 +2515,7 @@ def _render_method_expander(
                 _l68 = float(_zs[min(_i68, len(_zs) - 1)])
                 _l95 = float(_zs[min(_i95, len(_zs) - 1)])
                 fig_c.add_trace(go.Contour(
-                    x=x_g, y=fbin_g, z=_z_corner,
+                    x=fbin_g, y=x_g, z=_z_corner.T,
                     contours=dict(coloring='none', showlabels=True,
                                   labelfont=dict(size=8, color=pal['contour_label'])),
                     ncontours=2, contours_start=_l95, contours_end=_l68,
@@ -2500,7 +2524,7 @@ def _render_method_expander(
                 ), row=2, col=1)
             # Best-fit star
             fig_c.add_trace(go.Scatter(
-                x=[_bv.get(x_name, 0)], y=[_bv.get('fbin', 0)],
+                x=[_bv.get('fbin', 0)], y=[_bv.get(x_name, 0)],
                 mode='markers',
                 marker=dict(symbol='star', size=10, color='#DAA520',
                             line=dict(color='black', width=1)),
@@ -2510,11 +2534,11 @@ def _render_method_expander(
             # Hide upper-right cell
             fig_c.update_xaxes(visible=False, row=1, col=2)
             fig_c.update_yaxes(visible=False, row=1, col=2)
-            # Axis labels
+            # Axis labels — corner plot: col 1 = fbin, row 2 = x
             fig_c.update_xaxes(title_text='f_bin', row=1, col=1)
-            fig_c.update_xaxes(title_text=x_display_label, row=2, col=1)
+            fig_c.update_xaxes(title_text='f_bin', row=2, col=1)
             fig_c.update_xaxes(title_text=x_display_label, row=2, col=2)
-            fig_c.update_yaxes(title_text='f_bin', row=2, col=1)
+            fig_c.update_yaxes(title_text=x_display_label, row=2, col=1)
 
             fig_c.update_layout(**{
                 **PLOTLY_THEME,
@@ -4247,6 +4271,9 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
         st.session_state[f'{p}_result'] = _res
         st.session_state['result_dsilva'] = _res
         cached_load_grid_result.clear()
+        # Persist final live heatmaps so they remain visible after job cleanup
+        if _job.get('live_heatmaps'):
+            st.session_state[f'{p}_final_live_heatmaps'] = _job['live_heatmaps']
         _elapsed = _job.get('elapsed_total', 0)
         _desc = _job.get('desc_name', '')
         _nrows = _job.get('n_rows_total', 0)
@@ -4269,6 +4296,28 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
         else:
             status_slot.warning('Simulation cancelled.')
         del st.session_state[f'{p}_job']
+
+    # ── Show persisted final live heatmaps (Bug 1: survive job cleanup) ─────
+    _final_lhm = st.session_state.get(f'{p}_final_live_heatmaps')
+    if _final_lhm:
+        _lc1, _lc2 = st.columns(2)
+        for _mk, _col in [('ks', _lc1), ('weighted', _lc2)]:
+            if _mk in _final_lhm:
+                hd = _final_lhm[_mk]
+                with _col:
+                    st.plotly_chart(
+                        _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
+                            title=hd['title'], height=300, live=False),
+                        use_container_width=True)
+        _lc3, _lc4 = st.columns(2)
+        for _mk, _col in [('cvm', _lc3), ('likelihood', _lc4)]:
+            if _mk in _final_lhm:
+                hd = _final_lhm[_mk]
+                with _col:
+                    st.plotly_chart(
+                        _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
+                            title=hd['title'], height=300, live=False),
+                        use_container_width=True)
 
     # ── Display result (always shown when result exists) ─────────────────────
     result = st.session_state.get(f'{p}_result') or st.session_state.get('result_dsilva')
@@ -4369,13 +4418,12 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
         else:
             disp_lp_idx = 0
 
-        # ── Multi-method comparison summary ─────────────────────────────
-        with st.expander('📊 Scoring Method Comparison', expanded=False):
-            _render_method_summary_section(
-                result, fbin_g, pi_g,
-                prefix=p, x_name='pi', x_label='pi',
-                ndim_mode='dsilva',
-            )
+        # ── Multi-method comparison summary (shown directly, not collapsed) ─
+        _render_method_summary_section(
+            result, fbin_g, pi_g,
+            prefix=p, x_name='pi', x_label='pi',
+            ndim_mode='dsilva',
+        )
 
         # ── Per-method expanders ────────────────────────────────────────
         _ds_outer_slices = (disp_lp_idx, disp_sig_idx)
@@ -4405,22 +4453,7 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                     disp_outer_slices=_ds_outer_slices,
                 )
 
-        # Show f_bin × π heatmap for selected (logPmax, sigma)
-        if not run_btn:
-            _lp_title = (f', logP_max={float(logPmax_g[disp_lp_idx]):.2f}'
-                         if _has_logPmax_scan else '')
-            heatmap_slot.plotly_chart(
-                _make_heatmap_fig(
-                    ks_p_4d[disp_lp_idx, disp_sig_idx], fbin_g, pi_g,
-                    title=(f'{_p_lbl}-value  '
-                           f'(σ={float(sigma_g[disp_sig_idx]):.1f} km/s'
-                           f'{_lp_title})'),
-                    show_d=show_d,
-                    ks_d_2d=ks_D_4d[disp_lp_idx, disp_sig_idx],
-                    height=_ch, width=_cw,
-                ),
-                use_container_width=_use_cw,
-            )
+        # (Bug 2 removed: old heatmap_slot render is now handled by per-method expanders)
 
         # Best across ALL dimensions
         best_fbin_v   = float(fbin_g[best_fb_idx])
@@ -4436,46 +4469,7 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
         _cur_logPmax_v = float(logPmax_g[disp_lp_idx])
         _cur_sigma_v = float(sigma_g[disp_sig_idx])
 
-        # Slice-vs-global metrics
-        _lp_lbl = (f'logP_max={_cur_logPmax_v:.2f}, '
-                   if _has_logPmax_scan else '')
-        _sig_lbl = f'σ={_cur_sigma_v:.1f} km/s'
-        _m_col1, _m_col2 = st.columns(2)
-        _m_col1.metric(
-            label=f'Current slice ({_lp_lbl}{_sig_lbl})',
-            value=f'f_bin={_slice_fb:.4f}, π={_slice_pi:.4f}',
-            delta=f'{_p_lbl} = {_slice_pval:.6f}',
-            delta_color='off',
-        )
-        _m_col2.metric(
-            label='Global best (all slices)',
-            value=f'f_bin={best_fbin_v:.4f}, π={best_pi_v:.4f}',
-            delta=f'{_p_lbl} = {best_pval_v:.6f}',
-            delta_color='off',
-        )
-
-        # ── Scoring analysis (CvM) ─────────────────────────────────────
-        with st.expander('📊 CvM S-score Analysis', expanded=True):
-            # For Dsilva: ks_D_4d is (n_lp, n_sig, n_fb, n_pi)
-            # Current 2D slice:
-            _cvm_2d_D = ks_D_4d[disp_lp_idx, disp_sig_idx]
-            _cvm_2d_p = ks_p_4d[disp_lp_idx, disp_sig_idx]
-            # Full 3D for 3D interpolation (sigma × fbin × pi):
-            _cvm_3d_D = ks_D_4d[disp_lp_idx]  # (n_sig, n_fb, n_pi)
-            _cvm_3d_p = ks_p_4d[disp_lp_idx]
-            _obs_drv = result.get('obs_delta_rv')
-            _lk_edges = result.get('likelihood_bin_edges')
-            _render_cvm_analysis(
-                _cvm_2d_D, _cvm_2d_p,
-                fbin_g, pi_g,
-                x_label='f_bin', y_label='π',
-                sigma_grid=sigma_g if len(sigma_g) > 1 else None,
-                ks_D_3d=_cvm_3d_D if len(sigma_g) > 1 else None,
-                ks_p_3d=_cvm_3d_p if len(sigma_g) > 1 else None,
-                height=_ch, width=_cw, prefix=f'{p}_cvm',
-                mode='cvm',
-                obs_delta_rv=_obs_drv,
-                likelihood_bin_edges=_lk_edges)
+        # (Bug 11+12 removed: old CvM expander and orphaned metrics are now in per-method expanders)
 
         # Apply grid exclusion mask to 4D arrays for downstream sections
         # Use stored 1D per-axis masks (includes range sliders + per-value exclusions)
@@ -4539,390 +4533,6 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
         except Exception:
             n_det = 0
 
-        # ── Marginalization + HDI68 (Dsilva 2023 style) ─────────────────
-        # Always compute posteriors (needed for corner plot); HDI from .npz if available
-        ks_p_3d = np.sum(ks_p_4d, axis=0)  # [sigma, fbin, pi]
-        post_fbin = np.sum(ks_p_3d, axis=(0, 2))
-        post_pi   = np.sum(ks_p_3d, axis=(0, 1))
-        if _has_sigma_scan:
-            post_sigma = np.sum(ks_p_3d, axis=(1, 2))
-        if _has_logPmax_scan:
-            post_logPmax = np.sum(ks_p_4d, axis=(1, 2, 3))
-
-        _res = st.session_state.get(f'{p}_result', {})
-        if 'mode_fbin' in _res:
-            mode_fbin = float(_res['mode_fbin'])
-            lo_fbin   = float(_res['lo_fbin'])
-            hi_fbin   = float(_res['hi_fbin'])
-            mode_pi   = float(_res['mode_pi'])
-            lo_pi     = float(_res['lo_pi'])
-            hi_pi     = float(_res['hi_pi'])
-            mode_sigma   = float(_res['mode_sigma'])
-            lo_sigma     = float(_res['lo_sigma'])
-            hi_sigma     = float(_res['hi_sigma'])
-            mode_logPmax = float(_res['mode_logPmax'])
-            lo_logPmax   = float(_res['lo_logPmax'])
-            hi_logPmax   = float(_res['hi_logPmax'])
-        else:
-            from wr_bias_simulation import compute_hdi68
-            mode_fbin, lo_fbin, hi_fbin = compute_hdi68(fbin_g, post_fbin)
-            mode_pi, lo_pi, hi_pi = compute_hdi68(pi_g, post_pi)
-            if _has_sigma_scan:
-                mode_sigma, lo_sigma, hi_sigma = compute_hdi68(sigma_g, post_sigma)
-            else:
-                mode_sigma = float(sigma_g[0])
-                lo_sigma = hi_sigma = mode_sigma
-            if _has_logPmax_scan:
-                mode_logPmax, lo_logPmax, hi_logPmax = compute_hdi68(logPmax_g, post_logPmax)
-            else:
-                mode_logPmax = float(logPmax_g[0])
-                lo_logPmax = hi_logPmax = mode_logPmax
-
-        # Compute p-value at posterior mode (nearest grid point)
-        _mode_fb_idx = int(np.argmin(np.abs(fbin_g - mode_fbin)))
-        _mode_pi_idx = int(np.argmin(np.abs(pi_g - mode_pi)))
-        _mode_sig_idx = int(np.argmin(np.abs(sigma_g - mode_sigma)))
-        _mode_lp_idx = int(np.argmin(np.abs(logPmax_g - mode_logPmax)))
-        _mode_pval = float(ks_p_4d[_mode_lp_idx, _mode_sig_idx,
-                                    _mode_fb_idx, _mode_pi_idx])
-
-        # Build summary table — one row per parameter, errors as ±1σ
-        _rows = []
-        _rows.append(
-            f'| f_bin | `{best_fbin_v:.4f}` '
-            f'| `{mode_fbin:.4f}` +{hi_fbin - mode_fbin:.4f} '
-            f'−{mode_fbin - lo_fbin:.4f} |'
-        )
-        _rows.append(
-            f'| π | `{best_pi_v:.4f}` '
-            f'| `{mode_pi:.4f}` +{hi_pi - mode_pi:.4f} '
-            f'−{mode_pi - lo_pi:.4f} |'
-        )
-        if _has_sigma_scan:
-            _rows.append(
-                f'| σ_single (km/s) | `{best_sigma_v:.1f}` '
-                f'| `{mode_sigma:.1f}` +{hi_sigma - mode_sigma:.1f} '
-                f'−{mode_sigma - lo_sigma:.1f} |'
-            )
-        else:
-            _rows.append(
-                f'| σ_single (km/s) | `{best_sigma_v:.1f}` '
-                f'| `{mode_sigma:.1f}` (fixed) |'
-            )
-        if _has_logPmax_scan:
-            _rows.append(
-                f'| logP_max | `{best_logPmax_v:.2f}` '
-                f'| `{mode_logPmax:.2f}` +{hi_logPmax - mode_logPmax:.2f} '
-                f'−{mode_logPmax - lo_logPmax:.2f} |'
-            )
-        else:
-            _rows.append(
-                f'| logP_max | `{best_logPmax_v:.2f}` '
-                f'| `{mode_logPmax:.2f}` (fixed) |'
-            )
-        _rows.append(
-            f'| **{_p_lbl}** | `{best_pval_v:.6f}` '
-            f'| `{_mode_pval:.6f}` |'
-        )
-
-        result_slot.markdown(
-            '| Parameter | Best fit (argmax) | Posterior mode ± 1σ |\n'
-            '|---|---|---|\n'
-            + '\n'.join(_rows) + '\n\n'
-            f'**Observed fraction:**  '
-            f'({n_det}+{bartzakos})/{total_pop} = '
-            f'**{(n_det+bartzakos)/total_pop*100:.1f}%**'
-        )
-
-        # ── Corner Plot ──────────────────────────────────────────────────
-        st.markdown('---')
-        st.markdown('### Marginalized Posteriors (Corner Plot)')
-
-        from plotly.subplots import make_subplots as _corner_subplots
-
-        # Build param lists: π, f_bin, [σ_single], [logP_max]
-        # π first so the off-diagonal cell (row=f_bin, col=π) has x=π, y=f_bin
-        # — matching the main heatmap orientation.
-        _param_names = ['π', 'f_bin']
-        _param_grids = [pi_g, fbin_g]
-        _param_posts = [post_pi, post_fbin]
-        _param_bests = [mode_pi, mode_fbin]
-        _param_los   = [lo_pi, lo_fbin]
-        _param_his   = [hi_pi, hi_fbin]
-        # Map param index → ks_p_4d axis: [logPmax=0, sigma=1, fbin=2, pi=3]
-        _param_axes  = [3, 2]
-
-        if _has_sigma_scan:
-            _param_names.append('σ_single')
-            _param_grids.append(sigma_g)
-            _param_posts.append(post_sigma)
-            _param_bests.append(mode_sigma)
-            _param_los.append(lo_sigma)
-            _param_his.append(hi_sigma)
-            _param_axes.append(1)
-
-        if _has_logPmax_scan:
-            _param_names.append('logP_max')
-            _param_grids.append(logPmax_g)
-            _param_posts.append(post_logPmax)
-            _param_bests.append(mode_logPmax)
-            _param_los.append(lo_logPmax)
-            _param_his.append(hi_logPmax)
-            _param_axes.append(0)
-
-        _n_params = len(_param_names)
-
-        fig_corner = _corner_subplots(
-            rows=_n_params, cols=_n_params,
-            horizontal_spacing=0.06, vertical_spacing=0.06,
-        )
-
-        for i in range(_n_params):
-            # Diagonal: 1D posterior
-            _post_norm = _param_posts[i] / float(np.trapezoid(_param_posts[i], _param_grids[i])) \
-                if float(np.trapezoid(_param_posts[i], _param_grids[i])) > 0 else _param_posts[i]
-
-            fig_corner.add_trace(go.Scatter(
-                x=_param_grids[i], y=_post_norm,
-                mode='lines', line=dict(color='#4A90D9', width=2),
-                showlegend=False,
-            ), row=i + 1, col=i + 1)
-
-            # HDI68 shading
-            _mask_hdi = (_param_grids[i] >= _param_los[i]) & (_param_grids[i] <= _param_his[i])
-            _x_hdi = _param_grids[i][_mask_hdi]
-            _y_hdi = _post_norm[_mask_hdi]
-            if len(_x_hdi) > 0:
-                fig_corner.add_trace(go.Scatter(
-                    x=np.concatenate([_x_hdi, _x_hdi[::-1]]),
-                    y=np.concatenate([_y_hdi, np.zeros(len(_y_hdi))]),
-                    fill='toself', fillcolor='rgba(74,144,217,0.3)',
-                    line=dict(width=0), showlegend=False,
-                ), row=i + 1, col=i + 1)
-
-            # Best-fit line (argmax, matches heatmap star)
-            fig_corner.add_vline(
-                x=_param_bests[i], line_dash='dash',
-                line_color='#E25A53', line_width=1.5,
-                row=i + 1, col=i + 1,
-            )
-
-            # Off-diagonal: 2D marginalized heatmaps (lower triangle only)
-            for j in range(i):
-                # Marginalize ks_p_4d over all axes except the two we want
-                _keep_axes = sorted([_param_axes[j], _param_axes[i]])
-                _sum_axes = tuple(k for k in range(4) if k not in _keep_axes)
-                if _sum_axes:
-                    _2d = np.sum(ks_p_4d, axis=_sum_axes)
-                else:
-                    _2d = ks_p_4d.copy()
-
-                # _2d shape: [_keep_axes[0] dim, _keep_axes[1] dim]
-                # We want z[y_idx, x_idx] for Heatmap: y=param_i, x=param_j
-                if _param_axes[i] == _keep_axes[0]:
-                    _z = _2d        # rows=param_i, cols=param_j
-                else:
-                    _z = _2d.T      # need to transpose
-
-                _z_valid = _z[~np.isnan(_z)]
-                _z_max = float(np.nanmax(_z_valid)) if _z_valid.size > 0 else 1.0
-                fig_corner.add_trace(go.Heatmap(
-                    x=_param_grids[j], y=_param_grids[i],
-                    z=_z,
-                    colorscale='RdBu_r', zmin=0.0, zmax=_z_max,
-                    zsmooth='best', showscale=False,
-                    hovertemplate=f'{_param_names[j]}=%{{x:.4f}}<br>'
-                                 f'{_param_names[i]}=%{{y:.4f}}<br>'
-                                 f'p-sum=%{{z:.4f}}<extra></extra>',
-                ), row=i + 1, col=j + 1)
-
-                # Contour lines for 68% and 95% credible regions
-                _z_flat = _z.ravel()
-                _z_pos = _z_flat[_z_flat > 0]
-                if len(_z_pos) > 2:
-                    _z_sorted = np.sort(_z_pos)[::-1]
-                    _z_cumsum = np.cumsum(_z_sorted)
-                    _z_cumsum = _z_cumsum / _z_cumsum[-1]
-                    _idx_68 = np.searchsorted(_z_cumsum, 0.68)
-                    _idx_95 = np.searchsorted(_z_cumsum, 0.95)
-                    _lvl_68 = float(_z_sorted[min(_idx_68, len(_z_sorted) - 1)])
-                    _lvl_95 = float(_z_sorted[min(_idx_95, len(_z_sorted) - 1)])
-                    fig_corner.add_trace(go.Contour(
-                        x=_param_grids[j], y=_param_grids[i], z=_z,
-                        contours=dict(
-                            coloring='none', showlabels=True,
-                            labelfont=dict(size=8, color=pal['contour_label']),
-                        ),
-                        ncontours=2,
-                        contours_start=_lvl_95,
-                        contours_end=_lvl_68,
-                        line=dict(color=pal['contour_color'], width=1.5, dash='dot'),
-                        showscale=False, hoverinfo='skip',
-                    ), row=i + 1, col=j + 1)
-
-                # Best-fit marker (argmax, matches heatmap star)
-                fig_corner.add_trace(go.Scatter(
-                    x=[_param_bests[j]], y=[_param_bests[i]],
-                    mode='markers',
-                    marker=dict(symbol='star', size=10, color='#DAA520',
-                                line=dict(color='black', width=1)),
-                    showlegend=False,
-                ), row=i + 1, col=j + 1)
-
-        # Axis labels (bottom row and left column)
-        for i in range(_n_params):
-            fig_corner.update_xaxes(title_text=_param_names[i],
-                                     row=_n_params, col=i + 1)
-            if i > 0:
-                fig_corner.update_yaxes(title_text=_param_names[i],
-                                         row=i + 1, col=1)
-
-        # Hide upper triangle
-        for i in range(_n_params):
-            for j in range(i + 1, _n_params):
-                fig_corner.update_xaxes(visible=False, row=i + 1, col=j + 1)
-                fig_corner.update_yaxes(visible=False, row=i + 1, col=j + 1)
-
-        fig_corner.update_layout(
-            **PLOTLY_THEME,
-            height=250 * _n_params,
-            width=250 * _n_params,
-            showlegend=False,
-            margin=dict(l=60, r=20, t=30, b=60),
-        )
-        st.plotly_chart(fig_corner, use_container_width=True, key=f'{p}_corner_plot')
-        _cap_logP = (f', logP_max = {_ana_logPmax:.2f}'
-                     if _has_logPmax_scan else '')
-        st.caption(
-            f'Marginalized posteriors following Dsilva et al. (2023). '
-            f'**Diagonal:** 1D posteriors with best fit (dashed red) and '
-            f'68% HDI (blue shading). '
-            f'**Off-diagonal:** 2D marginalized {_p_lbl}-value sums with '
-            f'best fit (gold star) and 68%/95% credible contours (white dotted). '
-            f'Analysis values: f_bin = {_ana_fbin:.4f}, '
-            f'π = {_ana_pi:.4f}, '
-            f'σ = {_ana_sigma:.1f} km/s'
-            f'{_cap_logP}, '
-            f'{_p_lbl} = {best_pval_v:.6f}.'
-        )
-
-        # ── Likelihood Corner Plot (Dsilva+2023) ─────────────────────────
-        _ds_L_full = result.get('likelihood')
-        if _ds_L_full is not None:
-            _ds_L_full = np.asarray(_ds_L_full, dtype=float)
-            if _ds_L_full.ndim == 2:
-                _ds_L_full = _ds_L_full[np.newaxis, ...]
-            if _ds_L_full.ndim == 3 and np.any(np.isfinite(_ds_L_full) & (_ds_L_full > 0)):
-                with st.expander('Corner Plot — Likelihood (Dsilva+2023)', expanded=True):
-                    from plotly.subplots import make_subplots as _dsL_sub
-                    from wr_bias_simulation import compute_hdi68 as _dsL_hdi
-
-                    # Use best sigma slice
-                    if _ds_L_full.shape[0] > 1:
-                        _dsL_sums = [float(np.nansum(_ds_L_full[s])) for s in range(_ds_L_full.shape[0])]
-                        _dsL_2d = _ds_L_full[int(np.argmax(_dsL_sums))]
-                    else:
-                        _dsL_2d = _ds_L_full[0]
-                    _dsL_names = ['f_bin', 'π']
-                    _dsL_grids = [fbin_g, pi_g]
-                    _dsL_posts = [np.nansum(_dsL_2d, axis=1), np.nansum(_dsL_2d, axis=0)]
-                    _dsL_bests, _dsL_los, _dsL_his = [], [], []
-                    for _gi, _gv, _gp in zip(range(2), _dsL_grids, _dsL_posts):
-                        if _gp.sum() > 0:
-                            _m, _l, _h = _dsL_hdi(_gv, _gp)
-                        else:
-                            _m = _l = _h = float(_gv[0])
-                        _dsL_bests.append(_m); _dsL_los.append(_l); _dsL_his.append(_h)
-
-                    fig_dsL = _dsL_sub(rows=2, cols=2, horizontal_spacing=0.08, vertical_spacing=0.08)
-                    for i in range(2):
-                        _iv = float(np.trapezoid(_dsL_posts[i], _dsL_grids[i]))
-                        _pn = (_dsL_posts[i] / _iv) if _iv > 0 else _dsL_posts[i]
-                        fig_dsL.add_trace(go.Scatter(
-                            x=_dsL_grids[i], y=_pn, mode='lines',
-                            line=dict(color='#E25A53', width=2), showlegend=False,
-                        ), row=i+1, col=i+1)
-                        _msk = ((_dsL_grids[i] >= _dsL_los[i]) & (_dsL_grids[i] <= _dsL_his[i]))
-                        _xh, _yh = _dsL_grids[i][_msk], _pn[_msk]
-                        if len(_xh) > 0:
-                            fig_dsL.add_trace(go.Scatter(
-                                x=np.concatenate([_xh, _xh[::-1]]),
-                                y=np.concatenate([_yh, np.zeros(len(_yh))]),
-                                fill='toself', fillcolor='rgba(226,90,83,0.25)',
-                                line=dict(width=0), showlegend=False,
-                            ), row=i+1, col=i+1)
-                        fig_dsL.add_vline(x=_dsL_bests[i], line_dash='dash',
-                                          line_color='#DAA520', line_width=1.5, row=i+1, col=i+1)
-                    # Off-diagonal: 2D joint
-                    fig_dsL.add_trace(go.Heatmap(
-                        x=_dsL_grids[0], y=_dsL_grids[1], z=_dsL_2d.T,
-                        colorscale='Hot_r', zmin=0, zmax=float(np.nanmax(_dsL_2d)),
-                        zsmooth='best', showscale=False,
-                    ), row=2, col=1)
-                    fig_dsL.add_trace(go.Scatter(
-                        x=[_dsL_bests[0]], y=[_dsL_bests[1]], mode='markers',
-                        marker=dict(symbol='star', size=10, color='#DAA520',
-                                    line=dict(color='black', width=1)),
-                        showlegend=False,
-                    ), row=2, col=1)
-                    fig_dsL.update_xaxes(title_text='f_bin', row=2, col=1)
-                    fig_dsL.update_xaxes(title_text='π', row=2, col=2)
-                    fig_dsL.update_yaxes(title_text='π', row=2, col=1)
-                    fig_dsL.update_xaxes(visible=False, row=1, col=2)
-                    fig_dsL.update_yaxes(visible=False, row=1, col=2)
-                    fig_dsL.update_layout(**PLOTLY_THEME, height=500, width=500,
-                                          showlegend=False, margin=dict(l=60, r=20, t=30, b=60))
-                    st.plotly_chart(fig_dsL, use_container_width=True, key=f'{p}_L_corner')
-                    st.caption('Likelihood posteriors (Dsilva+2023 binned multinomial). '
-                               'Red = 1D posteriors with 68% HDI, gold star = mode.')
-
-        # ── Marginalized heatmaps: f_bin × σ and π × σ (Task #19) ───────
-        if _has_sigma_scan:
-            st.markdown('---')
-            st.markdown('### Marginalized Heatmaps vs σ_single')
-            _marg_col1, _marg_col2 = st.columns(2)
-
-            # f_bin × σ: sum over logPmax (axis 0) and π (axis 3)
-            _marg_fbin_sigma = np.nansum(ks_p_4d, axis=(0, 3)).T  # [n_fbin, n_sigma]
-            with _marg_col1:
-                st.plotly_chart(
-                    _make_heatmap_fig(
-                        _marg_fbin_sigma, fbin_g, sigma_g,
-                        title='f_bin × σ_single',
-                        height=_ch, width=_cw,
-                        x_label='σ_single (km/s)',
-                        y_label='f_bin',
-                        x_name='σ',
-                        best_label_fmt='  f={fbin:.3f}, σ={x:.1f}, p-sum={p:.2f}',
-                    ),
-                    use_container_width=True,
-                    key=f'{p}_marg_fbin_sigma',
-                )
-                st.caption(
-                    f'{_p_lbl}-value summed over logP_max and π. '
-                    'Shows the joint constraint on f_bin and σ_single.'
-                )
-
-            # π × σ: sum over logPmax (axis 0) and f_bin (axis 2)
-            _marg_pi_sigma = np.nansum(ks_p_4d, axis=(0, 2)).T  # [n_pi, n_sigma]
-            with _marg_col2:
-                st.plotly_chart(
-                    _make_heatmap_fig(
-                        _marg_pi_sigma, pi_g, sigma_g,
-                        title='π × σ_single',
-                        height=_ch, width=_cw,
-                        x_label='σ_single (km/s)',
-                        y_label='π',
-                        x_name='σ',
-                        best_label_fmt='  π={fbin:.3f}, σ={x:.1f}, p-sum={p:.2f}',
-                    ),
-                    use_container_width=True,
-                    key=f'{p}_marg_pi_sigma',
-                )
-                st.caption(
-                    f'{_p_lbl}-value summed over logP_max and f_bin. '
-                    'Shows the joint constraint on π and σ_single.'
-                )
 
         # ── Import simulation functions for analysis plots ─────────────────
         from wr_bias_simulation import (
@@ -5613,124 +5223,6 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                     'chosen cutoff.'
                 )
 
-        # ── Multi-sigma visualizations (after model explorer) ────────────
-        if len(sigma_g) > 1:
-            st.markdown('---')
-
-            # Animated 4D figure
-            st.markdown('### Animated 4D view  (σ_single as time axis)')
-            st.caption('Use the Play button or drag the slider to step through σ_single values.')
-
-            frames = []
-            for i_s, sigma_val in enumerate(sigma_g):
-                z_frame = ks_p_3d[i_s]
-                bf_f, bp_f, _ = _best_point(z_frame, fbin_g, pi_g)
-                frames.append(go.Frame(
-                    data=[
-                        go.Heatmap(
-                            z=z_frame, x=pi_g, y=fbin_g,
-                            colorscale='RdBu_r',
-                            zmin=0.0,
-                            zmax=float(np.nanmax(ks_p_3d)),
-                            zsmooth='best',
-                            colorbar=dict(title=f'{_p_lbl}-value', thickness=14),
-                        ),
-                        go.Scatter(
-                            x=[bp_f], y=[bf_f],
-                            mode='markers',
-                            marker=dict(symbol='star', size=16, color='gold',
-                                        line=dict(color='black', width=1)),
-                        ),
-                    ],
-                    name=str(i_s),
-                    layout=go.Layout(
-                        title_text=(
-                            f'{_p_lbl}-value  —  σ_single = {sigma_val:.1f} km/s  '
-                            f'(best f_bin={bf_f:.3f}, π={bp_f:.2f})'
-                        )
-                    ),
-                ))
-
-            anim_layout: dict = {
-                **PLOTLY_THEME,
-                'title': f'Bias Correction — {_p_lbl}-value animated over σ_single',
-                'xaxis_title': 'π  (period power-law index)',
-                'yaxis_title': 'f_bin  (intrinsic binary fraction)',
-                'updatemenus': [dict(
-                    type='buttons',
-                    showactive=False,
-                    y=1.18, x=0.5, xanchor='center',
-                    buttons=[
-                        dict(
-                            label='▶ Play',
-                            method='animate',
-                            args=[None, dict(
-                                frame=dict(duration=900, redraw=True),
-                                fromcurrent=True, mode='immediate',
-                            )],
-                        ),
-                        dict(
-                            label='⏸ Pause',
-                            method='animate',
-                            args=[[None], dict(
-                                mode='immediate',
-                                frame=dict(duration=0, redraw=False),
-                            )],
-                        ),
-                    ],
-                )],
-                'sliders': [dict(
-                    active=0,
-                    currentvalue=dict(
-                        prefix='σ_single = ', suffix=' km/s', visible=True,
-                        font=dict(size=13),
-                    ),
-                    pad=dict(t=55),
-                    steps=[
-                        dict(
-                            args=[[str(i_s)], dict(
-                                mode='immediate',
-                                frame=dict(duration=0, redraw=True),
-                            )],
-                            label=f'{float(sv):.1f}',
-                            method='animate',
-                        )
-                        for i_s, sv in enumerate(sigma_g)
-                    ],
-                )],
-                'height': _ch + 120,
-                'margin': dict(l=60, r=20, t=80, b=80),
-            }
-            if _cw is not None:
-                anim_layout['width'] = _cw
-
-            fig4d = go.Figure(data=frames[0].data, frames=frames,
-                              layout=go.Layout(**anim_layout))
-            st.plotly_chart(fig4d, use_container_width=_use_cw, key=f'{p}_anim_4d')
-
-            # 3D stacked heatmap
-            st.markdown('### 3D Stacked View')
-            st.caption(
-                'Semi-transparent heatmap layers stacked along σ_single. '
-                'Rotate and zoom with mouse.'
-            )
-            fig_3d = _make_3d_stacked_fig(
-                ks_p_3d, fbin_g, pi_g, sigma_g,
-                height=_ch + 200, width=_cw,
-            )
-            st.plotly_chart(fig_3d, use_container_width=_use_cw, key=f'{p}_3d_stacked')
-
-            # Summary table
-            summary_rows = []
-            for i_s, sv in enumerate(sigma_g):
-                bf_s, bp_s, bpv_s = _best_point(ks_p_3d[i_s], fbin_g, pi_g)
-                summary_rows.append({
-                    'σ_single (km/s)': round(float(sv), 2),
-                    'Best f_bin': round(bf_s, 4),
-                    'Best π': round(bp_s, 4),
-                    _p_lbl: round(bpv_s, 5),
-                })
-            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
 
         # ── Simulation Methodology & Equations ───────────────────────────────
         st.markdown('---')
@@ -6270,6 +5762,9 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         _lg_res = _lg_job['result']
         st.session_state[f'{p}_result'] = _lg_res
         cached_load_grid_result.clear()
+        # Persist final live heatmaps so they remain visible after job cleanup
+        if _lg_job.get('live_heatmaps'):
+            st.session_state[f'{p}_final_live_heatmaps'] = _lg_job['live_heatmaps']
         _lg_elapsed = _lg_job.get('elapsed_total', 0)
         _lg_desc = _lg_job.get('desc_name', '')
         _lg_nc = _lg_job.get('n_cells_total', 0)
@@ -6292,6 +5787,28 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         else:
             lg_status_slot.warning('Simulation cancelled.')
         del st.session_state[f'{p}_job']
+
+    # ── Show persisted final live heatmaps (Bug 1: survive job cleanup) ─────
+    _final_lhm = st.session_state.get(f'{p}_final_live_heatmaps')
+    if _final_lhm:
+        _lc1, _lc2 = st.columns(2)
+        for _mk, _col in [('ks', _lc1), ('weighted', _lc2)]:
+            if _mk in _final_lhm:
+                hd = _final_lhm[_mk]
+                with _col:
+                    st.plotly_chart(
+                        _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
+                            title=hd['title'], height=300, live=False),
+                        use_container_width=True)
+        _lc3, _lc4 = st.columns(2)
+        for _mk, _col in [('cvm', _lc3), ('likelihood', _lc4)]:
+            if _mk in _final_lhm:
+                hd = _final_lhm[_mk]
+                with _col:
+                    st.plotly_chart(
+                        _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
+                            title=hd['title'], height=300, live=False),
+                        use_container_width=True)
 
     # ── Display result (always shown when result exists) ─────────────────────
     lg_result = st.session_state.get(f'{p}_result')
@@ -6321,13 +5838,12 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 use_container_width=_use_cw,
             )
 
-        # ── Multi-method comparison summary (Langer) ────────────────────
-        with st.expander('📊 Scoring Method Comparison', expanded=False):
-            _render_method_summary_section(
-                lg_result, lg_fbin_g, lg_sigma_g,
-                prefix=p, x_name='sigma', x_label='sigma_single',
-                ndim_mode='langer',
-            )
+        # ── Multi-method comparison summary (Langer, shown directly) ─────
+        _render_method_summary_section(
+            lg_result, lg_fbin_g, lg_sigma_g,
+            prefix=p, x_name='sigma', x_label='sigma_single',
+            ndim_mode='langer',
+        )
 
         # ── Per-method expanders (Langer) ───────────────────────────────
         for _mk, _mname, _pk, _dk, _mcolor in SCORING_METHODS:
@@ -6350,18 +5866,7 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         best_fbin_lg, best_sigma_lg, best_pval_lg = _best_point(
             lg_ks_p_2d, lg_fbin_g, lg_sigma_g)
 
-        # ── Scoring analysis (CvM) ─────────────────────────────────────
-        with st.expander('📊 CvM S-score Analysis', expanded=True):
-            _lg_obs_drv = lg_result.get('obs_delta_rv')
-            _lg_lk_edges = lg_result.get('likelihood_bin_edges')
-            _render_cvm_analysis(
-                lg_ks_D_2d, lg_ks_p_2d,
-                lg_fbin_g, lg_sigma_g,
-                x_label='f_bin', y_label='σ_single',
-                height=_ch, width=_cw, prefix=f'{p}_cvm',
-                mode='cvm',
-                obs_delta_rv=_lg_obs_drv,
-                likelihood_bin_edges=_lg_lk_edges)
+        # (Bug 11 removed: old CvM expander is now in per-method expanders)
 
         # Apply grid exclusion mask to 2D arrays for downstream sections
         # Use stored 1D per-axis masks (includes range sliders + per-value exclusions)
@@ -6390,245 +5895,6 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         except Exception:
             lg_n_det = 0
 
-        # ── Marginalization + HDI68 ───────────────────────────────────────────
-        # Always compute posteriors (needed for corner plot); HDI from .npz if available
-        lg_post_fbin  = np.sum(lg_ks_p_2d, axis=1)
-        lg_post_sigma = np.sum(lg_ks_p_2d, axis=0)
-
-        _lg_res = st.session_state.get(f'{p}_result', {})
-        if 'mode_fbin' in _lg_res:
-            lg_mode_fbin  = float(_lg_res['mode_fbin'])
-            lg_lo_fbin    = float(_lg_res['lo_fbin'])
-            lg_hi_fbin    = float(_lg_res['hi_fbin'])
-            lg_mode_sigma = float(_lg_res['mode_sigma'])
-            lg_lo_sigma   = float(_lg_res['lo_sigma'])
-            lg_hi_sigma   = float(_lg_res['hi_sigma'])
-        else:
-            from wr_bias_simulation import compute_hdi68
-            lg_mode_fbin, lg_lo_fbin, lg_hi_fbin = compute_hdi68(lg_fbin_g, lg_post_fbin)
-            lg_mode_sigma, lg_lo_sigma, lg_hi_sigma = compute_hdi68(lg_sigma_g, lg_post_sigma)
-
-        # Compute p-value at HDI mode (nearest grid point)
-        _lg_mode_fb_idx = int(np.argmin(np.abs(lg_fbin_g - lg_mode_fbin)))
-        _lg_mode_sig_idx = int(np.argmin(np.abs(lg_sigma_g - lg_mode_sigma)))
-        _lg_mode_pval = float(lg_ks_p_2d[_lg_mode_fb_idx, _lg_mode_sig_idx])
-
-        lg_result_slot.markdown(
-            '| Parameter | Best fit (argmax) | Posterior mode ± 1σ |\n'
-            '|---|---|---|\n'
-            f'| f_bin | `{best_fbin_lg:.4f}` '
-            f'| `{lg_mode_fbin:.4f}` +{lg_hi_fbin - lg_mode_fbin:.4f} '
-            f'−{lg_mode_fbin - lg_lo_fbin:.4f} |\n'
-            f'| σ_single (km/s) | `{best_sigma_lg:.1f}` '
-            f'| `{lg_mode_sigma:.1f}` +{lg_hi_sigma - lg_mode_sigma:.1f} '
-            f'−{lg_mode_sigma - lg_lo_sigma:.1f} |\n'
-            f'| **{_lg_p_lbl}** | `{best_pval_lg:.6f}` '
-            f'| `{_lg_mode_pval:.6f}` |\n\n'
-            f'**Observed fraction:**  '
-            f'({lg_n_det}+{lg_bartzakos})/{lg_total_pop} = '
-            f'**{(lg_n_det + lg_bartzakos) / lg_total_pop * 100:.1f}%**'
-        )
-
-        # ── Corner Plot (2 params: f_bin × σ_single) ─────────────────────────
-        st.markdown('---')
-        st.markdown('### Marginalized Posteriors (Corner Plot)')
-
-        from plotly.subplots import make_subplots as _lg_corner_subplots
-
-        _lg_n_params = 2
-        _lg_param_names = ['f_bin', 'σ_single']
-        _lg_param_grids = [lg_fbin_g, lg_sigma_g]
-        _lg_param_posts = [lg_post_fbin, lg_post_sigma]
-        _lg_param_modes = [lg_mode_fbin, lg_mode_sigma]
-        _lg_param_los   = [lg_lo_fbin, lg_lo_sigma]
-        _lg_param_his   = [lg_hi_fbin, lg_hi_sigma]
-
-        fig_lg_corner = _lg_corner_subplots(
-            rows=_lg_n_params, cols=_lg_n_params,
-            horizontal_spacing=0.08, vertical_spacing=0.08,
-        )
-
-        for i in range(_lg_n_params):
-            # Diagonal: 1D posterior
-            _lg_area = float(np.trapezoid(_lg_param_posts[i], _lg_param_grids[i]))
-            _lg_pn = _lg_param_posts[i] / _lg_area if _lg_area > 0 else _lg_param_posts[i]
-
-            fig_lg_corner.add_trace(go.Scatter(
-                x=_lg_param_grids[i], y=_lg_pn,
-                mode='lines', line=dict(color='#4A90D9', width=2),
-                showlegend=False,
-            ), row=i + 1, col=i + 1)
-
-            # HDI68 shading
-            _lg_mask = ((_lg_param_grids[i] >= _lg_param_los[i]) &
-                        (_lg_param_grids[i] <= _lg_param_his[i]))
-            _lg_xh = _lg_param_grids[i][_lg_mask]
-            _lg_yh = _lg_pn[_lg_mask]
-            if len(_lg_xh) > 0:
-                fig_lg_corner.add_trace(go.Scatter(
-                    x=np.concatenate([_lg_xh, _lg_xh[::-1]]),
-                    y=np.concatenate([_lg_yh, np.zeros(len(_lg_yh))]),
-                    fill='toself', fillcolor='rgba(74,144,217,0.3)',
-                    line=dict(width=0), showlegend=False,
-                ), row=i + 1, col=i + 1)
-
-            # Mode line
-            fig_lg_corner.add_vline(
-                x=_lg_param_modes[i], line_dash='dash',
-                line_color='#E25A53', line_width=1.5,
-                row=i + 1, col=i + 1,
-            )
-
-            # Off-diagonal: 2D heatmap (lower triangle)
-            for j in range(i):
-                # For 2 params, axes are: param0=f_bin→axis0, param1=σ→axis1
-                # ks_p_2d shape is [n_fbin, n_sigma]
-                # For cell (i=1, j=0): x=f_bin (j=0), y=σ (i=1)
-                # z needs to be [n_y, n_x] = [n_sigma, n_fbin] = ks_p_2d.T
-                _lg_z = lg_ks_p_2d.T
-                _lg_z_valid = _lg_z[~np.isnan(_lg_z)]
-                _lg_z_max = float(np.nanmax(_lg_z_valid)) if _lg_z_valid.size > 0 else 1.0
-                fig_lg_corner.add_trace(go.Heatmap(
-                    x=_lg_param_grids[j], y=_lg_param_grids[i],
-                    z=_lg_z,
-                    colorscale='RdBu_r', zmin=0.0, zmax=_lg_z_max,
-                    zsmooth='best', showscale=False,
-                    hovertemplate=f'{_lg_param_names[j]}=%{{x:.4f}}<br>'
-                                 f'{_lg_param_names[i]}=%{{y:.4f}}<br>'
-                                 f'p=%{{z:.4f}}<extra></extra>',
-                ), row=i + 1, col=j + 1)
-
-                # Contour lines for 68% and 95% credible regions
-                _lg_z_flat = _lg_z.ravel()
-                _lg_z_pos = _lg_z_flat[_lg_z_flat > 0]
-                if len(_lg_z_pos) > 2:
-                    _lg_z_sorted = np.sort(_lg_z_pos)[::-1]
-                    _lg_z_cumsum = np.cumsum(_lg_z_sorted)
-                    _lg_z_cumsum = _lg_z_cumsum / _lg_z_cumsum[-1]
-                    _lg_idx_68 = np.searchsorted(_lg_z_cumsum, 0.68)
-                    _lg_idx_95 = np.searchsorted(_lg_z_cumsum, 0.95)
-                    _lg_lvl_68 = float(_lg_z_sorted[min(_lg_idx_68, len(_lg_z_sorted) - 1)])
-                    _lg_lvl_95 = float(_lg_z_sorted[min(_lg_idx_95, len(_lg_z_sorted) - 1)])
-                    fig_lg_corner.add_trace(go.Contour(
-                        x=_lg_param_grids[j], y=_lg_param_grids[i],
-                        z=_lg_z,
-                        contours=dict(
-                            coloring='none', showlabels=True,
-                            labelfont=dict(size=8, color=pal['contour_label']),
-                        ),
-                        ncontours=2,
-                        contours_start=_lg_lvl_95,
-                        contours_end=_lg_lvl_68,
-                        line=dict(color=pal['contour_color'], width=1.5, dash='dot'),
-                        showscale=False, hoverinfo='skip',
-                    ), row=i + 1, col=j + 1)
-
-                fig_lg_corner.add_trace(go.Scatter(
-                    x=[_lg_param_modes[j]], y=[_lg_param_modes[i]],
-                    mode='markers',
-                    marker=dict(symbol='star', size=10, color='#DAA520',
-                                line=dict(color='black', width=1)),
-                    showlegend=False,
-                ), row=i + 1, col=j + 1)
-
-        # Axis labels
-        for i in range(_lg_n_params):
-            fig_lg_corner.update_xaxes(title_text=_lg_param_names[i],
-                                        row=_lg_n_params, col=i + 1)
-            if i > 0:
-                fig_lg_corner.update_yaxes(title_text=_lg_param_names[i],
-                                            row=i + 1, col=1)
-
-        # Hide upper triangle
-        for i in range(_lg_n_params):
-            for j in range(i + 1, _lg_n_params):
-                fig_lg_corner.update_xaxes(visible=False, row=i + 1, col=j + 1)
-                fig_lg_corner.update_yaxes(visible=False, row=i + 1, col=j + 1)
-
-        fig_lg_corner.update_layout(
-            **PLOTLY_THEME,
-            height=250 * _lg_n_params,
-            width=250 * _lg_n_params,
-            showlegend=False,
-            margin=dict(l=60, r=20, t=30, b=60),
-        )
-        st.plotly_chart(fig_lg_corner, use_container_width=True, key=f'{p}_corner_plot')
-        st.caption(
-            f'Marginalized posteriors (Langer 2020 model). '
-            f'**Diagonal:** 1D posteriors with mode (dashed red) and '
-            f'68% HDI (blue shading). '
-            f'**Off-diagonal:** 2D {_lg_p_lbl}-value with best-fit (gold star). '
-            f'f_bin = {lg_mode_fbin:.4f} '
-            f'(+{lg_hi_fbin - lg_mode_fbin:.4f}/-{lg_mode_fbin - lg_lo_fbin:.4f}), '
-            f'σ = {lg_mode_sigma:.1f} '
-            f'(+{lg_hi_sigma - lg_mode_sigma:.1f}/-{lg_mode_sigma - lg_lo_sigma:.1f}) km/s.'
-        )
-
-        # ── Likelihood Corner Plot (Langer, Dsilva+2023) ─────────────────
-        _lgL_arr = lg_result.get('likelihood')
-        if _lgL_arr is not None:
-            _lgL_arr = np.asarray(_lgL_arr, dtype=float)
-            if _lgL_arr.ndim == 3 and _lgL_arr.shape[0] == 1:
-                _lgL_arr = _lgL_arr[0]
-            elif _lgL_arr.ndim == 3:
-                _sums = [float(np.nansum(_lgL_arr[s])) for s in range(_lgL_arr.shape[0])]
-                _lgL_arr = _lgL_arr[int(np.argmax(_sums))]
-            if _lgL_arr.ndim == 2 and np.any(np.isfinite(_lgL_arr) & (_lgL_arr > 0)):
-                with st.expander('Corner Plot — Likelihood (Dsilva+2023)', expanded=True):
-                    from plotly.subplots import make_subplots as _lgL_sub
-                    from wr_bias_simulation import compute_hdi68 as _lgL_hdi
-
-                    _lgL_names = ['f_bin', 'σ_single']
-                    _lgL_grids = [lg_fbin_g, lg_sigma_g]
-                    _lgL_posts = [np.nansum(_lgL_arr, axis=1), np.nansum(_lgL_arr, axis=0)]
-                    _lgL_bests, _lgL_los, _lgL_his = [], [], []
-                    for _gv, _gp in zip(_lgL_grids, _lgL_posts):
-                        if _gp.sum() > 0:
-                            _m, _l, _h = _lgL_hdi(_gv, _gp)
-                        else:
-                            _m = _l = _h = float(_gv[0])
-                        _lgL_bests.append(_m); _lgL_los.append(_l); _lgL_his.append(_h)
-
-                    fig_lgL = _lgL_sub(rows=2, cols=2, horizontal_spacing=0.08, vertical_spacing=0.08)
-                    for i in range(2):
-                        _iv = float(np.trapezoid(_lgL_posts[i], _lgL_grids[i]))
-                        _pn = (_lgL_posts[i] / _iv) if _iv > 0 else _lgL_posts[i]
-                        fig_lgL.add_trace(go.Scatter(
-                            x=_lgL_grids[i], y=_pn, mode='lines',
-                            line=dict(color='#E25A53', width=2), showlegend=False,
-                        ), row=i+1, col=i+1)
-                        _msk = ((_lgL_grids[i] >= _lgL_los[i]) & (_lgL_grids[i] <= _lgL_his[i]))
-                        _xh, _yh = _lgL_grids[i][_msk], _pn[_msk]
-                        if len(_xh) > 0:
-                            fig_lgL.add_trace(go.Scatter(
-                                x=np.concatenate([_xh, _xh[::-1]]),
-                                y=np.concatenate([_yh, np.zeros(len(_yh))]),
-                                fill='toself', fillcolor='rgba(226,90,83,0.25)',
-                                line=dict(width=0), showlegend=False,
-                            ), row=i+1, col=i+1)
-                        fig_lgL.add_vline(x=_lgL_bests[i], line_dash='dash',
-                                          line_color='#DAA520', line_width=1.5, row=i+1, col=i+1)
-                    fig_lgL.add_trace(go.Heatmap(
-                        x=_lgL_grids[0], y=_lgL_grids[1], z=_lgL_arr.T,
-                        colorscale='Hot_r', zmin=0, zmax=float(np.nanmax(_lgL_arr)),
-                        zsmooth='best', showscale=False,
-                    ), row=2, col=1)
-                    fig_lgL.add_trace(go.Scatter(
-                        x=[_lgL_bests[0]], y=[_lgL_bests[1]], mode='markers',
-                        marker=dict(symbol='star', size=10, color='#DAA520',
-                                    line=dict(color='black', width=1)),
-                        showlegend=False,
-                    ), row=2, col=1)
-                    fig_lgL.update_xaxes(title_text='f_bin', row=2, col=1)
-                    fig_lgL.update_xaxes(title_text='σ_single', row=2, col=2)
-                    fig_lgL.update_yaxes(title_text='σ_single', row=2, col=1)
-                    fig_lgL.update_xaxes(visible=False, row=1, col=2)
-                    fig_lgL.update_yaxes(visible=False, row=1, col=2)
-                    fig_lgL.update_layout(**PLOTLY_THEME, height=500, width=500,
-                                          showlegend=False, margin=dict(l=60, r=20, t=30, b=60))
-                    st.plotly_chart(fig_lgL, use_container_width=True, key=f'{p}_L_corner')
-                    st.caption('Likelihood posteriors (Dsilva+2023 binned multinomial). '
-                               'Red = 1D posteriors with 68% HDI, gold star = mode.')
 
         # ── Analysis plots (period dist, binary fraction, orbital properties) ─
         from wr_bias_simulation import (
@@ -7351,23 +6617,7 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                     'Detection fraction as a function of threshold (Langer 2020 model).'
                 )
 
-        # ── Summary table ─────────────────────────────────────────────────────
-        st.markdown('---')
-        lg_summary_rows = []
-        for i_f in range(len(lg_fbin_g)):
-            bf_v = float(lg_fbin_g[i_f])
-            for i_s in range(len(lg_sigma_g)):
-                sv = float(lg_sigma_g[i_s])
-                pv = float(lg_ks_p_2d[i_f, i_s])
-                if pv == float(np.nanmax(lg_ks_p_2d)):
-                    lg_summary_rows.append({
-                        'f_bin': round(bf_v, 4),
-                        'σ_single (km/s)': round(sv, 2),
-                        _lg_p_lbl: round(pv, 5),
-                    })
-        if lg_summary_rows:
-            st.markdown('### Best Grid Point')
-            st.dataframe(pd.DataFrame(lg_summary_rows), use_container_width=True)
+        # (Bug 12 removed: old summary table is now in per-method expanders)
 
         # ── Methodology Expander (Langer) ────────────────────────────────────
         _render_methodology_expander('langer')
@@ -7592,17 +6842,22 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                                 'is_final': _is_final,
                             }
                         job['live_heatmaps'] = _method_live
-                        # Status from KS p
+                        # Build per-method status summary
+                        _status_items = []
+                        for _smk in ('ks', 'weighted', 'cvm', 'likelihood'):
+                            if _smk in _method_live:
+                                _sp = _method_live[_smk]['p']
+                                _, _, _spv = _best_point(_sp, fbin_grid, sigma_grid)
+                                _status_items.append(f'{_smk}: **{_spv:.4f}**')
                         _ks_disp = _method_live['ks']['p']
                         _bp_idx = np.unravel_index(
                             np.argmax(_ks_disp), _ks_disp.shape)
                         _bf = float(fbin_grid[_bp_idx[0]])
                         _bsig = float(sigma_grid[_bp_idx[1]])
-                        _bpv = float(_ks_disp[_bp_idx])
                         job['live_status'] = (
                             f'best f_bin = **{_bf:.4f}**, '
-                            f'σ_single = **{_bsig:.1f}** km/s, '
-                            f'K-S p = **{_bpv:.4f}**')
+                            f'σ_single = **{_bsig:.1f}** km/s  |  '
+                            + '  |  '.join(_status_items))
                     else:
                         # Dsilva (or single-sigma Langer): show CURRENT sigma slice
                         _display_sig_idx = _current_sig_idx if n_sig > 1 else 0
@@ -7644,17 +6899,23 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                                 'min_scores': _live_sig_scores,
                             }
 
+                        # Build per-method status items
+                        _method_status_items = []
+                        for _smk in ('ks', 'weighted', 'cvm', 'likelihood'):
+                            if _smk in _method_live:
+                                _sp = _method_live[_smk]['p']
+                                _, _, _spv = _best_point(_sp, fbin_grid, pi_grid)
+                                _method_status_items.append(f'{_smk}: **{_spv:.4f}**')
                         _ks_disp = _method_live['ks']['p']
                         _bp_idx = np.unravel_index(
                             np.argmax(_ks_disp), _ks_disp.shape)
                         _bf = float(fbin_grid[_bp_idx[0]])
                         _bpi = float(pi_grid[_bp_idx[1]])
-                        _bpv = float(_ks_disp[_bp_idx])
                         _status_parts = [
                             f'Showing {_sig_label} km/s  →  '
                             f'f_bin = **{_bf:.4f}**, '
-                            f'π = **{_bpi:.3f}**, '
-                            f'K-S p = **{_bpv:.4f}**',
+                            f'π = **{_bpi:.3f}**  |  '
+                            + '  |  '.join(_method_status_items),
                         ]
                         if n_sig > 1:
                             _overall_best_sig = 0
@@ -7899,12 +7160,37 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
         if _job is not None and _job.get('result'):
             result = _job['result']
             st.session_state[f'{p}_result'] = result
+            # Persist final live heatmaps so they remain visible after job cleanup
+            if _job.get('live_heatmaps'):
+                st.session_state[f'{p}_final_live_heatmaps'] = _job['live_heatmaps']
             del st.session_state[f'{p}_job']
             # Clear caches so load table picks up auto-saved file
             cached_load_grid_result.clear()
             _scan_result_metadata.clear()
         else:
             result = _saved_result or {}
+
+        # Show persisted final live heatmaps (Bug 1: survive job cleanup)
+        _final_lhm = st.session_state.get(f'{p}_final_live_heatmaps')
+        if _final_lhm:
+            _lc1, _lc2 = st.columns(2)
+            for _mk, _col in [('ks', _lc1), ('weighted', _lc2)]:
+                if _mk in _final_lhm:
+                    hd = _final_lhm[_mk]
+                    with _col:
+                        st.plotly_chart(
+                            _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
+                                title=hd['title'], height=300, live=False),
+                            use_container_width=True)
+            _lc3, _lc4 = st.columns(2)
+            for _mk, _col in [('cvm', _lc3), ('likelihood', _lc4)]:
+                if _mk in _final_lhm:
+                    hd = _final_lhm[_mk]
+                    with _col:
+                        st.plotly_chart(
+                            _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
+                                title=hd['title'], height=300, live=False),
+                            use_container_width=True)
 
         ks_p_arr = result.get('ks_p')
         if ks_p_arr is None:
@@ -7980,13 +7266,13 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
             _cad_x_label = 'sigma_single'
             _cad_x_disp = 'sigma_single (km/s)'
 
-        with st.expander('📊 Scoring Method Comparison', expanded=False):
-            _render_method_summary_section(
-                result, np.asarray(fbin_grid), _cad_x_g,
-                extra_grids=_cad_extra_grids,
-                prefix=p, x_name=_cad_x_name, x_label=_cad_x_label,
-                ndim_mode=_cad_ndim_mode,
-            )
+        # ── Multi-method comparison summary (cadence, shown directly) ────
+        _render_method_summary_section(
+            result, np.asarray(fbin_grid), _cad_x_g,
+            extra_grids=_cad_extra_grids,
+            prefix=p, x_name=_cad_x_name, x_label=_cad_x_label,
+            ndim_mode=_cad_ndim_mode,
+        )
 
         # ── Per-method expanders (cadence) ──────────────────────────────
         # Determine outer slice indices for 3D→2D slicing
@@ -8021,61 +7307,7 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
                     disp_outer_slices=None if _is_langer_sigma else _cad_outer,
                 )
 
-        # ── Scoring analysis (CvM) ─────────────────────────────────────
-        if True:
-            ks_d_arr = result.get('ks_D')
-            _sraw_arr = result.get('ks_S_raw')
-            if _sraw_arr is not None:
-                _sraw_arr = np.asarray(_sraw_arr, dtype=float)
-            _cad_obs_drv = result.get('obs_delta_rv')
-            _cad_lk_edges = result.get('likelihood_bin_edges')
-            if ks_d_arr is not None:
-                with st.expander('📊 CvM S-score Analysis', expanded=True):
-                    _cad_mode_kw = dict(mode='cvm',
-                                        obs_delta_rv=_cad_obs_drv,
-                                        likelihood_bin_edges=_cad_lk_edges)
-                    if _is_langer_sigma:
-                        # Langer with sigma: 2D grid is (n_fb, n_sig)
-                        _cvm_D_2d = ks_d_arr[:, :, 0].T  # match hm_z shape
-                        _cvm_p_2d = ks_p_arr[:, :, 0].T
-                        _sraw_2d = _sraw_arr[:, :, 0].T if _sraw_arr is not None else None
-                        _render_cvm_analysis(
-                            _cvm_D_2d, _cvm_p_2d,
-                            fbin_grid, sigma_grid,
-                            x_label='f_bin', y_label='σ_single',
-                            ks_S_raw_2d=_sraw_2d,
-                            height=_ch, width=_cw, prefix=f'{p}_cvm',
-                            **_cad_mode_kw)
-                    elif n_sig == 1:
-                        # Single sigma: 2D grid
-                        _cvm_D_2d = ks_d_arr[0]
-                        _cvm_p_2d = ks_p_arr[0]
-                        _sraw_2d = _sraw_arr[0] if _sraw_arr is not None else None
-                        _y_lbl = 'π' if _is_dsilva else 'σ_single'
-                        _y_vals = pi_grid if _is_dsilva else sigma_grid
-                        _render_cvm_analysis(
-                            _cvm_D_2d, _cvm_p_2d,
-                            fbin_grid, _y_vals,
-                            x_label='f_bin', y_label=_y_lbl,
-                            ks_S_raw_2d=_sraw_2d,
-                            height=_ch, width=_cw, prefix=f'{p}_cvm',
-                            **_cad_mode_kw)
-                    else:
-                        # Dsilva with sigma scan: 3D — show best sigma slice
-                        _pmax_cvm = [float(np.nanmin(ks_d_arr[s])) for s in range(n_sig)]
-                        _best_s_cvm = int(np.argmin(_pmax_cvm))
-                        _cvm_2d_D = ks_d_arr[_best_s_cvm]
-                        _cvm_2d_p = ks_p_arr[_best_s_cvm]
-                        _sraw_2d = _sraw_arr[_best_s_cvm] if _sraw_arr is not None else None
-                        _render_cvm_analysis(
-                            _cvm_2d_D, _cvm_2d_p,
-                            fbin_grid, pi_grid,
-                            x_label='f_bin', y_label='π',
-                            sigma_grid=sigma_grid,
-                            ks_D_3d=ks_d_arr, ks_p_3d=ks_p_arr,
-                            ks_S_raw_2d=_sraw_2d,
-                            height=_ch, width=_cw, prefix=f'{p}_cvm',
-                            **_cad_mode_kw)
+        # (Bug 11 removed: old CvM expander is now in per-method expanders)
 
         # Apply grid exclusion mask to cadence arrays for downstream sections
         # Rebuild masks from excluded VALUE SETS (not stored 1D masks which may
@@ -8344,512 +7576,6 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
 
 
 
-        # ── Grid-derived plots (corner, marginalized, animated, 3D) ────────────
-        if n_sig > 1:
-            st.markdown('---')
-
-            # ── Corner plot: 1D posteriors + 2D marginalized heatmaps ─────────
-            with st.expander('Corner Plot (marginalized posteriors)', expanded=True):
-                from plotly.subplots import make_subplots as _cad_corner_subplots
-
-                _cad_param_names = ['f_bin']
-                _cad_param_grids = [fbin_grid]
-                _cad_param_axes = [1]  # axis in ks_p_arr (n_sig, n_fb, n_pi)
-
-                # Posteriors: marginalize ks_p_arr
-                _cad_post_fb = np.nansum(ks_p_arr, axis=(0, 2))  # sum over sigma, pi
-                _cad_param_posts = [_cad_post_fb]
-
-                # Best-fit values
-                if not np.any(np.isfinite(ks_p_arr)):
-                    st.info('No finite values in result grid — cannot compute corner plot.')
-                    return
-                _cad_best_idx_full = np.unravel_index(
-                    np.nanargmax(ks_p_arr), ks_p_arr.shape)
-                _cad_best_sigma = float(sigma_grid[_cad_best_idx_full[0]])
-                _cad_best_fb_corner = float(fbin_grid[_cad_best_idx_full[1]])
-                # HDI68 for f_bin (mode = marginalized peak)
-                from wr_bias_simulation import compute_hdi68 as _cad_hdi68
-                if _cad_post_fb.sum() > 0:
-                    _m_fb, _lo_fb, _hi_fb = _cad_hdi68(fbin_grid, _cad_post_fb)
-                else:
-                    _m_fb, _lo_fb, _hi_fb = _cad_best_fb_corner, _cad_best_fb_corner, _cad_best_fb_corner
-                _cad_param_bests = [_m_fb]
-                _cad_param_los = [_lo_fb]
-                _cad_param_his = [_hi_fb]
-
-                if _is_dsilva and len(pi_grid) > 1:
-                    _cad_post_pi = np.nansum(ks_p_arr, axis=(0, 1))
-                    _cad_param_names.append('π')
-                    _cad_param_grids.append(pi_grid)
-                    _cad_param_posts.append(_cad_post_pi)
-                    _cad_param_axes.append(2)
-                    _cad_best_pi_corner = float(pi_grid[_cad_best_idx_full[2]])
-                    if _cad_post_pi.sum() > 0:
-                        _m_pi, _lo_pi, _hi_pi = _cad_hdi68(pi_grid, _cad_post_pi)
-                    else:
-                        _m_pi, _lo_pi, _hi_pi = _cad_best_pi_corner, _cad_best_pi_corner, _cad_best_pi_corner
-                    _cad_param_bests.append(_m_pi)
-                    _cad_param_los.append(_lo_pi)
-                    _cad_param_his.append(_hi_pi)
-
-                _cad_post_sig = np.nansum(ks_p_arr, axis=(1, 2))
-                _cad_param_names.append('σ_single')
-                _cad_param_grids.append(sigma_grid)
-                _cad_param_posts.append(_cad_post_sig)
-                _cad_param_axes.append(0)
-                if _cad_post_sig.sum() > 0:
-                    _m_sig, _lo_sig, _hi_sig = _cad_hdi68(sigma_grid, _cad_post_sig)
-                else:
-                    _m_sig, _lo_sig, _hi_sig = _cad_best_sigma, _cad_best_sigma, _cad_best_sigma
-                _cad_param_bests.append(_m_sig)
-                _cad_param_los.append(_lo_sig)
-                _cad_param_his.append(_hi_sig)
-
-                _cn = len(_cad_param_names)
-                fig_corner_cad = _cad_corner_subplots(
-                    rows=_cn, cols=_cn,
-                    horizontal_spacing=0.06, vertical_spacing=0.06,
-                )
-
-                for i in range(_cn):
-                    # Diagonal: 1D posterior
-                    _int_val = float(np.trapezoid(_cad_param_posts[i], _cad_param_grids[i]))
-                    _post_n = (_cad_param_posts[i] / _int_val) if _int_val > 0 else _cad_param_posts[i]
-
-                    fig_corner_cad.add_trace(go.Scatter(
-                        x=_cad_param_grids[i], y=_post_n,
-                        mode='lines', line=dict(color='#4A90D9', width=2),
-                        showlegend=False,
-                    ), row=i + 1, col=i + 1)
-
-                    # HDI68 shading
-                    _msk = ((_cad_param_grids[i] >= _cad_param_los[i])
-                            & (_cad_param_grids[i] <= _cad_param_his[i]))
-                    _xh = _cad_param_grids[i][_msk]
-                    _yh = _post_n[_msk]
-                    if len(_xh) > 0:
-                        fig_corner_cad.add_trace(go.Scatter(
-                            x=np.concatenate([_xh, _xh[::-1]]),
-                            y=np.concatenate([_yh, np.zeros(len(_yh))]),
-                            fill='toself', fillcolor='rgba(74,144,217,0.3)',
-                            line=dict(width=0), showlegend=False,
-                        ), row=i + 1, col=i + 1)
-
-                    fig_corner_cad.add_vline(
-                        x=_cad_param_bests[i], line_dash='dash',
-                        line_color='#E25A53', line_width=1.5,
-                        row=i + 1, col=i + 1,
-                    )
-
-                    # Off-diagonal: 2D marginalized heatmaps (lower triangle)
-                    for j in range(i):
-                        _keep = sorted([_cad_param_axes[j], _cad_param_axes[i]])
-                        _sum_ax = tuple(k for k in range(3) if k not in _keep)
-                        _2d = np.nansum(ks_p_arr, axis=_sum_ax) if _sum_ax else ks_p_arr.copy()
-
-                        if _cad_param_axes[i] == _keep[0]:
-                            _zz = _2d
-                        else:
-                            _zz = _2d.T
-
-                        _zz_valid = _zz[~np.isnan(_zz)]
-                        _zz_max = float(np.nanmax(_zz_valid)) if _zz_valid.size > 0 else 1.0
-                        fig_corner_cad.add_trace(go.Heatmap(
-                            x=_cad_param_grids[j], y=_cad_param_grids[i],
-                            z=_zz, colorscale='RdBu_r', zmin=0.0, zmax=_zz_max,
-                            zsmooth='best', showscale=False,
-                            hovertemplate=(
-                                f'{_cad_param_names[j]}=%{{x:.4f}}<br>'
-                                f'{_cad_param_names[i]}=%{{y:.4f}}<br>'
-                                f'p-sum=%{{z:.4f}}<extra></extra>'
-                            ),
-                        ), row=i + 1, col=j + 1)
-
-                        # Contour lines (68% / 95%)
-                        _zf = _zz.ravel()
-                        _zp = _zf[_zf > 0]
-                        if len(_zp) > 2:
-                            _zs = np.sort(_zp)[::-1]
-                            _zcs = np.cumsum(_zs)
-                            _zcs = _zcs / _zcs[-1]
-                            _i68 = np.searchsorted(_zcs, 0.68)
-                            _i95 = np.searchsorted(_zcs, 0.95)
-                            _l68 = float(_zs[min(_i68, len(_zs) - 1)])
-                            _l95 = float(_zs[min(_i95, len(_zs) - 1)])
-                            fig_corner_cad.add_trace(go.Contour(
-                                x=_cad_param_grids[j], y=_cad_param_grids[i], z=_zz,
-                                contours=dict(
-                                    coloring='none', showlabels=True,
-                                    labelfont=dict(size=8, color=pal['contour_label']),
-                                ),
-                                ncontours=2,
-                                contours_start=_l95, contours_end=_l68,
-                                line=dict(color=pal['contour_color'], width=1.5, dash='dot'),
-                                showscale=False, hoverinfo='skip',
-                            ), row=i + 1, col=j + 1)
-
-                        # Best-fit marker
-                        fig_corner_cad.add_trace(go.Scatter(
-                            x=[_cad_param_bests[j]], y=[_cad_param_bests[i]],
-                            mode='markers',
-                            marker=dict(symbol='star', size=10, color='#DAA520',
-                                        line=dict(color='black', width=1)),
-                            showlegend=False,
-                        ), row=i + 1, col=j + 1)
-
-                # Axis labels
-                for i in range(_cn):
-                    fig_corner_cad.update_xaxes(
-                        title_text=_cad_param_names[i], row=_cn, col=i + 1)
-                    if i > 0:
-                        fig_corner_cad.update_yaxes(
-                            title_text=_cad_param_names[i], row=i + 1, col=1)
-                # Hide upper triangle
-                for i in range(_cn):
-                    for j in range(i + 1, _cn):
-                        fig_corner_cad.update_xaxes(visible=False, row=i + 1, col=j + 1)
-                        fig_corner_cad.update_yaxes(visible=False, row=i + 1, col=j + 1)
-
-                fig_corner_cad.update_layout(
-                    **PLOTLY_THEME,
-                    height=250 * _cn,
-                    width=250 * _cn,
-                    showlegend=False,
-                    margin=dict(l=60, r=20, t=30, b=60),
-                )
-                st.plotly_chart(fig_corner_cad, use_container_width=True,
-                                key=f'{p}_corner_plot')
-                st.caption(
-                    f'Marginalized posteriors. '
-                    f'**Diagonal:** 1D posteriors with best fit (dashed red) and '
-                    f'68% HDI (blue shading). '
-                    f'**Off-diagonal:** 2D marginalized K-S p-value sums with '
-                    f'best fit (gold star) and 68%/95% credible contours.'
-                )
-
-            # ── Likelihood Corner Plot (separate, below p-value corner) ──────
-            _L_arr_cad = result.get('likelihood')
-            if _L_arr_cad is not None:
-                _L_arr_cad = np.asarray(_L_arr_cad, dtype=float)
-                # Ensure 3D: (n_sig, n_fb, n_pi)
-                if _L_arr_cad.ndim == 2:
-                    _L_arr_cad = _L_arr_cad[np.newaxis, ...]
-                _has_finite_L = np.any(np.isfinite(_L_arr_cad) & (_L_arr_cad > 0))
-                if bool(_has_finite_L) and n_sig > 1:
-                    with st.expander('Corner Plot — Likelihood (Dsilva+2023)', expanded=True):
-                        from plotly.subplots import make_subplots as _Lcorner_sub
-                        from wr_bias_simulation import compute_hdi68 as _L_hdi68
-
-                        # Build parameter lists (same structure as p-value corner)
-                        _Lnames = ['f_bin']
-                        _Lgrids = [fbin_grid]
-                        _Laxes = [1]
-                        _Lpost_fb = np.nansum(_L_arr_cad, axis=(0, 2))
-                        _Lposts = [_Lpost_fb]
-                        _Lbests, _Llos, _Lhis = [], [], []
-                        if _Lpost_fb.sum() > 0:
-                            _mLfb, _loLfb, _hiLfb = _L_hdi68(fbin_grid, _Lpost_fb)
-                        else:
-                            _mLfb = _loLfb = _hiLfb = float(fbin_grid[0])
-                        _Lbests.append(_mLfb); _Llos.append(_loLfb); _Lhis.append(_hiLfb)
-
-                        if _is_dsilva and len(pi_grid) > 1:
-                            _Lpost_pi = np.nansum(_L_arr_cad, axis=(0, 1))
-                            _Lnames.append('π'); _Lgrids.append(pi_grid)
-                            _Lposts.append(_Lpost_pi); _Laxes.append(2)
-                            if _Lpost_pi.sum() > 0:
-                                _mLpi, _loLpi, _hiLpi = _L_hdi68(pi_grid, _Lpost_pi)
-                            else:
-                                _mLpi = _loLpi = _hiLpi = float(pi_grid[0])
-                            _Lbests.append(_mLpi); _Llos.append(_loLpi); _Lhis.append(_hiLpi)
-
-                        _Lpost_sig = np.nansum(_L_arr_cad, axis=(1, 2))
-                        _Lnames.append('σ_single'); _Lgrids.append(sigma_grid)
-                        _Lposts.append(_Lpost_sig); _Laxes.append(0)
-                        if _Lpost_sig.sum() > 0:
-                            _mLsig, _loLsig, _hiLsig = _L_hdi68(sigma_grid, _Lpost_sig)
-                        else:
-                            _mLsig = _loLsig = _hiLsig = float(sigma_grid[0])
-                        _Lbests.append(_mLsig); _Llos.append(_loLsig); _Lhis.append(_hiLsig)
-
-                        _Lcn = len(_Lnames)
-                        fig_L_corner = _Lcorner_sub(
-                            rows=_Lcn, cols=_Lcn,
-                            horizontal_spacing=0.06, vertical_spacing=0.06,
-                        )
-                        for i in range(_Lcn):
-                            _Lint = float(np.trapezoid(_Lposts[i], _Lgrids[i]))
-                            _Lpn = (_Lposts[i] / _Lint) if _Lint > 0 else _Lposts[i]
-                            fig_L_corner.add_trace(go.Scatter(
-                                x=_Lgrids[i], y=_Lpn,
-                                mode='lines', line=dict(color='#E25A53', width=2),
-                                showlegend=False,
-                            ), row=i + 1, col=i + 1)
-                            _Lmsk = ((_Lgrids[i] >= _Llos[i]) & (_Lgrids[i] <= _Lhis[i]))
-                            _Lxh = _Lgrids[i][_Lmsk]
-                            _Lyh = _Lpn[_Lmsk]
-                            if len(_Lxh) > 0:
-                                fig_L_corner.add_trace(go.Scatter(
-                                    x=np.concatenate([_Lxh, _Lxh[::-1]]),
-                                    y=np.concatenate([_Lyh, np.zeros(len(_Lyh))]),
-                                    fill='toself', fillcolor='rgba(226,90,83,0.25)',
-                                    line=dict(width=0), showlegend=False,
-                                ), row=i + 1, col=i + 1)
-                            fig_L_corner.add_vline(
-                                x=_Lbests[i], line_dash='dash',
-                                line_color='#DAA520', line_width=1.5,
-                                row=i + 1, col=i + 1,
-                            )
-                            for j in range(i):
-                                _Lkeep = sorted([_Laxes[j], _Laxes[i]])
-                                _Lsum_ax = tuple(k for k in range(3) if k not in _Lkeep)
-                                _L2d = np.nansum(_L_arr_cad, axis=_Lsum_ax) if _Lsum_ax else _L_arr_cad.copy()
-                                if _Laxes[i] == _Lkeep[0]:
-                                    _Lzz = _L2d
-                                else:
-                                    _Lzz = _L2d.T
-                                _Lzmax = float(np.nanmax(_Lzz)) if np.any(~np.isnan(_Lzz)) else 1.0
-                                fig_L_corner.add_trace(go.Heatmap(
-                                    x=_Lgrids[j], y=_Lgrids[i], z=_Lzz,
-                                    colorscale='Hot_r', zmin=0.0, zmax=_Lzmax,
-                                    zsmooth='best', showscale=False,
-                                ), row=i + 1, col=j + 1)
-                                fig_L_corner.add_trace(go.Scatter(
-                                    x=[_Lbests[j]], y=[_Lbests[i]],
-                                    mode='markers',
-                                    marker=dict(symbol='star', size=10, color='#DAA520',
-                                                line=dict(color='black', width=1)),
-                                    showlegend=False,
-                                ), row=i + 1, col=j + 1)
-                        for i in range(_Lcn):
-                            fig_L_corner.update_xaxes(title_text=_Lnames[i], row=_Lcn, col=i + 1)
-                            if i > 0:
-                                fig_L_corner.update_yaxes(title_text=_Lnames[i], row=i + 1, col=1)
-                        for i in range(_Lcn):
-                            for j in range(i + 1, _Lcn):
-                                fig_L_corner.update_xaxes(visible=False, row=i + 1, col=j + 1)
-                                fig_L_corner.update_yaxes(visible=False, row=i + 1, col=j + 1)
-                        fig_L_corner.update_layout(
-                            **PLOTLY_THEME,
-                            height=250 * _Lcn, width=250 * _Lcn,
-                            showlegend=False,
-                            margin=dict(l=60, r=20, t=30, b=60),
-                        )
-                        st.plotly_chart(fig_L_corner, use_container_width=True,
-                                        key=f'{p}_L_corner_plot')
-                        st.caption(
-                            'Marginalized **likelihood** posteriors (Dsilva+2023 binned multinomial). '
-                            'Red lines = 1D posteriors, red shading = 68% HDI, '
-                            'gold star = mode. Compare with p-value corner plot above.'
-                        )
-
-            # ── Marginalized heatmaps: f_bin x sigma (and pi x sigma if Dsilva)
-            if _is_dsilva and len(pi_grid) > 1:
-                with st.expander('Marginalized Heatmaps vs sigma_single', expanded=True):
-                    _mc1, _mc2 = st.columns(2)
-
-                    # f_bin x sigma: sum over pi (axis 2)
-                    _marg_fb_sig = np.nansum(ks_p_arr, axis=2)  # (n_sig, n_fb)
-                    with _mc1:
-                        st.plotly_chart(
-                            _make_heatmap_fig(
-                                _marg_fb_sig.T, fbin_grid.tolist(), sigma_grid.tolist(),
-                                title='f_bin x sigma_single',
-                                height=_ch, width=_cw,
-                                x_label='sigma_single (km/s)',
-                                y_label='f_bin',
-                                x_name='sigma',
-                                best_label_fmt='  f={fbin:.3f}, sigma={x:.1f}, p-sum={p:.2f}',
-                            ),
-                            use_container_width=True,
-                            key=f'{p}_marg_fbin_sigma',
-                        )
-                        st.caption(
-                            f'K-S p-value summed over pi. '
-                            'Shows the joint constraint on f_bin and sigma_single.'
-                        )
-
-                    # pi x sigma: sum over f_bin (axis 1)
-                    _marg_pi_sig = np.nansum(ks_p_arr, axis=1)  # (n_sig, n_pi)
-                    with _mc2:
-                        st.plotly_chart(
-                            _make_heatmap_fig(
-                                _marg_pi_sig.T, pi_grid.tolist(), sigma_grid.tolist(),
-                                title='pi x sigma_single',
-                                height=_ch, width=_cw,
-                                x_label='sigma_single (km/s)',
-                                y_label='pi',
-                                x_name='sigma',
-                                best_label_fmt='  pi={fbin:.3f}, sigma={x:.1f}, p-sum={p:.2f}',
-                            ),
-                            use_container_width=True,
-                            key=f'{p}_marg_pi_sigma',
-                        )
-                        st.caption(
-                            f'K-S p-value summed over f_bin. '
-                            'Shows the joint constraint on pi and sigma_single.'
-                        )
-
-            # ── Animated 4D view (sigma as slider) ────────────────────────────
-            with st.expander('Animated 4D View (sigma_single as time axis)', expanded=True):
-                # Determine which 2D slice to animate over
-                if _is_dsilva and len(pi_grid) > 1:
-                    _anim_x = pi_grid
-                    _anim_x_label = 'pi  (period power-law index)'
-                    _anim_y_label = 'f_bin  (intrinsic binary fraction)'
-                else:
-                    # Langer or single-pi Dsilva: f_bin vs sigma already shown
-                    # animate doesn't add much, but we can show f_bin vs pi if pi>1
-                    _anim_x = pi_grid if len(pi_grid) > 1 else sigma_grid
-                    _anim_x_label = 'pi' if len(pi_grid) > 1 else 'sigma_single (km/s)'
-                    _anim_y_label = 'f_bin'
-
-                _cad_frames = []
-                for i_s, sv in enumerate(sigma_grid):
-                    _zf = ks_p_arr[i_s]
-                    if not np.any(np.isfinite(_zf)):
-                        continue
-                    _bf_idx = np.unravel_index(np.nanargmax(_zf), _zf.shape)
-                    _bf_f = float(fbin_grid[_bf_idx[0]])
-                    _bp_f = float(_anim_x[_bf_idx[1]]) if _zf.ndim > 1 else 0.0
-                    _cad_frames.append(go.Frame(
-                        data=[
-                            go.Heatmap(
-                                z=_zf, x=_anim_x, y=fbin_grid,
-                                colorscale='RdBu_r',
-                                zmin=0.0,
-                                zmax=float(np.nanmax(ks_p_arr)),
-                                zsmooth='best',
-                                colorbar=dict(title=f'K-S p-value', thickness=14),
-                            ),
-                            go.Scatter(
-                                x=[_bp_f], y=[_bf_f],
-                                mode='markers',
-                                marker=dict(symbol='star', size=16, color='gold',
-                                            line=dict(color='black', width=1)),
-                            ),
-                        ],
-                        name=str(i_s),
-                        layout=go.Layout(
-                            title_text=(
-                                f'K-S p-value  --  sigma_single = {sv:.1f} km/s  '
-                                f'(best f_bin={_bf_f:.3f})'
-                            )
-                        ),
-                    ))
-
-                _cad_anim_layout = {
-                    **PLOTLY_THEME,
-                    'title': f'Cadence K-S p-value animated over sigma_single',
-                    'xaxis_title': _anim_x_label,
-                    'yaxis_title': _anim_y_label,
-                    'updatemenus': [dict(
-                        type='buttons', showactive=False,
-                        y=1.18, x=0.5, xanchor='center',
-                        buttons=[
-                            dict(label='Play', method='animate',
-                                 args=[None, dict(
-                                     frame=dict(duration=900, redraw=True),
-                                     fromcurrent=True, mode='immediate')]),
-                            dict(label='Pause', method='animate',
-                                 args=[[None], dict(
-                                     mode='immediate',
-                                     frame=dict(duration=0, redraw=False))]),
-                        ],
-                    )],
-                    'sliders': [dict(
-                        active=0,
-                        currentvalue=dict(
-                            prefix='sigma_single = ', suffix=' km/s', visible=True,
-                            font=dict(size=13)),
-                        pad=dict(t=55),
-                        steps=[
-                            dict(args=[[str(i_s)], dict(
-                                     mode='immediate',
-                                     frame=dict(duration=0, redraw=True))],
-                                 label=f'{float(sv):.1f}', method='animate')
-                            for i_s, sv in enumerate(sigma_grid)
-                        ],
-                    )],
-                    'height': _ch + 120,
-                    'margin': dict(l=60, r=20, t=80, b=80),
-                }
-                if _cw is not None:
-                    _cad_anim_layout['width'] = _cw
-
-                fig_cad_4d = go.Figure(
-                    data=_cad_frames[0].data, frames=_cad_frames,
-                    layout=go.Layout(**_cad_anim_layout))
-                st.plotly_chart(fig_cad_4d, use_container_width=_use_cw,
-                                key=f'{p}_anim_4d')
-                st.caption(
-                    'Use the Play button or drag the slider to step through '
-                    f'sigma_single values. Each frame shows the K-S p-value '
-                    'heatmap at a fixed sigma_single.'
-                )
-
-            # ── 3D Stacked Surface ────────────────────────────────────────────
-            if _is_dsilva and len(pi_grid) > 1:
-                with st.expander('3D Stacked View', expanded=True):
-                    fig_cad_3d = _make_3d_stacked_fig(
-                        ks_p_arr, fbin_grid, pi_grid, sigma_grid,
-                        height=_ch + 200, width=_cw,
-                    )
-                    st.plotly_chart(fig_cad_3d, use_container_width=_use_cw,
-                                    key=f'{p}_3d_stacked')
-                    st.caption(
-                        'Semi-transparent heatmap layers stacked along sigma_single. '
-                        'Rotate and zoom with mouse.'
-                    )
-
-            # ── Per-sigma summary table ───────────────────────────────────────
-            with st.expander('Per-sigma summary table', expanded=True):
-                _cad_summary = []
-                _ks_d_for_sig = _cad_ks_d if _cad_ks_d is not None else result.get('ks_D')
-                for i_s, sv in enumerate(sigma_grid):
-                    _sl = ks_p_arr[i_s]
-                    if not np.any(np.isfinite(_sl)):
-                        _row_dict = {
-                            'σ_single (km/s)': round(float(sv), 2),
-                            'Best f_bin': '—', 'Best π': '—',
-                            'K-S p': '—',
-                        }
-                        if _ks_d_for_sig is not None:
-                            _row_dict['Min weighted S'] = '—'
-                        _cad_summary.append(_row_dict)
-                        continue
-                    _sl_idx = np.unravel_index(np.nanargmax(_sl), _sl.shape)
-                    _row_dict = {
-                        'σ_single (km/s)': round(float(sv), 2),
-                        'Best f_bin': round(float(fbin_grid[_sl_idx[0]]), 4),
-                        'Best π': round(float(pi_grid[_sl_idx[1]]), 4) if _is_dsilva else '-',
-                        'K-S p': round(float(_sl[_sl_idx]), 5),
-                    }
-                    if _ks_d_for_sig is not None:
-                        _d_sl = np.asarray(_ks_d_for_sig)[i_s]
-                        _row_dict['Min weighted S'] = round(float(np.nanmin(_d_sl)), 5) if np.any(np.isfinite(_d_sl)) else '—'
-                    _cad_summary.append(_row_dict)
-                st.dataframe(pd.DataFrame(_cad_summary), use_container_width=True)
-
-                # 1D score (S) vs sigma_single plot
-                if _ks_d_for_sig is not None:
-                    _sig_min_scores = []
-                    for i_s in range(len(sigma_grid)):
-                        _d_sl = np.asarray(_ks_d_for_sig)[i_s]
-                        if np.any(np.isfinite(_d_sl)):
-                            _sig_min_scores.append(float(np.nanmin(_d_sl)))
-                        else:
-                            _sig_min_scores.append(float('inf'))
-                    _stat_lbl = 'K-S'
-                    st.plotly_chart(
-                        _make_min_score_fig(
-                            sigma_grid, _sig_min_scores,
-                            height=300,
-                            x_label='σ_single (km/s)',
-                            stat_label=_stat_lbl,
-                        ), use_container_width=True)
-                    st.caption('Lower weighted S-score = better fit. Gold star marks the optimal σ_single.')
 
         # ── Diagnostic analysis (requires simulation at best-fit) ─────────────
         # ── Diagnostic Analysis (auto-trigger at best-fit) ─────────────
