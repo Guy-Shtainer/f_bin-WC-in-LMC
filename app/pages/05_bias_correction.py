@@ -2193,41 +2193,74 @@ def _render_method_summary_section(
             else:
                 _be = np.asarray(_be)
             obs_drv = np.asarray(obs_drv)
+            _n_obs_stars = len(obs_drv)
             obs_cdf = binned_cdf(obs_drv, _be)
+            # Prepend (0, 0) so the CDF starts at the origin
+            _obs_x = np.concatenate([[0.0], _be])
+            _obs_y = np.concatenate([[0.0], obs_cdf])
 
             fig_cdf = go.Figure()
             fig_cdf.add_trace(go.Scatter(
-                x=_be, y=obs_cdf,
+                x=_obs_x, y=_obs_y,
                 mode='lines', name='Observed',
                 line=dict(color='black', width=2.5),
             ))
 
+            _n_cdf_sets = 100  # Number of MC draws for confidence band
+
             # For each method, simulate at best-fit params and overlay CDF
+            # with 16th/84th percentile confidence bands
             for mk, info in method_results.items():
                 bv = info['best_vals']
                 fb = bv.get('fbin', 0.5)
                 pi_v = bv.get(x_name, 0.0)
                 sig_v = bv.get('sigma', 5.0)
-                _mcolor = dict(SCORING_METHODS).get(mk, '#888888') if False else \
-                    next((c for k, _, _, _, c in SCORING_METHODS if k == mk), '#888888')
+                _mcolor = next((c for k, _, _, _, c in SCORING_METHODS if k == mk), '#888888')
                 _mname = next((n for k, n, _, _, _ in SCORING_METHODS if k == mk), mk)
                 try:
-                    sim_cfg = SimulationConfig(
-                        n_stars=1000, sigma_single=float(sig_v),
-                        sigma_measure=float(result.get('sigma_meas', 3.0)),
-                    )
-                    bin_cfg = BinaryParameterConfig()
-                    rng = np.random.default_rng(42)
-                    sim_drv = simulate_delta_rv_sample(
-                        f_bin=float(fb), pi=float(pi_v),
-                        sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
-                    sim_cdf = binned_cdf(sim_drv, _be)
+                    # Simulate n_cdf_sets draws to get median + confidence band
+                    _all_cdfs = []
+                    for _seed_i in range(_n_cdf_sets):
+                        sim_cfg = SimulationConfig(
+                            n_stars=_n_obs_stars,
+                            sigma_single=float(sig_v),
+                            sigma_measure=float(result.get('sigma_meas', 3.0)),
+                        )
+                        bin_cfg = BinaryParameterConfig()
+                        rng = np.random.default_rng(42 + _seed_i)
+                        sim_drv = simulate_delta_rv_sample(
+                            f_bin=float(fb), pi=float(pi_v),
+                            sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
+                        _all_cdfs.append(binned_cdf(sim_drv, _be))
+                    _all_cdfs = np.array(_all_cdfs)  # (n_sets, n_bins)
+                    _median_cdf = np.median(_all_cdfs, axis=0)
+                    _lo_cdf = np.percentile(_all_cdfs, 16, axis=0)
+                    _hi_cdf = np.percentile(_all_cdfs, 84, axis=0)
+
+                    # Prepend (0, 0) to all CDF traces
+                    _med_x = np.concatenate([[0.0], _be])
+                    _med_y = np.concatenate([[0.0], _median_cdf])
+                    _lo_y = np.concatenate([[0.0], _lo_cdf])
+                    _hi_y = np.concatenate([[0.0], _hi_cdf])
+
                     _lbl = f'{_mname} (f_bin={fb:.3f}'
                     if x_name in bv:
                         _lbl += f', {x_label}={bv[x_name]:.2f}'
                     _lbl += ')'
+
+                    # Confidence band (shaded region between 16th and 84th)
+                    _fill_color = _hex_to_rgba(_mcolor, 0.2)
                     fig_cdf.add_trace(go.Scatter(
-                        x=_be, y=sim_cdf,
+                        x=np.concatenate([_med_x, _med_x[::-1]]),
+                        y=np.concatenate([_hi_y, _lo_y[::-1]]),
+                        fill='toself', fillcolor=_fill_color,
+                        line=dict(color='rgba(0,0,0,0)'),
+                        showlegend=False,
+                        hoverinfo='skip',
+                    ))
+                    # Median line
+                    fig_cdf.add_trace(go.Scatter(
+                        x=_med_x, y=_med_y,
                         mode='lines', name=_lbl,
                         line=dict(color=_mcolor, width=2, dash='dash'),
                     ))
@@ -2245,8 +2278,9 @@ def _render_method_summary_section(
             st.plotly_chart(fig_cdf, use_container_width=True,
                             key=f'{prefix}_cdf_comparison')
             st.caption(
-                'Observed ΔRV CDF (solid black) vs simulated CDFs at each '
-                'method\'s best-fit parameters (dashed). Shows where methods agree/diverge.'
+                f'Observed ΔRV CDF (solid black) vs simulated CDFs at each '
+                f'method\'s best-fit parameters (dashed, median of {_n_cdf_sets} draws). '
+                f'Shaded bands show 16th-84th percentile range. N_stars={_n_obs_stars}.'
             )
         except ImportError:
             pass  # wr_bias_simulation not available
@@ -2826,7 +2860,12 @@ def _render_cvm_analysis(
         st.info(f'Excluding **{_n_excluded}** / {_exc_mask_2d.size} grid points from fitting')
 
     # Apply exclusion — working copies for fitting AND display
-    _S_work = ks_D_2d.copy().astype(float)
+    # For likelihood mode, logL_raw is negative (higher = better), so negate
+    # to get -logL (positive, lower = better) — consistent with CvM minimization.
+    if _is_likelihood:
+        _S_work = -ks_D_2d.copy().astype(float)
+    else:
+        _S_work = ks_D_2d.copy().astype(float)
     _S_work[_exc_mask_2d] = np.nan
     _p_work = ks_p_2d.copy().astype(float)
     _p_work[_exc_mask_2d] = np.nan
@@ -3104,7 +3143,8 @@ def _render_cvm_analysis(
             dict(eye=dict(x=1.5, y=1.5, z=1.2)))
 
         # Build working copy with exclusion applied
-        _S3d_work = ks_D_3d.copy().astype(float)
+        # Negate for likelihood (same as 2D: minimize -logL)
+        _S3d_work = (-ks_D_3d if _is_likelihood else ks_D_3d).copy().astype(float)
         for _is3 in range(_S3d_work.shape[0]):
             _S3d_work[_is3][_exc_mask_2d] = np.nan
 
