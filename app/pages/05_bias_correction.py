@@ -1058,10 +1058,7 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
         stable_cfg       = params['stable_cfg']
         save_params      = params['save_params']
         bcfg             = params['bin_cfg_params']
-        scoring_method   = params.get('scoring_method', 'ks')
         n_sets_cvm       = params.get('n_sets_cvm', 1000)
-        _sn = ('L' if scoring_method == 'likelihood' else 'CvM' if scoring_method == 'cvm' else 'K-S')
-        _pl = f'{_sn} p'
 
         _scan_logPmax = len(logPmax_scan_vals) > 1
 
@@ -1083,16 +1080,24 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
         n_fbin    = len(fbin_vals)
         n_pi      = len(pi_vals)
 
-        # Support resuming from partial checkpoint
+        # Accumulation arrays for all 4 scoring methods
+        _shape = (n_logPmax, n_sigma, n_fbin, n_pi)
+        # Support resuming from partial checkpoint (uses ks_p for completeness check)
         _prefilled_p = params.get('prefilled_ks_p')
         _prefilled_D = params.get('prefilled_ks_D')
         if (_prefilled_p is not None and _prefilled_D is not None
-                and _prefilled_p.shape == (n_logPmax, n_sigma, n_fbin, n_pi)):
-            accumulated_ks_p = _prefilled_p.copy()
-            accumulated_ks_D = _prefilled_D.copy()
+                and _prefilled_p.shape == _shape):
+            acc_ks_p = _prefilled_p.copy()
+            acc_ks_D = _prefilled_D.copy()
         else:
-            accumulated_ks_p = np.full((n_logPmax, n_sigma, n_fbin, n_pi), np.nan)
-            accumulated_ks_D = np.full_like(accumulated_ks_p, np.nan)
+            acc_ks_p = np.full(_shape, np.nan)
+            acc_ks_D = np.full(_shape, np.nan)
+        acc_weighted_D = np.full(_shape, np.nan)
+        acc_weighted_p = np.full(_shape, np.nan)
+        acc_cvm_D      = np.full(_shape, np.nan)
+        acc_cvm_p      = np.full(_shape, np.nan)
+        acc_cvm_S_raw  = np.full(_shape, np.nan)
+        acc_logL_raw   = np.full(_shape, np.nan)
 
         n_rows_total = n_logPmax * n_sigma * n_fbin
         # Count already-completed rows (from partial resume)
@@ -1100,7 +1105,7 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
         for i_lp in range(n_logPmax):
             for i_s in range(n_sigma):
                 for gj in range(n_fbin):
-                    if not np.any(np.isnan(accumulated_ks_p[i_lp, i_s, gj, :])):
+                    if not np.any(np.isnan(acc_ks_p[i_lp, i_s, gj, :])):
                         _pre_done += 1
         rows_done = _pre_done
         t_start      = time.time()
@@ -1123,7 +1128,7 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                 initargs=(cadence_list, cadence_weights, obs_delta_rv,
                           int(n_stars_sim), float(sigma_meas),
                           6, 3650.0, None, 0.0, None,
-                          scoring_method, n_sets_cvm,
+                          n_sets_cvm,
                           _lk_bin_edges),
             ) as pool:
                 def _save_partial_dsilva():
@@ -1141,7 +1146,11 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                         fbin_grid=fbin_vals, pi_grid=pi_vals,
                         sigma_grid=sigma_vals,
                         logPmax_grid=logPmax_scan_vals,
-                        ks_p=accumulated_ks_p, ks_D=accumulated_ks_D,
+                        ks_p=acc_ks_p, ks_D=acc_ks_D,
+                        weighted_D=acc_weighted_D, weighted_p=acc_weighted_p,
+                        cvm_D=acc_cvm_D, cvm_p=acc_cvm_p,
+                        cvm_S_raw=acc_cvm_S_raw, logL_raw=acc_logL_raw,
+                        scoring_version=np.array(2),
                         timestamp=np.array(
                             _dt.datetime.now().isoformat()),
                         progress_pct=np.array(
@@ -1172,7 +1181,7 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                         for gj in range(n_fbin):
                             # Skip fbin rows already complete (from partial resume)
                             if not np.any(np.isnan(
-                                    accumulated_ks_p[i_lp, i_sigma, gj, :])):
+                                    acc_ks_p[i_lp, i_sigma, gj, :])):
                                 _skip_fbin.add(gj)
                                 continue
                             for i_pi, pv in enumerate(pi_vals):
@@ -1190,13 +1199,24 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                             # All fbin rows already complete for this slice
                             continue
 
-                        for fb, pi_ret, sigma_ret, D, p_val, _s_raw, _logL in pool.imap_unordered(
+                        for res in pool.imap_unordered(
                                 _single_grid_task_lite, tasks,
                                 chunksize=max(1, n_pi // 4)):
+                            (fb, pi_ret, sigma_ret,
+                             _ks_D, _ks_p,
+                             _w_D, _w_p,
+                             _cvm_D, _cvm_p, _cvm_S,
+                             _logL) = res
                             gj   = fbin_to_global[round(fb, 10)]
                             i_pi = pi_to_idx[round(pi_ret, 10)]
-                            accumulated_ks_p[i_lp, i_sigma, gj, i_pi] = p_val
-                            accumulated_ks_D[i_lp, i_sigma, gj, i_pi] = D
+                            acc_ks_p[i_lp, i_sigma, gj, i_pi] = _ks_p
+                            acc_ks_D[i_lp, i_sigma, gj, i_pi] = _ks_D
+                            acc_weighted_D[i_lp, i_sigma, gj, i_pi] = _w_D
+                            acc_weighted_p[i_lp, i_sigma, gj, i_pi] = _w_p
+                            acc_cvm_D[i_lp, i_sigma, gj, i_pi] = _cvm_D
+                            acc_cvm_p[i_lp, i_sigma, gj, i_pi] = _cvm_p
+                            acc_cvm_S_raw[i_lp, i_sigma, gj, i_pi] = _cvm_S
+                            acc_logL_raw[i_lp, i_sigma, gj, i_pi] = _logL
                             completed_per_fbin[gj] += 1
 
                             if completed_per_fbin[gj] == n_pi:
@@ -1217,32 +1237,39 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                                 _is_final = (rows_done == n_rows_total)
                                 if now - last_render_time > 1.0 or _is_final:
                                     last_render_time = now
-                                    cur_p = accumulated_ks_p[i_lp, i_sigma]
-                                    cur_p_disp = np.where(np.isnan(cur_p), 0.0, cur_p)
-                                    cur_D_disp = np.where(
-                                        np.isnan(accumulated_ks_D[i_lp, i_sigma]),
-                                        0.0, accumulated_ks_D[i_lp, i_sigma])
                                     _lp_title = (f', logP_max={logPmax_v:.2f}'
                                                  if _scan_logPmax else '')
-                                    job['live_heatmap'] = {
-                                        'p': cur_p_disp.copy(),
-                                        'd': cur_D_disp.copy(),
-                                        'fbin': fbin_vals.copy(),
-                                        'x': pi_vals.copy(),
-                                        'title': (f'{_sn} p-value  '
-                                                  f'(σ={sigma:.1f} km/s{_lp_title})'),
-                                        'is_final': _is_final,
-                                    }
+                                    _sig_title = f'σ={sigma:.1f} km/s{_lp_title}'
+                                    _method_live = {}
+                                    for _mk, _mp, _md, _ml in [
+                                        ('ks', acc_ks_p, acc_ks_D, 'K-S p'),
+                                        ('weighted', acc_weighted_p, acc_weighted_D, 'K-S weighted p'),
+                                        ('cvm', acc_cvm_p, acc_cvm_D, 'CvM p'),
+                                        ('likelihood', acc_logL_raw, acc_logL_raw, 'Likelihood'),
+                                    ]:
+                                        _cur = _mp[i_lp, i_sigma]
+                                        _cur_d = _md[i_lp, i_sigma]
+                                        _method_live[_mk] = {
+                                            'p': np.where(np.isnan(_cur), 0.0, _cur).copy(),
+                                            'd': np.where(np.isnan(_cur_d), 0.0, _cur_d).copy(),
+                                            'fbin': fbin_vals.copy(),
+                                            'x': pi_vals.copy(),
+                                            'title': f'{_ml}  ({_sig_title})',
+                                            'is_final': _is_final,
+                                        }
+                                    job['live_heatmaps'] = _method_live
+                                    # Primary status from KS p-value
+                                    _ks_disp = _method_live['ks']['p']
                                     bf, bp, bpv = _best_point(
-                                        cur_p_disp, fbin_vals, pi_vals)
+                                        _ks_disp, fbin_vals, pi_vals)
                                     job['live_status'] = (
                                         f'{_lp_label}σ = **{sigma:.1f}** km/s  →  '
                                         f'best f_bin = **{bf:.4f}**, '
                                         f'π = **{bp:.3f}**, '
-                                        f'{_pl} = **{bpv:.4f}**')
+                                        f'K-S p = **{bpv:.4f}**')
 
-                        # Update outer max-p
-                        _slice_p = accumulated_ks_p[i_lp, i_sigma]
+                        # Update outer max-p (use KS p-value as primary)
+                        _slice_p = acc_ks_p[i_lp, i_sigma]
                         outer_max_p[i_lp, i_sigma] = float(np.nanmax(_slice_p))
                         if _scan_logPmax:
                             now2 = time.time()
@@ -1266,7 +1293,11 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                             fbin_grid=fbin_vals, pi_grid=pi_vals,
                             sigma_grid=sigma_vals,
                             logPmax_grid=logPmax_scan_vals,
-                            ks_p=accumulated_ks_p, ks_D=accumulated_ks_D,
+                            ks_p=acc_ks_p, ks_D=acc_ks_D,
+                            weighted_D=acc_weighted_D, weighted_p=acc_weighted_p,
+                            cvm_D=acc_cvm_D, cvm_p=acc_cvm_p,
+                            cvm_S_raw=acc_cvm_S_raw, logL_raw=acc_logL_raw,
+                            scoring_version=np.array(2),
                             config_hash=_stable_cfg_hash(stable_cfg),
                             settings=np.array(json.dumps(stable_cfg)),
                             timestamp=np.array(_dt.datetime.now().isoformat()),
@@ -1287,17 +1318,29 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
             'sigma_vals': sigma_vals.tolist(),
             'logPmax_vals': logPmax_scan_vals.tolist(),
         })
+        # Normalize logL → likelihood [0,1]
+        _logL_max = np.nanmax(acc_logL_raw)
+        if np.isfinite(_logL_max):
+            acc_likelihood = np.exp(acc_logL_raw - _logL_max)
+        else:
+            acc_likelihood = np.zeros_like(acc_logL_raw)
+
         full_result = {
             'fbin_grid': fbin_vals, 'pi_grid': pi_vals,
             'sigma_grid': sigma_vals, 'logPmax_grid': logPmax_scan_vals,
-            'ks_p': accumulated_ks_p, 'ks_D': accumulated_ks_D,
+            'ks_p': acc_ks_p, 'ks_D': acc_ks_D,
+            'weighted_D': acc_weighted_D, 'weighted_p': acc_weighted_p,
+            'cvm_D': acc_cvm_D, 'cvm_p': acc_cvm_p,
+            'cvm_S_raw': acc_cvm_S_raw,
+            'likelihood': acc_likelihood, 'logL_raw': acc_logL_raw,
+            'scoring_version': np.array(2),
             'obs_delta_rv': obs_delta_rv,
             'likelihood_bin_edges': params.get('likelihood_bin_edges'),
         }
 
         # ── Compute HDI68 posterior errors and save alongside ────────────
         from wr_bias_simulation import compute_hdi68 as _hdi68
-        _ks4 = accumulated_ks_p  # [logPmax, sigma, fbin, pi]
+        _ks4 = acc_ks_p  # [logPmax, sigma, fbin, pi]
         _ks3 = np.sum(_ks4, axis=0)  # [sigma, fbin, pi]
         _post_fbin = np.sum(_ks3, axis=(0, 2))
         _post_pi   = np.sum(_ks3, axis=(0, 1))
@@ -1378,14 +1421,19 @@ def _run_langer_bg(job: dict, params: dict) -> None:
         bin_cfg         = params['bin_cfg']
         stable_cfg      = params['stable_cfg']
         save_params     = params['save_params']
-        scoring_method  = params.get('scoring_method', 'ks')
         n_sets_cvm      = params.get('n_sets_cvm', 1000)
-        _sn = ('L' if scoring_method == 'likelihood' else 'CvM' if scoring_method == 'cvm' else 'K-S')
-        _pl = f'{_sn} p'
         # Pre-filled arrays (from partial cache reuse)
         acc_ks_p        = params['acc_ks_p']
         acc_ks_D        = params['acc_ks_D']
         missing_fbin_idx = params['missing_fbin_idx']
+        # Additional method arrays
+        _lg_shape = acc_ks_p.shape  # (n_fbin, n_sigma)
+        acc_weighted_D = np.full(_lg_shape, np.nan)
+        acc_weighted_p = np.full(_lg_shape, np.nan)
+        acc_cvm_D      = np.full(_lg_shape, np.nan)
+        acc_cvm_p      = np.full(_lg_shape, np.nan)
+        acc_cvm_S_raw  = np.full(_lg_shape, np.nan)
+        acc_logL_raw   = np.full(_lg_shape, np.nan)
 
         n_fbin  = len(fbin_vals)
         n_sigma = len(sigma_vals)
@@ -1419,7 +1467,7 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                 initargs=(cadence_list, cadence_weights, obs_delta_rv,
                           int(n_stars), float(sigma_meas),
                           6, 3650.0, None, 0.0, None,
-                          scoring_method, n_sets_cvm,
+                          n_sets_cvm,
                           _lg_lk_bin_edges),
             ) as pool:
                 def _save_partial_langer():
@@ -1436,6 +1484,10 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                         _pf,
                         fbin_grid=fbin_vals, sigma_grid=sigma_vals,
                         ks_p=acc_ks_p, ks_D=acc_ks_D,
+                        weighted_D=acc_weighted_D, weighted_p=acc_weighted_p,
+                        cvm_D=acc_cvm_D, cvm_p=acc_cvm_p,
+                        cvm_S_raw=acc_cvm_S_raw, logL_raw=acc_logL_raw,
+                        scoring_version=np.array(2),
                         config_hash=_stable_cfg_hash(stable_cfg),
                         settings=np.array(json.dumps(stable_cfg,
                                                      default=str)),
@@ -1448,7 +1500,7 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                     )
                     job['partial_saved'] = True
 
-                for fb, _pi_ret, sigma_ret, D, p_val, _s_raw, _logL in pool.imap_unordered(
+                for res in pool.imap_unordered(
                         _single_grid_task_lite, tasks,
                         chunksize=max(1, n_sigma // 4)):
                     if job.get('cancel'):
@@ -1456,10 +1508,21 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                             _save_partial_langer()
                         job['status'] = 'cancelled'
                         return
+                    (fb, _pi_ret, sigma_ret,
+                     _ks_D, _ks_p,
+                     _w_D, _w_p,
+                     _cvm_D, _cvm_p, _cvm_S,
+                     _logL) = res
                     gj  = fbin_to_global[round(fb, 10)]
                     i_s = sigma_to_idx[round(sigma_ret, 10)]
-                    acc_ks_p[gj, i_s] = p_val
-                    acc_ks_D[gj, i_s] = D
+                    acc_ks_p[gj, i_s] = _ks_p
+                    acc_ks_D[gj, i_s] = _ks_D
+                    acc_weighted_D[gj, i_s] = _w_D
+                    acc_weighted_p[gj, i_s] = _w_p
+                    acc_cvm_D[gj, i_s] = _cvm_D
+                    acc_cvm_p[gj, i_s] = _cvm_p
+                    acc_cvm_S_raw[gj, i_s] = _cvm_S
+                    acc_logL_raw[gj, i_s] = _logL
                     cells_done += 1
 
                     elapsed = time.time() - t_start
@@ -1474,20 +1537,30 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                     now = time.time()
                     if now - last_render > 1.0 or cells_done == n_cells_total:
                         last_render = now
-                        cur_p = np.where(np.isnan(acc_ks_p), 0.0, acc_ks_p)
-                        cur_D = np.where(np.isnan(acc_ks_D), 0.0, acc_ks_D)
-                        job['live_heatmap'] = {
-                            'p': cur_p.copy(), 'd': cur_D.copy(),
-                            'fbin': fbin_vals.copy(),
-                            'x': sigma_vals.copy(),
-                            'is_final': (cells_done == n_cells_total),
-                        }
+                        _is_final = (cells_done == n_cells_total)
+                        _method_live = {}
+                        for _mk, _mp, _md, _ml in [
+                            ('ks', acc_ks_p, acc_ks_D, 'K-S p'),
+                            ('weighted', acc_weighted_p, acc_weighted_D, 'K-S weighted p'),
+                            ('cvm', acc_cvm_p, acc_cvm_D, 'CvM p'),
+                            ('likelihood', acc_logL_raw, acc_logL_raw, 'Likelihood'),
+                        ]:
+                            _method_live[_mk] = {
+                                'p': np.where(np.isnan(_mp), 0.0, _mp).copy(),
+                                'd': np.where(np.isnan(_md), 0.0, _md).copy(),
+                                'fbin': fbin_vals.copy(),
+                                'x': sigma_vals.copy(),
+                                'title': f'{_ml}  (Langer 2020)',
+                                'is_final': _is_final,
+                            }
+                        job['live_heatmaps'] = _method_live
+                        _ks_disp = _method_live['ks']['p']
                         bf, bsig, bpv = _best_point(
-                            cur_p, fbin_vals, sigma_vals)
+                            _ks_disp, fbin_vals, sigma_vals)
                         job['live_status'] = (
                             f'best f_bin = **{bf:.4f}**, '
                             f'σ_single = **{bsig:.1f}** km/s, '
-                            f'{_pl} = **{bpv:.4f}**')
+                            f'K-S p = **{bpv:.4f}**')
 
             # Checkpoint
             if cells_done > 0:
@@ -1496,6 +1569,10 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                     _result_path('langer') + '.partial',
                     fbin_grid=fbin_vals, sigma_grid=sigma_vals,
                     ks_p=acc_ks_p, ks_D=acc_ks_D,
+                    weighted_D=acc_weighted_D, weighted_p=acc_weighted_p,
+                    cvm_D=acc_cvm_D, cvm_p=acc_cvm_p,
+                    cvm_S_raw=acc_cvm_S_raw, logL_raw=acc_logL_raw,
+                    scoring_version=np.array(2),
                     config_hash=_stable_cfg_hash(stable_cfg),
                     settings=np.array(json.dumps(stable_cfg)),
                     timestamp=np.array(_dt.datetime.now().isoformat()),
@@ -1514,9 +1591,21 @@ def _run_langer_bg(job: dict, params: dict) -> None:
             'sigma_min': sp['sigma_min'], 'sigma_max': sp['sigma_max'],
             'sigma_steps': sp['sigma_steps'],
         })
+        # Normalize logL → likelihood [0,1]
+        _logL_max = np.nanmax(acc_logL_raw)
+        if np.isfinite(_logL_max):
+            acc_likelihood = np.exp(acc_logL_raw - _logL_max)
+        else:
+            acc_likelihood = np.zeros_like(acc_logL_raw)
+
         full_result = {
             'fbin_grid': fbin_vals, 'sigma_grid': sigma_vals,
             'ks_p': acc_ks_p, 'ks_D': acc_ks_D,
+            'weighted_D': acc_weighted_D, 'weighted_p': acc_weighted_p,
+            'cvm_D': acc_cvm_D, 'cvm_p': acc_cvm_p,
+            'cvm_S_raw': acc_cvm_S_raw,
+            'likelihood': acc_likelihood, 'logL_raw': acc_logL_raw,
+            'scoring_version': np.array(2),
             'obs_delta_rv': obs_delta_rv,
             'likelihood_bin_edges': params.get('likelihood_bin_edges'),
         }
@@ -6346,7 +6435,6 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         period_model     = params['period_model']
         bin_cfg          = params['bin_cfg']
         sigma_meas       = params['sigma_meas']
-        scoring_method   = params.get('scoring_method', 'ks')
         save_params      = params.get('save_params', {})
         stable_cfg       = params.get('stable_cfg', save_params)
         resume_from_path = params.get('resume_from_path')
@@ -6374,23 +6462,27 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             cadence_list, cadence_weights, obs_delta_rv,
             len(cadence_list), float(sigma_meas),
             6, 3650.0, None, 0.0, _cad_bin_edges,
-            scoring_method,
             n_sets,   # n_sets_cvm
             params.get('likelihood_bin_edges'),  # coarse bins for likelihood
         )
 
         # Support resuming from partial checkpoint
+        _cad_shape = (n_sig, n_fb, n_pi)
         _pre_p = params.get('prefilled_ks_p')
         _pre_D = params.get('prefilled_ks_D')
         if (_pre_p is not None and _pre_D is not None
-                and _pre_p.shape == (n_sig, n_fb, n_pi)):
+                and _pre_p.shape == _cad_shape):
             ks_p = _pre_p.copy()
             ks_D = _pre_D.copy()
         else:
-            ks_D = np.full((n_sig, n_fb, n_pi), np.nan)
-            ks_p = np.full((n_sig, n_fb, n_pi), np.nan)
-        ks_S_raw = np.full((n_sig, n_fb, n_pi), np.nan)
-        logL_raw = np.full((n_sig, n_fb, n_pi), np.nan)
+            ks_D = np.full(_cad_shape, np.nan)
+            ks_p = np.full(_cad_shape, np.nan)
+        weighted_D = np.full(_cad_shape, np.nan)
+        weighted_p = np.full(_cad_shape, np.nan)
+        cvm_D      = np.full(_cad_shape, np.nan)
+        cvm_p      = np.full(_cad_shape, np.nan)
+        cvm_S_raw  = np.full(_cad_shape, np.nan)
+        logL_raw   = np.full(_cad_shape, np.nan)
 
         # Track overall progress (including pre-completed cells from resume)
         _total_original = n_sig * n_fb * n_pi
@@ -6445,8 +6537,11 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                         os.makedirs(_RESULT_DIR, exist_ok=True)
                         np.savez(
                             _partial_path,
-                            ks_p=ks_p, ks_D=ks_D, ks_S_raw=ks_S_raw,
-                            logL_raw=logL_raw,
+                            ks_p=ks_p, ks_D=ks_D,
+                            weighted_D=weighted_D, weighted_p=weighted_p,
+                            cvm_D=cvm_D, cvm_p=cvm_p,
+                            cvm_S_raw=cvm_S_raw, logL_raw=logL_raw,
+                            scoring_version=np.array(2),
                             fbin_grid=fbin_grid, pi_grid=pi_grid,
                             sigma_grid=sigma_grid,
                             timestamp=_dt.datetime.now().isoformat(),
@@ -6456,7 +6551,6 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             period_model=period_model,
                             drv_bin_width=float(params.get('drv_bin_width', 10.0)),
                             drv_max=float(params.get('drv_max', 360.0)),
-                            scoring_method=scoring_method,
                             adaptive_bins=bool(params.get('adaptive_bins', False)),
                             settings=np.array(json.dumps(stable_cfg, default=str)),
                             n_sets=np.array(n_sets),
@@ -6464,18 +6558,27 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                         job['partial_saved'] = True
                     job['status'] = 'cancelled'
                     return
-                fb, pi_val, sigma, D, p, s_raw, _logL, med_cdf, lo_cdf, hi_cdf = res
+                (fb, pi_val, sigma,
+                 _ks_D, _ks_p,
+                 _w_D, _w_p,
+                 _cvm_D, _cvm_p, _cvm_S,
+                 _logL,
+                 med_cdf, lo_cdf, hi_cdf) = res
                 i_sig = int(np.searchsorted(sigma_grid, sigma))
                 i_fb  = int(np.searchsorted(fbin_grid, fb))
                 i_pi  = int(np.searchsorted(pi_grid, pi_val))
                 _current_sig_idx = min(i_sig, n_sig - 1)
                 if i_sig < n_sig and i_fb < n_fb and i_pi < n_pi:
-                    ks_D[i_sig, i_fb, i_pi] = D
-                    ks_p[i_sig, i_fb, i_pi] = p
-                    ks_S_raw[i_sig, i_fb, i_pi] = s_raw
+                    ks_D[i_sig, i_fb, i_pi] = _ks_D
+                    ks_p[i_sig, i_fb, i_pi] = _ks_p
+                    weighted_D[i_sig, i_fb, i_pi] = _w_D
+                    weighted_p[i_sig, i_fb, i_pi] = _w_p
+                    cvm_D[i_sig, i_fb, i_pi] = _cvm_D
+                    cvm_p[i_sig, i_fb, i_pi] = _cvm_p
+                    cvm_S_raw[i_sig, i_fb, i_pi] = _cvm_S
                     logL_raw[i_sig, i_fb, i_pi] = _logL
-                if p > best_p:
-                    best_p = p
+                if _ks_p > best_p:
+                    best_p = _ks_p
                     best_fb = fb
                     best_median_cdf = med_cdf
                     best_lo_cdf = lo_cdf
@@ -6493,71 +6596,70 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                 job['progress_text'] = (
                     f'{pct*100:.1f}%  ({_pre_done + completed}/{_total_original}){eta_str}')
 
-                # Live heatmap update (throttled)
+                # Live heatmap update (throttled) — all 4 methods
                 _now = _time.monotonic()
                 _is_final = (completed == n_tasks)
                 _is_langer = (period_model == 'langer2020')
                 if _now - job.get('_last_hm', 0) > 1.0 or _is_final:
                     job['_last_hm'] = _now
 
+                    # Build per-method live heatmaps
+                    _method_arrays = [
+                        ('ks', ks_p, ks_D, 'K-S p'),
+                        ('weighted', weighted_p, weighted_D, 'K-S weighted p'),
+                        ('cvm', cvm_p, cvm_D, 'CvM p'),
+                        ('likelihood', logL_raw, logL_raw, 'Likelihood'),
+                    ]
+                    _method_live = {}
+
                     if _is_langer and n_sig > 1:
                         # Langer with sigma scan: show f_bin × σ_single heatmap
-                        # ks_p shape: (n_sig, n_fb, n_pi=1) → squeeze pi dim
-                        cur_p_2d = ks_p[:, :, 0].T  # (n_fb, n_sig)
-                        cur_p_disp = np.where(np.isnan(cur_p_2d), 0.0, cur_p_2d)
-                        cur_D_2d = ks_D[:, :, 0].T
-                        cur_D_disp = np.where(np.isnan(cur_D_2d), 0.0, cur_D_2d)
-                        job['live_heatmap'] = {
-                            'p': cur_p_disp.copy(),
-                            'd': cur_D_disp.copy(),
-                            'fbin': fbin_grid.copy(),
-                            'x': sigma_grid.copy(),
-                            'x_label': 'σ_single (km/s)',
-                            'x_name': 'σ',
-                            'title': f'{"Likelihood" if scoring_method == "likelihood" else "CvM p" if scoring_method == "cvm" else "K-S p-value"}  (cadence-aware, Langer 2020)',
-                            'is_final': _is_final,
-                        }
+                        for _mk, _mp, _md, _ml in _method_arrays:
+                            cur_p_2d = _mp[:, :, 0].T  # (n_fb, n_sig)
+                            cur_D_2d = _md[:, :, 0].T
+                            _method_live[_mk] = {
+                                'p': np.where(np.isnan(cur_p_2d), 0.0, cur_p_2d).copy(),
+                                'd': np.where(np.isnan(cur_D_2d), 0.0, cur_D_2d).copy(),
+                                'fbin': fbin_grid.copy(),
+                                'x': sigma_grid.copy(),
+                                'x_label': 'σ_single (km/s)',
+                                'x_name': 'σ',
+                                'title': f'{_ml}  (cadence-aware, Langer 2020)',
+                                'is_final': _is_final,
+                            }
+                        job['live_heatmaps'] = _method_live
+                        # Status from KS p
+                        _ks_disp = _method_live['ks']['p']
                         _bp_idx = np.unravel_index(
-                            np.argmax(cur_p_disp), cur_p_disp.shape)
+                            np.argmax(_ks_disp), _ks_disp.shape)
                         _bf = float(fbin_grid[_bp_idx[0]])
                         _bsig = float(sigma_grid[_bp_idx[1]])
-                        _bpv = float(cur_p_disp[_bp_idx])
-                        _p_lbl = ('L' if scoring_method == 'likelihood' else 'CvM p' if scoring_method == 'cvm' else 'K-S p')
+                        _bpv = float(_ks_disp[_bp_idx])
                         job['live_status'] = (
                             f'best f_bin = **{_bf:.4f}**, '
                             f'σ_single = **{_bsig:.1f}** km/s, '
-                            f'{_p_lbl} = **{_bpv:.4f}**')
+                            f'K-S p = **{_bpv:.4f}**')
                     else:
-                        # Dsilva (or single-sigma Langer): show CURRENT sigma slice as f_bin x pi
+                        # Dsilva (or single-sigma Langer): show CURRENT sigma slice
                         _display_sig_idx = _current_sig_idx if n_sig > 1 else 0
-                        # Also compute overall best for status text
-                        _overall_best_sig = 0
-                        if n_sig > 1:
-                            _pmax_per_sig = [
-                                float(np.nanmax(ks_p[s]))
-                                if np.any(~np.isnan(ks_p[s]))
-                                else -1.0
-                                for s in range(n_sig)
-                            ]
-                            if any(v > -1.0 for v in _pmax_per_sig):
-                                _overall_best_sig = int(np.argmax(_pmax_per_sig))
                         _sig_label = f'σ={sigma_grid[_display_sig_idx]:.1f}'
-                        cur_p = ks_p[_display_sig_idx]
-                        cur_p_disp = np.where(np.isnan(cur_p), 0.0, cur_p)
-                        cur_D_disp = np.where(
-                            np.isnan(ks_D[_display_sig_idx]),
-                            0.0, ks_D[_display_sig_idx])
-                        job['live_heatmap'] = {
-                            'p': cur_p_disp.copy(),
-                            'd': cur_D_disp.copy(),
-                            'fbin': fbin_grid.copy(),
-                            'x': pi_grid.copy(),
-                            'x_label': 'π  (period power-law index)',
-                            'x_name': 'π',
-                            'title': f'{"Likelihood" if scoring_method == "likelihood" else "CvM p" if scoring_method == "cvm" else "K-S p-value"}  (cadence-aware, {_sig_label} km/s)',
-                            'is_final': _is_final,
-                        }
-                        # Live 1D σ graph (max p per sigma slice)
+
+                        for _mk, _mp, _md, _ml in _method_arrays:
+                            cur_p = _mp[_display_sig_idx]
+                            cur_d = _md[_display_sig_idx]
+                            _method_live[_mk] = {
+                                'p': np.where(np.isnan(cur_p), 0.0, cur_p).copy(),
+                                'd': np.where(np.isnan(cur_d), 0.0, cur_d).copy(),
+                                'fbin': fbin_grid.copy(),
+                                'x': pi_grid.copy(),
+                                'x_label': 'π  (period power-law index)',
+                                'x_name': 'π',
+                                'title': f'{_ml}  (cadence-aware, {_sig_label} km/s)',
+                                'is_final': _is_final,
+                            }
+                        job['live_heatmaps'] = _method_live
+
+                        # Live 1D σ graph (max KS p per sigma slice)
                         if n_sig > 1:
                             _live_sig_pvals = []
                             _live_sig_scores = []
@@ -6577,18 +6679,29 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                                 'max_pvals': _live_sig_pvals,
                                 'min_scores': _live_sig_scores,
                             }
+
+                        _ks_disp = _method_live['ks']['p']
                         _bp_idx = np.unravel_index(
-                            np.argmax(cur_p_disp), cur_p_disp.shape)
+                            np.argmax(_ks_disp), _ks_disp.shape)
                         _bf = float(fbin_grid[_bp_idx[0]])
                         _bpi = float(pi_grid[_bp_idx[1]])
-                        _bpv = float(cur_p_disp[_bp_idx])
+                        _bpv = float(_ks_disp[_bp_idx])
                         _status_parts = [
                             f'Showing {_sig_label} km/s  →  '
                             f'f_bin = **{_bf:.4f}**, '
                             f'π = **{_bpi:.3f}**, '
-                            f'{"L" if scoring_method == "likelihood" else "CvM p" if scoring_method == "cvm" else "K-S p"} = **{_bpv:.4f}**',
+                            f'K-S p = **{_bpv:.4f}**',
                         ]
                         if n_sig > 1:
+                            _overall_best_sig = 0
+                            _pmax_per_sig = [
+                                float(np.nanmax(ks_p[s]))
+                                if np.any(~np.isnan(ks_p[s]))
+                                else -1.0
+                                for s in range(n_sig)
+                            ]
+                            if any(v > -1.0 for v in _pmax_per_sig):
+                                _overall_best_sig = int(np.argmax(_pmax_per_sig))
                             _obs = sigma_grid[_overall_best_sig]
                             _obp = _pmax_per_sig[_overall_best_sig] if _pmax_per_sig[_overall_best_sig] > -1 else 0
                             _status_parts.append(
@@ -6602,21 +6715,21 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         else:
             likelihood = np.zeros_like(logL_raw)
 
-        # For 'likelihood' scoring, use normalized likelihood as primary heatmap
-        if scoring_method == 'likelihood':
-            ks_p = likelihood.copy()
-            ks_D = np.where(np.isfinite(logL_raw), -logL_raw, np.nan)
-
-        # Build result
+        # Build result with all 4 methods
         result = {
             'fbin_grid': fbin_grid,
             'pi_grid': pi_grid,
             'sigma_grid': sigma_grid,
             'ks_D': ks_D,
             'ks_p': ks_p,
-            'ks_S_raw': ks_S_raw,
+            'weighted_D': weighted_D,
+            'weighted_p': weighted_p,
+            'cvm_D': cvm_D,
+            'cvm_p': cvm_p,
+            'cvm_S_raw': cvm_S_raw,
             'likelihood': likelihood,
             'logL_raw': logL_raw,
+            'scoring_version': np.array(2),
             'obs_delta_rv': obs_delta_rv,
             'best_median_cdf': best_median_cdf,
             'best_lo_cdf': best_lo_cdf,
@@ -6624,7 +6737,6 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             'n_sets': n_sets,
             'mode': 'cadence_aware',
             'bin_edges': _cad_bin_edges,
-            'scoring_method': scoring_method,
             'likelihood_bin_edges': params.get('likelihood_bin_edges'),
         }
 
