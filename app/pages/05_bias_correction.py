@@ -2361,6 +2361,304 @@ def _render_method_expander(
             likelihood_bin_edges=_lk_edges,
         )
 
+    # ── Corner Plot (2-param: fbin x x) ─────────────────────────────
+    st.divider()
+    with st.expander(f'Corner Plot — {display_name}', expanded=False):
+        from plotly.subplots import make_subplots as _ms
+        from wr_bias_simulation import compute_hdi68
+
+        # Build grids/names matching p_nd dimensions
+        if ndim_mode == 'dsilva':
+            _sigma_g = np.asarray(result.get('sigma_grid', [0.0]))
+            _logPmax_g = np.asarray(result.get('logPmax_grid', [0.0]))
+            _all_grids = [_logPmax_g, _sigma_g, fbin_g, x_g]
+            _all_names = ['logPmax', 'sigma', 'fbin', x_name]
+        elif ndim_mode == 'langer':
+            _all_grids = [fbin_g, x_g]
+            _all_names = ['fbin', x_name]
+        else:
+            # cadence modes — build from p_nd shape
+            _all_grids = []
+            _all_names = []
+            _sig_g_c = np.asarray(result.get('sigma_grid', [0.0]))
+            if p_nd.ndim >= 3 and _sig_g_c.size > 1:
+                _all_grids.append(_sig_g_c)
+                _all_names.append('sigma')
+            _all_grids.extend([fbin_g, x_g])
+            _all_names.extend(['fbin', x_name])
+
+        _info = _method_best_and_hdi(p_nd, _all_grids, _all_names,
+                                     is_likelihood=_is_likelihood)
+        if _info is not None:
+            _hdi = _info['hdi']
+            _bv = _info['best_vals']
+            _fb_mode, _fb_lo, _fb_hi = _hdi.get('fbin', (0, 0, 0))
+            _x_mode, _x_lo, _x_hi = _hdi.get(x_name, (0, 0, 0))
+
+            # Marginalize to 1D posteriors
+            _fb_ax = _all_names.index('fbin')
+            _x_ax = _all_names.index(x_name)
+            _sum_fb = tuple(j for j in range(p_nd.ndim) if j != _fb_ax)
+            _sum_x = tuple(j for j in range(p_nd.ndim) if j != _x_ax)
+            _post_fb = np.nansum(p_nd, axis=_sum_fb) if _sum_fb else p_nd.copy()
+            _post_x = np.nansum(p_nd, axis=_sum_x) if _sum_x else p_nd.copy()
+
+            # Marginalize to 2D (fbin x x)
+            _keep = sorted([_fb_ax, _x_ax])
+            _sum_2d = tuple(j for j in range(p_nd.ndim) if j not in _keep)
+            _p2d_marg = np.nansum(p_nd, axis=_sum_2d) if _sum_2d else p_nd.copy()
+            # Orient: rows=fbin, cols=x
+            if _fb_ax == _keep[0]:
+                _z_corner = _p2d_marg
+            else:
+                _z_corner = _p2d_marg.T
+
+            fig_c = _ms(rows=2, cols=2, horizontal_spacing=0.08,
+                        vertical_spacing=0.08)
+
+            # [0,0] f_bin posterior
+            _norm_fb = float(np.trapezoid(_post_fb, fbin_g))
+            _pn_fb = _post_fb / _norm_fb if _norm_fb > 0 else _post_fb
+            fig_c.add_trace(go.Scatter(
+                x=fbin_g, y=_pn_fb, mode='lines',
+                line=dict(color='#4A90D9', width=2), showlegend=False,
+            ), row=1, col=1)
+            _m_fb = (fbin_g >= _fb_lo) & (fbin_g <= _fb_hi)
+            if np.any(_m_fb):
+                _xh = fbin_g[_m_fb]
+                _yh = _pn_fb[_m_fb]
+                fig_c.add_trace(go.Scatter(
+                    x=np.concatenate([_xh, _xh[::-1]]),
+                    y=np.concatenate([_yh, np.zeros(len(_yh))]),
+                    fill='toself', fillcolor='rgba(74,144,217,0.3)',
+                    line=dict(width=0), showlegend=False,
+                ), row=1, col=1)
+            fig_c.add_vline(x=_fb_mode, line_dash='dash',
+                            line_color='#E25A53', line_width=1.5,
+                            row=1, col=1)
+
+            # [1,1] x posterior
+            _norm_x = float(np.trapezoid(_post_x, x_g))
+            _pn_x = _post_x / _norm_x if _norm_x > 0 else _post_x
+            fig_c.add_trace(go.Scatter(
+                x=x_g, y=_pn_x, mode='lines',
+                line=dict(color='#4A90D9', width=2), showlegend=False,
+            ), row=2, col=2)
+            _m_x = (x_g >= _x_lo) & (x_g <= _x_hi)
+            if np.any(_m_x):
+                _xh2 = x_g[_m_x]
+                _yh2 = _pn_x[_m_x]
+                fig_c.add_trace(go.Scatter(
+                    x=np.concatenate([_xh2, _xh2[::-1]]),
+                    y=np.concatenate([_yh2, np.zeros(len(_yh2))]),
+                    fill='toself', fillcolor='rgba(74,144,217,0.3)',
+                    line=dict(width=0), showlegend=False,
+                ), row=2, col=2)
+            fig_c.add_vline(x=_x_mode, line_dash='dash',
+                            line_color='#E25A53', line_width=1.5,
+                            row=2, col=2)
+
+            # [1,0] 2D heatmap
+            _z_max = float(np.nanmax(_z_corner)) if np.any(np.isfinite(_z_corner)) else 1.0
+            fig_c.add_trace(go.Heatmap(
+                x=x_g, y=fbin_g, z=_z_corner,
+                colorscale='RdBu_r', zmin=0, zmax=_z_max,
+                zsmooth='best', showscale=False,
+            ), row=2, col=1)
+            # Contour overlay
+            _zf = _z_corner.ravel()
+            _zp = _zf[_zf > 0]
+            if len(_zp) > 2:
+                _zs = np.sort(_zp)[::-1]
+                _zcs = np.cumsum(_zs)
+                _zcs = _zcs / _zcs[-1]
+                _i68 = np.searchsorted(_zcs, 0.68)
+                _i95 = np.searchsorted(_zcs, 0.95)
+                _l68 = float(_zs[min(_i68, len(_zs) - 1)])
+                _l95 = float(_zs[min(_i95, len(_zs) - 1)])
+                fig_c.add_trace(go.Contour(
+                    x=x_g, y=fbin_g, z=_z_corner,
+                    contours=dict(coloring='none', showlabels=True,
+                                  labelfont=dict(size=8, color=pal['contour_label'])),
+                    ncontours=2, contours_start=_l95, contours_end=_l68,
+                    line=dict(color=pal['contour_color'], width=1.5, dash='dot'),
+                    showscale=False, hoverinfo='skip',
+                ), row=2, col=1)
+            # Best-fit star
+            fig_c.add_trace(go.Scatter(
+                x=[_bv.get(x_name, 0)], y=[_bv.get('fbin', 0)],
+                mode='markers',
+                marker=dict(symbol='star', size=10, color='#DAA520',
+                            line=dict(color='black', width=1)),
+                showlegend=False,
+            ), row=2, col=1)
+
+            # Hide upper-right cell
+            fig_c.update_xaxes(visible=False, row=1, col=2)
+            fig_c.update_yaxes(visible=False, row=1, col=2)
+            # Axis labels
+            fig_c.update_xaxes(title_text='f_bin', row=1, col=1)
+            fig_c.update_xaxes(title_text=x_display_label, row=2, col=1)
+            fig_c.update_xaxes(title_text=x_display_label, row=2, col=2)
+            fig_c.update_yaxes(title_text='f_bin', row=2, col=1)
+
+            fig_c.update_layout(**{
+                **PLOTLY_THEME,
+                'height': 500, 'showlegend': False,
+                'margin': dict(l=60, r=20, t=30, b=60),
+            })
+            st.plotly_chart(fig_c, use_container_width=True,
+                            key=f'{prefix}_{method_key}_corner')
+            st.caption(
+                f'2-parameter corner plot for {display_name}. '
+                f'Diagonal: 1D posteriors with 68% HDI (blue shading) and mode (red dashed). '
+                f'Off-diagonal: 2D marginalized heatmap with 68%/95% contours and best fit (gold star).'
+            )
+        else:
+            st.info('No valid data for corner plot.')
+
+    # ── Model Explorer (best-fit CDF, histogram, detection fraction) ──
+    _obs_drv_me = result.get('obs_delta_rv')
+    if _obs_drv_me is not None:
+        st.divider()
+        with st.expander(f'Model Explorer — {display_name}', expanded=False):
+            try:
+                from wr_bias_simulation import (
+                    simulate_delta_rv_sample, SimulationConfig,
+                    BinaryParameterConfig, binned_cdf, DEFAULT_DRV_BIN_EDGES,
+                )
+
+                # Get best-fit params from global argmax
+                _me_info = _info  # reuse from corner plot section
+                if _me_info is None:
+                    _me_info = _method_best_and_hdi(
+                        p_nd,
+                        _all_grids if '_all_grids' in dir() else [fbin_g, x_g],
+                        _all_names if '_all_names' in dir() else ['fbin', x_name],
+                        is_likelihood=_is_likelihood,
+                    )
+                if _me_info is not None:
+                    _me_bv = _me_info['best_vals']
+                    _me_fb = float(_me_bv.get('fbin', 0.5))
+                    _me_x = float(_me_bv.get(x_name, 0.0))
+                    _me_sig = float(_me_bv.get('sigma', result.get('sigma_meas', 5.0)))
+
+                    _obs_drv_arr = np.asarray(_obs_drv_me)
+                    _be = result.get('bin_edges')
+                    if _be is None:
+                        _be = DEFAULT_DRV_BIN_EDGES
+                    else:
+                        _be = np.asarray(_be)
+
+                    # Simulate at best-fit
+                    _sim_cfg_me = SimulationConfig(
+                        n_stars=1000,
+                        sigma_single=_me_sig,
+                        sigma_measure=float(result.get('sigma_meas', 3.0)),
+                    )
+                    _bin_cfg_me = BinaryParameterConfig()
+                    _rng_me = np.random.default_rng(42)
+                    _sim_drv = simulate_delta_rv_sample(
+                        _me_fb, _me_x, _sim_cfg_me, _bin_cfg_me, _rng_me)
+
+                    # 1) CDF comparison
+                    _obs_cdf = binned_cdf(_obs_drv_arr, _be)
+                    _sim_cdf = binned_cdf(_sim_drv, _be)
+
+                    fig_me_cdf = go.Figure()
+                    fig_me_cdf.add_trace(go.Scatter(
+                        x=_be, y=_obs_cdf, mode='lines', name='Observed',
+                        line=dict(color='#4A90D9', width=2.5, shape='hv'),
+                    ))
+                    fig_me_cdf.add_trace(go.Scatter(
+                        x=_be, y=_sim_cdf, mode='lines', name='Simulated',
+                        line=dict(color='#E25A53', width=2.5, dash='dash', shape='hv'),
+                    ))
+                    fig_me_cdf.update_layout(**{
+                        **PLOTLY_THEME,
+                        'title': dict(
+                            text=f'CDF at best fit (f_bin={_me_fb:.3f}, {x_label}={_me_x:.2f})',
+                            font=dict(size=14)),
+                        'xaxis_title': 'DeltaRV (km/s)',
+                        'yaxis_title': 'Cumulative fraction',
+                        'height': 380,
+                        'legend': dict(x=0.6, y=0.15),
+                    })
+                    st.plotly_chart(fig_me_cdf, use_container_width=True,
+                                    key=f'{prefix}_{method_key}_me_cdf')
+
+                    # 2) DeltaRV histogram overlay
+                    fig_me_hist = go.Figure()
+                    fig_me_hist.add_trace(go.Histogram(
+                        x=_obs_drv_arr, nbinsx=30,
+                        histnorm='probability density',
+                        name='Observed', marker_color='#4A90D9', opacity=0.6,
+                    ))
+                    fig_me_hist.add_trace(go.Histogram(
+                        x=_sim_drv, nbinsx=30,
+                        histnorm='probability density',
+                        name='Simulated', marker_color='#E25A53', opacity=0.5,
+                    ))
+                    fig_me_hist.update_layout(**{
+                        **PLOTLY_THEME,
+                        'barmode': 'overlay',
+                        'title': dict(text='DeltaRV Distribution', font=dict(size=14)),
+                        'xaxis_title': 'DeltaRV (km/s)',
+                        'yaxis_title': 'Probability density',
+                        'height': 380,
+                        'legend': dict(x=0.65, y=0.95),
+                    })
+                    st.plotly_chart(fig_me_hist, use_container_width=True,
+                                    key=f'{prefix}_{method_key}_me_hist')
+
+                    # 3) Detection fraction vs threshold
+                    _max_drv = max(float(np.max(_obs_drv_arr)),
+                                   float(np.max(_sim_drv)))
+                    _thresholds = np.linspace(0, _max_drv * 1.1, 100)
+                    _frac_obs = np.array([(_obs_drv_arr > T).mean() for T in _thresholds])
+                    _frac_sim = np.array([(_sim_drv > T).mean() for T in _thresholds])
+
+                    fig_me_det = go.Figure()
+                    fig_me_det.add_trace(go.Scatter(
+                        x=_thresholds, y=_frac_obs, mode='lines', name='Observed',
+                        line=dict(color='#4A90D9', width=2.5),
+                    ))
+                    fig_me_det.add_trace(go.Scatter(
+                        x=_thresholds, y=_frac_sim, mode='lines', name='Simulated',
+                        line=dict(color='#E25A53', width=2.5, dash='dash'),
+                    ))
+                    _thresh_dRV = float(result.get('thresh_dRV', 45.5))
+                    fig_me_det.add_vline(
+                        x=_thresh_dRV, line_dash='dot',
+                        line_color='#DAA520', line_width=1.5,
+                        annotation_text=f'Threshold={_thresh_dRV:.0f}',
+                        annotation_position='top right',
+                        annotation_font_color='#DAA520',
+                    )
+                    fig_me_det.update_layout(**{
+                        **PLOTLY_THEME,
+                        'title': dict(
+                            text=f'Detection Fraction (f_bin={_me_fb:.3f}, {x_label}={_me_x:.2f})',
+                            font=dict(size=14)),
+                        'xaxis_title': 'DeltaRV threshold (km/s)',
+                        'yaxis_title': 'Fraction above threshold',
+                        'height': 380,
+                        'yaxis': dict(range=[0, 1.05]),
+                        'legend': dict(x=0.65, y=0.95),
+                    })
+                    st.plotly_chart(fig_me_det, use_container_width=True,
+                                    key=f'{prefix}_{method_key}_me_det')
+
+                    st.caption(
+                        f'Best-fit model explorer for {display_name}. '
+                        f'Top: binned CDF comparison. Middle: DeltaRV histogram overlay. '
+                        f'Bottom: detection fraction vs threshold (gold line = classification cutoff).'
+                    )
+                else:
+                    st.info('Could not determine best-fit parameters.')
+            except ImportError:
+                st.info('wr_bias_simulation not available for model explorer.')
+
 
 def _render_cvm_analysis(
     ks_D_2d: np.ndarray,
