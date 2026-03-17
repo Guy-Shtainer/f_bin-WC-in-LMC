@@ -239,6 +239,15 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                                     ]:
                                         _cur = _mp[i_lp, i_sigma]
                                         _cur_d = _md[i_lp, i_sigma]
+                                        # Normalize likelihood logL to [0,1]
+                                        if _mk == 'likelihood':
+                                            _logL_slice = _cur.copy()
+                                            _logL_max_v = np.nanmax(_logL_slice)
+                                            if np.isfinite(_logL_max_v):
+                                                _cur = np.exp(_logL_slice - _logL_max_v)
+                                            else:
+                                                _cur = np.zeros_like(_logL_slice)
+                                            _cur_d = _cur  # no separate D for likelihood
                                         _method_live[_mk] = {
                                             'p': np.where(np.isnan(_cur), 0.0, _cur).copy(),
                                             'd': np.where(np.isnan(_cur_d), 0.0, _cur_d).copy(),
@@ -542,9 +551,19 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                             ('cvm', acc_cvm_p, acc_cvm_D, 'CvM p'),
                             ('likelihood', acc_logL_raw, acc_logL_raw, 'Likelihood'),
                         ]:
+                            _disp_p = _mp
+                            _disp_d = _md
+                            # Normalize likelihood logL to [0,1]
+                            if _mk == 'likelihood':
+                                _logL_max_v = np.nanmax(_mp)
+                                if np.isfinite(_logL_max_v):
+                                    _disp_p = np.exp(_mp - _logL_max_v)
+                                else:
+                                    _disp_p = np.zeros_like(_mp)
+                                _disp_d = _disp_p
                             _method_live[_mk] = {
-                                'p': np.where(np.isnan(_mp), 0.0, _mp).copy(),
-                                'd': np.where(np.isnan(_md), 0.0, _md).copy(),
+                                'p': np.where(np.isnan(_disp_p), 0.0, _disp_p).copy(),
+                                'd': np.where(np.isnan(_disp_d), 0.0, _disp_d).copy(),
                                 'fbin': fbin_vals.copy(),
                                 'x': sigma_vals.copy(),
                                 'title': f'{_ml}  (Langer 2020)',
@@ -877,6 +896,14 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                         for _mk, _mp, _md, _ml in _method_arrays:
                             cur_p_2d = _mp[:, :, 0].T  # (n_fb, n_sig)
                             cur_D_2d = _md[:, :, 0].T
+                            # Normalize likelihood logL to [0,1]
+                            if _mk == 'likelihood':
+                                _logL_max_v = np.nanmax(cur_p_2d)
+                                if np.isfinite(_logL_max_v):
+                                    cur_p_2d = np.exp(cur_p_2d - _logL_max_v)
+                                else:
+                                    cur_p_2d = np.zeros_like(cur_p_2d)
+                                cur_D_2d = cur_p_2d
                             _method_live[_mk] = {
                                 'p': np.where(np.isnan(cur_p_2d), 0.0, cur_p_2d).copy(),
                                 'd': np.where(np.isnan(cur_D_2d), 0.0, cur_D_2d).copy(),
@@ -912,6 +939,14 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                         for _mk, _mp, _md, _ml in _method_arrays:
                             cur_p = _mp[_display_sig_idx]
                             cur_d = _md[_display_sig_idx]
+                            # Normalize likelihood logL to [0,1]
+                            if _mk == 'likelihood':
+                                _logL_max_v = np.nanmax(cur_p)
+                                if np.isfinite(_logL_max_v):
+                                    cur_p = np.exp(cur_p - _logL_max_v)
+                                else:
+                                    cur_p = np.zeros_like(cur_p)
+                                cur_d = cur_p
                             _method_live[_mk] = {
                                 'p': np.where(np.isnan(cur_p), 0.0, cur_p).copy(),
                                 'd': np.where(np.isnan(cur_d), 0.0, cur_d).copy(),
@@ -924,13 +959,15 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             }
                         job['live_heatmaps'] = _method_live
 
-                        # Live 1D σ graph (max KS p per sigma slice)
+                        # Live 1D σ graph (max KS p and max likelihood per sigma slice)
                         if n_sig > 1:
                             _live_sig_pvals = []
                             _live_sig_scores = []
+                            _live_sig_likelihood = []
                             for _ls in range(n_sig):
                                 _lsp = ks_p[_ls]
                                 _lsd = ks_D[_ls]
+                                _lsL = logL_raw[_ls]
                                 if np.any(~np.isnan(_lsp)):
                                     _live_sig_pvals.append(float(np.nanmax(_lsp)))
                                 else:
@@ -939,10 +976,21 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                                     _live_sig_scores.append(float(np.nanmin(_lsd)))
                                 else:
                                     _live_sig_scores.append(float('inf'))
+                                # Max normalized likelihood per sigma slice
+                                if np.any(~np.isnan(_lsL)):
+                                    _lsL_max = np.nanmax(_lsL)
+                                    if np.isfinite(_lsL_max):
+                                        _live_sig_likelihood.append(
+                                            float(np.nanmax(np.exp(_lsL - _lsL_max))))
+                                    else:
+                                        _live_sig_likelihood.append(0.0)
+                                else:
+                                    _live_sig_likelihood.append(0.0)
                             job['live_sigma_1d'] = {
                                 'sigma_vals': sigma_grid.tolist(),
                                 'max_pvals': _live_sig_pvals,
                                 'min_scores': _live_sig_scores,
+                                'max_likelihood': _live_sig_likelihood,
                             }
 
                         # Build per-method status items

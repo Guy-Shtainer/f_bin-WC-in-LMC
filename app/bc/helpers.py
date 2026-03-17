@@ -51,6 +51,14 @@ SCORING_METHODS = [
 
 _METHOD_COLORS = {m[0]: m[4] for m in SCORING_METHODS}
 
+# Scoring label for make_heatmap_fig colorbar per method
+_METHOD_SCORING_LABELS = {
+    'ks': 'K-S',
+    'weighted': 'K-S weighted',
+    'cvm': 'CvM',
+    'likelihood': 'Likelihood',
+}
+
 
 def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     """Convert hex color to rgba string for Plotly shading."""

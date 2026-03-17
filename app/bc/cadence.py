@@ -9,6 +9,7 @@ import threading
 import time
 
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -25,7 +26,7 @@ from shared import (
 )
 
 from bc.helpers import (
-    SCORING_METHODS, _METHOD_COLORS,
+    SCORING_METHODS, _METHOD_COLORS, _METHOD_SCORING_LABELS,
     _RESULT_DIR, _HISTORY_PATH, _FILENAME_FORMAT_HELP,
     _hex_to_rgba, _fmt_eta, _result_path, _stable_cfg_hash,
     _build_descriptive_filename, _list_saved_results,
@@ -90,7 +91,8 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
                             st.plotly_chart(
                                 _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
                                     title=hd['title'], height=300,
-                                    live=not hd['is_final']),
+                                    live=not hd['is_final'],
+                                    scoring_label=_METHOD_SCORING_LABELS[_mk]),
                                 use_container_width=True)
                 _lc3, _lc4 = st.columns(2)
                 for _mk, _col in [('cvm', _lc3), ('likelihood', _lc4)]:
@@ -100,23 +102,23 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
                             st.plotly_chart(
                                 _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
                                     title=hd['title'], height=300,
-                                    live=not hd['is_final']),
+                                    live=not hd['is_final'],
+                                    scoring_label=_METHOD_SCORING_LABELS[_mk]),
                                 use_container_width=True)
             if _j.get('live_status'):
                 st.markdown(_j['live_status'])
-            # Live 1D σ graph (Dsilva with multi-sigma) — show score (S)
+            # Live 1D σ graph — show max likelihood per sigma
             _lsig = _j.get('live_sigma_1d')
             if _lsig and len(_lsig.get('sigma_vals', [])) > 1:
-                _stat_lbl = 'K-S'
-                _lsig_scores = _lsig.get('min_scores')
-                if _lsig_scores and any(s != float('inf') for s in _lsig_scores):
+                _lsig_likelihood = _lsig.get('max_likelihood')
+                if _lsig_likelihood and any(v > 0 for v in _lsig_likelihood):
                     st.plotly_chart(
-                        _make_min_score_fig(
+                        _make_max_pval_fig(
                             np.array(_lsig['sigma_vals']),
-                            _lsig_scores,
+                            _lsig_likelihood,
                             height=250,
                             x_label='σ_single (km/s)',
-                            stat_label=_stat_lbl,
+                            stat_label='Likelihood',
                         ), use_container_width=True)
                 else:
                     st.plotly_chart(
@@ -125,7 +127,7 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
                             _lsig['max_pvals'],
                             height=250,
                             x_label='σ_single (km/s)',
-                            stat_label=_stat_lbl,
+                            stat_label='K-S',
                         ), use_container_width=True)
         _cadence_live_poll()
 
@@ -168,7 +170,8 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
                     with _col:
                         st.plotly_chart(
                             _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
-                                title=hd['title'], height=300, live=False),
+                                title=hd['title'], height=300, live=False,
+                                scoring_label=_METHOD_SCORING_LABELS[_mk]),
                             use_container_width=True)
             _lc3, _lc4 = st.columns(2)
             for _mk, _col in [('cvm', _lc3), ('likelihood', _lc4)]:
@@ -177,7 +180,8 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
                     with _col:
                         st.plotly_chart(
                             _make_heatmap_fig(hd['p'], hd['fbin'], hd['x'],
-                                title=hd['title'], height=300, live=False),
+                                title=hd['title'], height=300, live=False,
+                                scoring_label=_METHOD_SCORING_LABELS[_mk]),
                             use_container_width=True)
 
         ks_p_arr = result.get('ks_p')
