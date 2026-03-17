@@ -1417,7 +1417,7 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
                  n_stars, sigma_measure,
                  n_epochs=6, time_span=3650.0,
                  observation_times=None, v_sys=0.0,
-                 bin_edges=None, scoring_method='ks',
+                 bin_edges=None,
                  n_sets_cvm=1000, likelihood_bin_edges=None):
     """Pool initializer: store shared data as process-level globals."""
     global _WORKER_GLOBALS
@@ -1432,16 +1432,23 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
         'observation_times': observation_times,
         'v_sys': v_sys,
         'bin_edges': bin_edges,
-        'scoring_method': scoring_method,
         'n_sets_cvm': n_sets_cvm,
         'likelihood_bin_edges': likelihood_bin_edges,
     }
 
 
 def _single_grid_task_lite(args):
-    """Lightweight worker: shared data comes from _WORKER_GLOBALS (set by pool initializer).
+    """Lightweight worker: compute ALL 4 scoring methods from the same simulated data.
 
     args = (f_bin, pi, sigma_single, bin_cfg, period_model, seed)
+
+    Returns
+    -------
+    (f_bin, pi, sigma_single,
+     ks_D, ks_p,              # KS standard
+     weighted_D, weighted_p,  # KS variance-weighted (chi2)
+     cvm_D, cvm_p, cvm_S_raw, # CvM
+     logL)                     # raw log-likelihood
     """
     f_bin, pi, sigma_single, bin_cfg, period_model, seed = args
     g = _WORKER_GLOBALS
@@ -1461,54 +1468,63 @@ def _single_grid_task_lite(args):
     bin_cfg_local.period_model = period_model
 
     rng = np.random.default_rng(seed)
-    scoring = g.get('scoring_method', 'ks')
 
-    S_raw = np.nan
-    logL = np.nan
+    # Bin edges for CDF scoring
+    _be = g.get('bin_edges')
+    if _be is None:
+        _be = DEFAULT_DRV_BIN_EDGES
+    # Bin edges for likelihood scoring
     _lbe = g.get('likelihood_bin_edges')
     if _lbe is None:
         _lbe = g.get('bin_edges')
     if _lbe is None:
         _lbe = DEFAULT_DRV_BIN_EDGES
 
-    if scoring == 'cvm':
-        # CvM requires multiple sets to compute variance
-        n_sets = g.get('n_sets_cvm', 1000)
-        _be = g.get('bin_edges')
-        if _be is None:
-            _be = DEFAULT_DRV_BIN_EDGES
-        all_drv = np.empty((n_sets, sim_cfg_local.n_stars))
-        for s in range(n_sets):
-            all_drv[s] = simulate_delta_rv_sample(
-                f_bin=f_bin, pi=pi,
-                sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng)
-        all_cdfs = np.empty((n_sets, _be.size), dtype=float)
-        for s in range(n_sets):
-            all_cdfs[s] = binned_cdf(all_drv[s], _be)
-        median_cdf = np.median(all_cdfs, axis=0)
-        cdf_var = np.var(all_cdfs, axis=0)
-        obs_cdf = binned_cdf(g['obs_delta_rv'], _be)
-        D, p, S_raw = cvm_weighted_score(median_cdf, obs_cdf, cdf_var, all_drv, _be)
-        # Bonus: also compute likelihood from the same pooled sim data
-        logL = multinomial_log_likelihood(g['obs_delta_rv'], all_drv.ravel(), _lbe)
-    elif scoring == 'likelihood':
-        # Likelihood-only: simulate multiple sets, compute binned likelihood
-        n_sets = g.get('n_sets_cvm', 1000)
-        all_drv = np.empty((n_sets, sim_cfg_local.n_stars))
-        for s in range(n_sets):
-            all_drv[s] = simulate_delta_rv_sample(
-                f_bin=f_bin, pi=pi,
-                sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng)
-        logL = multinomial_log_likelihood(g['obs_delta_rv'], all_drv.ravel(), _lbe)
-        D = -logL   # D-stat view: negative log-likelihood (lower = better)
-        p = logL    # Will be normalized to [0,1] post-grid
-    else:
-        delta_sim = simulate_delta_rv_sample(
+    # Always draw n_sets samples (needed for CvM/weighted variance estimation)
+    n_sets = g.get('n_sets_cvm', 1000)
+    all_drv = np.empty((n_sets, sim_cfg_local.n_stars))
+    for s in range(n_sets):
+        all_drv[s] = simulate_delta_rv_sample(
             f_bin=f_bin, pi=pi,
-            sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng,
-        )
-        D, p = ks_two_sample_binned(delta_sim, g['obs_delta_rv'], g.get('bin_edges'))
-    return f_bin, pi, sigma_single, D, p, S_raw, logL
+            sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng)
+
+    # Compute CDFs: one per set, then median + variance
+    all_cdfs = np.empty((n_sets, _be.size), dtype=float)
+    for s in range(n_sets):
+        all_cdfs[s] = binned_cdf(all_drv[s], _be)
+    median_cdf = np.median(all_cdfs, axis=0)
+    cdf_var = np.var(all_cdfs, axis=0)
+    obs_cdf = binned_cdf(g['obs_delta_rv'], _be)
+
+    # 1) KS standard: D = max|median_cdf - obs_cdf|, Kolmogorov-series p-value
+    ks_D = float(np.max(np.abs(median_cdf - obs_cdf)))
+    n1 = n_sets * sim_cfg_local.n_stars
+    n2 = len(g['obs_delta_rv'])
+    en = math.sqrt(n1 * n2 / (n1 + n2))
+    x = (en + 0.12 + 0.11 / en) * ks_D
+    term_sum = 0.0
+    for j in range(1, 101):
+        term = 2.0 * ((-1) ** (j - 1)) * math.exp(-2.0 * (j ** 2) * (x ** 2))
+        term_sum += term
+        if abs(term) < 1e-8:
+            break
+    ks_p = max(0.0, min(1.0, term_sum))
+
+    # 2) KS variance-weighted (chi2)
+    weighted_D, weighted_p = chi2_weighted_score(median_cdf, obs_cdf, cdf_var)
+
+    # 3) CvM S-score
+    cvm_D, cvm_p, cvm_S_raw = cvm_weighted_score(
+        median_cdf, obs_cdf, cdf_var, all_drv, _be)
+
+    # 4) Likelihood (Dsilva+2023)
+    logL = multinomial_log_likelihood(g['obs_delta_rv'], all_drv.ravel(), _lbe)
+
+    return (f_bin, pi, sigma_single,
+            ks_D, ks_p,
+            weighted_D, weighted_p,
+            cvm_D, cvm_p, cvm_S_raw,
+            logL)
 
 
 def run_bias_grid(
@@ -1522,13 +1538,15 @@ def run_bias_grid(
     n_processes: Optional[int] = None,
     seed_base: int = 1234,
     use_multiprocessing: bool = True,
-    scoring_method: str = 'ks',
     n_sets_cvm: int = 1000,
     bin_edges: Optional[np.ndarray] = None,
     likelihood_bin_edges: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
     """
-    Run a (f_bin, pi[, sigma_single]) grid of simulations and K-S comparisons.
+    Run a (f_bin, pi[, sigma_single]) grid computing ALL 4 scoring methods.
+
+    All methods (KS standard, KS weighted, CvM, Likelihood) are computed
+    simultaneously from the same simulated data at each grid point.
 
     Parameters
     ----------
@@ -1554,6 +1572,8 @@ def run_bias_grid(
         Base seed; each grid point gets seed = seed_base + idx.
     use_multiprocessing : bool
         If False, run everything serially (useful for debugging).
+    n_sets_cvm : int
+        Number of simulation sets per grid point (for CvM variance, etc.).
     likelihood_bin_edges : array or None
         Coarse bin edges for multinomial likelihood (Dsilva+2023).
         If None, uses DSILVA_LIKELIHOOD_BINS.
@@ -1561,13 +1581,18 @@ def run_bias_grid(
     Returns
     -------
     result : dict with keys:
-        "fbin_grid"  : 1D array of f_bin values.
-        "pi_grid"    : 1D array of π values.
-        "sigma_grid" : 1D array of sigma_single values (length 1 if not scanned).
-        "ks_D"       : 3D array [n_sigma, n_fbin, n_pi] of K-S D.
-        "ks_p"       : 3D array of corresponding p-values.
-        "likelihood" : 3D array of normalized likelihood (when CvM or likelihood scoring).
-        "logL_raw"   : 3D array of raw log-likelihood values.
+        "fbin_grid"   : 1D array of f_bin values.
+        "pi_grid"     : 1D array of π values.
+        "sigma_grid"  : 1D array of sigma_single values (length 1 if not scanned).
+        "ks_D"        : 3D [n_sigma, n_fbin, n_pi] KS standard D-statistic.
+        "ks_p"        : 3D KS standard p-values.
+        "weighted_D"  : 3D KS variance-weighted chi2 statistic.
+        "weighted_p"  : 3D KS variance-weighted p-values.
+        "cvm_D"       : 3D CvM weighted S-score (D-stat equivalent).
+        "cvm_p"       : 3D CvM empirical p-values.
+        "cvm_S_raw"   : 3D CvM unweighted S (cross-model comparable).
+        "likelihood"  : 3D normalized likelihood [0,1].
+        "logL_raw"    : 3D raw log-likelihood values.
     """
     if sim_cfg is None:
         sim_cfg = SimulationConfig()
@@ -1576,7 +1601,8 @@ def run_bias_grid(
 
     fbin_grid  = np.array(list(fbin_values), dtype=float)
     pi_grid    = np.array(list(pi_values), dtype=float)
-    sigma_grid = np.array(list(sigma_values), dtype=float) if sigma_values is not None                  else np.array([sim_cfg.sigma_single], dtype=float)
+    sigma_grid = np.array(list(sigma_values), dtype=float) if sigma_values is not None \
+                 else np.array([sim_cfg.sigma_single], dtype=float)
 
     obs_delta_rv = np.asarray(obs_delta_rv, dtype=float)
 
@@ -1611,7 +1637,6 @@ def run_bias_grid(
         sim_cfg.observation_times,
         sim_cfg.v_sys,
         _used_bin_edges,
-        scoring_method,
         n_sets_cvm,
         likelihood_bin_edges,
     )
@@ -1641,18 +1666,31 @@ def run_bias_grid(
     n_sig = sigma_grid.size
     n_fb  = fbin_grid.size
     n_pi  = pi_grid.size
-    ks_D     = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    ks_p     = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    ks_S_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
-    logL_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
+    ks_D       = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    ks_p       = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    weighted_D = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    weighted_p = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    cvm_D      = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    cvm_p      = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    cvm_S_raw  = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
+    logL_raw   = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
 
-    for idx, (fb, pi, sigma, D, p, s_raw, _logL) in enumerate(results):
+    for idx, res in enumerate(results):
+        (fb, pi, sigma,
+         _ks_D, _ks_p,
+         _w_D, _w_p,
+         _cvm_D, _cvm_p, _cvm_S,
+         _logL) = res
         i_sig = idx // (n_fb * n_pi)
         i_fb  = (idx % (n_fb * n_pi)) // n_pi
         i_pi  = idx % n_pi
-        ks_D[i_sig, i_fb, i_pi] = D
-        ks_p[i_sig, i_fb, i_pi] = p
-        ks_S_raw[i_sig, i_fb, i_pi] = s_raw
+        ks_D[i_sig, i_fb, i_pi] = _ks_D
+        ks_p[i_sig, i_fb, i_pi] = _ks_p
+        weighted_D[i_sig, i_fb, i_pi] = _w_D
+        weighted_p[i_sig, i_fb, i_pi] = _w_p
+        cvm_D[i_sig, i_fb, i_pi] = _cvm_D
+        cvm_p[i_sig, i_fb, i_pi] = _cvm_p
+        cvm_S_raw[i_sig, i_fb, i_pi] = _cvm_S
         logL_raw[i_sig, i_fb, i_pi] = _logL
 
     # Normalize logL → likelihood [0, 1] (Dsilva+2023 style posterior weight)
@@ -1662,20 +1700,19 @@ def run_bias_grid(
     else:
         likelihood = np.zeros_like(logL_raw)
 
-    # For 'likelihood' scoring, use normalized likelihood as the primary heatmap
-    if scoring_method == 'likelihood':
-        ks_p = likelihood.copy()
-        ks_D = np.where(np.isfinite(logL_raw), -logL_raw, np.nan)
-
     return {
-        "fbin_grid":  fbin_grid,
-        "pi_grid":    pi_grid,
-        "sigma_grid": sigma_grid,
-        "ks_D":       ks_D,
-        "ks_p":       ks_p,
-        "ks_S_raw":   ks_S_raw,
-        "likelihood": likelihood,
-        "logL_raw":   logL_raw,
+        "fbin_grid":   fbin_grid,
+        "pi_grid":     pi_grid,
+        "sigma_grid":  sigma_grid,
+        "ks_D":        ks_D,
+        "ks_p":        ks_p,
+        "weighted_D":  weighted_D,
+        "weighted_p":  weighted_p,
+        "cvm_D":       cvm_D,
+        "cvm_p":       cvm_p,
+        "cvm_S_raw":   cvm_S_raw,
+        "likelihood":  likelihood,
+        "logL_raw":    logL_raw,
     }
 
 
@@ -1684,9 +1721,18 @@ def run_bias_grid(
 # ---------------------------------------------------------------------------
 
 def _single_grid_task_cadence_aware(args):
-    """Worker for cadence-aware grid search.
+    """Worker for cadence-aware grid search: compute ALL 4 scoring methods.
 
     args = (f_bin, pi, sigma_single, bin_cfg, period_model, seed, n_sets)
+
+    Returns
+    -------
+    (f_bin, pi, sigma_single,
+     ks_D, ks_p,              # KS standard
+     weighted_D, weighted_p,  # KS variance-weighted (chi2)
+     cvm_D, cvm_p, cvm_S_raw, # CvM
+     logL,                     # raw log-likelihood
+     median_cdf, lo_cdf, hi_cdf)
     """
     f_bin, pi, sigma_single, bin_cfg, period_model, seed, n_sets = args
     g = _WORKER_GLOBALS
@@ -1706,6 +1752,12 @@ def _single_grid_task_cadence_aware(args):
     bin_cfg_local.period_model = period_model
 
     _bin_edges = g.get('bin_edges')
+    _be = _bin_edges if _bin_edges is not None else DEFAULT_DRV_BIN_EDGES
+    _lbe = g.get('likelihood_bin_edges')
+    if _lbe is None:
+        _lbe = g.get('bin_edges')
+    if _lbe is None:
+        _lbe = DEFAULT_DRV_BIN_EDGES
 
     rng = np.random.default_rng(seed)
     result = simulate_delta_rv_cadence_aware(
@@ -1714,51 +1766,40 @@ def _single_grid_task_cadence_aware(args):
         n_sets=n_sets, bin_edges=_bin_edges,
     )
 
-    obs_cdf = binned_cdf(g['obs_delta_rv'],
-                         _bin_edges if _bin_edges is not None else DEFAULT_DRV_BIN_EDGES)
+    obs_cdf = binned_cdf(g['obs_delta_rv'], _be)
     median_cdf = result['median_cdf']
+    cdf_var = result['cdf_var']
     n2 = len(g['obs_delta_rv'])
 
-    scoring = g.get('scoring_method', 'ks')
-    S_raw = np.nan
-    logL = np.nan
-    _lbe = g.get('likelihood_bin_edges')
-    if _lbe is None:
-        _lbe = g.get('bin_edges')
-    if _lbe is None:
-        _lbe = DEFAULT_DRV_BIN_EDGES
+    # 1) KS standard: D = max|median_cdf - obs_cdf|, Kolmogorov-series p-value
+    ks_D = float(np.max(np.abs(median_cdf - obs_cdf)))
+    n1 = n_sets * len(g['cadence_library'])
+    en = math.sqrt(n1 * n2 / (n1 + n2))
+    x = (en + 0.12 + 0.11 / en) * ks_D
+    term_sum = 0.0
+    for j in range(1, 101):
+        term = 2.0 * ((-1) ** (j - 1)) * math.exp(-2.0 * (j ** 2) * (x ** 2))
+        term_sum += term
+        if abs(term) < 1e-8:
+            break
+    ks_p = max(0.0, min(1.0, term_sum))
 
-    if scoring == 'cvm':
-        _be = _bin_edges if _bin_edges is not None else DEFAULT_DRV_BIN_EDGES
-        D, p_value, S_raw = cvm_weighted_score(
-            median_cdf, obs_cdf, result['cdf_var'],
-            result['all_delta_rv'], _be)
-        # Bonus: also compute likelihood from the same pooled sim data
-        logL = multinomial_log_likelihood(
-            g['obs_delta_rv'], result['all_delta_rv'].ravel(), _lbe)
-    elif scoring == 'likelihood':
-        # Likelihood-only: compute binned likelihood from pooled sim data
-        logL = multinomial_log_likelihood(
-            g['obs_delta_rv'], result['all_delta_rv'].ravel(), _lbe)
-        D = -logL   # D-stat view: negative log-likelihood (lower = better)
-        p_value = logL  # Will be normalized to [0,1] post-grid
-    elif scoring == 'weighted':
-        D, p_value = chi2_weighted_score(median_cdf, obs_cdf, result['cdf_var'])
-    else:
-        D = float(np.max(np.abs(median_cdf - obs_cdf)))
-        # Approximate p-value (Kolmogorov series)
-        n1 = n_sets * len(g['cadence_library'])
-        en = math.sqrt(n1 * n2 / (n1 + n2))
-        x = (en + 0.12 + 0.11 / en) * D
-        term_sum = 0.0
-        for j in range(1, 101):
-            term = 2.0 * ((-1) ** (j - 1)) * math.exp(-2.0 * (j ** 2) * (x ** 2))
-            term_sum += term
-            if abs(term) < 1e-8:
-                break
-        p_value = max(0.0, min(1.0, term_sum))
+    # 2) KS variance-weighted (chi2)
+    weighted_D, weighted_p = chi2_weighted_score(median_cdf, obs_cdf, cdf_var)
 
-    return (f_bin, pi, sigma_single, D, p_value, S_raw, logL,
+    # 3) CvM S-score
+    cvm_D, cvm_p, cvm_S_raw = cvm_weighted_score(
+        median_cdf, obs_cdf, cdf_var, result['all_delta_rv'], _be)
+
+    # 4) Likelihood (Dsilva+2023)
+    logL = multinomial_log_likelihood(
+        g['obs_delta_rv'], result['all_delta_rv'].ravel(), _lbe)
+
+    return (f_bin, pi, sigma_single,
+            ks_D, ks_p,
+            weighted_D, weighted_p,
+            cvm_D, cvm_p, cvm_S_raw,
+            logL,
             result['median_cdf'], result['lo_cdf'], result['hi_cdf'])
 
 
@@ -1775,11 +1816,10 @@ def run_bias_grid_cadence_aware(
     seed_base: int = 1234,
     use_multiprocessing: bool = True,
     callback=None,
-    scoring_method: str = 'ks',
     bin_edges: Optional[np.ndarray] = None,
     likelihood_bin_edges: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
-    """Cadence-aware grid search over (f_bin, pi[, sigma_single]).
+    """Cadence-aware grid search computing ALL 4 scoring methods.
 
     Like ``run_bias_grid`` but each grid point uses
     ``simulate_delta_rv_cadence_aware`` with *n_sets* repetitions of 25-star
@@ -1830,13 +1870,12 @@ def run_bias_grid_cadence_aware(
         sim_cfg.observation_times,
         sim_cfg.v_sys,
         _used_bin_edges,
-        scoring_method,
         n_sets,              # n_sets_cvm positional slot
         likelihood_bin_edges,
     )
 
-    # Storage for best-fit CDF band
-    best_p = -1.0
+    # Storage for best-fit CDF band (tracked by KS p-value)
+    best_ks_p = -1.0
     best_median_cdf = None
     best_lo_cdf = None
     best_hi_cdf = None
@@ -1844,24 +1883,37 @@ def run_bias_grid_cadence_aware(
     n_sig = sigma_grid.size
     n_fb  = fbin_grid.size
     n_pi  = pi_grid.size
-    ks_D     = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    ks_p     = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    ks_S_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
-    logL_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
+    ks_D       = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    ks_p       = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    weighted_D = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    weighted_p = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    cvm_D      = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    cvm_p      = np.empty((n_sig, n_fb, n_pi), dtype=float)
+    cvm_S_raw  = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
+    logL_raw   = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
 
     def _process_result(res_tuple, completed):
-        nonlocal best_p, best_median_cdf, best_lo_cdf, best_hi_cdf
-        fb, pi_val, sigma, D, p, s_raw, _logL, med_cdf, lo_cdf, hi_cdf = res_tuple
+        nonlocal best_ks_p, best_median_cdf, best_lo_cdf, best_hi_cdf
+        (fb, pi_val, sigma,
+         _ks_D, _ks_p,
+         _w_D, _w_p,
+         _cvm_D, _cvm_p, _cvm_S,
+         _logL,
+         med_cdf, lo_cdf, hi_cdf) = res_tuple
         i_sig = np.searchsorted(sigma_grid, sigma)
         i_fb  = np.searchsorted(fbin_grid, fb)
         i_pi  = np.searchsorted(pi_grid, pi_val)
         if i_sig < n_sig and i_fb < n_fb and i_pi < n_pi:
-            ks_D[i_sig, i_fb, i_pi] = D
-            ks_p[i_sig, i_fb, i_pi] = p
-            ks_S_raw[i_sig, i_fb, i_pi] = s_raw
+            ks_D[i_sig, i_fb, i_pi] = _ks_D
+            ks_p[i_sig, i_fb, i_pi] = _ks_p
+            weighted_D[i_sig, i_fb, i_pi] = _w_D
+            weighted_p[i_sig, i_fb, i_pi] = _w_p
+            cvm_D[i_sig, i_fb, i_pi] = _cvm_D
+            cvm_p[i_sig, i_fb, i_pi] = _cvm_p
+            cvm_S_raw[i_sig, i_fb, i_pi] = _cvm_S
             logL_raw[i_sig, i_fb, i_pi] = _logL
-        if p > best_p:
-            best_p = p
+        if _ks_p > best_ks_p:
+            best_ks_p = _ks_p
             best_median_cdf = med_cdf
             best_lo_cdf = lo_cdf
             best_hi_cdf = hi_cdf
@@ -1888,18 +1940,17 @@ def run_bias_grid_cadence_aware(
     else:
         likelihood = np.zeros_like(logL_raw)
 
-    # For 'likelihood' scoring, use normalized likelihood as the primary heatmap
-    if scoring_method == 'likelihood':
-        ks_p = likelihood.copy()
-        ks_D = np.where(np.isfinite(logL_raw), -logL_raw, np.nan)
-
     return {
         "fbin_grid":       fbin_grid,
         "pi_grid":         pi_grid,
         "sigma_grid":      sigma_grid,
         "ks_D":            ks_D,
         "ks_p":            ks_p,
-        "ks_S_raw":        ks_S_raw,
+        "weighted_D":      weighted_D,
+        "weighted_p":      weighted_p,
+        "cvm_D":           cvm_D,
+        "cvm_p":           cvm_p,
+        "cvm_S_raw":       cvm_S_raw,
         "likelihood":      likelihood,
         "logL_raw":        logL_raw,
         "best_median_cdf": best_median_cdf,
