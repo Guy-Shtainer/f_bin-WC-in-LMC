@@ -74,6 +74,7 @@
     "logP_max": 5.0,
     "n_stars_sim": 10000,
     "n_processes": null,
+    "likelihood_threshold": 45.5,
     "orbital": {
       "logP_max": 4.0
     }
@@ -105,7 +106,8 @@
     ],
     "langer_q_mu": 0.67,
     "langer_q_sigma": 0.39,
-    "q_model": "empirical"
+    "q_model": "empirical",
+    "likelihood_threshold": 45.5
   },
   "grid_cadence_dsilva": {
     "fbin_min": 0.01,
@@ -123,7 +125,7 @@
     "sigma_meas": 1.622,
     "orbital": {
       "logP_min": 0.15,
-      "logP_max": 5.0,
+      "logP_max": 4.0,
       "e_model": "flat",
       "e_max": 0.9,
       "mass_primary_model": "fixed",
@@ -145,13 +147,14 @@
     "error_model_type": "Weibull",
     "errp_2": 0.8982,
     "errp_1": 0.7935,
-    "errp_0": 1.328
+    "errp_0": 1.328,
+    "likelihood_threshold": 45.5
   },
   "grid_cadence_langer": {
     "fbin_min": 0.01,
     "fbin_max": 1.0,
     "fbin_steps": 100,
-    "n_sets": 10000,
+    "n_sets": 2000,
     "scan_sigma": true,
     "sigma_single": 15.0,
     "sigma_min": 0.1,
@@ -189,7 +192,9 @@
     "errp_0": 1.328,
     "errp_1": 0.7935,
     "errp_2": 0.8982,
-    "adaptive_bins": true
+    "adaptive_bins": true,
+    "likelihood_threshold": 45.5,
+    "sigma_measure": 1.628
   },
   "ui": {
     "last_star": "MNM2014 LMC195-1",

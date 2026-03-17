@@ -1216,6 +1216,14 @@ def cvm_weighted_score(
 DSILVA_LIKELIHOOD_BINS = np.array([0.0, 50.0, 250.0, 650.0, np.inf])
 
 
+def dsilva_likelihood_bins(threshold: float = 45.5) -> np.ndarray:
+    """Coarse ΔRV bins following Dsilva+2023 Sec 4.2, anchored at detection threshold.
+
+    Returns ``[0, threshold, 250, 650, ∞]`` km/s.
+    """
+    return np.array([0.0, float(threshold), 250.0, 650.0, np.inf])
+
+
 def multinomial_log_likelihood(
     obs_delta_rv: np.ndarray,
     sim_delta_rv_pooled: np.ndarray,

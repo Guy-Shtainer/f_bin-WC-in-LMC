@@ -274,6 +274,16 @@ def _scan_partial_metadata(model: str) -> pd.DataFrame:
                 except Exception:
                     pass
 
+            # Fallback: populate sett from individual top-level keys
+            # (for older cadence partials saved without a settings blob)
+            if not sett:
+                for _sk, _nk in [('period_model', 'period_model'),
+                                 ('scoring_method', 'scoring_method')]:
+                    if _nk in d:
+                        _v = d[_nk]
+                        sett[_sk] = (_v.item() if hasattr(_v, 'item')
+                                     else str(_v))
+
             n_stars = str(sett.get('n_stars_sim', '\u2014'))
 
             # Best-fit from completed cells
@@ -1113,7 +1123,8 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                 initargs=(cadence_list, cadence_weights, obs_delta_rv,
                           int(n_stars_sim), float(sigma_meas),
                           6, 3650.0, None, 0.0, None,
-                          scoring_method, n_sets_cvm),
+                          scoring_method, n_sets_cvm,
+                          _lk_bin_edges),
             ) as pool:
                 def _save_partial_dsilva():
                     """Save accumulated results as a partial checkpoint."""
@@ -1280,6 +1291,8 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
             'fbin_grid': fbin_vals, 'pi_grid': pi_vals,
             'sigma_grid': sigma_vals, 'logPmax_grid': logPmax_scan_vals,
             'ks_p': accumulated_ks_p, 'ks_D': accumulated_ks_D,
+            'obs_delta_rv': obs_delta_rv,
+            'likelihood_bin_edges': params.get('likelihood_bin_edges'),
         }
 
         # ── Compute HDI68 posterior errors and save alongside ────────────
@@ -1406,7 +1419,8 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                 initargs=(cadence_list, cadence_weights, obs_delta_rv,
                           int(n_stars), float(sigma_meas),
                           6, 3650.0, None, 0.0, None,
-                          scoring_method, n_sets_cvm),
+                          scoring_method, n_sets_cvm,
+                          _lg_lk_bin_edges),
             ) as pool:
                 def _save_partial_langer():
                     """Save accumulated Langer results as partial."""
@@ -1503,6 +1517,8 @@ def _run_langer_bg(job: dict, params: dict) -> None:
         full_result = {
             'fbin_grid': fbin_vals, 'sigma_grid': sigma_vals,
             'ks_p': acc_ks_p, 'ks_D': acc_ks_D,
+            'obs_delta_rv': obs_delta_rv,
+            'likelihood_bin_edges': params.get('likelihood_bin_edges'),
         }
 
         # ── Compute HDI68 posterior errors and save alongside ────────────
@@ -1831,18 +1847,28 @@ def _render_cvm_analysis(
     height: int = 400,
     width: int | None = None,
     prefix: str = 'cvm',
+    mode: str = 'cvm',
+    obs_delta_rv: np.ndarray | None = None,
+    likelihood_bin_edges: np.ndarray | None = None,
 ) -> None:
-    """Render CvM S-score heatmaps, p-value mask, parabolic interpolation, and 1D slices.
+    """Render scoring analysis: heatmaps, grid exclusion, parabolic fit, 1D slices.
 
+    Works for both CvM (mode='cvm') and Likelihood (mode='likelihood').
     Convention: x_grid = fbin (rows of z), y_grid = π/σ (cols of z).
     Display matches make_heatmap_fig: y-axis = f_bin, x-axis = π/σ.
     """
     import plotly.graph_objects as go
 
     _theme = PLOTLY_THEME
+    _is_likelihood = (mode == 'likelihood')
+
+    # Mode-dependent labels
+    _stat_name = '-logL' if _is_likelihood else 'S'
+    _score_name = 'Likelihood' if _is_likelihood else 'p-value'
 
     # ── 0. Log scale toggle ─────────────────────────────────────────────
-    _use_log = st.checkbox('Log₁₀(S) scale', value=False, key=f'{prefix}_log_s')
+    _log_label = f'Log₁₀({_stat_name}) scale'
+    _use_log = st.checkbox(_log_label, value=False, key=f'{prefix}_log_s')
 
     def _to_display(S_arr):
         """Transform S values for display (log or linear)."""
@@ -1850,8 +1876,8 @@ def _render_cvm_analysis(
             return np.log10(np.where(S_arr > 0, S_arr, np.nan))
         return S_arr
 
-    _cbar_title = 'log₁₀(S)' if _use_log else 'S'
-    _z_hover = 'log₁₀(S)' if _use_log else 'S'
+    _cbar_title = f'log₁₀({_stat_name})' if _use_log else _stat_name
+    _z_hover = _cbar_title
 
     # ── 0b. Grid range exclusion (above heatmaps) ────────────────────────
     with st.expander('Grid Range Exclusion', expanded=False):
@@ -1940,51 +1966,97 @@ def _render_cvm_analysis(
     _p_work = ks_p_2d.copy().astype(float)
     _p_work[_exc_mask_2d] = np.nan
 
-    # ── 1. Three heatmaps stacked vertically (full-width) ───────────────
-    st.markdown('#### CvM S-score Analysis')
+    # ── 1. Heatmaps stacked vertically (full-width) ───────────────
+    _section_title = 'Likelihood Analysis' if _is_likelihood else 'CvM S-score Analysis'
+    st.markdown(f'#### {_section_title}')
 
-    # Raw S-score (uses _S_work so excluded points show as white)
+    # Raw statistic (uses _S_work so excluded points show as white)
     fig_raw = go.Figure(go.Heatmap(
         z=_to_display(_S_work), x=y_grid, y=x_grid,
         colorscale='Viridis_r', colorbar=dict(title=_cbar_title),
         hovertemplate=f'{y_label}: %{{x:.3f}}<br>{x_label}: %{{y:.3f}}<br>{_z_hover}: %{{z:.2f}}<extra></extra>',
     ))
-    fig_raw.update_layout(**{**_theme, 'title': dict(text=f'Weighted {_cbar_title} (all models)'),
+    _raw_title = f'{_cbar_title} (all models)' if _is_likelihood else f'Weighted {_cbar_title} (all models)'
+    fig_raw.update_layout(**{**_theme, 'title': dict(text=_raw_title),
                              'xaxis': dict(title=y_label), 'yaxis': dict(title=x_label),
                              'height': height, 'width': width})
     st.plotly_chart(fig_raw, use_container_width=(width is None))
-    st.caption('Lower S = better fit. All models shown.')
+    _raw_caption = ('Lower -logL = better fit. All models shown.'
+                    if _is_likelihood else 'Lower S = better fit. All models shown.')
+    st.caption(_raw_caption)
 
-    # P-value masked S-score
+    # Score-masked statistic
     S_masked = _S_work.copy()
-    p_mask = (_p_work < 0.05) | (_p_work > 0.95)
+    if _is_likelihood:
+        # For likelihood: mask where L < 5% of max (implausible models)
+        _L_max = np.nanmax(_p_work)
+        p_mask = _p_work < (0.05 * _L_max) if _L_max > 0 else np.ones_like(_p_work, dtype=bool)
+    else:
+        p_mask = (_p_work < 0.05) | (_p_work > 0.95)
     S_masked[p_mask] = np.nan
+    _masked_title = (f'{_cbar_title} (L ≥ 5% of max)' if _is_likelihood
+                     else f'{_cbar_title} (p ∈ [0.05, 0.95])')
     fig_masked = go.Figure(go.Heatmap(
         z=_to_display(S_masked), x=y_grid, y=x_grid,
         colorscale='Viridis_r', colorbar=dict(title=_cbar_title),
         hovertemplate=f'{y_label}: %{{x:.3f}}<br>{x_label}: %{{y:.3f}}<br>{_z_hover}: %{{z:.2f}}<extra></extra>',
     ))
-    fig_masked.update_layout(**{**_theme, 'title': dict(text=f'{_cbar_title} (p ∈ [0.05, 0.95])'),
+    fig_masked.update_layout(**{**_theme, 'title': dict(text=_masked_title),
                                 'xaxis': dict(title=y_label), 'yaxis': dict(title=x_label),
                                 'height': height, 'width': width})
     _masked_slot = st.empty()  # placeholder — will re-render after adding gold star
     _masked_slot.plotly_chart(fig_masked, use_container_width=(width is None))
-    st.caption('White = models outside p ∈ [0.05, 0.95] (implausible).')
+    _masked_caption = ('White = models with L < 5% of max (implausible).'
+                       if _is_likelihood
+                       else 'White = models outside p ∈ [0.05, 0.95] (implausible).')
+    st.caption(_masked_caption)
 
-    # P-value heatmap — standard style (uses _p_work for exclusion)
+    # Score heatmap — standard style (uses _p_work for exclusion)
+    _score_title = 'Normalized Likelihood' if _is_likelihood else 'Empirical p-value'
+    _scoring_lbl = 'L' if _is_likelihood else 'CvM'
     _fig_pval = _make_heatmap_fig(
         _p_work, x_grid, y_grid,
-        title='Empirical p-value',
+        title=_score_title,
         show_d=False, height=height, width=width,
         x_label=y_label, x_name=y_label,
-        scoring_label='CvM',
+        scoring_label=_scoring_lbl,
     )
     _pval_slot = st.empty()
     _pval_slot.plotly_chart(_fig_pval, use_container_width=(width is None))
-    st.caption('Fraction of simulated sets with S ≥ S_obs.')
+    _score_caption = ('Higher = better fit. Normalized so max = 1.'
+                      if _is_likelihood
+                      else 'Fraction of simulated sets with S ≥ S_obs.')
+    st.caption(_score_caption)
 
-    # S_raw (unweighted) heatmap — cross-model comparable
-    if ks_S_raw_2d is not None and np.any(np.isfinite(ks_S_raw_2d)):
+    # Binned bar chart (likelihood-specific: observed vs simulated bin counts)
+    if _is_likelihood and obs_delta_rv is not None and likelihood_bin_edges is not None:
+        _lk_edges = np.asarray(likelihood_bin_edges)
+        _n_obs_bins = np.histogram(np.abs(obs_delta_rv), bins=_lk_edges)[0]
+        _bin_labels = []
+        for _bi in range(len(_lk_edges) - 1):
+            lo = _lk_edges[_bi]
+            hi = _lk_edges[_bi + 1]
+            if np.isinf(hi):
+                _bin_labels.append(f'[{lo:.0f}, ∞)')
+            else:
+                _bin_labels.append(f'[{lo:.0f}, {hi:.0f})')
+        _fig_bar = go.Figure()
+        _fig_bar.add_trace(go.Bar(
+            x=_bin_labels, y=_n_obs_bins,
+            name='Observed', marker_color='#4A90D9',
+            text=_n_obs_bins, textposition='auto',
+        ))
+        _fig_bar.update_layout(**{**_theme,
+            'title': dict(text='Observed ΔRV Bin Counts (Multinomial Likelihood)'),
+            'xaxis': dict(title='ΔRV bin (km/s)'),
+            'yaxis': dict(title='Count'),
+            'height': 350})
+        st.plotly_chart(_fig_bar, use_container_width=(width is None))
+        st.caption('Multinomial likelihood compares these observed bin counts '
+                   'to simulated bin probabilities at each grid point.')
+
+    # S_raw (unweighted) heatmap — CvM only, cross-model comparable
+    if not _is_likelihood and ks_S_raw_2d is not None and np.any(np.isfinite(ks_S_raw_2d)):
         _Sraw_work = ks_S_raw_2d
         fig_sraw = go.Figure(go.Heatmap(
             z=_to_display(_Sraw_work), x=y_grid, y=x_grid,
@@ -2074,7 +2146,7 @@ def _render_cvm_analysis(
 
     st.success(
         f'**Parabolic minimum:** {x_label} = {best_x:.4f}, '
-        f'{y_label} = {best_y:.3f}, S = {best_S:.2f}')
+        f'{y_label} = {best_y:.3f}, {_stat_name} = {best_S:.2f}')
 
     # ── 3b. 3D surface plot of the parabolic fit ─────────────────────────
     if _fit_coeffs is not None and _fit_bounds is not None:
@@ -2183,7 +2255,7 @@ def _render_cvm_analysis(
         st.success(
             f'**3D minimum:** {x_label} = {_3d_bx:.4f}, '
             f'{y_label} = {_3d_by:.3f}, σ_single = {_3d_bz:.2f} km/s, '
-            f'S = {_3d_bS:.2f}')
+            f'{_stat_name} = {_3d_bS:.2f}')
 
         if _3d_coeffs is not None and _3d_bounds is not None:
             xb0, xb1, yb0, yb1, zb0, zb1 = _3d_bounds
@@ -2671,6 +2743,7 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                                 f'{_stat_name} {_stat_sym}-statistic'],
                                horizontal=True, key=f'{p}_view_mode')
         show_d = view_mode == f'{_stat_name} {_stat_sym}-statistic'
+        _lk_bin_edges = None  # populated below if likelihood scoring
         if scoring_method in ('cvm', 'likelihood'):
             _cvm_cols = st.columns([0.3, 0.7])
             _sets_label = 'N sets' if scoring_method == 'likelihood' else 'N sets (CvM)'
@@ -2679,7 +2752,16 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 key=f'{p}_n_sets_cvm',
                 help='Number of simulation sets per grid point for variance estimation / likelihood')
             if scoring_method == 'likelihood':
-                _cvm_cols[1].caption('Likelihood bins: [0, 50) [50, 250) [250, 650) [650+) km/s')
+                from wr_bias_simulation import dsilva_likelihood_bins
+                _lk_threshold = _cvm_cols[1].number_input(
+                    'Detection threshold (km/s)', value=45.5,
+                    min_value=1.0, max_value=200.0, step=0.5,
+                    key=f'{p}_lk_threshold',
+                    help='First bin boundary (Dsilva+2023 Sec 4.2)')
+                _lk_bin_edges = dsilva_likelihood_bins(_lk_threshold)
+                _cvm_cols[1].caption(
+                    f'Likelihood bins: [0, {_lk_threshold:.1f}) '
+                    f'[{_lk_threshold:.1f}, 250) [250, 650) [650+) km/s')
         else:
             n_sets_cvm = 1000
         _run_col, _load_col, _save_col = _ac3.columns(3)
@@ -2832,6 +2914,7 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             'stable_cfg': stable_cfg,
             'scoring_method': scoring_method,
             'n_sets_cvm': int(n_sets_cvm),
+            'likelihood_bin_edges': _lk_bin_edges,
             'bin_cfg_params': {
                 'logP_min': float(logP_min_val), 'logP_max': float(logP_max_val),
                 'e_model': str(e_model), 'e_max': float(e_max),
@@ -3131,9 +3214,11 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             delta_color='off',
         )
 
-        # ── CvM S-score analysis (when CvM scoring was used) ─────────────
-        if scoring_method == 'cvm':
-            with st.expander('📊 CvM S-score Analysis', expanded=True):
+        # ── Scoring analysis (CvM or Likelihood) ─────────────────────────
+        if scoring_method in ('cvm', 'likelihood'):
+            _exp_title = ('📊 Likelihood Analysis' if scoring_method == 'likelihood'
+                          else '📊 CvM S-score Analysis')
+            with st.expander(_exp_title, expanded=True):
                 # For Dsilva: ks_D_4d is (n_lp, n_sig, n_fb, n_pi)
                 # Current 2D slice:
                 _cvm_2d_D = ks_D_4d[disp_lp_idx, disp_sig_idx]
@@ -3141,6 +3226,8 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 # Full 3D for 3D interpolation (sigma × fbin × pi):
                 _cvm_3d_D = ks_D_4d[disp_lp_idx]  # (n_sig, n_fb, n_pi)
                 _cvm_3d_p = ks_p_4d[disp_lp_idx]
+                _obs_drv = result.get('obs_delta_rv')
+                _lk_edges = result.get('likelihood_bin_edges')
                 _render_cvm_analysis(
                     _cvm_2d_D, _cvm_2d_p,
                     fbin_g, pi_g,
@@ -3148,7 +3235,10 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                     sigma_grid=sigma_g if len(sigma_g) > 1 else None,
                     ks_D_3d=_cvm_3d_D if len(sigma_g) > 1 else None,
                     ks_p_3d=_cvm_3d_p if len(sigma_g) > 1 else None,
-                    height=_ch, width=_cw, prefix=f'{p}_cvm')
+                    height=_ch, width=_cw, prefix=f'{p}_cvm',
+                    mode=scoring_method,
+                    obs_delta_rv=_obs_drv,
+                    likelihood_bin_edges=_lk_edges)
 
         # Apply grid exclusion mask to 4D arrays for downstream sections
         # Use stored 1D per-axis masks (includes range sliders + per-value exclusions)
@@ -3486,7 +3576,7 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             if _ds_L_full.ndim == 2:
                 _ds_L_full = _ds_L_full[np.newaxis, ...]
             if _ds_L_full.ndim == 3 and np.any(np.isfinite(_ds_L_full) & (_ds_L_full > 0)):
-                with st.expander('Corner Plot — Likelihood (Dsilva+2023)', expanded=False):
+                with st.expander('Corner Plot — Likelihood (Dsilva+2023)', expanded=True):
                     from plotly.subplots import make_subplots as _dsL_sub
                     from wr_bias_simulation import compute_hdi68 as _dsL_hdi
 
@@ -4812,6 +4902,7 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                                        f'{_lg_stat_name} {_lg_stat_sym}-statistic'],
                                       horizontal=True, key=f'{p}_view_mode')
         lg_show_d = lg_view_mode == f'{_lg_stat_name} {_lg_stat_sym}-statistic'
+        _lg_lk_bin_edges = None  # populated below if likelihood scoring
         if lg_scoring_method in ('cvm', 'likelihood'):
             _lg_cvm_cols = st.columns([0.3, 0.7])
             _lg_sets_label = 'N sets' if lg_scoring_method == 'likelihood' else 'N sets (CvM)'
@@ -4820,7 +4911,16 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 key=f'{p}_n_sets_cvm',
                 help='Number of simulation sets per grid point for variance estimation / likelihood')
             if lg_scoring_method == 'likelihood':
-                _lg_cvm_cols[1].caption('Likelihood bins: [0, 50) [50, 250) [250, 650) [650+) km/s')
+                from wr_bias_simulation import dsilva_likelihood_bins
+                _lg_lk_threshold = _lg_cvm_cols[1].number_input(
+                    'Detection threshold (km/s)', value=45.5,
+                    min_value=1.0, max_value=200.0, step=0.5,
+                    key=f'{p}_lk_threshold',
+                    help='First bin boundary (Dsilva+2023 Sec 4.2)')
+                _lg_lk_bin_edges = dsilva_likelihood_bins(_lg_lk_threshold)
+                _lg_cvm_cols[1].caption(
+                    f'Likelihood bins: [0, {_lg_lk_threshold:.1f}) '
+                    f'[{_lg_lk_threshold:.1f}, 250) [250, 650) [650+) km/s')
         else:
             lg_n_sets_cvm = 1000
         _lg_run_col, _lg_load_col, _lg_save_col = _lg_ac3.columns(3)
@@ -5072,6 +5172,7 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             'missing_fbin_idx': lg_missing_fbin_idx,
             'scoring_method': lg_scoring_method,
             'n_sets_cvm': int(lg_n_sets_cvm),
+            'likelihood_bin_edges': _lg_lk_bin_edges,
             'save_params': {
                 'fbin_min': float(lg_fbin_min), 'fbin_max': float(lg_fbin_max),
                 'fbin_steps': int(lg_fbin_steps),
@@ -5193,14 +5294,21 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
         best_fbin_lg, best_sigma_lg, best_pval_lg = _best_point(
             lg_ks_p_2d, lg_fbin_g, lg_sigma_g)
 
-        # ── CvM S-score analysis (when CvM scoring was used) ─────────────
-        if lg_scoring_method == 'cvm':
-            with st.expander('📊 CvM S-score Analysis', expanded=True):
+        # ── Scoring analysis (CvM or Likelihood) ─────────────────────────
+        if lg_scoring_method in ('cvm', 'likelihood'):
+            _lg_exp_title = ('📊 Likelihood Analysis' if lg_scoring_method == 'likelihood'
+                             else '📊 CvM S-score Analysis')
+            with st.expander(_lg_exp_title, expanded=True):
+                _lg_obs_drv = lg_result.get('obs_delta_rv')
+                _lg_lk_edges = lg_result.get('likelihood_bin_edges')
                 _render_cvm_analysis(
                     lg_ks_D_2d, lg_ks_p_2d,
                     lg_fbin_g, lg_sigma_g,
                     x_label='f_bin', y_label='σ_single',
-                    height=_ch, width=_cw, prefix=f'{p}_cvm')
+                    height=_ch, width=_cw, prefix=f'{p}_cvm',
+                    mode=lg_scoring_method,
+                    obs_delta_rv=_lg_obs_drv,
+                    likelihood_bin_edges=_lg_lk_edges)
 
         # Apply grid exclusion mask to 2D arrays for downstream sections
         # Use stored 1D per-axis masks (includes range sliders + per-value exclusions)
@@ -5413,7 +5521,7 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 _sums = [float(np.nansum(_lgL_arr[s])) for s in range(_lgL_arr.shape[0])]
                 _lgL_arr = _lgL_arr[int(np.argmax(_sums))]
             if _lgL_arr.ndim == 2 and np.any(np.isfinite(_lgL_arr) & (_lgL_arr > 0)):
-                with st.expander('Corner Plot — Likelihood (Dsilva+2023)', expanded=False):
+                with st.expander('Corner Plot — Likelihood (Dsilva+2023)', expanded=True):
                     from plotly.subplots import make_subplots as _lgL_sub
                     from wr_bias_simulation import compute_hdi68 as _lgL_hdi
 
@@ -6240,6 +6348,8 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         sigma_meas       = params['sigma_meas']
         scoring_method   = params.get('scoring_method', 'ks')
         save_params      = params.get('save_params', {})
+        stable_cfg       = params.get('stable_cfg', save_params)
+        resume_from_path = params.get('resume_from_path')
 
         fbin_grid = np.array(fbin_vals, dtype=float)
         pi_grid   = np.array(pi_vals, dtype=float)
@@ -6266,7 +6376,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             6, 3650.0, None, 0.0, _cad_bin_edges,
             scoring_method,
             n_sets,   # n_sets_cvm
-            None,     # likelihood_bin_edges (uses DSILVA default)
+            params.get('likelihood_bin_edges'),  # coarse bins for likelihood
         )
 
         # Support resuming from partial checkpoint
@@ -6282,6 +6392,10 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         ks_S_raw = np.full((n_sig, n_fb, n_pi), np.nan)
         logL_raw = np.full((n_sig, n_fb, n_pi), np.nan)
 
+        # Track overall progress (including pre-completed cells from resume)
+        _total_original = n_sig * n_fb * n_pi
+        _pre_done = 0
+
         # Filter out already-completed tasks
         if _pre_p is not None:
             tasks = [t for t in tasks
@@ -6290,6 +6404,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                          int(np.searchsorted(fbin_grid, t[0])),
                          int(np.searchsorted(pi_grid, t[1]))])]
             n_tasks = len(tasks)
+            _pre_done = _total_original - n_tasks
 
         best_p = -1.0
         best_fb = 0.0
@@ -6309,20 +6424,24 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                     pool.terminate()
                     # Save partial results if cancel_mode is 'save'
                     if (job.get('cancel_mode') == 'save'
-                            and completed > 0):
-                        _p_tag = ('cadence_dsilva'
-                                  if period_model == 'powerlaw'
-                                  else 'cadence_langer')
-                        _x_vals = (pi_grid if period_model == 'powerlaw'
-                                   else sigma_grid)
-                        _x_lbl = 'pi' if period_model == 'powerlaw' else 'sig'
-                        _partial_path = os.path.join(
-                            _RESULT_DIR,
-                            _build_partial_filename(
-                                _p_tag, fbin_grid, _x_vals,
-                                n_sets, sigma_grid,
-                                bin_cfg.logP_min, bin_cfg.logP_max,
-                                x_label=_x_lbl))
+                            and (_pre_done + completed) > 0):
+                        # Reuse the original file path if resuming
+                        _partial_path = resume_from_path
+                        if not _partial_path:
+                            _p_tag = ('cadence_dsilva'
+                                      if period_model == 'powerlaw'
+                                      else 'cadence_langer')
+                            _x_vals = (pi_grid if period_model == 'powerlaw'
+                                       else sigma_grid)
+                            _x_lbl = ('pi' if period_model == 'powerlaw'
+                                      else 'sig')
+                            _partial_path = os.path.join(
+                                _RESULT_DIR,
+                                _build_partial_filename(
+                                    _p_tag, fbin_grid, _x_vals,
+                                    n_sets, sigma_grid,
+                                    bin_cfg.logP_min, bin_cfg.logP_max,
+                                    x_label=_x_lbl))
                         os.makedirs(_RESULT_DIR, exist_ok=True)
                         np.savez(
                             _partial_path,
@@ -6331,13 +6450,16 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             fbin_grid=fbin_grid, pi_grid=pi_grid,
                             sigma_grid=sigma_grid,
                             timestamp=_dt.datetime.now().isoformat(),
-                            progress_pct=completed / n_tasks,
-                            rows_done=completed, total_rows=n_tasks,
+                            progress_pct=(_pre_done + completed) / _total_original,
+                            rows_done=_pre_done + completed,
+                            total_rows=_total_original,
                             period_model=period_model,
                             drv_bin_width=float(params.get('drv_bin_width', 10.0)),
                             drv_max=float(params.get('drv_max', 360.0)),
                             scoring_method=scoring_method,
                             adaptive_bins=bool(params.get('adaptive_bins', False)),
+                            settings=np.array(json.dumps(stable_cfg, default=str)),
+                            n_sets=np.array(n_sets),
                         )
                         job['partial_saved'] = True
                     job['status'] = 'cancelled'
@@ -6360,16 +6482,16 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                     best_hi_cdf = hi_cdf
                 completed += 1
 
-                # ETA + percentage
+                # ETA + percentage (overall, including pre-completed cells)
                 elapsed = _time.time() - t_start
                 eta_str = ''
                 if completed > 1 and completed < n_tasks:
                     eta = elapsed / completed * (n_tasks - completed)
                     eta_str = f'  —  ETA {_fmt_eta(eta)}'
-                pct = completed / n_tasks
+                pct = (_pre_done + completed) / _total_original
                 job['progress_pct'] = pct
                 job['progress_text'] = (
-                    f'{pct*100:.1f}%  ({completed}/{n_tasks}){eta_str}')
+                    f'{pct*100:.1f}%  ({_pre_done + completed}/{_total_original}){eta_str}')
 
                 # Live heatmap update (throttled)
                 _now = _time.monotonic()
@@ -6503,6 +6625,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             'mode': 'cadence_aware',
             'bin_edges': _cad_bin_edges,
             'scoring_method': scoring_method,
+            'likelihood_bin_edges': params.get('likelihood_bin_edges'),
         }
 
         # HDI68 (p-value based)
@@ -6562,7 +6685,8 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         # Save result
         import datetime
         result['timestamp'] = datetime.datetime.now().isoformat()
-        result['settings'] = json.dumps(save_params, default=str)
+        result['settings'] = json.dumps(stable_cfg, default=str)
+        result['n_sets'] = n_sets
 
         _cad_model = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
         _desc = (f"{_cad_model}_fb{fbin_grid[0]:.1f}-{fbin_grid[-1]:.1f}x{n_fb}"
@@ -6821,14 +6945,21 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                     key=f'{p}_L_heatmap',
                 )
 
-        # ── CvM S-score analysis (when CvM scoring was used) ─────────────
-        if scoring_method == 'cvm':
+        # ── Scoring analysis (CvM or Likelihood) ─────────────────────────
+        if scoring_method in ('cvm', 'likelihood'):
             ks_d_arr = result.get('ks_D')
             _sraw_arr = result.get('ks_S_raw')
             if _sraw_arr is not None:
                 _sraw_arr = np.asarray(_sraw_arr, dtype=float)
+            _cad_obs_drv = result.get('obs_delta_rv')
+            _cad_lk_edges = result.get('likelihood_bin_edges')
             if ks_d_arr is not None:
-                with st.expander('📊 CvM S-score Analysis', expanded=True):
+                _cad_exp_title = ('📊 Likelihood Analysis' if scoring_method == 'likelihood'
+                                  else '📊 CvM S-score Analysis')
+                with st.expander(_cad_exp_title, expanded=True):
+                    _cad_mode_kw = dict(mode=scoring_method,
+                                        obs_delta_rv=_cad_obs_drv,
+                                        likelihood_bin_edges=_cad_lk_edges)
                     if _is_langer_sigma:
                         # Langer with sigma: 2D grid is (n_fb, n_sig)
                         _cvm_D_2d = ks_d_arr[:, :, 0].T  # match hm_z shape
@@ -6839,7 +6970,8 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                             fbin_grid, sigma_grid,
                             x_label='f_bin', y_label='σ_single',
                             ks_S_raw_2d=_sraw_2d,
-                            height=_ch, width=_cw, prefix=f'{p}_cvm')
+                            height=_ch, width=_cw, prefix=f'{p}_cvm',
+                            **_cad_mode_kw)
                     elif n_sig == 1:
                         # Single sigma: 2D grid
                         _cvm_D_2d = ks_d_arr[0]
@@ -6852,7 +6984,8 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                             fbin_grid, _y_vals,
                             x_label='f_bin', y_label=_y_lbl,
                             ks_S_raw_2d=_sraw_2d,
-                            height=_ch, width=_cw, prefix=f'{p}_cvm')
+                            height=_ch, width=_cw, prefix=f'{p}_cvm',
+                            **_cad_mode_kw)
                     else:
                         # Dsilva with sigma scan: 3D — show best sigma slice
                         _pmax_cvm = [float(np.nanmin(ks_d_arr[s])) for s in range(n_sig)]
@@ -6867,7 +7000,8 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                             sigma_grid=sigma_grid,
                             ks_D_3d=ks_d_arr, ks_p_3d=ks_p_arr,
                             ks_S_raw_2d=_sraw_2d,
-                            height=_ch, width=_cw, prefix=f'{p}_cvm')
+                            height=_ch, width=_cw, prefix=f'{p}_cvm',
+                            **_cad_mode_kw)
 
         # Apply grid exclusion mask to cadence arrays for downstream sections
         # Rebuild masks from excluded VALUE SETS (not stored 1D masks which may
@@ -8353,6 +8487,21 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
                       else 'weighted' if 'variance' in _scoring_label
                       else 'ks')
 
+    # Likelihood bin threshold (cadence tabs)
+    _lk_bin_edges = None
+    if scoring_method == 'likelihood':
+        from wr_bias_simulation import dsilva_likelihood_bins
+        _lk_cols = st.columns([0.3, 0.7])
+        _lk_threshold = _lk_cols[0].number_input(
+            'Detection threshold (km/s)', value=45.5,
+            min_value=1.0, max_value=200.0, step=0.5,
+            key=f'{p}_lk_threshold',
+            help='First bin boundary (Dsilva+2023 Sec 4.2)')
+        _lk_bin_edges = dsilva_likelihood_bins(_lk_threshold)
+        _lk_cols[1].caption(
+            f'Likelihood bins: [0, {_lk_threshold:.1f}) '
+            f'[{_lk_threshold:.1f}, 250) [250, 650) [650+) km/s')
+
     # Action buttons
     _a1, _a2, _a3, _a4 = st.columns(4)
     _run_btn = _a1.button('\u25b6\ufe0f Run', key=f'{p}_run_btn', type='primary')
@@ -8397,7 +8546,12 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
         st.session_state[f'{p}_job']['cancel_mode'] = 'save'
 
     _cad_auto_resume = st.session_state.pop(f'{p}_auto_resume', False)
-    if _run_btn or _cad_auto_resume:
+    _job_running = (f'{p}_job' in st.session_state
+                    and st.session_state[f'{p}_job'].get('status') == 'running')
+    if _run_btn and _job_running:
+        st.warning('A simulation is already running in this tab. '
+                   'Cancel it or wait for completion before starting a new run.')
+    if (_run_btn or _cad_auto_resume) and not _job_running:
         _sh = settings_hash(settings)
         obs_drv, obs_det = cached_load_observed_delta_rvs(_sh)
         cad_list, cad_wts = cached_load_cadence(_sh)
@@ -8407,6 +8561,32 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
             pi_v = np.linspace(pi_min, pi_max, pi_steps).tolist()
         else:
             pi_v = [0.0]
+
+        # Build stable_cfg with full metadata (mirrors Dsilva pattern)
+        _cad_stable_cfg = {
+            'n_stars_sim':        len(cad_list),
+            'sigma_measure':      float(_sigma_meas),
+            'logP_min':           float(_bin_cfg.logP_min),
+            'logP_max':           float(_bin_cfg.logP_max),
+            'period_model':       _period_model,
+            'e_model':            str(_bin_cfg.e_model),
+            'e_max':              float(_bin_cfg.e_max),
+            'mass_primary_model': str(_bin_cfg.mass_primary_model),
+            'mass_primary_fixed': float(_bin_cfg.mass_primary_fixed),
+            'q_model':            str(_bin_cfg.q_model),
+            'q_min':              float(_bin_cfg.q_range[0]),
+            'q_max':              float(_bin_cfg.q_range[1]),
+            'q_flipped':          bool(getattr(_bin_cfg, 'q_flipped', False)),
+            'primary_line':       settings.get('primary_line', 'C IV 5808-5812'),
+            'threshold_dRV':      settings.get('classification', {}).get('threshold_dRV', 45.5),
+            'sigma_factor':       settings.get('classification', {}).get('sigma_factor', 4.0),
+            'scoring_method':     scoring_method,
+            'adaptive_bins':      _use_adaptive,
+            'n_sets':             n_sets,
+        }
+        if not _is_dsilva:
+            _cad_stable_cfg['langer_period_params'] = getattr(
+                _bin_cfg, 'langer_period_params', {})
 
         job = {
             'status': 'running',
@@ -8435,6 +8615,8 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
             'adaptive_bins': _use_adaptive,
             'drv_bin_width': float(st.session_state.get(f'{p}_drv_bin_width', 5.0)),
             'drv_max': float(st.session_state.get(f'{p}_drv_max', 360.0)),
+            'likelihood_bin_edges': _lk_bin_edges,
+            'stable_cfg': _cad_stable_cfg,
             'save_params': {
                 'mode': 'cadence_aware',
                 'period_model': _period_model,
@@ -8467,6 +8649,8 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
                     scoring_method = _saved_scoring
                     params['scoring_method'] = _saved_scoring
                     params['save_params']['scoring_method'] = _saved_scoring
+                # Save the original file path so cancel-save updates it
+                params['resume_from_path'] = _cad_resume_path
                 st.info(
                     f'\u267b\ufe0f Resuming from checkpoint '
                     f'({_n_pre}/{_n_tot} cells, '
