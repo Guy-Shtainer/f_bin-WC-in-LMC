@@ -2054,7 +2054,12 @@ def _render_method_summary_section(
         # 2D: [fbin, sigma]
         grids = [fbin_g, x_g]
         grid_names = ['fbin', x_name]
-    elif ndim_mode in ('cadence_dsilva', 'cadence_langer'):
+    elif ndim_mode == 'cadence_langer':
+        # Cadence Langer: arrays are [n_sig, n_fb, n_pi=1]
+        # Squeeze pi dim and transpose to [n_fb, n_sig] → treat as 2D like Langer
+        grids = [fbin_g, x_g]
+        grid_names = ['fbin', x_name]
+    elif ndim_mode == 'cadence_dsilva':
         # 3D: [sigma, fbin, pi]
         grids = []
         grid_names = []
@@ -2086,8 +2091,17 @@ def _render_method_summary_section(
             elif p_arr.ndim == 3:
                 p_arr = p_arr[np.newaxis, ...]
 
-        # For cadence: squeeze leading sigma dim if not in grids
-        if ndim_mode in ('cadence_dsilva', 'cadence_langer'):
+        # For cadence Langer: squeeze pi dim and transpose to [n_fb, n_sig]
+        if ndim_mode == 'cadence_langer':
+            if p_arr.ndim == 3 and p_arr.shape[2] == 1:
+                p_arr = p_arr[:, :, 0].T  # [n_sig, n_fb, 1] → [n_fb, n_sig]
+            elif p_arr.ndim == 3:
+                # Multi-pi cadence langer — shouldn't happen but handle gracefully
+                p_arr = p_arr[:, :, 0].T
+            while p_arr.ndim > len(grids):
+                p_arr = p_arr[0]
+        # For cadence Dsilva: squeeze leading dims if needed
+        elif ndim_mode == 'cadence_dsilva':
             while p_arr.ndim > len(grids):
                 p_arr = p_arr[0]
 
@@ -7941,13 +7955,30 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
         st.plotly_chart(fig_hm, use_container_width=_use_cw, key=f'{p}_heatmap')
 
         # ── Multi-method comparison summary (cadence) ────────────────────
-        _cad_ndim_mode = 'cadence_dsilva' if _is_dsilva else 'cadence_langer'
-        _cad_extra_grids = [('sigma', np.asarray(sigma_grid))] if n_sig > 1 else None
-        _cad_x_g = pi_grid if _is_dsilva else sigma_grid
-        _cad_x_name = 'pi' if _is_dsilva else 'sigma'
-        _cad_x_label = 'pi' if _is_dsilva else 'sigma_single'
-        _cad_x_disp = ('pi (period power-law index)' if _is_dsilva
-                        else 'sigma_single (km/s)')
+        if _is_langer_sigma:
+            # Cadence Langer: arrays are [n_sig, n_fb, n_pi=1], treat as 2D
+            _cad_ndim_mode = 'cadence_langer'
+            _cad_extra_grids = None
+            _cad_x_g = np.asarray(sigma_grid)
+            _cad_x_name = 'sigma'
+            _cad_x_label = 'sigma_single'
+            _cad_x_disp = 'sigma_single (km/s)'
+        elif _is_dsilva:
+            # Cadence Dsilva: arrays are [n_sig, n_fb, n_pi]
+            _cad_ndim_mode = 'cadence_dsilva'
+            _cad_extra_grids = [('sigma', np.asarray(sigma_grid))] if n_sig > 1 else None
+            _cad_x_g = pi_grid
+            _cad_x_name = 'pi'
+            _cad_x_label = 'pi'
+            _cad_x_disp = 'pi (period power-law index)'
+        else:
+            # Cadence Langer without sigma scan: single sigma, treat as 2D
+            _cad_ndim_mode = 'cadence_langer'
+            _cad_extra_grids = None
+            _cad_x_g = np.asarray(sigma_grid)
+            _cad_x_name = 'sigma'
+            _cad_x_label = 'sigma_single'
+            _cad_x_disp = 'sigma_single (km/s)'
 
         with st.expander('📊 Scoring Method Comparison', expanded=False):
             _render_method_summary_section(
@@ -7973,6 +8004,11 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
             if _m_p_arr is None:
                 continue
             _m_d_arr = _get_method_array(result, _dk)
+            # For cadence Langer: squeeze pi dim and transpose to [n_fb, n_sig]
+            if _is_langer_sigma and _m_p_arr.ndim == 3 and _m_p_arr.shape[2] == 1:
+                _m_p_arr = _m_p_arr[:, :, 0].T
+                if _m_d_arr is not None and _m_d_arr.ndim == 3:
+                    _m_d_arr = _m_d_arr[:, :, 0].T
             with st.expander(f'{_mname}', expanded=(_mk == 'ks')):
                 _render_method_expander(
                     _mk, _mname, _m_p_arr, _m_d_arr,
@@ -7982,7 +8018,7 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
                     x_label=_cad_x_label, x_name=_cad_x_name,
                     x_display_label=_cad_x_disp,
                     ndim_mode=_cad_ndim_mode,
-                    disp_outer_slices=_cad_outer,
+                    disp_outer_slices=None if _is_langer_sigma else _cad_outer,
                 )
 
         # ── Scoring analysis (CvM) ─────────────────────────────────────
