@@ -6,6 +6,36 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-17 — Multi-score bias correction, RV modeling rebuild, webapp subpackages
+
+Major day: unified all 4 scoring methods into single simulation pass, rebuilt RV modeling page from scratch, split 4 large pages into subpackages.
+
+| Hash | Summary |
+|------|---------|
+| `76de227` | Pre-refactor revert point |
+| `80638c2` | Compute all 4 scoring methods per grid point in single simulation pass |
+| `6acfaf6` | Update background runners to accumulate all 4 scoring methods |
+| `0790c30` | Remove scoring method radio buttons, show all 4 methods in UI |
+| `18d4049` | Add scoring method summary table + per-method expanders |
+| `d1acfa2` | Add CDF comparison plot to scoring method summary section |
+| `c76b2a6` | Add corner plots and model explorer to per-method expanders |
+| `1b6e0de` | Extract duplicated orbital param UI into shared helper functions |
+| `955cb86` | Fix cadence Langer shape mismatch in summary + method expanders |
+| `7f2e425` | Fix bugs 1,2,11,12,13,14: live heatmaps persist, remove old sections |
+| `933c9ed` | Fix bugs 3,4,7,8,9,10: CDF plot, likelihood analysis, corner plot, metrics |
+| `1d0e846` | Split bias correction page into app/bc/ package (9,977 → 10 files) |
+| `b2d8119` | Fix missing pandas imports, colorbar labels, likelihood normalization |
+| `677bcc4` | Show scores in live heatmaps instead of p-values |
+| `3f52b16` | Split 06_plots.py (1456 lines) into app/plots/ package |
+| `aadfe0d` | Split 11_nres_analysis.py (1117 lines) into app/nres/ package |
+| `17fcb69` | Split 12_rv_modeling.py (1193 lines) into app/rv_modeling/ package |
+| `0d200e7` | End-of-day: docs, TODO updates, E034 fix, file size limit rule |
+| `74cc245` | Add daily log for 2026-03-17 |
+
+**Tag:** `v260317-working`
+
+---
+
 ## 2026-03-16 — Likelihood implementation (Dsilva+2023) + cadence fixes
 
 - `8fc7746` Add binned multinomial likelihood (Dsilva+2023) + heatmaps + corner plots
