@@ -93,6 +93,17 @@ _CMP_DASHES = [
     'longdashdot', 'solid', 'dash', 'dot', 'dashdot',
 ]
 
+# ── Scoring method registry ──────────────────────────────────────────────────
+# (key, display_name, p_key, D_key, color)
+SCORING_METHODS = [
+    ('ks',         'K-S (standard)',  'ks_p',       'ks_D',       '#4A90D9'),
+    ('weighted',   'K-S (weighted)',  'weighted_p', 'weighted_D', '#50C878'),
+    ('cvm',        'CvM (S-score)',   'cvm_p',      'cvm_D',      '#E25A53'),
+    ('likelihood', 'Likelihood',      'likelihood', 'logL_raw',   '#DAA520'),
+]
+
+_METHOD_COLORS = {m[0]: m[4] for m in SCORING_METHODS}
+
 
 def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     """Convert hex color to rgba string for Plotly shading."""
@@ -1922,6 +1933,363 @@ def _render_cvm_1d_plot(col, t_grid, S_grid, label, best_t, best_S,
     col.caption(caption_text)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-method summary + per-method expanders
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_method_array(result: dict, key: str) -> np.ndarray | None:
+    """Safely retrieve and convert a scoring array from result dict."""
+    arr = result.get(key)
+    if arr is None:
+        return None
+    arr = np.asarray(arr, dtype=float)
+    if not np.any(np.isfinite(arr)):
+        return None
+    return arr
+
+
+def _method_best_and_hdi(
+    p_nd: np.ndarray,
+    grids: list[np.ndarray],
+    grid_names: list[str],
+    is_likelihood: bool = False,
+) -> dict:
+    """Find global best-fit and 68% HDI for each axis of a scoring array.
+
+    Parameters
+    ----------
+    p_nd : ndarray
+        N-dimensional scoring array (higher = better for all methods,
+        since likelihood is already normalized to [0,1]).
+    grids : list of 1D arrays
+        Grid values for each axis, in order matching p_nd dimensions.
+    grid_names : list of str
+        Names for each axis (e.g. ['sigma', 'fbin', 'pi']).
+    is_likelihood : bool
+        True if the array is likelihood (not p-value). Affects labels only.
+
+    Returns
+    -------
+    dict with keys:
+        'best_idx' : tuple of int — multi-index of best point
+        'best_vals' : dict[name -> float]
+        'best_score' : float
+        'hdi' : dict[name -> (mode, lo, hi)]
+    """
+    from wr_bias_simulation import compute_hdi68
+
+    valid = np.isfinite(p_nd)
+    if not np.any(valid):
+        return None
+
+    flat_best = int(np.nanargmax(p_nd))
+    best_idx = np.unravel_index(flat_best, p_nd.shape)
+    best_score = float(p_nd[best_idx])
+    best_vals = {}
+    hdi = {}
+
+    for i, (g, name) in enumerate(zip(grids, grid_names)):
+        best_vals[name] = float(g[best_idx[i]])
+        # Marginalize over all other axes
+        sum_axes = tuple(j for j in range(p_nd.ndim) if j != i)
+        post_1d = np.nansum(p_nd, axis=sum_axes) if sum_axes else p_nd.copy()
+        if post_1d.sum() > 0:
+            mode, lo, hi = compute_hdi68(g, post_1d)
+            hdi[name] = (float(mode), float(lo), float(hi))
+        else:
+            v = best_vals[name]
+            hdi[name] = (v, v, v)
+
+    return {
+        'best_idx': best_idx,
+        'best_vals': best_vals,
+        'best_score': best_score,
+        'hdi': hdi,
+    }
+
+
+def _render_method_summary_section(
+    result: dict,
+    fbin_g: np.ndarray,
+    x_g: np.ndarray,
+    extra_grids: list[tuple[str, np.ndarray]] | None = None,
+    prefix: str = 'ds',
+    x_name: str = 'pi',
+    x_label: str = 'pi',
+    ndim_mode: str = 'dsilva',
+) -> None:
+    """Render a comparison table of all scoring methods above the per-method details.
+
+    Parameters
+    ----------
+    result : dict
+        Full result dictionary (must contain scoring arrays).
+    fbin_g : 1D array
+        f_bin grid.
+    x_g : 1D array
+        Second-axis grid (pi for Dsilva, sigma for Langer).
+    extra_grids : list of (name, 1D-array) or None
+        Additional grids to include in the analysis (e.g. sigma, logPmax
+        for the Dsilva 4D case). These are prepended to the grid list.
+    prefix : str
+        Unique key prefix for session state.
+    x_name : str
+        Display name for x_g axis (e.g. 'pi', 'sigma').
+    x_label : str
+        Formatted label for x_g axis (e.g. 'pi', 'sigma_single').
+    ndim_mode : str
+        'dsilva' (4D: logPmax x sigma x fbin x pi),
+        'langer' (2D: fbin x sigma),
+        'cadence_dsilva' (3D: sigma x fbin x pi),
+        'cadence_langer' (3D/2D: sigma x fbin x pi).
+    """
+    # Build ordered grid list matching array dimensions
+    if ndim_mode == 'dsilva':
+        # 4D: [logPmax, sigma, fbin, pi]
+        sigma_g = np.asarray(result.get('sigma_grid', [0.0]))
+        logPmax_g = np.asarray(result.get('logPmax_grid', [0.0]))
+        grids = [logPmax_g, sigma_g, fbin_g, x_g]
+        grid_names = ['logPmax', 'sigma', 'fbin', x_name]
+    elif ndim_mode == 'langer':
+        # 2D: [fbin, sigma]
+        grids = [fbin_g, x_g]
+        grid_names = ['fbin', x_name]
+    elif ndim_mode in ('cadence_dsilva', 'cadence_langer'):
+        # 3D: [sigma, fbin, pi]
+        grids = []
+        grid_names = []
+        if extra_grids:
+            for gn, ga in extra_grids:
+                grids.append(ga)
+                grid_names.append(gn)
+        grids.extend([fbin_g, x_g])
+        grid_names.extend(['fbin', x_name])
+    else:
+        grids = [fbin_g, x_g]
+        grid_names = ['fbin', x_name]
+
+    rows = []
+    method_results = {}
+
+    for mk, mname, pk, dk, mcolor in SCORING_METHODS:
+        p_arr = _get_method_array(result, pk)
+        if p_arr is None:
+            continue
+
+        # Ensure dimensionality matches expected grids
+        is_lk = (mk == 'likelihood')
+
+        # For Dsilva 4D: ensure 4D
+        if ndim_mode == 'dsilva':
+            if p_arr.ndim == 2:
+                p_arr = p_arr[np.newaxis, np.newaxis, ...]
+            elif p_arr.ndim == 3:
+                p_arr = p_arr[np.newaxis, ...]
+
+        # For cadence: squeeze leading sigma dim if not in grids
+        if ndim_mode in ('cadence_dsilva', 'cadence_langer'):
+            while p_arr.ndim > len(grids):
+                p_arr = p_arr[0]
+
+        info = _method_best_and_hdi(p_arr, grids, grid_names, is_likelihood=is_lk)
+        if info is None:
+            continue
+        method_results[mk] = info
+
+        bv = info['best_vals']
+        hdi = info['hdi']
+
+        def _fmt_hdi_cell(name, fmt='.4f'):
+            if name not in hdi:
+                return '--'
+            mode, lo, hi = hdi[name]
+            return f'{mode:{fmt}} (+{hi - mode:{fmt}} / -{mode - lo:{fmt}})'
+
+        fb_best = f"{bv.get('fbin', 0):.4f}"
+        fb_hdi = _fmt_hdi_cell('fbin', '.4f')
+
+        x_best = f"{bv.get(x_name, 0):.3f}"
+        x_hdi = _fmt_hdi_cell(x_name, '.3f')
+
+        score_val = f"{info['best_score']:.6f}"
+
+        rows.append({
+            'Method': mname,
+            f'Best f_bin': fb_best,
+            '68% HDI f_bin': fb_hdi,
+            f'Best {x_label}': x_best,
+            f'68% HDI {x_label}': x_hdi,
+            'Score (best)': score_val,
+        })
+
+    if not rows:
+        return
+
+    # Compute agreement column: does each method's best f_bin fall within
+    # every other method's 68% HDI for f_bin?
+    for i, row in enumerate(rows):
+        mk_i = SCORING_METHODS[i][0]
+        if mk_i not in method_results:
+            row['Agreement'] = '--'
+            continue
+        best_fb_i = method_results[mk_i]['best_vals'].get('fbin', np.nan)
+        in_all = True
+        for mk_j, info_j in method_results.items():
+            if mk_j == mk_i:
+                continue
+            lo_j = info_j['hdi'].get('fbin', (0, 0, 0))[1]
+            hi_j = info_j['hdi'].get('fbin', (0, 0, 0))[2]
+            if not (lo_j <= best_fb_i <= hi_j):
+                in_all = False
+                break
+        row['Agreement'] = 'Yes' if in_all else 'No'
+
+    st.markdown('#### Scoring Method Comparison')
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.caption(
+        'Comparison of all scoring methods. "Agreement" = does this method\'s '
+        'best f_bin fall within every other method\'s 68% HDI for f_bin.'
+    )
+
+
+def _render_method_expander(
+    method_key: str,
+    display_name: str,
+    p_nd: np.ndarray,
+    D_nd: np.ndarray | None,
+    result: dict,
+    fbin_g: np.ndarray,
+    x_g: np.ndarray,
+    prefix: str,
+    height: int = 520,
+    width: int | None = None,
+    use_cw: bool = True,
+    x_label: str = 'pi',
+    x_name: str = 'pi',
+    x_display_label: str = 'pi (period power-law index)',
+    ndim_mode: str = 'dsilva',
+    disp_outer_slices: tuple[int, ...] | None = None,
+) -> None:
+    """Render one scoring method's detail panel inside an expander.
+
+    Shows: heatmap of the 2D (fbin x x) slice, best-fit metrics,
+    and calls _render_cvm_analysis with the appropriate mode.
+
+    Parameters
+    ----------
+    p_nd : ndarray
+        Full N-dimensional scoring array (p-value or likelihood).
+    D_nd : ndarray or None
+        Full N-dimensional D-statistic array.
+    disp_outer_slices : tuple of int or None
+        Indices for outer dimensions to select the 2D slice to display.
+        For Dsilva 4D: (logPmax_idx, sigma_idx).
+        For cadence 3D: (sigma_idx,).
+        For Langer 2D: None (already 2D).
+    """
+    _is_likelihood = (method_key == 'likelihood')
+    _theme = PLOTLY_THEME
+
+    # Slice down to 2D: [fbin, x]
+    if disp_outer_slices is not None and p_nd.ndim > 2:
+        p_2d = p_nd[disp_outer_slices]
+        D_2d = D_nd[disp_outer_slices] if D_nd is not None else None
+    else:
+        p_2d = p_nd
+        D_2d = D_nd
+
+    # Ensure 2D
+    while p_2d.ndim > 2:
+        p_2d = p_2d[0]
+        if D_2d is not None:
+            D_2d = D_2d[0]
+
+    # Global best across all dimensions
+    valid = np.isfinite(p_nd)
+    if not np.any(valid):
+        st.warning(f'No valid data for {display_name}.')
+        return
+
+    flat_best = int(np.nanargmax(p_nd))
+    global_best_idx = np.unravel_index(flat_best, p_nd.shape)
+    global_best_score = float(p_nd[global_best_idx])
+
+    # Slice best
+    slice_valid = np.isfinite(p_2d)
+    if np.any(slice_valid):
+        flat_slice_best = int(np.nanargmax(p_2d))
+        slice_best_idx = np.unravel_index(flat_slice_best, p_2d.shape)
+        slice_best_fb = float(fbin_g[slice_best_idx[0]])
+        slice_best_x = float(x_g[slice_best_idx[1]])
+        slice_best_score = float(p_2d[slice_best_idx])
+    else:
+        slice_best_fb = slice_best_x = slice_best_score = float('nan')
+
+    # Determine global best fbin and x values
+    # For Dsilva 4D: axes are [logPmax, sigma, fbin, pi]
+    if ndim_mode == 'dsilva':
+        g_fb = float(fbin_g[global_best_idx[2]])
+        g_x = float(x_g[global_best_idx[3]])
+    elif ndim_mode in ('cadence_dsilva', 'cadence_langer'):
+        # 3D: [sigma, fbin, pi] or [sigma, fbin, sigma]
+        g_fb = float(fbin_g[global_best_idx[-2]])
+        g_x = float(x_g[global_best_idx[-1]])
+    else:
+        # 2D: [fbin, x]
+        g_fb = float(fbin_g[global_best_idx[0]])
+        g_x = float(x_g[global_best_idx[1]])
+
+    score_label = 'Likelihood' if _is_likelihood else 'p-value'
+
+    # ── Heatmap ──────────────────────────────────────────────────
+    show_d = not _is_likelihood
+    fig_hm = _make_heatmap_fig(
+        p_2d, fbin_g, x_g,
+        title=f'{display_name} — {score_label}',
+        show_d=show_d,
+        ks_d_2d=D_2d if show_d else None,
+        height=height, width=width,
+        x_label=x_display_label,
+        x_name=x_name,
+        scoring_label=display_name,
+    )
+    st.plotly_chart(fig_hm, use_container_width=use_cw,
+                    key=f'{prefix}_{method_key}_hm')
+
+    # ── Slice vs Global metrics ──────────────────────────────────
+    mc1, mc2 = st.columns(2)
+    mc1.metric(
+        label=f'Current slice best ({display_name})',
+        value=f'f_bin={slice_best_fb:.4f}, {x_label}={slice_best_x:.3f}',
+        delta=f'{score_label} = {slice_best_score:.6f}',
+        delta_color='off',
+    )
+    mc2.metric(
+        label=f'Global best ({display_name})',
+        value=f'f_bin={g_fb:.4f}, {x_label}={g_x:.3f}',
+        delta=f'{score_label} = {global_best_score:.6f}',
+        delta_color='off',
+    )
+
+    # ── Scoring analysis (reuse _render_cvm_analysis) ────────────
+    _obs_drv = result.get('obs_delta_rv')
+    _lk_edges = result.get('likelihood_bin_edges')
+    if method_key in ('cvm', 'likelihood'):
+        _mode = method_key
+        _render_cvm_analysis(
+            D_2d if D_2d is not None else p_2d,
+            p_2d,
+            fbin_g, x_g,
+            x_label='f_bin', y_label=x_label,
+            height=height, width=width,
+            prefix=f'{prefix}_{method_key}_analysis',
+            mode=_mode,
+            obs_delta_rv=_obs_drv,
+            likelihood_bin_edges=_lk_edges,
+        )
+
+
 def _render_cvm_analysis(
     ks_D_2d: np.ndarray,
     ks_p_2d: np.ndarray,
@@ -3228,6 +3596,42 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             disp_lp_idx = int(np.argmin(np.abs(logPmax_g - selected_logPmax_f)))
         else:
             disp_lp_idx = 0
+
+        # ── Multi-method comparison summary ─────────────────────────────
+        with st.expander('📊 Scoring Method Comparison', expanded=False):
+            _render_method_summary_section(
+                result, fbin_g, pi_g,
+                prefix=p, x_name='pi', x_label='pi',
+                ndim_mode='dsilva',
+            )
+
+        # ── Per-method expanders ────────────────────────────────────────
+        _ds_outer_slices = (disp_lp_idx, disp_sig_idx)
+        for _mk, _mname, _pk, _dk, _mcolor in SCORING_METHODS:
+            _m_p_arr = _get_method_array(result, _pk)
+            if _m_p_arr is None:
+                continue
+            # Ensure 4D
+            if _m_p_arr.ndim == 2:
+                _m_p_arr = _m_p_arr[np.newaxis, np.newaxis, ...]
+            elif _m_p_arr.ndim == 3:
+                _m_p_arr = _m_p_arr[np.newaxis, ...]
+            _m_d_arr = _get_method_array(result, _dk)
+            if _m_d_arr is not None:
+                if _m_d_arr.ndim == 2:
+                    _m_d_arr = _m_d_arr[np.newaxis, np.newaxis, ...]
+                elif _m_d_arr.ndim == 3:
+                    _m_d_arr = _m_d_arr[np.newaxis, ...]
+            with st.expander(f'{_mname}', expanded=(_mk == 'ks')):
+                _render_method_expander(
+                    _mk, _mname, _m_p_arr, _m_d_arr,
+                    result, fbin_g, pi_g, prefix=p,
+                    height=_ch, width=_cw, use_cw=_use_cw,
+                    x_label='pi', x_name='pi',
+                    x_display_label='pi (period power-law index)',
+                    ndim_mode='dsilva',
+                    disp_outer_slices=_ds_outer_slices,
+                )
 
         # Show f_bin × π heatmap for selected (logPmax, sigma)
         if not run_btn:
@@ -5323,6 +5727,31 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                 use_container_width=_use_cw,
             )
 
+        # ── Multi-method comparison summary (Langer) ────────────────────
+        with st.expander('📊 Scoring Method Comparison', expanded=False):
+            _render_method_summary_section(
+                lg_result, lg_fbin_g, lg_sigma_g,
+                prefix=p, x_name='sigma', x_label='sigma_single',
+                ndim_mode='langer',
+            )
+
+        # ── Per-method expanders (Langer) ───────────────────────────────
+        for _mk, _mname, _pk, _dk, _mcolor in SCORING_METHODS:
+            _m_p_arr = _get_method_array(lg_result, _pk)
+            if _m_p_arr is None:
+                continue
+            _m_d_arr = _get_method_array(lg_result, _dk)
+            with st.expander(f'{_mname}', expanded=(_mk == 'ks')):
+                _render_method_expander(
+                    _mk, _mname, _m_p_arr, _m_d_arr,
+                    lg_result, lg_fbin_g, lg_sigma_g, prefix=p,
+                    height=_ch, width=_cw, use_cw=_use_cw,
+                    x_label='sigma_single', x_name='sigma',
+                    x_display_label='sigma_single (km/s)',
+                    ndim_mode='langer',
+                    disp_outer_slices=None,
+                )
+
         # Best-fit point
         best_fbin_lg, best_sigma_lg, best_pval_lg = _best_point(
             lg_ks_p_2d, lg_fbin_g, lg_sigma_g)
@@ -6930,6 +7359,51 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
         _best_fb = float(fbin_grid[_bi[0]])
         _best_pval = float(hm_z[_bi])
         st.plotly_chart(fig_hm, use_container_width=_use_cw, key=f'{p}_heatmap')
+
+        # ── Multi-method comparison summary (cadence) ────────────────────
+        _cad_ndim_mode = 'cadence_dsilva' if _is_dsilva else 'cadence_langer'
+        _cad_extra_grids = [('sigma', np.asarray(sigma_grid))] if n_sig > 1 else None
+        _cad_x_g = pi_grid if _is_dsilva else sigma_grid
+        _cad_x_name = 'pi' if _is_dsilva else 'sigma'
+        _cad_x_label = 'pi' if _is_dsilva else 'sigma_single'
+        _cad_x_disp = ('pi (period power-law index)' if _is_dsilva
+                        else 'sigma_single (km/s)')
+
+        with st.expander('📊 Scoring Method Comparison', expanded=False):
+            _render_method_summary_section(
+                result, np.asarray(fbin_grid), _cad_x_g,
+                extra_grids=_cad_extra_grids,
+                prefix=p, x_name=_cad_x_name, x_label=_cad_x_label,
+                ndim_mode=_cad_ndim_mode,
+            )
+
+        # ── Per-method expanders (cadence) ──────────────────────────────
+        # Determine outer slice indices for 3D→2D slicing
+        if n_sig > 1:
+            _cad_best_s = 0
+            if np.any(np.isfinite(ks_p_arr)):
+                _pmax_list = [float(np.nanmax(ks_p_arr[s])) for s in range(n_sig)]
+                _cad_best_s = int(np.argmax(_pmax_list))
+            _cad_outer = (_cad_best_s,)
+        else:
+            _cad_outer = (0,) if ks_p_arr.ndim == 3 else None
+
+        for _mk, _mname, _pk, _dk, _mcolor in SCORING_METHODS:
+            _m_p_arr = _get_method_array(result, _pk)
+            if _m_p_arr is None:
+                continue
+            _m_d_arr = _get_method_array(result, _dk)
+            with st.expander(f'{_mname}', expanded=(_mk == 'ks')):
+                _render_method_expander(
+                    _mk, _mname, _m_p_arr, _m_d_arr,
+                    result, np.asarray(fbin_grid), _cad_x_g,
+                    prefix=p,
+                    height=_ch, width=_cw, use_cw=_use_cw,
+                    x_label=_cad_x_label, x_name=_cad_x_name,
+                    x_display_label=_cad_x_disp,
+                    ndim_mode=_cad_ndim_mode,
+                    disp_outer_slices=_cad_outer,
+                )
 
         # ── Scoring analysis (CvM) ─────────────────────────────────────
         if True:
