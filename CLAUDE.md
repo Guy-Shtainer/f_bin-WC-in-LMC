@@ -150,6 +150,14 @@ If missing, restore with: `ln -s ../Data Data`. NEVER delete this symlink.
 
 ## Code Quality Rules
 
+**File size limit (800 lines max):** No single `.py` file should exceed ~800 lines.
+Before writing any new feature, estimate the line count. If it will exceed ~500 lines,
+design a subpackage structure from the start using the thin-wrapper pattern:
+- `pages/NN_name.py` (≤30 lines) → imports from `app/{name}/page.py`
+- `app/{name}/` contains modules split by responsibility: config, data, UI tabs, compute
+- Target 500–800 lines per module. Check `wc -l` before adding code to existing files.
+- If a file is approaching 700+ lines, split it before adding more.
+
 **Always test before finishing:** After writing any new `.py` file, run:
 ```bash
 conda run -n guyenv python -m py_compile path/to/file.py

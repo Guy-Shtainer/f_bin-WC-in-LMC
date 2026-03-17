@@ -418,6 +418,16 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 | **Why** | Python's `or` evaluates truthiness of the left operand. For numpy arrays with >1 element, `bool(array)` raises `ValueError: The truth value of an array with more than one element is ambiguous`. This happens when `dict.get()` returns a numpy array (truthy) and you chain with `or`. Use explicit `is None` checks instead. |
 | **Found in** | `wr_bias_simulation.py` — likelihood bin edges fallback chain |
 
+### E038 — `st.session_state[widget_key] = value` after widget is instantiated
+
+| | |
+|---|---|
+| **Bad** | `st.slider(..., key="my_key")` then later `st.session_state["my_key"] = new_val` |
+| **Fix** | Store in an internal key (`_bestfit_my_key`) **before** the widget renders, then use `st.slider(..., value=st.session_state.get("_bestfit_my_key", default), key="my_key")` |
+| **Grep** | *(not reliably greppable — requires flow analysis)* |
+| **Why** | Streamlit raises `StreamlitAPIException: st.session_state.X cannot be modified after the widget with key X is instantiated`. Once a widget with a given key has rendered in a script run, its session_state entry is locked. To update defaults after computation, use a separate internal key and read it as the widget's `value` parameter. |
+| **Found in** | `app/pages/12_rv_modeling.py` — playground sliders updated after fitting |
+
 ---
 
 ## Adding New Errors

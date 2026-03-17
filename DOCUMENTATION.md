@@ -841,6 +841,38 @@ strength of this analysis compared to the prior work.
 - Whether to use Dsilva's coarse bins (for paper comparability) or fine bins (for σ sensitivity)
   as the default — currently using the user's configured bins.
 
+### 2026-03-17 — Multi-score bias correction, RV modeling page rebuild, webapp reorganisation
+
+**Unified multi-score bias correction.** The simulation engine (`wr_bias_simulation.py`) was
+refactored to compute all four scoring methods — Kolmogorov–Smirnov, inverse-variance-weighted
+CvM, Cramér–von Mises, and binned multinomial likelihood — in a single pass per grid point.
+Previously each scoring method required a separate simulation run; now the ΔRV samples are
+generated once and all four statistics are computed from the same data, with no performance
+regression since simulation cost is dominated by orbital integration, not statistical tests.
+The bias correction UI was restructured: per-method radio buttons removed, replaced by a
+unified summary table comparing all four methods and collapsible per-method expanders showing
+heatmaps, corner plots, CvM/likelihood analysis, and model explorers.
+
+**Statistical RV Modeling page rebuilt** (Task #52/#103). The two-component mixture model page
+was rewritten from scratch. Two models are now fitted side-by-side: (1) an **empirical model**
+using binary ΔRV survival functions from the Monte Carlo orbital simulation, fitting
+`(f_bin, σ_single)`; and (2) a **Gaussian analytical model** fitting
+`(σ_single, σ_binary, f_bin)`. The page features an interactive parameter playground with
+instant sliders for binary fraction and sigma values (updating plots without re-simulation),
+plus full orbital parameter controls that require an explicit Recompute action. Four analysis
+tabs: Sample Fit (with residuals and weighted PDFs), Fraction Recovery (noise/signal domain
+separation), Global Correction (+Bartzakos prior), and Population Simulation (placeholder).
+
+**Webapp reorganisation.** Three pages exceeding 1,000 lines were split into subpackages:
+`06_plots.py` (1,456 → `app/plots/`), `11_nres_analysis.py` (1,117 → `app/nres/`), and
+`12_rv_modeling.py` (1,193 → `app/rv_modeling/`). The bias correction page (9,977 lines)
+was similarly split into `app/bc/`. An 800-line-per-file limit was established as a project
+rule.
+
+**Bug fixes.** E034 (nanargmax without isfinite guard) in dsilva.py, E038 (session_state
+write after widget instantiation) in rv_modeling, cadence Langer shape mismatch, CDF origin
+offset, colorbar labels, live heatmap persistence, 15+ additional UI fixes.
+
 ---
 
-*Last updated: 2026-03-16*
+*Last updated: 2026-03-17*

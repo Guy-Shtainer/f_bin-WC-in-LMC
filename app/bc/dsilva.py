@@ -643,6 +643,9 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
 
         # ── Sigma browse ──────────────────────────────────────────────────
         # Find global best across all dimensions
+        if not np.any(np.isfinite(ks_p_4d)):
+            st.warning('No finite p-values in grid — cannot determine best point.')
+            return
         _flat_best_4d = int(np.nanargmax(ks_p_4d))
         _n_sig, _n_fb, _n_pi = ks_p_4d.shape[1], ks_p_4d.shape[2], ks_p_4d.shape[3]
         best_lp_idx  = _flat_best_4d // (_n_sig * _n_fb * _n_pi)
