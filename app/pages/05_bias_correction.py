@@ -2152,6 +2152,78 @@ def _render_method_summary_section(
         'best f_bin fall within every other method\'s 68% HDI for f_bin.'
     )
 
+    # ── CDF comparison plot: observed vs best-fit model from each method ──
+    obs_drv = result.get('obs_delta_rv')
+    if obs_drv is not None and len(method_results) >= 2:
+        try:
+            from wr_bias_simulation import (
+                binned_cdf, DEFAULT_DRV_BIN_EDGES,
+                simulate_delta_rv_sample, SimulationConfig, BinaryParameterConfig,
+            )
+            _be = result.get('bin_edges')
+            if _be is None:
+                _be = DEFAULT_DRV_BIN_EDGES
+            else:
+                _be = np.asarray(_be)
+            obs_drv = np.asarray(obs_drv)
+            obs_cdf = binned_cdf(obs_drv, _be)
+
+            fig_cdf = go.Figure()
+            fig_cdf.add_trace(go.Scatter(
+                x=_be, y=obs_cdf,
+                mode='lines', name='Observed',
+                line=dict(color='black', width=2.5),
+            ))
+
+            # For each method, simulate at best-fit params and overlay CDF
+            for mk, info in method_results.items():
+                bv = info['best_vals']
+                fb = bv.get('fbin', 0.5)
+                pi_v = bv.get(x_name, 0.0)
+                sig_v = bv.get('sigma', 5.0)
+                _mcolor = dict(SCORING_METHODS).get(mk, '#888888') if False else \
+                    next((c for k, _, _, _, c in SCORING_METHODS if k == mk), '#888888')
+                _mname = next((n for k, n, _, _, _ in SCORING_METHODS if k == mk), mk)
+                try:
+                    sim_cfg = SimulationConfig(
+                        n_stars=1000, sigma_single=float(sig_v),
+                        sigma_measure=float(result.get('sigma_meas', 3.0)),
+                    )
+                    bin_cfg = BinaryParameterConfig()
+                    rng = np.random.default_rng(42)
+                    sim_drv = simulate_delta_rv_sample(
+                        f_bin=float(fb), pi=float(pi_v),
+                        sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
+                    sim_cdf = binned_cdf(sim_drv, _be)
+                    _lbl = f'{_mname} (f_bin={fb:.3f}'
+                    if x_name in bv:
+                        _lbl += f', {x_label}={bv[x_name]:.2f}'
+                    _lbl += ')'
+                    fig_cdf.add_trace(go.Scatter(
+                        x=_be, y=sim_cdf,
+                        mode='lines', name=_lbl,
+                        line=dict(color=_mcolor, width=2, dash='dash'),
+                    ))
+                except Exception:
+                    pass  # Skip if simulation fails for this method
+
+            fig_cdf.update_layout(**{
+                **PLOTLY_THEME,
+                'title': dict(text='CDF Comparison: Observed vs Best-Fit Models', font=dict(size=14)),
+                'xaxis_title': 'ΔRV (km/s)',
+                'yaxis_title': 'Cumulative Fraction',
+                'height': 400,
+                'legend': dict(x=0.55, y=0.05),
+            })
+            st.plotly_chart(fig_cdf, use_container_width=True,
+                            key=f'{prefix}_cdf_comparison')
+            st.caption(
+                'Observed ΔRV CDF (solid black) vs simulated CDFs at each '
+                'method\'s best-fit parameters (dashed). Shows where methods agree/diverge.'
+            )
+        except ImportError:
+            pass  # wr_bias_simulation not available
+
 
 def _render_method_expander(
     method_key: str,
