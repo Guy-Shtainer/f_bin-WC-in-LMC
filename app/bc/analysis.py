@@ -682,7 +682,7 @@ def _render_method_expander(
                     BinaryParameterConfig, binned_cdf, DEFAULT_DRV_BIN_EDGES,
                 )
 
-                # Get best-fit params from global argmax
+                # Get best-fit params as defaults for interactive sliders
                 _me_info = _info  # reuse from corner plot section
                 if _me_info is None:
                     _me_info = _method_best_and_hdi(
@@ -693,9 +693,29 @@ def _render_method_expander(
                     )
                 if _me_info is not None:
                     _me_bv = _me_info['best_vals']
-                    _me_fb = float(_me_bv.get('fbin', 0.5))
-                    _me_x = float(_me_bv.get(x_name, 0.0))
-                    _me_sig = float(_me_bv.get('sigma', result.get('sigma_meas', 5.0)))
+                    _def_fb = float(_me_bv.get('fbin', 0.5))
+                    _def_x = float(_me_bv.get(x_name, 0.0))
+                    _def_sig = float(_me_bv.get('sigma', result.get('sigma_meas', 5.0)))
+
+                    # Interactive parameter sliders
+                    _me_cols = st.columns(3)
+                    _me_fb = _me_cols[0].slider(
+                        'f_bin', 0.0, 1.0, _def_fb, 0.01,
+                        key=f'{prefix}_{method_key}_me_fb')
+                    _x_lo_me = float(x_g[0]) if len(x_g) > 0 else -3.0
+                    _x_hi_me = float(x_g[-1]) if len(x_g) > 0 else 3.0
+                    _me_x = _me_cols[1].slider(
+                        x_label, _x_lo_me, _x_hi_me, min(max(_def_x, _x_lo_me), _x_hi_me), 0.01,
+                        key=f'{prefix}_{method_key}_me_x')
+                    _sigma_g_me = np.asarray(result.get('sigma_grid', []))
+                    if _sigma_g_me.size > 1:
+                        _me_sig = _me_cols[2].slider(
+                            'σ_single (km/s)',
+                            float(_sigma_g_me[0]), float(_sigma_g_me[-1]),
+                            min(max(_def_sig, float(_sigma_g_me[0])), float(_sigma_g_me[-1])),
+                            0.1, key=f'{prefix}_{method_key}_me_sig')
+                    else:
+                        _me_sig = _def_sig
 
                     _obs_drv_arr = np.asarray(_obs_drv_me)
                     _be = result.get('bin_edges')
