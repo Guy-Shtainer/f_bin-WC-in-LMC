@@ -61,6 +61,16 @@ DIAGNOSTIC_LINES: dict[str, list[dict]] = {
         {'name': 'N V 4604',  'wave': 4603.7, 'element': 'N', 'type': 'em'},
         {'name': 'N V 4620',  'wave': 4619.9, 'element': 'N', 'type': 'em'},
     ],
+    'Oxygen (WC diagnostic)': [
+        {'name': 'O V 3144',  'wave': 3144.0, 'element': 'O', 'type': 'em'},
+        {'name': 'O IV 3412', 'wave': 3412.0, 'element': 'O', 'type': 'em'},
+        {'name': 'O VI 3811', 'wave': 3811.4, 'element': 'O', 'type': 'em'},
+        {'name': 'O VI 3834', 'wave': 3834.2, 'element': 'O', 'type': 'em'},
+        {'name': 'O III 5007','wave': 5006.8, 'element': 'O', 'type': 'em'},
+        {'name': 'O VI 5290', 'wave': 5290.0, 'element': 'O', 'type': 'em'},
+        {'name': 'O V 5590',  'wave': 5590.0, 'element': 'O', 'type': 'em'},
+        {'name': 'O III 5592','wave': 5592.3, 'element': 'O', 'type': 'em'},
+    ],
     'Interstellar / Other': [
         {'name': 'Na I D1', 'wave': 5895.9, 'element': 'Na', 'type': 'abs'},
         {'name': 'Na I D2', 'wave': 5889.9, 'element': 'Na', 'type': 'abs'},
@@ -77,6 +87,7 @@ _LINE_COLORS = {
     'He II': '#AF7AC5',   # purple
     'C':     '#F5B041',   # orange
     'N':     '#58D68D',   # green
+    'O':     '#E74C3C',   # red
     'Na':    '#AEB6BF',   # grey
     'DIB':   '#AEB6BF',   # grey
 }
@@ -183,6 +194,22 @@ def get_mjd(star_name: str, epoch: int) -> float | None:
             pass
     return None
 
+@st.cache_data
+def _load_model_file(path: str):
+    """Load a model spectrum file (wavelengths expected in Å). Returns (wave, flux) or (None, None)."""
+    try:
+        _mod_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if _mod_root not in sys.path:
+            sys.path.insert(0, _mod_root)
+        from plot import read_file
+        mw, mf = read_file(path)
+        return np.asarray(mw), np.asarray(mf)
+    except Exception:
+        return None, None
+
+_MODEL_COLORS = ['#AEB6BF', '#82E0AA', '#F0B27A', '#BB8FCE', '#85C1E9', '#F1948A']
+_MODELS_DIR = os.path.join(_ROOT, 'Data', 'Models_for_Guy')
+
 data    = load_spectrum(star_name, epoch, band)
 rv_prop = load_rvs(star_name, epoch)
 mjd     = get_mjd(star_name, epoch)
@@ -190,52 +217,83 @@ mjd     = get_mjd(star_name, epoch)
 # ── Overlay options ──────────────────────────────────────────────────────────
 opt_col1, opt_col2 = st.columns(2)
 
-# Overlay second epoch
-overlay_ep = opt_col1.checkbox('Overlay another epoch', key='spec_overlay_toggle')
-overlay_data = None
-ep2 = None
-if overlay_ep and len(epochs) > 1:
-    other_eps = [e for e in epochs if e != epoch]
-    ep2 = opt_col1.selectbox('Overlay epoch', other_eps, key='spec_overlay_ep')
-    overlay_data = load_spectrum(star_name, ep2, band)
+# Overlay multiple epochs
+overlay_eps = opt_col1.multiselect(
+    'Overlay epochs', [e for e in epochs if e != epoch], key='spec_overlay_eps',
+)
+vert_offset = 0.0
+if overlay_eps:
+    vert_offset = opt_col1.slider(
+        'Vertical offset between epochs', 0.0, 2.0, 0.0, 0.05, key='spec_vert_offset',
+    )
 
 # Model spectrum overlay
 show_model = opt_col2.checkbox('Overlay model spectrum', key='spec_model_toggle')
-model_wave = None
-model_flux = None
-if show_model:
-    uploaded = opt_col2.file_uploader(
-        'Upload model spectrum (.dat, .txt, .fits, .gz)',
-        type=['dat', 'txt', 'fits', 'gz', 'ascii', 'nspec'],
-        key='spec_model_file',
-    )
-    if uploaded is not None:
-        import tempfile
-        # Save uploaded file temporarily and parse it
-        suffix = '.' + uploaded.name.split('.')[-1]
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded.getvalue())
-            tmp_path = tmp.name
-        try:
-            sys.path.insert(0, _ROOT)
-            from plot import read_file
-            mw, mf = read_file(tmp_path)
-            model_wave = np.asarray(mw)
-            model_flux = np.asarray(mf)
-        except Exception as e:
-            opt_col2.error(f'Could not parse model file: {e}')
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+model_specs: list[dict] = []  # list of {wave, flux, name}
 
-        if model_wave is not None:
-            # Scale / offset controls
-            m_sc_col1, m_sc_col2 = opt_col2.columns(2)
-            model_scale  = m_sc_col1.slider('Scale', 0.1, 3.0, 1.0, 0.05, key='model_scale')
-            model_offset = m_sc_col2.slider('Offset', -1.0, 1.0, 0.0, 0.01, key='model_offset')
-            model_flux = model_flux * model_scale + model_offset
+if show_model:
+    with st.expander('Model overlay settings', expanded=True):
+        # --- Library folder browser ---
+        if os.path.isdir(_MODELS_DIR):
+            available_models = sorted(
+                f for f in os.listdir(_MODELS_DIR)
+                if os.path.isfile(os.path.join(_MODELS_DIR, f)) and not f.startswith('.')
+            )
+            selected_models = st.multiselect(
+                'Select model spectra from library', available_models,
+                key='spec_model_files',
+            )
+            for fname in selected_models:
+                mw, mf = _load_model_file(os.path.join(_MODELS_DIR, fname))
+                if mw is not None:
+                    model_specs.append({'wave': mw, 'flux': mf, 'name': fname})
+                else:
+                    st.warning(f'Could not load {fname}')
+        else:
+            st.info(f'Model library folder not found: `{_MODELS_DIR}`')
+
+        # --- Upload custom file ---
+        uploaded = st.file_uploader(
+            'Or upload a custom model (.dat, .txt, .fits, .gz)',
+            type=['dat', 'txt', 'fits', 'gz', 'ascii', 'nspec'],
+            key='spec_model_file',
+        )
+        if uploaded is not None:
+            import tempfile
+            suffix = '.' + uploaded.name.split('.')[-1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(uploaded.getvalue())
+                tmp_path = tmp.name
+            try:
+                mw, mf = _load_model_file(tmp_path)
+                if mw is not None:
+                    model_specs.append({'wave': mw, 'flux': mf, 'name': uploaded.name})
+                else:
+                    st.error('Could not parse uploaded model file.')
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+        # --- Per-model scale / offset controls ---
+        if model_specs:
+            st.markdown('**Scale / Offset:**')
+            for i, ms in enumerate(model_specs):
+                c1, c2, c3 = st.columns([3, 1, 1])
+                c1.caption(ms['name'])
+                sc = c2.slider('Scale', 0.1, 3.0, 1.0, 0.05, key=f'mscale_{i}')
+                off = c3.slider('Offset', -1.0, 1.0, 0.0, 0.01, key=f'moff_{i}')
+                ms['flux'] = ms['flux'] * sc + off
+
+        # --- OB star model reference links ---
+        st.caption(
+            'OB companion models: download from '
+            '[TLUSTY OSTAR/BSTAR](http://tlusty.oca.eu/Tlusty2002/tlusty-frames-cloudy.html) '
+            '(Lanz & Hubeny NLTE grids) or '
+            '[POLLUX](https://pollux.oreme.org/) '
+            '(synthetic spectra database). Upload downloaded files above.'
+        )
 
 # ── Line overlay controls ────────────────────────────────────────────────────
 line_col1, line_col2 = st.columns(2)
@@ -247,7 +305,7 @@ if show_diag_lines:
     all_groups = list(DIAGNOSTIC_LINES.keys())
     selected_groups = st.multiselect(
         'Select line groups to display',
-        all_groups, default=all_groups[:3],  # H, He I, He II by default
+        all_groups, default=all_groups[:4],  # H, He I, He II, Carbon by default
         key='spec_diag_groups',
     )
 
@@ -258,6 +316,7 @@ if data is not None:
     wave = np.asarray(data.get('wavelengths', data.get('wave', [])))
     flux = np.asarray(data.get('normalized_flux', data.get('flux', [])))
     if len(wave) > 0:
+        wave = wave * 10.0  # nm → Å (npz stores nm; display in Å)
         mjd_str = f'  MJD {mjd:.2f}' if mjd else ''
         fig.add_trace(go.Scatter(
             x=wave, y=flux, mode='lines',
@@ -267,25 +326,32 @@ if data is not None:
 else:
     st.info(f'No normalized spectrum for {star_name} epoch {epoch} band {band}.')
 
-# Overlay second epoch
-if overlay_data is not None:
-    w2 = np.asarray(overlay_data.get('wavelengths', overlay_data.get('wave', [])))
-    f2 = np.asarray(overlay_data.get('normalized_flux', overlay_data.get('flux', [])))
-    if len(w2) > 0:
-        mjd2 = get_mjd(star_name, ep2)
-        mjd_str2 = f'  MJD {mjd2:.2f}' if mjd2 else ''
-        fig.add_trace(go.Scatter(
-            x=w2, y=f2, mode='lines',
-            line=dict(color='#E25A53', width=1.0, dash='dot'),
-            name=f'Epoch {ep2}{mjd_str2}',
-        ))
+# Overlay selected epochs
+_OVERLAY_COLORS = ['#E25A53', '#58D68D', '#AF7AC5', '#F5B041', '#5DADE2', '#AEB6BF']
+for oi, ov_ep in enumerate(overlay_eps):
+    ov_data = load_spectrum(star_name, ov_ep, band)
+    if ov_data is not None:
+        w2 = np.asarray(ov_data.get('wavelengths', ov_data.get('wave', [])))
+        f2 = np.asarray(ov_data.get('normalized_flux', ov_data.get('flux', [])))
+        if len(w2) > 0:
+            w2 = w2 * 10.0  # nm → Å
+            f2 = f2 + vert_offset * (oi + 1)
+            mjd2 = get_mjd(star_name, ov_ep)
+            mjd_str2 = f'  MJD {mjd2:.2f}' if mjd2 else ''
+            off_str = f'  +{vert_offset * (oi + 1):.2f}' if vert_offset > 0 else ''
+            fig.add_trace(go.Scatter(
+                x=w2, y=f2, mode='lines',
+                line=dict(color=_OVERLAY_COLORS[oi % len(_OVERLAY_COLORS)], width=1.0, dash='dot'),
+                name=f'Epoch {ov_ep}{mjd_str2}{off_str}',
+            ))
 
-# Overlay model spectrum
-if model_wave is not None and model_flux is not None:
+# Overlay model spectra (multiple)
+for i, ms in enumerate(model_specs):
+    color = _MODEL_COLORS[i % len(_MODEL_COLORS)]
     fig.add_trace(go.Scatter(
-        x=model_wave, y=model_flux, mode='lines',
-        line=dict(color='#AEB6BF', width=1.0, dash='dash'),
-        name='Model spectrum',
+        x=ms['wave'], y=ms['flux'], mode='lines',
+        line=dict(color=color, width=1.0, dash='dash'),
+        name=f'Model: {ms["name"]}',
     ))
 
 # ── Emission line band overlays ──────────────────────────────────────────────
@@ -302,9 +368,9 @@ if show_em_lines and em_lines and data is not None:
 
 # ── Diagnostic absorption/emission line markers ─────────────────────────────
 if show_diag_lines and selected_groups and data is not None:
-    wave_arr = np.asarray(data.get('wavelengths', data.get('wave', [])))
-    if len(wave_arr) > 0:
-        wmin, wmax = float(wave_arr.min()), float(wave_arr.max())
+    # Reuse already-converted wave (in Å) for bounds checking
+    if len(wave) > 0:
+        wmin, wmax = float(wave.min()), float(wave.max())
         for group_name in selected_groups:
             lines_in_group = DIAGNOSTIC_LINES.get(group_name, [])
             for linfo in lines_in_group:
@@ -346,6 +412,106 @@ fig.update_layout(**{
 })
 st.plotly_chart(fig, use_container_width=True)
 st.caption('Spectrum viewer — zoom with scroll, pan with drag. Dashed lines = absorption features, dotted = emission features.')
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAX ΔRV EPOCH COMPARISON
+# ═══════════════════════════════════════════════════════════════════════════
+
+@st.cache_data
+def _load_all_lines_rvs(star_name: str) -> dict:
+    from pipeline.load_observations import load_star_rvs_all_lines
+    return load_star_rvs_all_lines(star_name, obs=get_obs_manager())
+
+st.markdown('---')
+st.markdown('## Max ΔRV Epoch Comparison')
+st.caption('Automatically shows the two epochs with the largest radial-velocity separation for the selected emission line.')
+
+_all_rvs = _load_all_lines_rvs(star_name)
+# Filter to lines with ≥2 epochs
+_lines_with_data = {ln: d for ln, d in _all_rvs.items() if len(d['epochs']) >= 2}
+
+if not _lines_with_data:
+    st.info('No emission lines with ≥2 epochs of RV data for this star.')
+else:
+    _line_names = list(_lines_with_data.keys())
+    _default_line = 'C IV 5808-5812'
+    _default_idx = _line_names.index(_default_line) if _default_line in _line_names else 0
+
+    drv_c1, drv_c2, drv_c3 = st.columns([2, 1, 1])
+    sel_line = drv_c1.selectbox('Emission line for ΔRV', _line_names, index=_default_idx, key='drv_line')
+    zoom_to_line = drv_c2.checkbox('Zoom to line region', value=True, key='drv_zoom')
+    drv_offset = drv_c3.slider('Vertical offset', 0.0, 2.0, 0.0, 0.05, key='drv_vert_offset')
+
+    _ld = _lines_with_data[sel_line]
+    _rv_arr = np.array(_ld['rv'])
+    _rv_err_arr = np.array(_ld['rv_err'])
+    _ep_arr = _ld['epochs']
+
+    _idx_lo = int(np.argmin(_rv_arr))
+    _idx_hi = int(np.argmax(_rv_arr))
+    _ep_lo, _ep_hi = _ep_arr[_idx_lo], _ep_arr[_idx_hi]
+    _rv_lo, _rv_hi = _rv_arr[_idx_lo], _rv_arr[_idx_hi]
+    _err_lo, _err_hi = _rv_err_arr[_idx_lo], _rv_err_arr[_idx_hi]
+    _delta_rv = abs(_rv_hi - _rv_lo)
+    _mjd_lo, _mjd_hi = get_mjd(star_name, _ep_lo), get_mjd(star_name, _ep_hi)
+
+    # Info row
+    ic1, ic2, ic3 = st.columns(3)
+    ic1.metric('Epoch (min RV)', f'{_ep_lo}', f'{_rv_lo:.1f} ± {_err_lo:.1f} km/s')
+    ic2.metric('Epoch (max RV)', f'{_ep_hi}', f'{_rv_hi:.1f} ± {_err_hi:.1f} km/s')
+    ic3.metric('ΔRV', f'{_delta_rv:.1f} km/s')
+
+    # Load spectra
+    _spec_lo = load_spectrum(star_name, _ep_lo, band)
+    _spec_hi = load_spectrum(star_name, _ep_hi, band)
+
+    if _spec_lo is not None and _spec_hi is not None:
+        fig_drv = go.Figure()
+        _wlo = np.asarray(_spec_lo.get('wavelengths', _spec_lo.get('wave', []))) * 10.0
+        _flo = np.asarray(_spec_lo.get('normalized_flux', _spec_lo.get('flux', [])))
+        _whi = np.asarray(_spec_hi.get('wavelengths', _spec_hi.get('wave', []))) * 10.0
+        _fhi = np.asarray(_spec_hi.get('normalized_flux', _spec_hi.get('flux', []))) + drv_offset
+
+        _mjd_lo_str = f'  MJD {_mjd_lo:.2f}' if _mjd_lo else ''
+        _mjd_hi_str = f'  MJD {_mjd_hi:.2f}' if _mjd_hi else ''
+
+        fig_drv.add_trace(go.Scatter(
+            x=_wlo, y=_flo, mode='lines', line=dict(color='#4A90D9', width=1.2),
+            name=f'Ep {_ep_lo}: RV={_rv_lo:.1f} km/s{_mjd_lo_str}',
+        ))
+        fig_drv.add_trace(go.Scatter(
+            x=_whi, y=_fhi, mode='lines', line=dict(color='#E25A53', width=1.2, dash='dash'),
+            name=f'Ep {_ep_hi}: RV={_rv_hi:.1f} km/s{_mjd_hi_str}',
+        ))
+
+        # Emission line band overlay
+        _em_lines = settings.get('emission_lines', {})
+        _line_rng = _em_lines.get(sel_line)
+        _xrange = None
+        if _line_rng and isinstance(_line_rng, (list, tuple)) and len(_line_rng) == 2:
+            _lo_a, _hi_a = float(_line_rng[0]) * 10, float(_line_rng[1]) * 10
+            fig_drv.add_vrect(x0=_lo_a, x1=_hi_a, fillcolor='rgba(255,215,0,0.10)',
+                              line_width=0.5, line_color='gold',
+                              annotation_text=sel_line, annotation_position='top left',
+                              annotation=dict(font_size=9, font_color='gold'))
+            if zoom_to_line:
+                _xrange = [_lo_a - 100, _hi_a + 100]
+
+        _layout = {
+            **PLOTLY_THEME,
+            'title': dict(text=f'{star_name} — Max ΔRV: {_delta_rv:.1f} km/s ({sel_line})'),
+            'xaxis': {**PLOTLY_THEME.get('xaxis', {}), 'title': 'Wavelength (Å)'},
+            'yaxis': {**PLOTLY_THEME.get('yaxis', {}), 'title': 'Normalised flux'},
+            'height': 450,
+            'legend': {**PLOTLY_THEME.get('legend', {}), 'bgcolor': 'rgba(30,30,46,0.85)'},
+        }
+        if _xrange:
+            _layout['xaxis']['range'] = _xrange
+        fig_drv.update_layout(**_layout)
+        st.plotly_chart(fig_drv, use_container_width=True)
+        st.caption(f'Comparing epochs {_ep_lo} and {_ep_hi} — the pair with largest RV separation on {sel_line}.')
+    else:
+        st.warning(f'Could not load spectra for epochs {_ep_lo} and/or {_ep_hi}.')
 
 # ── Diagnostic line legend (if shown) ────────────────────────────────────────
 if show_diag_lines and selected_groups:
