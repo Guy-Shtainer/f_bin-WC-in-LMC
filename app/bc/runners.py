@@ -119,7 +119,11 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                           int(n_stars_sim), float(sigma_meas),
                           6, 3650.0, None, 0.0, None,
                           n_sets_cvm,
-                          _lk_bin_edges),
+                          _lk_bin_edges,
+                          params.get('error_model_single', 'fixed'),
+                          params.get('error_params_single', ()),
+                          params.get('error_model_binary', 'fixed'),
+                          params.get('error_params_binary', ())),
             ) as pool:
                 def _save_partial_dsilva():
                     """Save accumulated results as a partial checkpoint."""
@@ -240,11 +244,18 @@ def _run_dsilva_bg(job: dict, params: dict) -> None:
                                         _cur = _mp[i_lp, i_sigma]
                                         _cur_d = _md[i_lp, i_sigma]
                                         # Normalize likelihood logL to [0,1]
+                                        # Use running global max across ALL sigma slices
+                                        # so likelihood values are comparable across σ_single
                                         if _mk == 'likelihood':
                                             _logL_slice = _cur.copy()
-                                            _logL_max_v = np.nanmax(_logL_slice)
-                                            if np.isfinite(_logL_max_v):
-                                                _cur = np.exp(_logL_slice - _logL_max_v)
+                                            _slice_max = np.nanmax(_logL_slice)
+                                            if np.isfinite(_slice_max):
+                                                _gk = '_logL_global_max'
+                                                _prev = job.get(_gk, -np.inf)
+                                                job[_gk] = max(_prev, _slice_max)
+                                            _global_max = job.get('_logL_global_max', np.nan)
+                                            if np.isfinite(_global_max):
+                                                _cur = np.exp(_logL_slice - _global_max)
                                             else:
                                                 _cur = np.zeros_like(_logL_slice)
                                             _cur_d = _cur  # no separate D for likelihood
@@ -474,7 +485,11 @@ def _run_langer_bg(job: dict, params: dict) -> None:
                           int(n_stars), float(sigma_meas),
                           6, 3650.0, None, 0.0, None,
                           n_sets_cvm,
-                          _lg_lk_bin_edges),
+                          _lg_lk_bin_edges,
+                          params.get('error_model_single', 'fixed'),
+                          params.get('error_params_single', ()),
+                          params.get('error_model_binary', 'fixed'),
+                          params.get('error_params_binary', ())),
             ) as pool:
                 def _save_partial_langer():
                     """Save accumulated Langer results as partial."""
@@ -743,6 +758,10 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             6, 3650.0, None, 0.0, _cad_bin_edges,
             n_sets,   # n_sets_cvm
             params.get('likelihood_bin_edges'),  # coarse bins for likelihood
+            params.get('error_model_single', 'fixed'),
+            params.get('error_params_single', ()),
+            params.get('error_model_binary', 'fixed'),
+            params.get('error_params_binary', ()),
         )
 
         # Support resuming from partial checkpoint
@@ -940,12 +959,19 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             cur_p = _mp[_display_sig_idx]
                             cur_d = _md[_display_sig_idx]
                             # Normalize likelihood logL to [0,1]
+                            # Use running global max across ALL sigma slices
                             if _mk == 'likelihood':
-                                _logL_max_v = np.nanmax(cur_p)
-                                if np.isfinite(_logL_max_v):
-                                    cur_p = np.exp(cur_p - _logL_max_v)
+                                _logL_slice = cur_p.copy()
+                                _slice_max = np.nanmax(_logL_slice)
+                                if np.isfinite(_slice_max):
+                                    _gk = '_logL_global_max'
+                                    _prev = job.get(_gk, -np.inf)
+                                    job[_gk] = max(_prev, _slice_max)
+                                _global_max = job.get('_logL_global_max', np.nan)
+                                if np.isfinite(_global_max):
+                                    cur_p = np.exp(_logL_slice - _global_max)
                                 else:
-                                    cur_p = np.zeros_like(cur_p)
+                                    cur_p = np.zeros_like(_logL_slice)
                                 cur_d = cur_p
                             _method_live[_mk] = {
                                 'p': np.where(np.isnan(cur_p), 0.0, cur_p).copy(),
@@ -964,6 +990,16 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             _live_sig_pvals = []
                             _live_sig_scores = []
                             _live_sig_likelihood = []
+                            # Compute global logL max across ALL sigma slices
+                            _logL_global = job.get('_logL_global_max', -np.inf)
+                            for _ls in range(n_sig):
+                                _lsL = logL_raw[_ls]
+                                if np.any(~np.isnan(_lsL)):
+                                    _sm = np.nanmax(_lsL)
+                                    if np.isfinite(_sm):
+                                        _logL_global = max(_logL_global, _sm)
+                            if np.isfinite(_logL_global):
+                                job['_logL_global_max'] = _logL_global
                             for _ls in range(n_sig):
                                 _lsp = ks_p[_ls]
                                 _lsd = ks_D[_ls]
@@ -976,14 +1012,10 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                                     _live_sig_scores.append(float(np.nanmin(_lsd)))
                                 else:
                                     _live_sig_scores.append(float('inf'))
-                                # Max normalized likelihood per sigma slice
-                                if np.any(~np.isnan(_lsL)):
-                                    _lsL_max = np.nanmax(_lsL)
-                                    if np.isfinite(_lsL_max):
-                                        _live_sig_likelihood.append(
-                                            float(np.nanmax(np.exp(_lsL - _lsL_max))))
-                                    else:
-                                        _live_sig_likelihood.append(0.0)
+                                # Max likelihood per sigma slice (globally normalized)
+                                if np.any(~np.isnan(_lsL)) and np.isfinite(_logL_global):
+                                    _live_sig_likelihood.append(
+                                        float(np.nanmax(np.exp(_lsL - _logL_global))))
                                 else:
                                     _live_sig_likelihood.append(0.0)
                             job['live_sigma_1d'] = {

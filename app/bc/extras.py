@@ -553,56 +553,52 @@ def _render_rv_errors_tab(p: str, settings: dict, sm) -> None:
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_error_model_selector(p: str, simcfg: dict, sm,
-                                  settings_section: str = 'simulation') -> dict:
-    """Render error model UI. Returns {'type': str, 'sigma_measure': float, 'params': tuple}.
-
-    For 'Fixed': sigma_measure is the user-entered value.
-    For distributions: sigma_measure is set to the distribution mean as fallback.
-    """
+def _render_one_error_model(p: str, suffix: str, simcfg: dict, sm,
+                            settings_section: str, label: str = 'Error model') -> dict:
+    """Render ONE error model selector. Returns {'type': str, 'sigma_measure': float, 'params': tuple}."""
     import scipy.stats as st_stats
 
     _err_options = ['Fixed', 'Normal', 'Log-normal', 'Gamma', 'Weibull', 'Exponential', 'Flat (uniform)']
-    _saved_type = str(simcfg.get('error_model_type', 'Fixed'))
+    _saved_key = f'error_model_type{suffix}'
+    _saved_type = str(simcfg.get(_saved_key, simcfg.get('error_model_type', 'Fixed')))
     _saved_idx = _err_options.index(_saved_type) if _saved_type in _err_options else 0
     _err_model = st.selectbox(
-        'Error model', _err_options,
+        label, _err_options,
         index=_saved_idx,
-        key=f'{p}_err_model',
+        key=f'{p}_err_model{suffix}',
         help='Fixed = constant σ_measure. Distribution = per-epoch error drawn from fitted model.',
-        on_change=lambda: sm.save([settings_section, 'error_model_type'],
-                                  value=st.session_state[f'{p}_err_model']),
+        on_change=lambda: sm.save([settings_section, _saved_key],
+                                  value=st.session_state[f'{p}_err_model{suffix}']),
     )
 
     if _err_model == 'Fixed':
+        _sm_key = f'sigma_measure{suffix}'
         sigma_meas = st.number_input(
             'σ_measure (km/s)', 0.001, 20.0,
-            float(simcfg.get('sigma_measure', 1.622)), 0.001,
-            format='%.3f', key=f'{p}_sigma_meas',
-            on_change=lambda: sm.save([settings_section, 'sigma_measure'],
-                                      value=st.session_state[f'{p}_sigma_meas']),
+            float(simcfg.get(_sm_key, simcfg.get('sigma_measure', 1.622))), 0.001,
+            format='%.3f', key=f'{p}_sigma_meas{suffix}',
+            on_change=lambda: sm.save([settings_section, _sm_key],
+                                      value=st.session_state[f'{p}_sigma_meas{suffix}']),
         )
         return {'type': 'fixed', 'sigma_measure': float(sigma_meas), 'params': ()}
 
-    # Distribution-based error model
     _param_meta = _RVE_PARAM_META.get(_err_model, [])
     _params = []
     if _param_meta:
         _pcols = st.columns(len(_param_meta))
-        for i, (label, default, pmin, pmax, step) in enumerate(_param_meta):
-            _saved_val = float(simcfg.get(f'errp_{i}', default))
+        for i, (lbl, default, pmin, pmax, step) in enumerate(_param_meta):
+            _saved_val = float(simcfg.get(f'errp{suffix}_{i}', default))
             with _pcols[i]:
                 _val = st.number_input(
-                    label, min_value=pmin, max_value=pmax,
-                    value=float(st.session_state.get(f'{p}_errp_{i}', _saved_val)),
-                    step=step, format='%.4f', key=f'{p}_errp_{i}',
+                    lbl, min_value=pmin, max_value=pmax,
+                    value=float(st.session_state.get(f'{p}_errp{suffix}_{i}', _saved_val)),
+                    step=step, format='%.4f', key=f'{p}_errp{suffix}_{i}',
                     on_change=lambda _i=i: sm.save(
-                        [settings_section, f'errp_{_i}'],
-                        value=st.session_state[f'{p}_errp_{_i}']),
+                        [settings_section, f'errp{suffix}_{_i}'],
+                        value=st.session_state[f'{p}_errp{suffix}_{_i}']),
                 )
             _params.append(_val)
 
-    # Compute distribution mean as sigma_measure fallback
     _scipy_name = _RVE_DISTRIBUTIONS.get(_err_model, 'norm')
     try:
         _dist = getattr(st_stats, _scipy_name)
@@ -612,12 +608,35 @@ def _render_error_model_selector(p: str, simcfg: dict, sm,
     except Exception:
         _mean = 1.622
 
-    st.caption(
-        f'Distribution mean = {_mean:.3f} km/s '
-        f'(used as σ_measure fallback until sim engine supports per-epoch draws)'
-    )
-
+    st.caption(f'Distribution mean = {_mean:.3f} km/s (per-epoch draws)')
     return {'type': _err_model, 'sigma_measure': _mean, 'params': tuple(_params)}
+
+
+def _render_error_model_selector(p: str, simcfg: dict, sm,
+                                  settings_section: str = 'simulation') -> dict:
+    """Render error model UI with separate selectors for singles and binaries.
+
+    Returns dict with keys:
+        type_single, sigma_measure, params_single,
+        type_binary, params_binary
+    """
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown('**Singles**')
+        _single = _render_one_error_model(p, '_single', simcfg, sm,
+                                          settings_section, 'Error model (singles)')
+    with c2:
+        st.markdown('**Binaries**')
+        _binary = _render_one_error_model(p, '_binary', simcfg, sm,
+                                          settings_section, 'Error model (binaries)')
+    return {
+        'type_single': _single['type'],
+        'sigma_measure': _single['sigma_measure'],
+        'params_single': _single['params'],
+        'type_binary': _binary['type'],
+        'sigma_measure_binary': _binary['sigma_measure'],
+        'params_binary': _binary['params'],
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

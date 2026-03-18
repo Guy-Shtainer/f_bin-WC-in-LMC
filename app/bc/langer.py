@@ -438,6 +438,10 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             'missing_fbin_idx': lg_missing_fbin_idx,
             'n_sets_cvm': int(lg_n_sets_cvm),
             'likelihood_bin_edges': _lg_lk_bin_edges,
+            'error_model_single': _lg_err_info.get('type_single', 'fixed'),
+            'error_params_single': _lg_err_info.get('params_single', ()),
+            'error_model_binary': _lg_err_info.get('type_binary', 'fixed'),
+            'error_params_binary': _lg_err_info.get('params_binary', ()),
             'save_params': {
                 'fbin_min': float(lg_fbin_min), 'fbin_max': float(lg_fbin_max),
                 'fbin_steps': int(lg_fbin_steps),

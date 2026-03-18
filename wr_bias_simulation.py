@@ -83,6 +83,50 @@ def adaptive_bin_edges(obs_delta_rv: np.ndarray, min_gap: float = 1.0) -> np.nda
 
 
 # ---------------------------------------------------------------------------
+# Per-epoch measurement noise draws
+# ---------------------------------------------------------------------------
+
+_ERR_DIST_MAP = {
+    'fixed': None,
+    'normal': 'norm', 'norm': 'norm',
+    'log-normal': 'lognorm', 'lognormal': 'lognorm',
+    'gamma': 'gamma',
+    'weibull': 'weibull_min', 'weibull_min': 'weibull_min',
+    'exponential': 'expon', 'expon': 'expon',
+    'flat (uniform)': 'uniform', 'uniform': 'uniform',
+}
+
+
+def _draw_measurement_noise(
+    model_type: str, params: tuple, sigma_fallback: float,
+    size, rng: np.random.Generator,
+) -> np.ndarray:
+    """Draw per-epoch measurement noise from the configured distribution.
+
+    For 'fixed' (or empty params): returns ``N(0, sigma_fallback)`` draws.
+    For scipy distributions: draws magnitudes from the distribution and
+    applies a random sign (symmetric errors).
+    """
+    if model_type == 'fixed' or not params:
+        if sigma_fallback <= 0.0:
+            return np.zeros(size, dtype=float)
+        return rng.normal(0.0, sigma_fallback, size=size)
+
+    import scipy.stats as _st
+    dist_name = _ERR_DIST_MAP.get(model_type.lower())
+    if dist_name is None:
+        return rng.normal(0.0, sigma_fallback, size=size)
+    dist = getattr(_st, dist_name, None)
+    if dist is None:
+        return rng.normal(0.0, sigma_fallback, size=size)
+    # Draw magnitudes from the distribution
+    magnitudes = np.abs(dist.rvs(*params, size=size, random_state=rng))
+    # Apply random sign (measurement errors are symmetric)
+    signs = rng.choice(np.array([-1.0, 1.0]), size=size)
+    return magnitudes * signs
+
+
+# ---------------------------------------------------------------------------
 # Configuration dataclasses
 # ---------------------------------------------------------------------------
 
@@ -134,6 +178,11 @@ class SimulationConfig:
     observation_times: Optional[np.ndarray] = field(default=None, repr=False)
     cadence_library: Optional[List[np.ndarray]] = field(default=None, repr=False)
     cadence_weights: Optional[np.ndarray] = field(default=None, repr=False)
+    # Per-epoch measurement noise distribution (separate for singles/binaries)
+    error_model_single: str = 'fixed'
+    error_params_single: tuple = ()
+    error_model_binary: str = 'fixed'
+    error_params_binary: tuple = ()
 
     def get_observation_times(self) -> np.ndarray:
         """
@@ -694,6 +743,10 @@ def simulate_delta_rv_sample(
             scale=sim_cfg.sigma_single,
             size=(n_stars_grp, n_ep),
         )
+        # Add per-epoch measurement noise from the error model
+        v += _draw_measurement_noise(
+            sim_cfg.error_model_single, sim_cfg.error_params_single,
+            sim_cfg.sigma_measure, size=v.shape, rng=rng)
         drv = v.max(axis=1) - v.min(axis=1)
         for idx_in_grp, k in enumerate(ks):
             delta_all[k] = drv[idx_in_grp]
@@ -749,11 +802,94 @@ def simulate_delta_rv_sample(
             v = sim_cfg.v_sys + K1[js, None] * (
                 np.cos(omega[js, None] + nu) + e[js, None] * np.cos(omega[js, None])
             )
+            # Add per-epoch measurement noise from the error model
+            v += _draw_measurement_noise(
+                sim_cfg.error_model_binary, sim_cfg.error_params_binary,
+                sim_cfg.sigma_measure, size=v.shape, rng=rng)
 
             drv = v.max(axis=1) - v.min(axis=1)
             delta_all[ks] = drv
 
     return delta_all
+
+
+def simulate_binary_rvs_raw(
+    sim_cfg: SimulationConfig,
+    bin_cfg: BinaryParameterConfig,
+    pi: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """
+    Simulate raw per-epoch RV values for a pure-binary population.
+
+    Returns centred (mean-subtracted per system) RV values flattened into 1-D,
+    suitable for histogram / distribution fitting.
+
+    Parameters
+    ----------
+    sim_cfg : SimulationConfig
+        Global simulation configuration.
+    bin_cfg : BinaryParameterConfig
+        Orbital-parameter distribution configuration.
+    pi : float
+        Power-law index for the period distribution (ignored for langer2020).
+    rng : np.random.Generator
+        RNG instance for reproducibility.
+
+    Returns
+    -------
+    centred_rvs : ndarray, shape (N * n_epochs_effective,)
+        Centred RV values [km/s] for all systems × epochs.
+    """
+    N = sim_cfg.n_stars
+    times_list = sim_cfg.sample_times_for_systems(N, rng)
+
+    # Draw orbital parameters (all binaries)
+    logP = sample_logP(size=N, rng=rng, pi=pi, cfg=bin_cfg)
+    P_days = 10.0 ** logP
+
+    e     = sample_eccentricity(bin_cfg, N, rng)
+    M1    = sample_primary_mass(bin_cfg, N, rng)
+    q     = sample_mass_ratio(bin_cfg, N, rng)
+    M2    = M1 / q if bin_cfg.q_flipped else M1 * q
+    i     = sample_inclination(N, rng)
+    omega = rng.uniform(0.0, 2.0 * np.pi, size=N)
+    T0    = rng.uniform(0.0, 2.0 * np.pi, size=N)
+
+    K1 = compute_K1(P_days=P_days, e=e, M1=M1, M2=M2, i_rad=i)
+
+    # Group by cadence length for batched Kepler solving
+    groups: dict = {}
+    for j in range(N):
+        n_ep = times_list[j].size
+        if n_ep >= 2:
+            groups.setdefault(n_ep, []).append(j)
+
+    all_centred: list = []
+    for n_ep, js in groups.items():
+        js_arr = np.array(js)
+        n_grp = len(js_arr)
+
+        t_mat = np.vstack([times_list[j] for j in js_arr])  # (n_grp, n_ep)
+
+        M_mean = T0[js_arr, None] + 2.0 * np.pi * (t_mat / P_days[js_arr, None])
+        E = solve_kepler(M_mean, e[js_arr, None])
+
+        sqrt_fac = np.sqrt((1.0 + e[js_arr, None]) / (1.0 - e[js_arr, None]))
+        nu = 2.0 * np.arctan2(sqrt_fac * np.tan(E / 2.0), 1.0)
+
+        v = sim_cfg.v_sys + K1[js_arr, None] * (
+            np.cos(omega[js_arr, None] + nu)
+            + e[js_arr, None] * np.cos(omega[js_arr, None])
+        )
+
+        # Centre each system by subtracting its mean
+        v -= v.mean(axis=1, keepdims=True)
+        all_centred.append(v.ravel())
+
+    if all_centred:
+        return np.concatenate(all_centred)
+    return np.array([], dtype=float)
 
 
 # ---------------------------------------------------------------------------
@@ -811,6 +947,10 @@ def simulate_delta_rv_cadence_aware(
         n_grp = len(ks_list)
         v = rng.normal(loc=sim_cfg.v_sys, scale=sim_cfg.sigma_single,
                        size=(n_grp, n_ep))
+        # Add per-epoch measurement noise from the error model
+        v += _draw_measurement_noise(
+            sim_cfg.error_model_single, sim_cfg.error_params_single,
+            sim_cfg.sigma_measure, size=v.shape, rng=rng)
         drv = v.max(axis=1) - v.min(axis=1)
         delta_all[np.array(ks_list)] = drv
 
@@ -848,6 +988,10 @@ def simulate_delta_rv_cadence_aware(
             v = sim_cfg.v_sys + K1[js, None] * (
                 np.cos(omega[js, None] + nu) + e[js, None] * np.cos(omega[js, None])
             )
+            # Add per-epoch measurement noise from the error model
+            v += _draw_measurement_noise(
+                sim_cfg.error_model_binary, sim_cfg.error_params_binary,
+                sim_cfg.sigma_measure, size=v.shape, rng=rng)
             drv = v.max(axis=1) - v.min(axis=1)
             delta_all[ks_arr] = drv
 
@@ -1418,7 +1562,9 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
                  n_epochs=6, time_span=3650.0,
                  observation_times=None, v_sys=0.0,
                  bin_edges=None,
-                 n_sets_cvm=1000, likelihood_bin_edges=None):
+                 n_sets_cvm=1000, likelihood_bin_edges=None,
+                 error_model_single='fixed', error_params_single=(),
+                 error_model_binary='fixed', error_params_binary=()):
     """Pool initializer: store shared data as process-level globals."""
     global _WORKER_GLOBALS
     _WORKER_GLOBALS = {
@@ -1434,6 +1580,10 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
         'bin_edges': bin_edges,
         'n_sets_cvm': n_sets_cvm,
         'likelihood_bin_edges': likelihood_bin_edges,
+        'error_model_single': error_model_single,
+        'error_params_single': error_params_single,
+        'error_model_binary': error_model_binary,
+        'error_params_binary': error_params_binary,
     }
 
 
@@ -1463,6 +1613,10 @@ def _single_grid_task_lite(args):
         observation_times=g.get('observation_times'),
         cadence_library=g['cadence_library'],
         cadence_weights=g['cadence_weights'],
+        error_model_single=g.get('error_model_single', 'fixed'),
+        error_params_single=g.get('error_params_single', ()),
+        error_model_binary=g.get('error_model_binary', 'fixed'),
+        error_params_binary=g.get('error_params_binary', ()),
     )
     bin_cfg_local = BinaryParameterConfig(**vars(bin_cfg))
     bin_cfg_local.period_model = period_model
@@ -1639,6 +1793,10 @@ def run_bias_grid(
         _used_bin_edges,
         n_sets_cvm,
         likelihood_bin_edges,
+        sim_cfg.error_model_single,
+        sim_cfg.error_params_single,
+        sim_cfg.error_model_binary,
+        sim_cfg.error_params_binary,
     )
 
     if use_multiprocessing and n_tasks > 1:
@@ -1747,6 +1905,10 @@ def _single_grid_task_cadence_aware(args):
         observation_times=g.get('observation_times'),
         cadence_library=g['cadence_library'],
         cadence_weights=g['cadence_weights'],
+        error_model_single=g.get('error_model_single', 'fixed'),
+        error_params_single=g.get('error_params_single', ()),
+        error_model_binary=g.get('error_model_binary', 'fixed'),
+        error_params_binary=g.get('error_params_binary', ()),
     )
     bin_cfg_local = BinaryParameterConfig(**vars(bin_cfg))
     bin_cfg_local.period_model = period_model
@@ -1872,6 +2034,10 @@ def run_bias_grid_cadence_aware(
         _used_bin_edges,
         n_sets,              # n_sets_cvm positional slot
         likelihood_bin_edges,
+        sim_cfg.error_model_single,
+        sim_cfg.error_params_single,
+        sim_cfg.error_model_binary,
+        sim_cfg.error_params_binary,
     )
 
     # Storage for best-fit CDF band (tracked by KS p-value)
@@ -2110,6 +2276,10 @@ def resimulate_at_point(
         observation_times=sim_cfg.observation_times,
         cadence_library=sim_cfg.cadence_library,
         cadence_weights=getattr(sim_cfg, 'cadence_weights', None),
+        error_model_single=getattr(sim_cfg, 'error_model_single', 'fixed'),
+        error_params_single=getattr(sim_cfg, 'error_params_single', ()),
+        error_model_binary=getattr(sim_cfg, 'error_model_binary', 'fixed'),
+        error_params_binary=getattr(sim_cfg, 'error_params_binary', ()),
     )
     bin_local = BinaryParameterConfig(**vars(bin_cfg))
     bin_local.period_model = period_model

@@ -397,6 +397,10 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             'stable_cfg': stable_cfg,
             'n_sets_cvm': int(n_sets_cvm),
             'likelihood_bin_edges': _lk_bin_edges,
+            'error_model_single': _err_info.get('type_single', 'fixed'),
+            'error_params_single': _err_info.get('params_single', ()),
+            'error_model_binary': _err_info.get('type_binary', 'fixed'),
+            'error_params_binary': _err_info.get('params_binary', ()),
             'bin_cfg_params': {
                 'logP_min': float(logP_min_val), 'logP_max': float(logP_max_val),
                 'e_model': str(e_model), 'e_max': float(e_max),

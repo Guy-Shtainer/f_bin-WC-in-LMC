@@ -1050,7 +1050,8 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
                               fb_min, fb_max, fb_steps,
                               pi_min, pi_max, pi_steps,
                               n_sets, sigma_vals, _bin_cfg,
-                              _sigma_meas, settings, sm) -> None:
+                              _sigma_meas, settings, sm,
+                              err_info: dict = None) -> None:
     """Shared action buttons + right column for cadence tabs."""
     _cad_tag = 'cadence_dsilva' if _is_dsilva else 'cadence_langer'
 
@@ -1224,6 +1225,10 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
             'drv_bin_width': float(st.session_state.get(f'{p}_drv_bin_width', 5.0)),
             'drv_max': float(st.session_state.get(f'{p}_drv_max', 360.0)),
             'likelihood_bin_edges': _lk_bin_edges,
+            'error_model_single': (err_info or {}).get('type_single', 'fixed'),
+            'error_params_single': (err_info or {}).get('params_single', ()),
+            'error_model_binary': (err_info or {}).get('type_binary', 'fixed'),
+            'error_params_binary': (err_info or {}).get('params_binary', ()),
             'stable_cfg': _cad_stable_cfg,
             'save_params': {
                 'mode': 'cadence_aware',
@@ -1375,7 +1380,7 @@ def _render_cadence_dsilva_tab(p: str, settings: dict, sm) -> None:
             fb_min, fb_max, fb_steps,
             pi_min, pi_max, pi_steps,
             n_sets, sigma_vals, _bin_cfg, _sigma_meas,
-            settings, sm)
+            settings, sm, err_info=_cad_err_info)
 
     _render_cadence_results(p, _is_dsilva, _bin_cfg)
 
@@ -1500,7 +1505,7 @@ def _render_cadence_langer_tab(p: str, settings: dict, sm) -> None:
             fb_min, fb_max, fb_steps,
             pi_min, pi_max, pi_steps,
             n_sets, sigma_vals, _bin_cfg, _sigma_meas,
-            settings, sm)
+            settings, sm, err_info=_cl_err_info)
 
     _render_cadence_results(p, _is_dsilva, _bin_cfg)
 
