@@ -434,8 +434,37 @@ def _render_method_expander(
     _theme = PLOTLY_THEME
     pal = get_palette()
 
+    # ── Per-method sigma slider (when sigma has >1 values) ─────────
+    _sigma_g_sl = np.asarray(result.get('sigma_grid', []))
+    _has_sig_slider = (_sigma_g_sl.size > 1 and p_nd.ndim >= 3
+                       and ndim_mode not in ('langer', 'cadence_langer'))
+    _user_sig_idx = None
+    if _has_sig_slider:
+        # Determine default: best sigma index from global argmax
+        _tmp_best = np.unravel_index(int(np.nanargmax(p_nd)), p_nd.shape)
+        if ndim_mode == 'dsilva':
+            _default_sig = int(_tmp_best[1])  # [logPmax, sigma, fbin, pi]
+        else:
+            _default_sig = int(_tmp_best[0])  # [sigma, fbin, pi]
+        _user_sig_idx = st.select_slider(
+            f'σ_single slice ({display_name})',
+            options=list(range(len(_sigma_g_sl))),
+            format_func=lambda i: f'{_sigma_g_sl[i]:.1f} km/s',
+            value=_default_sig,
+            key=f'{prefix}_{method_key}_sig_slider',
+        )
+
     # Slice down to 2D: [fbin, x]
-    if disp_outer_slices is not None and p_nd.ndim > 2:
+    if _user_sig_idx is not None:
+        # User-selected sigma slice overrides disp_outer_slices
+        if ndim_mode == 'dsilva' and p_nd.ndim == 4:
+            _lp_s = disp_outer_slices[0] if disp_outer_slices else 0
+            p_2d = p_nd[_lp_s, _user_sig_idx]
+            D_2d = D_nd[_lp_s, _user_sig_idx] if D_nd is not None else None
+        else:
+            p_2d = p_nd[_user_sig_idx]
+            D_2d = D_nd[_user_sig_idx] if D_nd is not None else None
+    elif disp_outer_slices is not None and p_nd.ndim > 2:
         p_2d = p_nd[disp_outer_slices]
         D_2d = D_nd[disp_outer_slices] if D_nd is not None else None
     else:
