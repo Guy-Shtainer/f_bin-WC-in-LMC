@@ -292,6 +292,26 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
             ndim_mode=_cad_ndim_mode,
         )
 
+        # ── CDF Comparison — all methods (at top, above expanders) ─────
+        if _method_res:
+            from bc.analysis import _render_all_methods_cdf
+            with st.expander('CDF Comparison (cadence-aware)', expanded=True):
+                _cdf_cols = st.columns(len(_method_res) + 1)
+                _cdf_show = {}
+                _cdf_cols[0].markdown('**Show:**')
+                for _ci, (_mk_c, _) in enumerate(_method_res.items()):
+                    _mname_c = next((n for k, n, _, _, _ in SCORING_METHODS
+                                     if k == _mk_c), _mk_c)
+                    _cdf_show[_mk_c] = _cdf_cols[_ci + 1].checkbox(
+                        _mname_c, value=True, key=f'{p}_cdf_show_{_mk_c}')
+                _shown = {k: v for k, v in _method_res.items()
+                          if _cdf_show.get(k, True)}
+                if _shown:
+                    _render_all_methods_cdf(
+                        result, _shown, np.asarray(fbin_grid), _cad_x_g,
+                        prefix=f'{p}_top', x_name=_cad_x_name,
+                        x_label=_cad_x_label)
+
         # ── Per-method expanders (cadence) ──────────────────────────────
         # Determine outer slice indices for 3D→2D slicing
         if n_sig > 1:

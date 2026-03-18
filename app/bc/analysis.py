@@ -661,16 +661,6 @@ def _render_method_expander(
         result, prefix, method_key, pal, use_cw,
     )
 
-    # ── All-methods CDF comparison (K-S expander only) ──────────────
-    if method_key == 'ks' and method_results:
-        st.divider()
-        with st.expander('CDF Comparison — All Scoring Methods', expanded=False):
-            _render_all_methods_cdf(
-                result, method_results, fbin_g, x_g,
-                prefix=f'{prefix}_{method_key}',
-                x_name=x_name, x_label=x_label,
-            )
-
     # ── Model Explorer (best-fit CDF, histogram, detection fraction) ──
     _obs_drv_me = result.get('obs_delta_rv')
     if _obs_drv_me is not None:
