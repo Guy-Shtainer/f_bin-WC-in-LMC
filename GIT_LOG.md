@@ -6,6 +6,37 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-18 — Per-epoch error model, spectrum enhancements, RV modeling redesign
+
+| Hash | Summary |
+|------|---------|
+| `bc377fa` | End-of-day docs: DOCUMENTATION.md, daily log, CLAUDE.md testing rules |
+| `efb3372` | Add likelihood CDF visualization + runtime integration test suite |
+| `196af6c` | RV Modeling page: 3 new tabs (Simulation/Fitting/Playground) + configurable binning |
+| `5939b59` | Spectrum page: nm→Å fix, model browser, O lines, multi-epoch overlay, ΔRV comparison |
+| `70b4a80` | **Fix likelihood f_bin=1 degeneracy**: per-epoch error model for binary RVs (Task #140) |
+| `d76af72` | Mark tasks #135, #138, #139 as to-test (Group 4 complete) |
+| `268b41c` | Add manual likelihood bin edges selector (Task #135) |
+| `2756765` | Per-method best-fit summary tables inside each expander (Task #138) |
+| `58448d6` | Move CDF comparison to top with per-method toggle checkboxes (Task #139) |
+| `4811125` | Mark tasks #133, #134 as to-test (Group 3 complete) |
+| `d6c975f` | Interactive Model Explorer with f_bin, pi, sigma sliders (Task #133c) |
+| `78fd373` | Add per-method sigma_single slider in scoring method expanders (Task #133b) |
+| `555b4ba` | Score-vs-sigma graph for ALL methods (Task #133a) |
+| `117cf43` | Extract corner plots to corner_plots.py + expand to 3-param (Task #134) |
+| `6f3ccb4` | Mark tasks #132, #136 as to-test (Group 2 complete) |
+| `bd32383` | Pass sigma_grid and full ND arrays to parabolic fit |
+| `af3a014` | Add sigma_single columns to Scoring Method Comparison table |
+| `dd4acfc` | Split analysis.py: extract fitting.py + scoring_detail.py |
+| `e747fe0` | Mark tasks #130, #131, #137 as to-test (Group 1 complete) |
+| `075a79f` | Fix likelihood interpolation labels: show "Likelihood" not "S" |
+| `035d407` | Persist live sigma-vs-score graph after cadence simulation completes |
+| `793606c` | Fix p-value labels for non-p-value metrics + add 10 BC tasks |
+
+**Tag:** `v260318-working` — Per-epoch error model for binaries, spectrum enhancements, RV modeling redesign, 10 BC tasks
+
+---
+
 ## 2026-03-17 — Multi-score bias correction, RV modeling rebuild, webapp subpackages
 
 Major day: unified all 4 scoring methods into single simulation pass, rebuilt RV modeling page from scratch, split 4 large pages into subpackages.
