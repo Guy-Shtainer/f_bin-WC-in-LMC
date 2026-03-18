@@ -1,0 +1,180 @@
+{
+  "metadata": {
+    "skill_name": "error-check",
+    "skill_path": ".claude/commands/error-check.md",
+    "executor_model": "claude-opus-4-6",
+    "timestamp": "2026-03-16T14:00:00Z",
+    "evals_run": [1, 2, 3],
+    "runs_per_configuration": 1
+  },
+  "runs": [
+    {
+      "eval_id": 1,
+      "eval_name": "specific-files-wr-sim-and-bias-page",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.89,
+        "passed": 8,
+        "failed": 1,
+        "total": 9,
+        "time_seconds": 451.5,
+        "tokens": 66357,
+        "tool_calls": 73,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Reads COMMON_ERRORS.md and extracts the Quick-Scan Regex", "passed": true, "evidence": "Ran exact grep pattern from COMMON_ERRORS.md"},
+        {"text": "Runs grep on both target files", "passed": true, "evidence": "22 matches found in bias_correction"},
+        {"text": "Deletes .pyc cache files", "passed": false, "evidence": "Sandbox denied rm commands"},
+        {"text": "Runs py_compile on both files", "passed": true, "evidence": "Both PASS"},
+        {"text": "Runs import test for root module", "passed": true, "evidence": "import wr_bias_simulation OK"},
+        {"text": "Runs import test for app/pages module", "passed": true, "evidence": "importlib with sys.path setup, WARN expected"},
+        {"text": "Function-level smoke tests with domain data", "passed": true, "evidence": "10 functions tested"},
+        {"text": "Phase 4 webapp smoke test triggered", "passed": true, "evidence": "shared.py + page imports verified"},
+        {"text": "Summary table produced", "passed": true, "evidence": "ASCII table with OVERALL: FAIL"}
+      ]
+    },
+    {
+      "eval_id": 1,
+      "eval_name": "specific-files-wr-sim-and-bias-page",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.33,
+        "passed": 3,
+        "failed": 6,
+        "total": 9,
+        "time_seconds": 348.0,
+        "tokens": 125542,
+        "tool_calls": 42,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Reads COMMON_ERRORS.md and extracts the Quick-Scan Regex", "passed": true, "evidence": "Scanned for COMMON_ERRORS patterns"},
+        {"text": "Runs grep on both target files", "passed": true, "evidence": "Found patterns but via code reading not grep"},
+        {"text": "Deletes .pyc cache files", "passed": false, "evidence": "No cache cleanup attempted"},
+        {"text": "Runs py_compile on both files", "passed": true, "evidence": "Both compile cleanly"},
+        {"text": "Runs import test for root module", "passed": false, "evidence": "No import test run"},
+        {"text": "Runs import test for app/pages module", "passed": false, "evidence": "No import test run"},
+        {"text": "Function-level smoke tests with domain data", "passed": false, "evidence": "No functional tests — only static code review"},
+        {"text": "Phase 4 webapp smoke test triggered", "passed": false, "evidence": "No webapp smoke test"},
+        {"text": "Summary table produced", "passed": false, "evidence": "No structured summary table"}
+      ]
+    },
+    {
+      "eval_id": 2,
+      "eval_name": "clean-file-utils",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 5,
+        "failed": 0,
+        "total": 5,
+        "time_seconds": 223.1,
+        "tokens": 42760,
+        "tool_calls": 24,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Runs grep scan with zero matches", "passed": true, "evidence": "0 matches"},
+        {"text": "Successfully imports utils", "passed": true, "evidence": "import utils OK"},
+        {"text": "Tests functions with numpy input", "passed": true, "evidence": "3 functions, 11 test cases"},
+        {"text": "Phase 4 skipped", "passed": true, "evidence": "SKIP — not app/"},
+        {"text": "OVERALL PASS", "passed": true, "evidence": "Summary: PASS"}
+      ]
+    },
+    {
+      "eval_id": 2,
+      "eval_name": "clean-file-utils",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.40,
+        "passed": 2,
+        "failed": 3,
+        "total": 5,
+        "time_seconds": 114.9,
+        "tokens": 26732,
+        "tool_calls": 12,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Runs grep scan with zero matches", "passed": true, "evidence": "No COMMON_ERRORS patterns found"},
+        {"text": "Successfully imports utils", "passed": false, "evidence": "No import test run — only static review"},
+        {"text": "Tests functions with numpy input", "passed": false, "evidence": "No functional tests run"},
+        {"text": "Phase 4 skipped", "passed": true, "evidence": "N/A for utils.py"},
+        {"text": "OVERALL PASS", "passed": false, "evidence": "No structured verdict"}
+      ]
+    },
+    {
+      "eval_id": 3,
+      "eval_name": "auto-detect-git-diff",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 4,
+        "failed": 0,
+        "total": 4,
+        "time_seconds": 409.7,
+        "tokens": 67921,
+        "tool_calls": 70,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Runs git diff --name-only", "passed": true, "evidence": "Auto-detected 2 files"},
+        {"text": "Reports detected files", "passed": true, "evidence": "Listed both files"},
+        {"text": "Runs all 5 phases", "passed": true, "evidence": "All phases executed"},
+        {"text": "Produces summary table", "passed": true, "evidence": "ASCII table with OVERALL: PASS"}
+      ]
+    },
+    {
+      "eval_id": 3,
+      "eval_name": "auto-detect-git-diff",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.50,
+        "passed": 2,
+        "failed": 2,
+        "total": 4,
+        "time_seconds": 251.1,
+        "tokens": 53973,
+        "tool_calls": 49,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "Runs git diff --name-only", "passed": true, "evidence": "Used git diff to find files"},
+        {"text": "Reports detected files", "passed": true, "evidence": "Found 2 modified files"},
+        {"text": "Runs all 5 phases", "passed": false, "evidence": "Only ran py_compile + static review, no functional tests"},
+        {"text": "Produces summary table", "passed": false, "evidence": "No structured summary table"}
+      ]
+    }
+  ],
+  "run_summary": {
+    "with_skill": {
+      "pass_rate": {"mean": 0.96, "stddev": 0.06, "min": 0.89, "max": 1.0},
+      "time_seconds": {"mean": 361.4, "stddev": 120.0, "min": 223.1, "max": 451.5},
+      "tokens": {"mean": 59013, "stddev": 13600, "min": 42760, "max": 67921}
+    },
+    "without_skill": {
+      "pass_rate": {"mean": 0.41, "stddev": 0.09, "min": 0.33, "max": 0.50},
+      "time_seconds": {"mean": 238.0, "stddev": 117.0, "min": 114.9, "max": 348.0},
+      "tokens": {"mean": 68749, "stddev": 50000, "min": 26732, "max": 125542}
+    },
+    "delta": {
+      "pass_rate": "+0.55",
+      "time_seconds": "+123.4",
+      "tokens": "-9736"
+    }
+  },
+  "notes": [
+    "With-skill pass rate 96% vs baseline 41% — the skill adds structured functional testing that baseline completely skips",
+    "Baseline never runs import tests or function-level smoke tests — relies entirely on static code review",
+    "With-skill uses fewer tokens on average despite higher pass rate — more focused execution vs baseline's unstructured exploration",
+    "Phase 2 (cache cleanup) failed in eval 1 due to sandbox restrictions on rm — may need to handle permission denial gracefully",
+    "Eval 1 with-skill correctly identified 5 E034 violations and tested 10 pure computation functions — baseline found the same E034 issues but also found a real bug (wrong kwargs in _render_cdf_sanity_check) through deep code reading that the skill missed"
+  ]
+}

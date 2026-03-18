@@ -1,0 +1,52 @@
+{
+  "eval_id": 1,
+  "eval_name": "specific-files-wr-sim-and-bias-page",
+  "prompt": "/error-check wr_bias_simulation.py app/pages/05_bias_correction.py",
+  "assertions": [
+    {
+      "text": "Reads COMMON_ERRORS.md and extracts the Quick-Scan Regex",
+      "type": "behavioral",
+      "check": "transcript contains Read of COMMON_ERRORS.md"
+    },
+    {
+      "text": "Runs grep with the Quick-Scan pattern against both target files",
+      "type": "behavioral",
+      "check": "transcript contains grep command on wr_bias_simulation.py and 05_bias_correction.py"
+    },
+    {
+      "text": "Deletes or attempts to delete .pyc cache files for modified modules",
+      "type": "behavioral",
+      "check": "transcript contains rm command targeting __pycache__/*.pyc"
+    },
+    {
+      "text": "Runs py_compile on both files",
+      "type": "behavioral",
+      "check": "transcript contains py_compile on both files"
+    },
+    {
+      "text": "Runs import test for wr_bias_simulation as a root module",
+      "type": "behavioral",
+      "check": "transcript contains 'import wr_bias_simulation'"
+    },
+    {
+      "text": "Runs import test for 05_bias_correction with sys.path setup for app/",
+      "type": "behavioral",
+      "check": "transcript contains sys.path.insert and pages.05_bias_correction import"
+    },
+    {
+      "text": "Generates at least one function-level smoke test with numpy/domain data",
+      "type": "behavioral",
+      "check": "transcript contains python -c with numpy import and a function call from one of the target modules"
+    },
+    {
+      "text": "Runs Phase 4 webapp smoke test because app/ file is in target list",
+      "type": "behavioral",
+      "check": "transcript contains shared.py import test"
+    },
+    {
+      "text": "Produces a formatted summary table with per-phase results and OVERALL verdict",
+      "type": "output",
+      "check": "result.md contains a table with Phase 1-5 results and OVERALL"
+    }
+  ]
+}

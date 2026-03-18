@@ -1,0 +1,10 @@
+{
+  "expectations": [
+    {"text": "Runs grep scan on utils.py with zero or minimal matches", "passed": true, "evidence": "Phase 1: 0 matches, PASS"},
+    {"text": "Successfully imports utils module", "passed": true, "evidence": "Phase 3b: 'import utils; print(OK)' → PASS"},
+    {"text": "Tests at least one function from utils.py with numpy array input", "passed": true, "evidence": "Tested all 3 functions (robust_mean, double_robust_mean, robust_std) with 11 test cases including edge cases"},
+    {"text": "Phase 4 is skipped because utils.py is not under app/", "passed": true, "evidence": "Phase 4: SKIP — 'Not an app/ file'"},
+    {"text": "OVERALL verdict is PASS", "passed": true, "evidence": "Summary table shows OVERALL: PASS"}
+  ],
+  "summary": {"passed": 5, "failed": 0, "total": 5, "pass_rate": 1.0}
+}

@@ -1,0 +1,70 @@
+{
+  "tool_calls": {
+    "total": 38,
+    "by_tool": {
+      "Read": 13,
+      "Bash": 19,
+      "Grep": 5,
+      "Glob": 2,
+      "Write": 2,
+      "Edit": 0
+    },
+    "bash_succeeded": 9,
+    "bash_denied": 10
+  },
+  "files_checked": 2,
+  "files_detected": [
+    "app/pages/05_bias_correction.py",
+    "wr_bias_simulation.py"
+  ],
+  "phases": {
+    "phase_1_static_scan": {
+      "result": "PASS",
+      "greppable_matches": 22,
+      "greppable_with_guard": 17,
+      "greppable_warn_no_guard": 5,
+      "hard_fails": 0,
+      "non_greppable_checks": {
+        "E003_zero_filter": "PASS",
+        "E018_plotly_theme": "PASS",
+        "E024_cache_fields": "PASS",
+        "E025_removed_widget": "PASS"
+      }
+    },
+    "phase_2_cache_cleanup": {
+      "result": "DONE",
+      "pyc_files_cleaned": 3
+    },
+    "phase_3_functional": {
+      "result": "PASS",
+      "py_compile": {
+        "passed": 2,
+        "failed": 0
+      },
+      "import_test": {
+        "passed": 1,
+        "warn": 1,
+        "failed": 0
+      },
+      "smoke_tests": {
+        "passed": 4,
+        "failed": 0,
+        "skipped": 6
+      }
+    },
+    "phase_4_webapp": {
+      "result": "PASS",
+      "shared_import": "PASS",
+      "page_imports": {
+        "passed": 0,
+        "warn": 1,
+        "failed": 0
+      }
+    },
+    "phase_5_learning": {
+      "result": "DONE",
+      "new_patterns_added": 0
+    }
+  },
+  "overall": "PASS"
+}

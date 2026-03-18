@@ -1,0 +1,9 @@
+{
+  "expectations": [
+    {"text": "Runs git diff --name-only to detect modified .py files", "passed": true, "evidence": "Result header: 'Target files detected via git diff --name-only HEAD -- *.py'"},
+    {"text": "Reports which files were auto-detected before proceeding", "passed": true, "evidence": "Lists: 1. app/pages/05_bias_correction.py, 2. wr_bias_simulation.py"},
+    {"text": "Runs all 5 phases on the detected files", "passed": true, "evidence": "All 5 phases executed: Static scan, Cache cleanup (3 files), Functional tests (4/4 passed), Webapp smoke, Learning"},
+    {"text": "Produces summary table", "passed": true, "evidence": "ASCII summary table with OVERALL: PASS"}
+  ],
+  "summary": {"passed": 4, "failed": 0, "total": 4, "pass_rate": 1.0}
+}

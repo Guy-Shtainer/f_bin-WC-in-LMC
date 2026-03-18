@@ -1,0 +1,39 @@
+{
+  "tool_calls": {
+    "Grep": 6,
+    "Read": 12,
+    "Bash": 15,
+    "Write": 2,
+    "Glob": 0,
+    "Edit": 0
+  },
+  "total_tool_calls": 35,
+  "files_created": 2,
+  "errors_encountered": {
+    "phase_1_static_scan": {
+      "total_matches": 5,
+      "error_ids": ["E034", "E034", "E034", "E034", "E034"],
+      "files_with_issues": ["app/pages/05_bias_correction.py"],
+      "lines": [2834, 9163, 9175, 9185, 9202]
+    },
+    "phase_2_cache_cleanup": "SKIPPED (sandbox restriction)",
+    "phase_3_functional": {
+      "py_compile_pass": 2,
+      "py_compile_fail": 0,
+      "import_pass": 1,
+      "import_warn": 1,
+      "import_fail": 0,
+      "function_tests_pass": 10,
+      "function_tests_fail": 0,
+      "function_tests_skip": 3
+    },
+    "phase_4_webapp": {
+      "shared_import": "PASS",
+      "page_import": "WARN",
+      "key_exports": "PASS"
+    },
+    "phase_5_learning": "No new patterns"
+  },
+  "overall_result": "FAIL",
+  "failure_summary": "5 unguarded np.nanargmax calls (E034) in app/pages/05_bias_correction.py at lines 2834, 9163, 9175, 9185, 9202"
+}

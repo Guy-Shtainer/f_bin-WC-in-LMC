@@ -1,0 +1,27 @@
+{
+  "eval_id": 3,
+  "eval_name": "auto-detect-git-diff",
+  "prompt": "/error-check",
+  "assertions": [
+    {
+      "text": "Runs git diff --name-only to detect modified .py files",
+      "type": "behavioral",
+      "check": "transcript contains git diff --name-only"
+    },
+    {
+      "text": "Reports which files were auto-detected before proceeding",
+      "type": "output",
+      "check": "result.md lists the detected files"
+    },
+    {
+      "text": "Runs all 5 phases on the detected files (or stops gracefully if none found)",
+      "type": "behavioral",
+      "check": "transcript shows Phase 1 through Phase 5 execution, or a clean 'no files' message"
+    },
+    {
+      "text": "Produces summary table",
+      "type": "output",
+      "check": "result.md contains summary table"
+    }
+  ]
+}

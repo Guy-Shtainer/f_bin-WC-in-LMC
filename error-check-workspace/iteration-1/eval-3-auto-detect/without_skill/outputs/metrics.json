@@ -1,0 +1,19 @@
+{
+  "tool_calls": {
+    "Bash": 5,
+    "Read": 10,
+    "Grep": 15,
+    "Write": 2,
+    "Edit": 0,
+    "Glob": 0,
+    "total": 32
+  },
+  "files_checked": 2,
+  "issues_found": {
+    "medium_severity": 2,
+    "low_severity": 1,
+    "total": 3
+  },
+  "compilation_errors": 0,
+  "common_error_patterns_scanned": 12
+}

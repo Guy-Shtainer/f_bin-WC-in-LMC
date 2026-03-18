@@ -1,0 +1,14 @@
+{
+  "expectations": [
+    {"text": "Reads COMMON_ERRORS.md and extracts the Quick-Scan Regex", "passed": true, "evidence": "Result shows the exact grep pattern from COMMON_ERRORS.md and runs it against both files"},
+    {"text": "Runs grep with the Quick-Scan pattern against both target files", "passed": true, "evidence": "Found 0 matches in wr_bias_simulation.py, 22 nanargmax/nanargmin matches in 05_bias_correction.py"},
+    {"text": "Deletes or attempts to delete .pyc cache files for modified modules", "passed": false, "evidence": "Phase 2 SKIP — sandbox denied rm commands. The skill attempted it but was blocked."},
+    {"text": "Runs py_compile on both files", "passed": true, "evidence": "Phase 3a table shows PASS for both files"},
+    {"text": "Runs import test for wr_bias_simulation as a root module", "passed": true, "evidence": "Phase 3b: 'import wr_bias_simulation' OK"},
+    {"text": "Runs import test for 05_bias_correction with sys.path setup for app/", "passed": true, "evidence": "Phase 3b: importlib.import_module with sys.path.insert(0, 'app'), WARN (expected)"},
+    {"text": "Generates at least one function-level smoke test with numpy/domain data", "passed": true, "evidence": "10 functions tested with domain data: sample_inclination(100,rng), compute_K1(P,e,M1,M2,i)=102.36 km/s, solve_kepler, ks_two_sample, etc."},
+    {"text": "Runs Phase 4 webapp smoke test because app/ file is in target list", "passed": true, "evidence": "Phase 4: shared.py import PASS, page import WARN, PLOTLY_THEME exports verified"},
+    {"text": "Produces a formatted summary table with per-phase results and OVERALL verdict", "passed": true, "evidence": "ASCII table with Phase 1-5 results and OVERALL: FAIL"}
+  ],
+  "summary": {"passed": 8, "failed": 1, "total": 9, "pass_rate": 0.89}
+}

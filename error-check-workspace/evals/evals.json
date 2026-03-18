@@ -1,0 +1,46 @@
+{
+  "skill_name": "error-check",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "/error-check wr_bias_simulation.py app/pages/05_bias_correction.py",
+      "expected_output": "Full 5-phase verification on both files. Phase 1 should run grep patterns. Phase 2 should clean .pyc. Phase 3 should attempt imports and function-level tests. Phase 4 should run because app/ file is included. Summary table at end.",
+      "files": [],
+      "expectations": [
+        "Phase 1: Reads COMMON_ERRORS.md and runs the Quick-Scan Regex grep against both files",
+        "Phase 2: Attempts to delete .pyc files for both modules",
+        "Phase 3a: Runs py_compile on both files",
+        "Phase 3b: Runs import test for wr_bias_simulation (root module) and 05_bias_correction (app/pages/ module with sys.path setup)",
+        "Phase 3c: Identifies modified functions and generates at least one function-level smoke test with domain-appropriate data (numpy arrays, not trivial values)",
+        "Phase 4: Runs webapp smoke test because app/pages/05_bias_correction.py is in target list",
+        "Phase 4a: Imports shared.py successfully",
+        "Produces a summary table with PASS/FAIL/WARN/DONE for each phase and an OVERALL verdict"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "/error-check utils.py",
+      "expected_output": "5-phase verification on a clean utility file. Should pass all phases. Phase 3c should test robust_mean and robust_std with realistic data. Phase 4 should be skipped (not an app/ file).",
+      "files": [],
+      "expectations": [
+        "Phase 1: Runs grep scan on utils.py with zero matches",
+        "Phase 3b: Successfully imports utils module",
+        "Phase 3c: Tests at least one function from utils.py (robust_mean or robust_std) with numpy array input",
+        "Phase 4: Skipped or not run (utils.py is not under app/)",
+        "OVERALL verdict is PASS"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "/error-check",
+      "expected_output": "Auto-detects modified .py files from git diff. Runs all applicable phases on detected files. If no .py files are modified, reports that and stops.",
+      "files": [],
+      "expectations": [
+        "Runs git diff --name-only to detect modified .py files (not hardcoded file list)",
+        "Reports which files were auto-detected",
+        "If files found: runs all 5 phases on detected files",
+        "If no files found: reports 'No modified Python files' and stops gracefully"
+      ]
+    }
+  ]
+}

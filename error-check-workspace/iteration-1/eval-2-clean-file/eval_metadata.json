@@ -1,0 +1,32 @@
+{
+  "eval_id": 2,
+  "eval_name": "clean-file-utils",
+  "prompt": "/error-check utils.py",
+  "assertions": [
+    {
+      "text": "Runs grep scan on utils.py with zero or minimal matches",
+      "type": "behavioral",
+      "check": "transcript contains grep on utils.py"
+    },
+    {
+      "text": "Successfully imports utils module",
+      "type": "behavioral",
+      "check": "transcript contains 'import utils' with OK result"
+    },
+    {
+      "text": "Tests at least one function from utils.py (robust_mean or robust_std) with numpy array input",
+      "type": "behavioral",
+      "check": "transcript contains python -c calling robust_mean or robust_std with np.array"
+    },
+    {
+      "text": "Phase 4 is skipped because utils.py is not under app/",
+      "type": "output",
+      "check": "result.md indicates Phase 4 skipped or N/A"
+    },
+    {
+      "text": "OVERALL verdict is PASS",
+      "type": "output",
+      "check": "result.md contains OVERALL PASS"
+    }
+  ]
+}

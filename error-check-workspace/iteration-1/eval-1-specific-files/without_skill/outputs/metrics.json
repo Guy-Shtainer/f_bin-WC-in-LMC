@@ -1,0 +1,40 @@
+{
+  "tool_calls": {
+    "Bash": 4,
+    "Read": 12,
+    "Grep": 12,
+    "Write": 2,
+    "Edit": 0,
+    "Glob": 0,
+    "Skill": 0,
+    "ToolSearch": 0
+  },
+  "total_tool_calls": 30,
+  "files_created": 2,
+  "files_read": 2,
+  "errors_encountered": 1,
+  "issues_found": {
+    "critical": 1,
+    "medium": 1,
+    "low": 2,
+    "info": 1,
+    "total": 5
+  },
+  "common_errors_scanned": [
+    "E001_np_trapz",
+    "E002_numpy_bool",
+    "E017_applymap",
+    "E027_np_empty",
+    "E034_nanargmax_guard",
+    "asyncio_sleep",
+    "bool_is_true_false"
+  ],
+  "compilation_check": {
+    "wr_bias_simulation.py": "PASS",
+    "app/pages/05_bias_correction.py": "PASS"
+  },
+  "functional_test": {
+    "wr_bias_simulation.py": "BLOCKED (permission denied for Bash)",
+    "app/pages/05_bias_correction.py": "SKIPPED (requires Streamlit runtime)"
+  }
+}

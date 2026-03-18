@@ -1,0 +1,20 @@
+{
+  "tool_calls": {
+    "Read": 2,
+    "Grep": 3,
+    "Bash": 1,
+    "Write": 2,
+    "Edit": 0,
+    "Glob": 0,
+    "total": 8
+  },
+  "issues_found": {
+    "total": 5,
+    "high_severity": 0,
+    "medium_severity": 1,
+    "low_severity": 4
+  },
+  "common_errors_checked": true,
+  "runtime_tests_executed": false,
+  "runtime_tests_note": "Bash tool access was denied; only static analysis performed"
+}
