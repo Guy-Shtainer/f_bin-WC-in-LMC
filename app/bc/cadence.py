@@ -41,7 +41,7 @@ from bc.helpers import (
 )
 from bc.analysis import (
     _render_method_summary_section, _render_method_expander,
-    _render_cvm_analysis,
+    _render_cvm_analysis, _get_method_array,
 )
 from bc.params import (
     _render_orbital_params_dsilva, _render_orbital_params_langer,
@@ -159,6 +159,9 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
             # Persist final live heatmaps so they remain visible after job cleanup
             if _job.get('live_heatmaps'):
                 st.session_state[f'{p}_final_live_heatmaps'] = _job['live_heatmaps']
+            # Persist final live sigma 1D graph so it remains visible after job cleanup
+            if _job.get('live_sigma_1d'):
+                st.session_state[f'{p}_final_live_sigma_1d'] = _job['live_sigma_1d']
             del st.session_state[f'{p}_job']
             # Clear caches so load table picks up auto-saved file
             cached_load_grid_result.clear()
@@ -196,6 +199,29 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
                                 colorbar_title_override=_METHOD_COLORBAR_OVERRIDE.get(_mk)),
                             use_container_width=True)
 
+        # Show persisted final live sigma 1D graph (survive job cleanup)
+        _final_lsig = st.session_state.get(f'{p}_final_live_sigma_1d')
+        if _final_lsig and len(_final_lsig.get('sigma_vals', [])) > 1:
+            _lsig_lk = _final_lsig.get('max_likelihood')
+            if _lsig_lk and any(v > 0 for v in _lsig_lk):
+                st.plotly_chart(
+                    _make_max_pval_fig(
+                        np.array(_final_lsig['sigma_vals']),
+                        _lsig_lk, height=250,
+                        x_label='σ_single (km/s)',
+                        stat_label='Likelihood',
+                    ), use_container_width=True,
+                    key=f'{p}_final_sigma_1d_lk')
+            else:
+                st.plotly_chart(
+                    _make_max_pval_fig(
+                        np.array(_final_lsig['sigma_vals']),
+                        _final_lsig['max_pvals'], height=250,
+                        x_label='σ_single (km/s)',
+                        stat_label='K-S',
+                    ), use_container_width=True,
+                    key=f'{p}_final_sigma_1d_ks')
+
         ks_p_arr = result.get('ks_p')
         if ks_p_arr is None:
             st.warning('No results found.')
@@ -226,23 +252,11 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
             _x_vals = pi_grid
             _x_label = 'π  (period power-law index)'
             _x_name = 'π'
-            st.info(f'Showing best σ_single slice: {sigma_grid[_best_s]:.1f} km/s')
-
-        _score_label = 'K-S p-value'
-        _sl = 'K-S'
-        fig_hm = _make_heatmap_fig(
-            hm_z, fbin_grid.tolist(), np.asarray(_x_vals).tolist(),
-            title=f'{_score_label}  (cadence-aware, {"Dsilva" if _is_dsilva else "Langer 2020"})',
-            height=_ch, width=_cw,
-            x_label=_x_label, x_name=_x_name,
-            scoring_label=_sl,
-        )
-        # Star marker + contours are already added by make_heatmap_fig (live=False)
+        # Best-fit values from K-S (used downstream for summary, diagnostics, etc.)
         _bi = np.unravel_index(np.argmax(hm_z), hm_z.shape)
         _best_x_val = float(np.asarray(_x_vals)[_bi[1]])
         _best_fb = float(fbin_grid[_bi[0]])
         _best_pval = float(hm_z[_bi])
-        st.plotly_chart(fig_hm, use_container_width=_use_cw, key=f'{p}_heatmap')
 
         # ── Multi-method comparison summary (cadence) ────────────────────
         if _is_langer_sigma:
@@ -271,7 +285,7 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
             _cad_x_disp = 'sigma_single (km/s)'
 
         # ── Multi-method comparison summary (cadence, shown directly) ────
-        _render_method_summary_section(
+        _method_res = _render_method_summary_section(
             result, np.asarray(fbin_grid), _cad_x_g,
             extra_grids=_cad_extra_grids,
             prefix=p, x_name=_cad_x_name, x_label=_cad_x_label,
@@ -309,6 +323,7 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None) -> None:
                     x_display_label=_cad_x_disp,
                     ndim_mode=_cad_ndim_mode,
                     disp_outer_slices=None if _is_langer_sigma else _cad_outer,
+                    method_results=_method_res,
                 )
 
         # (Bug 11 removed: old CvM expander is now in per-method expanders)
