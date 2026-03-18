@@ -596,7 +596,7 @@ def _make_max_pval_fig(
     x_label: str = 'σ_single',
     stat_label: str = 'K-S',
 ) -> go.Figure:
-    """Line chart: max p-value vs a scan variable."""
+    """Line chart: max score vs a scan variable."""
     best_idx = int(np.argmax(max_pvals))
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -604,7 +604,7 @@ def _make_max_pval_fig(
         mode='lines+markers',
         marker=dict(size=8, color='#4A90D9'),
         line=dict(color='#4A90D9', width=2),
-        hovertemplate=f'{x_label}=%{{x:.2f}}<br>max p=%{{y:.4f}}<extra></extra>',
+        hovertemplate=f'{x_label}=%{{x:.2f}}<br>max {stat_label}=%{{y:.4f}}<extra></extra>',
         showlegend=False,
     ))
     fig.add_trace(go.Scatter(
@@ -613,16 +613,16 @@ def _make_max_pval_fig(
         mode='markers+text',
         marker=dict(symbol='star', size=16, color='gold',
                     line=dict(color='black', width=1)),
-        text=[f'  {x_label}={float(sigma_vals[best_idx]):.2f}, p={max_pvals[best_idx]:.4f}'],
+        text=[f'  {x_label}={float(sigma_vals[best_idx]):.2f}, {stat_label}={max_pvals[best_idx]:.4f}'],
         textposition='middle right',
         textfont=dict(color='gold', size=11),
         showlegend=False,
     ))
     fig.update_layout(**{
         **PLOTLY_THEME,
-        'title': dict(text=f'Max {stat_label} p-value vs {x_label}', font=dict(size=14)),
+        'title': dict(text=f'Max {stat_label} vs {x_label}', font=dict(size=14)),
         'xaxis_title': x_label,
-        'yaxis_title': f'Max {stat_label} p-value',
+        'yaxis_title': f'Max {stat_label}',
         'height': height,
         'margin': dict(l=60, r=20, t=50, b=50),
     })

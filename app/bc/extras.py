@@ -987,7 +987,7 @@ def _render_compare_tab(p: str) -> None:
     # ── Heatmaps ─────────────────────────────────────────────────────────
     _hm_results = [_r for _r in results if _r['info']['heatmap'] is not None]
     if _hm_results:
-        st.markdown('### p-value heatmaps')
+        st.markdown('### Score heatmaps')
 
         _all_same_type = len(set(_r['info']['type'] for _r in _hm_results)) == 1
         _all_same_shape = len(set(_r['info']['heatmap'].shape for _r in _hm_results)) == 1
@@ -1001,7 +1001,7 @@ def _render_compare_tab(p: str) -> None:
                 x=_ra['info']['x_vals'], y=_ra['info']['fbin_vals'],
                 colorscale='Blues', opacity=0.6, zsmooth='best',
                 name=_ra['label'],
-                colorbar=dict(title=f'{_ra["short"]} p-val', x=1.0),
+                colorbar=dict(title=f'{_ra["short"]} score', x=1.0),
             ))
             fig.add_trace(go.Contour(
                 z=_rb['info']['heatmap'],
@@ -1009,12 +1009,12 @@ def _render_compare_tab(p: str) -> None:
                 contours=dict(coloring='lines', showlabels=True),
                 line=dict(color=_rb['color'], width=2, dash='dot'),
                 name=_rb['label'],
-                colorbar=dict(title=f'{_rb["short"]} p-val', x=1.12),
+                colorbar=dict(title=f'{_rb["short"]} score', x=1.12),
                 showscale=True,
             ))
             fig.update_layout(**{
                 **PLOTLY_THEME,
-                'title': dict(text='p-value overlay'),
+                'title': dict(text='Score overlay'),
                 'xaxis_title': _ra['info']['x_label'],
                 'yaxis_title': 'f_bin',
                 'height': 500,
@@ -1037,7 +1037,7 @@ def _render_compare_tab(p: str) -> None:
                         _hm_fig = _make_heatmap_fig(
                             _r['info']['heatmap'],
                             _r['info']['fbin_vals'], _r['info']['x_vals'],
-                            title=f'p-value — {_r["short"]} ({_r["info"]["type"]})',
+                            title=f'Score — {_r["short"]} ({_r["info"]["type"]})',
                             x_label=_r['info']['x_label'],
                             height=350,
                         )

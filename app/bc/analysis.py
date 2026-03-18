@@ -361,8 +361,10 @@ def _render_method_summary_section(
     x_name: str = 'pi',
     x_label: str = 'pi',
     ndim_mode: str = 'dsilva',
-) -> None:
+) -> dict:
     """Render a comparison table of all scoring methods above the per-method details.
+
+    Returns method_results dict mapping method_key → {best_vals, hdi, ...}.
 
     Parameters
     ----------
@@ -510,112 +512,116 @@ def _render_method_summary_section(
         'best f_bin fall within every other method\'s 68% HDI for f_bin.'
     )
 
-    # ── CDF comparison plot: observed vs best-fit model from each method ──
+    return method_results
+
+
+def _render_all_methods_cdf(
+    result: dict,
+    method_results: dict,
+    fbin_g: np.ndarray,
+    x_g: np.ndarray,
+    prefix: str,
+    x_name: str = 'pi',
+    x_label: str = 'pi',
+) -> None:
+    """CDF comparison: observed vs best-fit model from each scoring method."""
     obs_drv = result.get('obs_delta_rv')
-    if obs_drv is not None and len(method_results) >= 2:
+    if obs_drv is None or len(method_results) < 1:
+        return
+    try:
+        from wr_bias_simulation import (
+            binned_cdf, DEFAULT_DRV_BIN_EDGES,
+            simulate_delta_rv_sample, SimulationConfig, BinaryParameterConfig,
+        )
+    except ImportError:
+        return
+
+    _be = result.get('bin_edges')
+    if _be is None:
+        _be = DEFAULT_DRV_BIN_EDGES
+    else:
+        _be = np.asarray(_be)
+    obs_drv = np.asarray(obs_drv)
+    _n_obs_stars = len(obs_drv)
+    obs_cdf = binned_cdf(obs_drv, _be)
+    _obs_x = np.concatenate([[0.0], _be])
+    _obs_y = np.concatenate([[0.0], obs_cdf])
+
+    fig_cdf = go.Figure()
+    fig_cdf.add_trace(go.Scatter(
+        x=_obs_x, y=_obs_y,
+        mode='lines', name='Observed',
+        line=dict(color='black', width=2.5),
+    ))
+
+    _n_cdf_sets = 100
+    for mk, info in method_results.items():
+        bv = info['best_vals']
+        fb = bv.get('fbin', 0.5)
+        pi_v = bv.get(x_name, 0.0)
+        sig_v = bv.get('sigma', 5.0)
+        _mcolor = next((c for k, _, _, _, c in SCORING_METHODS if k == mk), '#888888')
+        _mname = next((n for k, n, _, _, _ in SCORING_METHODS if k == mk), mk)
         try:
-            from wr_bias_simulation import (
-                binned_cdf, DEFAULT_DRV_BIN_EDGES,
-                simulate_delta_rv_sample, SimulationConfig, BinaryParameterConfig,
-            )
-            _be = result.get('bin_edges')
-            if _be is None:
-                _be = DEFAULT_DRV_BIN_EDGES
-            else:
-                _be = np.asarray(_be)
-            obs_drv = np.asarray(obs_drv)
-            _n_obs_stars = len(obs_drv)
-            obs_cdf = binned_cdf(obs_drv, _be)
-            # Prepend (0, 0) so the CDF starts at the origin
-            _obs_x = np.concatenate([[0.0], _be])
-            _obs_y = np.concatenate([[0.0], obs_cdf])
+            _all_cdfs = []
+            for _seed_i in range(_n_cdf_sets):
+                sim_cfg = SimulationConfig(
+                    n_stars=_n_obs_stars,
+                    sigma_single=float(sig_v),
+                    sigma_measure=float(result.get('sigma_meas', 3.0)),
+                )
+                bin_cfg = BinaryParameterConfig()
+                rng = np.random.default_rng(42 + _seed_i)
+                sim_drv = simulate_delta_rv_sample(
+                    f_bin=float(fb), pi=float(pi_v),
+                    sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
+                _all_cdfs.append(binned_cdf(sim_drv, _be))
+            _all_cdfs = np.array(_all_cdfs)
+            _median_cdf = np.median(_all_cdfs, axis=0)
+            _lo_cdf = np.percentile(_all_cdfs, 16, axis=0)
+            _hi_cdf = np.percentile(_all_cdfs, 84, axis=0)
 
-            fig_cdf = go.Figure()
+            _med_x = np.concatenate([[0.0], _be])
+            _med_y = np.concatenate([[0.0], _median_cdf])
+            _lo_y = np.concatenate([[0.0], _lo_cdf])
+            _hi_y = np.concatenate([[0.0], _hi_cdf])
+
+            _lbl = f'{_mname} (f_bin={fb:.3f}'
+            if x_name in bv:
+                _lbl += f', {x_label}={bv[x_name]:.2f}'
+            _lbl += ')'
+
+            _fill_color = _hex_to_rgba(_mcolor, 0.2)
             fig_cdf.add_trace(go.Scatter(
-                x=_obs_x, y=_obs_y,
-                mode='lines', name='Observed',
-                line=dict(color='black', width=2.5),
+                x=np.concatenate([_med_x, _med_x[::-1]]),
+                y=np.concatenate([_hi_y, _lo_y[::-1]]),
+                fill='toself', fillcolor=_fill_color,
+                line=dict(color='rgba(0,0,0,0)'),
+                showlegend=False, hoverinfo='skip',
             ))
+            fig_cdf.add_trace(go.Scatter(
+                x=_med_x, y=_med_y,
+                mode='lines', name=_lbl,
+                line=dict(color=_mcolor, width=2, dash='dash'),
+            ))
+        except Exception:
+            pass
 
-            _n_cdf_sets = 100  # Number of MC draws for confidence band
-
-            # For each method, simulate at best-fit params and overlay CDF
-            # with 16th/84th percentile confidence bands
-            for mk, info in method_results.items():
-                bv = info['best_vals']
-                fb = bv.get('fbin', 0.5)
-                pi_v = bv.get(x_name, 0.0)
-                sig_v = bv.get('sigma', 5.0)
-                _mcolor = next((c for k, _, _, _, c in SCORING_METHODS if k == mk), '#888888')
-                _mname = next((n for k, n, _, _, _ in SCORING_METHODS if k == mk), mk)
-                try:
-                    # Simulate n_cdf_sets draws to get median + confidence band
-                    _all_cdfs = []
-                    for _seed_i in range(_n_cdf_sets):
-                        sim_cfg = SimulationConfig(
-                            n_stars=_n_obs_stars,
-                            sigma_single=float(sig_v),
-                            sigma_measure=float(result.get('sigma_meas', 3.0)),
-                        )
-                        bin_cfg = BinaryParameterConfig()
-                        rng = np.random.default_rng(42 + _seed_i)
-                        sim_drv = simulate_delta_rv_sample(
-                            f_bin=float(fb), pi=float(pi_v),
-                            sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
-                        _all_cdfs.append(binned_cdf(sim_drv, _be))
-                    _all_cdfs = np.array(_all_cdfs)  # (n_sets, n_bins)
-                    _median_cdf = np.median(_all_cdfs, axis=0)
-                    _lo_cdf = np.percentile(_all_cdfs, 16, axis=0)
-                    _hi_cdf = np.percentile(_all_cdfs, 84, axis=0)
-
-                    # Prepend (0, 0) to all CDF traces
-                    _med_x = np.concatenate([[0.0], _be])
-                    _med_y = np.concatenate([[0.0], _median_cdf])
-                    _lo_y = np.concatenate([[0.0], _lo_cdf])
-                    _hi_y = np.concatenate([[0.0], _hi_cdf])
-
-                    _lbl = f'{_mname} (f_bin={fb:.3f}'
-                    if x_name in bv:
-                        _lbl += f', {x_label}={bv[x_name]:.2f}'
-                    _lbl += ')'
-
-                    # Confidence band (shaded region between 16th and 84th)
-                    _fill_color = _hex_to_rgba(_mcolor, 0.2)
-                    fig_cdf.add_trace(go.Scatter(
-                        x=np.concatenate([_med_x, _med_x[::-1]]),
-                        y=np.concatenate([_hi_y, _lo_y[::-1]]),
-                        fill='toself', fillcolor=_fill_color,
-                        line=dict(color='rgba(0,0,0,0)'),
-                        showlegend=False,
-                        hoverinfo='skip',
-                    ))
-                    # Median line
-                    fig_cdf.add_trace(go.Scatter(
-                        x=_med_x, y=_med_y,
-                        mode='lines', name=_lbl,
-                        line=dict(color=_mcolor, width=2, dash='dash'),
-                    ))
-                except Exception:
-                    pass  # Skip if simulation fails for this method
-
-            fig_cdf.update_layout(**{
-                **PLOTLY_THEME,
-                'title': dict(text='CDF Comparison: Observed vs Best-Fit Models', font=dict(size=14)),
-                'xaxis_title': 'ΔRV (km/s)',
-                'yaxis_title': 'Cumulative Fraction',
-                'height': 400,
-                'legend': dict(x=0.55, y=0.05),
-            })
-            st.plotly_chart(fig_cdf, use_container_width=True,
-                            key=f'{prefix}_cdf_comparison')
-            st.caption(
-                f'Observed ΔRV CDF (solid black) vs simulated CDFs at each '
-                f'method\'s best-fit parameters (dashed, median of {_n_cdf_sets} draws). '
-                f'Shaded bands show 16th-84th percentile range. N_stars={_n_obs_stars}.'
-            )
-        except ImportError:
-            pass  # wr_bias_simulation not available
-
+    fig_cdf.update_layout(**{
+        **PLOTLY_THEME,
+        'title': dict(text='CDF Comparison: Observed vs Best-Fit Models', font=dict(size=14)),
+        'xaxis_title': 'ΔRV (km/s)',
+        'yaxis_title': 'Cumulative Fraction',
+        'height': 400,
+        'legend': dict(x=0.55, y=0.05),
+    })
+    st.plotly_chart(fig_cdf, use_container_width=True,
+                    key=f'{prefix}_cdf_comparison')
+    st.caption(
+        f'Observed ΔRV CDF (solid black) vs simulated CDFs at each '
+        f'method\'s best-fit parameters (dashed, median of {_n_cdf_sets} draws). '
+        f'Shaded bands show 16th-84th percentile range. N_stars={_n_obs_stars}.'
+    )
 
 
 def _render_method_expander(
@@ -635,6 +641,7 @@ def _render_method_expander(
     x_display_label: str = 'pi (period power-law index)',
     ndim_mode: str = 'dsilva',
     disp_outer_slices: tuple[int, ...] | None = None,
+    method_results: dict | None = None,
 ) -> None:
     """Render one scoring method's detail panel inside an expander.
 
@@ -652,9 +659,13 @@ def _render_method_expander(
         For Dsilva 4D: (logPmax_idx, sigma_idx).
         For cadence 3D: (sigma_idx,).
         For Langer 2D: None (already 2D).
+    method_results : dict or None
+        All methods' best-fit info (from _render_method_summary_section).
+        Used to render CDF comparison inside K-S expander.
     """
     _is_likelihood = (method_key == 'likelihood')
     _theme = PLOTLY_THEME
+    pal = get_palette()
 
     # Slice down to 2D: [fbin, x]
     if disp_outer_slices is not None and p_nd.ndim > 2:
@@ -705,7 +716,12 @@ def _render_method_expander(
         g_fb = float(fbin_g[global_best_idx[0]])
         g_x = float(x_g[global_best_idx[1]])
 
-    score_label = 'Likelihood' if _is_likelihood else 'p-value'
+    if _is_likelihood:
+        score_label = 'Likelihood'
+    elif method_key == 'cvm':
+        score_label = 'CvM S-score'
+    else:
+        score_label = 'p-value'
 
     # ── Heatmap ──────────────────────────────────────────────────
     show_d = not _is_likelihood
@@ -763,7 +779,63 @@ def _render_method_expander(
             mode=_mode,
             obs_delta_rv=_obs_drv,
             likelihood_bin_edges=_lk_edges,
+            result=result,
         )
+
+    # ── Likelihood vs σ_single (only for likelihood with multiple σ values) ──
+    if method_key == 'likelihood':
+        _sigma_g = np.asarray(result.get('sigma_grid', []))
+        _lk_full = result.get('likelihood')
+        if _lk_full is not None and _sigma_g.size > 1:
+            _lk_full = np.asarray(_lk_full, dtype=float)
+            # Compute max likelihood per σ_single (marginalize over f_bin, π, logPmax)
+            if _lk_full.ndim == 4:
+                # [logPmax, sigma, fbin, pi] → max over logPmax, fbin, pi
+                _max_per_sig = np.nanmax(_lk_full, axis=(0, 2, 3))
+            elif _lk_full.ndim == 3:
+                # [sigma, fbin, pi] → max over fbin, pi
+                _max_per_sig = np.nanmax(_lk_full, axis=(1, 2))
+            elif _lk_full.ndim == 2:
+                # Langer: [fbin, sigma] → max over fbin
+                _max_per_sig = np.nanmax(_lk_full, axis=0)
+            else:
+                _max_per_sig = None
+
+            if _max_per_sig is not None and _max_per_sig.size == _sigma_g.size:
+                st.divider()
+                _best_sig_idx = int(np.nanargmax(_max_per_sig))
+                _fig_sig = go.Figure()
+                _fig_sig.add_trace(go.Scatter(
+                    x=_sigma_g, y=_max_per_sig,
+                    mode='lines+markers', name='Max Likelihood',
+                    line=dict(color='#4A90D9', width=2),
+                    marker=dict(size=6),
+                ))
+                _fig_sig.add_trace(go.Scatter(
+                    x=[float(_sigma_g[_best_sig_idx])],
+                    y=[float(_max_per_sig[_best_sig_idx])],
+                    mode='markers', name='Best σ_single',
+                    marker=dict(symbol='star', size=16, color='#DAA520'),
+                ))
+                _fig_sig.update_layout(**{
+                    **PLOTLY_THEME,
+                    'title': dict(
+                        text='Max Likelihood vs σ_single',
+                        font=dict(size=14),
+                    ),
+                    'xaxis_title': 'σ_single (km/s)',
+                    'yaxis_title': 'Max Normalized Likelihood',
+                    'height': 380,
+                    'legend': dict(x=0.7, y=0.95),
+                })
+                st.plotly_chart(_fig_sig, use_container_width=use_cw,
+                                key=f'{prefix}_{method_key}_sig_profile')
+                st.caption(
+                    f'Best σ_single = {_sigma_g[_best_sig_idx]:.1f} km/s '
+                    f'(max L = {_max_per_sig[_best_sig_idx]:.4f}). '
+                    f'Shows the maximum globally-normalized likelihood at each '
+                    f'σ_single value (maximized over f_bin and π).'
+                )
 
     # ── Corner Plot (2-param: fbin x x) ─────────────────────────────
     st.divider()
@@ -920,6 +992,16 @@ def _render_method_expander(
             )
         else:
             st.info('No valid data for corner plot.')
+
+    # ── All-methods CDF comparison (K-S expander only) ──────────────
+    if method_key == 'ks' and method_results:
+        st.divider()
+        with st.expander('CDF Comparison — All Scoring Methods', expanded=False):
+            _render_all_methods_cdf(
+                result, method_results, fbin_g, x_g,
+                prefix=f'{prefix}_{method_key}',
+                x_name=x_name, x_label=x_label,
+            )
 
     # ── Model Explorer (best-fit CDF, histogram, detection fraction) ──
     _obs_drv_me = result.get('obs_delta_rv')
@@ -1081,6 +1163,7 @@ def _render_cvm_analysis(
     mode: str = 'cvm',
     obs_delta_rv: np.ndarray | None = None,
     likelihood_bin_edges: np.ndarray | None = None,
+    result: dict | None = None,
 ) -> None:
     """Render scoring analysis: heatmaps, grid exclusion, parabolic fit, 1D slices.
 
@@ -1264,32 +1347,21 @@ def _render_cvm_analysis(
                       else 'Fraction of simulated sets with S ≥ S_obs.')
     st.caption(_score_caption)
 
-    # Binned bar chart (likelihood-specific: observed vs simulated bin counts)
-    if _is_likelihood and obs_delta_rv is not None and likelihood_bin_edges is not None:
-        _lk_edges = np.asarray(likelihood_bin_edges)
-        _n_obs_bins = np.histogram(np.abs(obs_delta_rv), bins=_lk_edges)[0]
-        _bin_labels = []
-        for _bi in range(len(_lk_edges) - 1):
-            lo = _lk_edges[_bi]
-            hi = _lk_edges[_bi + 1]
-            if np.isinf(hi):
-                _bin_labels.append(f'[{lo:.0f}, ∞)')
-            else:
-                _bin_labels.append(f'[{lo:.0f}, {hi:.0f})')
-        _fig_bar = go.Figure()
-        _fig_bar.add_trace(go.Bar(
-            x=_bin_labels, y=_n_obs_bins,
-            name='Observed', marker_color='#4A90D9',
-            text=_n_obs_bins, textposition='auto',
-        ))
-        _fig_bar.update_layout(**{**_theme,
-            'title': dict(text='Observed ΔRV Bin Counts (Multinomial Likelihood)'),
-            'xaxis': dict(title='ΔRV bin (km/s)'),
-            'yaxis': dict(title='Count'),
-            'height': 350})
-        st.plotly_chart(_fig_bar, use_container_width=(width is None))
-        st.caption('Multinomial likelihood compares these observed bin counts '
-                   'to simulated bin probabilities at each grid point.')
+    # Likelihood-specific: CDF comparison, per-bin stats, and explanation
+    if _is_likelihood and obs_delta_rv is not None and likelihood_bin_edges is not None and result is not None:
+        from bc.likelihood_viz import (
+            render_likelihood_cdf, render_likelihood_stats_table,
+            render_likelihood_explanation,
+        )
+        _pooled_sim = render_likelihood_cdf(
+            obs_delta_rv, result, likelihood_bin_edges,
+            prefix=prefix, theme=_theme,
+        )
+        if _pooled_sim is not None:
+            render_likelihood_stats_table(
+                obs_delta_rv, _pooled_sim, likelihood_bin_edges,
+            )
+        render_likelihood_explanation(obs_delta_rv, likelihood_bin_edges)
 
     # S_raw (unweighted) heatmap — CvM only, cross-model comparable
     if not _is_likelihood and ks_S_raw_2d is not None and np.any(np.isfinite(ks_S_raw_2d)):
