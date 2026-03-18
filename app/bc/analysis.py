@@ -571,60 +571,58 @@ def _render_method_expander(
             result=result,
         )
 
-    # ── Likelihood vs σ_single (only for likelihood with multiple σ values) ──
-    if method_key == 'likelihood':
-        _sigma_g = np.asarray(result.get('sigma_grid', []))
-        _lk_full = result.get('likelihood')
-        if _lk_full is not None and _sigma_g.size > 1:
-            _lk_full = np.asarray(_lk_full, dtype=float)
-            # Compute max likelihood per σ_single (marginalize over f_bin, π, logPmax)
-            if _lk_full.ndim == 4:
-                # [logPmax, sigma, fbin, pi] → max over logPmax, fbin, pi
-                _max_per_sig = np.nanmax(_lk_full, axis=(0, 2, 3))
-            elif _lk_full.ndim == 3:
-                # [sigma, fbin, pi] → max over fbin, pi
-                _max_per_sig = np.nanmax(_lk_full, axis=(1, 2))
-            elif _lk_full.ndim == 2:
-                # Langer: [fbin, sigma] → max over fbin
-                _max_per_sig = np.nanmax(_lk_full, axis=0)
+    # ── Score vs σ_single (all methods with multiple σ values) ──
+    _sigma_g = np.asarray(result.get('sigma_grid', []))
+    if _sigma_g.size > 1:
+        from bc.helpers import _make_max_pval_fig, _make_min_score_fig
+        # Get full ND score array for this method
+        _pk = next((pk for mk, _, pk, _, _ in SCORING_METHODS if mk == method_key), None)
+        _full_arr = _get_method_array(result, _pk) if _pk else None
+        if _full_arr is not None:
+            # Compute best score per sigma (maximize for p-value/likelihood, minimize for D-stat)
+            _is_cvm = (method_key == 'cvm')
+            # For CvM: use D-statistic (lower=better); for others: use p/likelihood (higher=better)
+            if _is_cvm:
+                _dk = next((dk for mk, _, _, dk, _ in SCORING_METHODS if mk == 'cvm'), None)
+                _d_arr = _get_method_array(result, _dk)
+                _score_arr = _d_arr if _d_arr is not None else _full_arr
             else:
-                _max_per_sig = None
+                _score_arr = _full_arr
 
-            if _max_per_sig is not None and _max_per_sig.size == _sigma_g.size:
+            # Determine sigma axis and compute per-sigma score
+            _per_sig = None
+            if _score_arr.ndim == 4:
+                # Dsilva 4D: [logPmax, sigma, fbin, pi]
+                if _is_cvm:
+                    _per_sig = np.nanmin(_score_arr, axis=(0, 2, 3))
+                else:
+                    _per_sig = np.nanmax(_score_arr, axis=(0, 2, 3))
+            elif _score_arr.ndim == 3:
+                # Cadence 3D: [sigma, fbin, pi]
+                if _is_cvm:
+                    _per_sig = np.nanmin(_score_arr, axis=(1, 2))
+                else:
+                    _per_sig = np.nanmax(_score_arr, axis=(1, 2))
+            elif _score_arr.ndim == 2:
+                # Langer 2D: [fbin, sigma]
+                if _is_cvm:
+                    _per_sig = np.nanmin(_score_arr, axis=0)
+                else:
+                    _per_sig = np.nanmax(_score_arr, axis=0)
+
+            if _per_sig is not None and _per_sig.size == _sigma_g.size:
                 st.divider()
-                _best_sig_idx = int(np.nanargmax(_max_per_sig))
-                _fig_sig = go.Figure()
-                _fig_sig.add_trace(go.Scatter(
-                    x=_sigma_g, y=_max_per_sig,
-                    mode='lines+markers', name='Max Likelihood',
-                    line=dict(color='#4A90D9', width=2),
-                    marker=dict(size=6),
-                ))
-                _fig_sig.add_trace(go.Scatter(
-                    x=[float(_sigma_g[_best_sig_idx])],
-                    y=[float(_max_per_sig[_best_sig_idx])],
-                    mode='markers', name='Best σ_single',
-                    marker=dict(symbol='star', size=16, color='#DAA520'),
-                ))
-                _fig_sig.update_layout(**{
-                    **PLOTLY_THEME,
-                    'title': dict(
-                        text='Max Likelihood vs σ_single',
-                        font=dict(size=14),
-                    ),
-                    'xaxis_title': 'σ_single (km/s)',
-                    'yaxis_title': 'Max Normalized Likelihood',
-                    'height': 380,
-                    'legend': dict(x=0.7, y=0.95),
-                })
+                _mname_sig = next((n for mk, n, _, _, _ in SCORING_METHODS if mk == method_key), method_key)
+                if _is_cvm:
+                    _fig_sig = _make_min_score_fig(
+                        _sigma_g, list(_per_sig), height=350,
+                        x_label='σ_single (km/s)', stat_label=_mname_sig)
+                else:
+                    _fig_sig = _make_max_pval_fig(
+                        _sigma_g, list(_per_sig), height=350,
+                        x_label='σ_single (km/s)', stat_label=_mname_sig)
                 st.plotly_chart(_fig_sig, use_container_width=use_cw,
                                 key=f'{prefix}_{method_key}_sig_profile')
-                st.caption(
-                    f'Best σ_single = {_sigma_g[_best_sig_idx]:.1f} km/s '
-                    f'(max L = {_max_per_sig[_best_sig_idx]:.4f}). '
-                    f'Shows the maximum globally-normalized likelihood at each '
-                    f'σ_single value (maximized over f_bin and π).'
-                )
 
     # ── Corner Plot (N-param: fbin × x × sigma if available) ───────────
     from bc.corner_plots import _render_corner_plot
