@@ -226,16 +226,28 @@ def _render_method_summary_section(
         x_best = f"{bv.get(x_name, 0):.3f}"
         x_hdi = _fmt_hdi_cell(x_name, '.3f')
 
+        # Sigma columns (only if sigma is a separate grid axis, not the x-axis)
+        _has_sigma_col = ('sigma' in grid_names and x_name != 'sigma')
+        sig_best = ''
+        sig_hdi = ''
+        if _has_sigma_col:
+            sig_best = f"{bv.get('sigma', 0):.2f}"
+            sig_hdi = _fmt_hdi_cell('sigma', '.2f')
+
         score_val = f"{info['best_score']:.6f}"
 
-        rows.append({
+        row = {
             'Method': mname,
-            f'Best f_bin': fb_best,
+            'Best f_bin': fb_best,
             '68% HDI f_bin': fb_hdi,
             f'Best {x_label}': x_best,
             f'68% HDI {x_label}': x_hdi,
             'Score (best)': score_val,
-        })
+        }
+        if _has_sigma_col:
+            row['Best σ_single'] = sig_best
+            row['68% HDI σ_single'] = sig_hdi
+        rows.append(row)
 
     if not rows:
         return
