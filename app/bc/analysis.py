@@ -536,11 +536,33 @@ def _render_method_expander(
     _lk_edges = result.get('likelihood_bin_edges')
     if method_key in ('cvm', 'likelihood'):
         _mode = method_key
+        # Extract sigma grid and full ND arrays for 3D fit passthrough
+        _sigma_g_fit = np.asarray(result.get('sigma_grid', []))
+        _full_D_3d = None
+        _full_p_3d = None
+        if _sigma_g_fit.size > 1:
+            _dk_key = {'cvm': 'cvm_D', 'likelihood': 'logL_raw'}[method_key]
+            _pk_key = {'cvm': 'cvm_p', 'likelihood': 'likelihood'}[method_key]
+            _raw_D = _get_method_array(result, _dk_key)
+            _raw_p = _get_method_array(result, _pk_key)
+            if _raw_D is not None:
+                # Handle Dsilva 4D: [logPmax, sigma, fbin, pi] → take logPmax slice
+                if ndim_mode == 'dsilva' and _raw_D.ndim == 4:
+                    _lp_idx = disp_outer_slices[0] if disp_outer_slices else 0
+                    _full_D_3d = _raw_D[_lp_idx]  # → [sigma, fbin, pi]
+                    _full_p_3d = _raw_p[_lp_idx] if _raw_p is not None else None
+                elif _raw_D.ndim == 3:
+                    # Cadence modes: already [sigma, fbin, pi]
+                    _full_D_3d = _raw_D
+                    _full_p_3d = _raw_p
         _render_cvm_analysis(
             D_2d if D_2d is not None else p_2d,
             p_2d,
             fbin_g, x_g,
             x_label='f_bin', y_label=x_label,
+            sigma_grid=_sigma_g_fit if _sigma_g_fit.size > 1 else None,
+            ks_D_3d=_full_D_3d,
+            ks_p_3d=_full_p_3d,
             height=height, width=width,
             prefix=f'{prefix}_{method_key}_analysis',
             mode=_mode,
