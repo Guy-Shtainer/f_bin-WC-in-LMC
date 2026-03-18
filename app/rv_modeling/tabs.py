@@ -1,37 +1,179 @@
-"""rv_modeling/tabs.py — The 4 result tabs for the RV Modeling page."""
+"""rv_modeling/tabs.py — Existing tabs: Sample Fit, Fraction Recovery, Global Correction."""
 from __future__ import annotations
 
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+from scipy.interpolate import interp1d
 
 from shared import PLOTLY_THEME, COLOR_BINARY, COLOR_SINGLE
 
-from rv_modeling.helpers import T_MAX, COLOR_GAUSS, _theme_parts, _ann
+from rv_modeling.helpers import NSIGMA_DETECT, T_MAX, COLOR_GAUSS, _theme_parts, _ann, resolve_nbins
+from rv_modeling.compute import (
+    compute_standard_ranges, compute_binary_delta_rvs,
+    _empirical_survival, _fit_models,
+)
 
 
-def render_tab_sample_fit(ctx: dict):
-    """Tab 1: Sample Fit — fitted binary fraction vs ΔRV threshold."""
-    pal = ctx["pal"]
+# ---------------------------------------------------------------------------
+# Tab D: Sample Fit (Empirical + Gaussian)
+# ---------------------------------------------------------------------------
+
+def render_tab_sample_fit(obs_data: dict):
+    """Tab D: Fitted binary fraction vs ΔRV threshold (Empirical + Gaussian)."""
+    pal = obs_data["pal"]
     _ax, _ay, _al = _theme_parts()
-    t_full = ctx["t_full"]
-    t_dots, f_dots, e_dots = ctx["t_dots"], ctx["f_dots"], ctx["e_dots"]
-    raw_frac = ctx["raw_frac"]
-    emp, gauss = ctx["emp"], ctx["gauss"]
-    binary_drvs = ctx["binary_drvs"]
-    sim_info = ctx["sim_info"]
-    pg_fbin, pg_sigma_s, pg_sigma_b = ctx["pg_fbin"], ctx["pg_sigma_s"], ctx["pg_sigma_b"]
-    pg_emp_curve, pg_gauss_curve = ctx["pg_emp_curve"], ctx["pg_gauss_curve"]
-    pg_chi2_emp, pg_chi2_gauss = ctx["pg_chi2_emp"], ctx["pg_chi2_gauss"]
-    t_optimal_main = ctx["t_optimal_main"]
-    is_sig, p2p, p2p_err = ctx["is_sig"], ctx["p2p"], ctx["p2p_err"]
-    names = ctx["names"]
-    n_stars = ctx["n_stars"]
-    star_centered_rvs = ctx["star_centered_rvs"]
+    t_full = obs_data["t_full"]
+    t_dots, f_dots, e_dots = obs_data["t_dots"], obs_data["f_dots"], obs_data["e_dots"]
+    f_obs = obs_data["f_obs"] if "f_obs" in obs_data else np.array(
+        [np.sum(obs_data["is_sig"] & (obs_data["p2p"] > t)) / obs_data["n_stars"]
+         for t in t_full])
+    raw_frac = obs_data["raw_frac"]
+    sig_err = obs_data["sig_err"]
+    is_sig, p2p, p2p_err = obs_data["is_sig"], obs_data["p2p"], obs_data["p2p_err"]
+    names = obs_data["names"]
+    n_stars = obs_data["n_stars"]
+    star_centered_rvs = obs_data["star_centered_rvs"]
 
-    st.subheader("Fitted Binary Fraction vs ΔRV Threshold")
+    st.subheader("Sample Fit (Empirical + Gaussian)")
+    st.caption(
+        "Uses simulated binary ΔRVs from Tab A to fit two models: "
+        "Empirical (uses actual ΔRV distribution) and Gaussian (analytical)."
+    )
 
+    # ── Check if simulation has been run in Tab A ──
+    sim_params = st.session_state.get("rvm_sim_params")
+    if sim_params is None:
+        st.warning("Run the simulation in the **Simulate Binary RVs** tab first.")
+        return
+
+    # ── Run ΔRV simulation + fitting ──
+    should_run = ("rvm_sf_results" not in st.session_state
+                  or st.button("Re-run fitting", key="rvm_sf_rerun"))
+
+    if should_run:
+        with st.spinner("Computing ΔRVs and fitting models..."):
+            p = sim_params
+            binary_drvs = compute_binary_delta_rvs(
+                n_sim=p["n_sim"], n_epochs=p["n_epochs"],
+                time_span=p["time_span"],
+                period_model=p["period_model"], pi=p["pi"],
+                e_model=p["e_model"], e_max=p["e_max"],
+                q_model=p["q_model"], seed=p["seed"],
+                weight_A=p["weight_A"],
+                logP_min=p["logP_min"], logP_max=p["logP_max"],
+                q_min=p["q_min"], q_max=p["q_max"],
+                q_flipped=p["q_flipped"],
+                langer_q_mu=p["langer_q_mu"],
+                langer_q_sigma=p["langer_q_sigma"],
+                mass_primary_model=p["mass_model"],
+                mass_primary_fixed=p["mass_fixed"],
+                mass_primary_min=p.get("mass_min", 10.0),
+                mass_primary_max=p.get("mass_max", 20.0),
+                dist_A=p["dist_A"], mu_A=p["mu_A"], sigma_A=p["sigma_A"],
+                dist_B=p["dist_B"], mu_B=p["mu_B"], sigma_B=p["sigma_B"],
+            )
+            sorted_binary = np.sort(binary_drvs)
+            sorted_std_ranges = compute_standard_ranges(p["n_epochs"])
+
+            t_max_b = max(500.0, float(np.max(binary_drvs)) * 1.1)
+            t_interp_b = np.linspace(0, t_max_b, 3000)
+            surv_b_raw = _empirical_survival(sorted_binary, t_interp_b)
+            binary_surv_fn = interp1d(t_interp_b, surv_b_raw, kind="linear",
+                                      bounds_error=False, fill_value=(1.0, 0.0))
+
+            t_interp_s = np.linspace(0, 15, 3000)
+            surv_s_raw = _empirical_survival(sorted_std_ranges, t_interp_s)
+            std_surv_fn = interp1d(t_interp_s, surv_s_raw, kind="linear",
+                                   bounds_error=False, fill_value=(1.0, 0.0))
+
+            emp, gauss = _fit_models(
+                t_full, t_dots, f_obs, f_dots, e_dots, raw_frac, sig_err,
+                std_surv_fn, binary_surv_fn,
+            )
+
+            if emp is None and gauss is None:
+                st.error("Both models failed to fit.")
+                return
+
+            st.session_state["_rvm_bestfit_fbin"] = (
+                emp["f_fit"] if emp else (gauss["f_fit"] if gauss else 0.4))
+            st.session_state["_rvm_bestfit_sigma_s"] = (
+                emp["sigma_s"] if emp else (gauss["sigma_s"] if gauss else 10.0))
+            st.session_state["_rvm_bestfit_sigma_b"] = (
+                gauss["sigma_b"] if gauss else 60.0)
+
+            st.session_state["rvm_sf_results"] = dict(
+                emp=emp, gauss=gauss,
+                binary_drvs=binary_drvs,
+                surv_s_x=t_interp_s, surv_s_y=surv_s_raw,
+                surv_b_x=t_interp_b, surv_b_y=surv_b_raw,
+                sim_info=sim_params,
+            )
+
+    res = st.session_state.get("rvm_sf_results")
+    if res is None:
+        st.info("Waiting for computation...")
+        return
+
+    emp = res["emp"]
+    gauss = res["gauss"]
+    binary_drvs = res["binary_drvs"]
+    sim_info = res["sim_info"]
+
+    # Rebuild survival functions for instant playground
+    std_surv_fn = interp1d(res["surv_s_x"], res["surv_s_y"], kind="linear",
+                           bounds_error=False, fill_value=(1.0, 0.0))
+    bin_surv_fn = interp1d(res["surv_b_x"], res["surv_b_y"], kind="linear",
+                           bounds_error=False, fill_value=(1.0, 0.0))
+
+    # ── Instant controls ──
+    st.markdown("**Instant controls** — adjust and see plots update immediately")
+    ic1, ic2, ic3 = st.columns(3)
+    with ic1:
+        pg_fbin = st.slider(
+            "f_bin", 0.0, 1.0,
+            st.session_state.get("_rvm_bestfit_fbin", 0.4),
+            0.01, key="rvm_sf_fbin",
+        )
+    with ic2:
+        pg_sigma_s = st.slider(
+            "σ_single (km/s)", 0.5, 80.0,
+            st.session_state.get("_rvm_bestfit_sigma_s", 10.0),
+            0.5, key="rvm_sf_sigma_s",
+        )
+    with ic3:
+        pg_sigma_b = st.slider(
+            "σ_binary (km/s) — Gaussian model", 5.0, 300.0,
+            st.session_state.get("_rvm_bestfit_sigma_b", 60.0),
+            1.0, key="rvm_sf_sigma_b",
+        )
+
+    # Playground curves
+    pg_emp_curve = (1 - pg_fbin) * std_surv_fn(t_full / pg_sigma_s) + \
+                   pg_fbin * bin_surv_fn(t_full)
+    pg_gauss_curve = (1 - pg_fbin) * std_surv_fn(t_full / pg_sigma_s) + \
+                     pg_fbin * std_surv_fn(t_full / pg_sigma_b)
+
+    pg_emp_d = (1 - pg_fbin) * std_surv_fn(t_dots / pg_sigma_s) + \
+               pg_fbin * bin_surv_fn(t_dots)
+    pg_gauss_d = (1 - pg_fbin) * std_surv_fn(t_dots / pg_sigma_s) + \
+                 pg_fbin * std_surv_fn(t_dots / pg_sigma_b)
+    pg_chi2_emp = float(np.sum(((f_dots - pg_emp_d) / e_dots) ** 2)) / max(1, len(t_dots) - 2)
+    pg_chi2_gauss = float(np.sum(((f_dots - pg_gauss_d) / e_dots) ** 2)) / max(1, len(t_dots) - 3)
+
+    t_optimal_main = None
+    if emp is not None:
+        t_optimal_main = emp.get("t_optimal")
+    elif gauss is not None:
+        t_optimal_main = gauss.get("t_optimal")
+    if t_optimal_main is None:
+        t_optimal_main = 45.5
+
+    st.markdown("---")
+
+    # ── Main plot ──
     fig1 = make_subplots(
         rows=2, cols=1, shared_xaxes=True,
         row_heights=[0.75, 0.25], vertical_spacing=0.04,
@@ -52,7 +194,7 @@ def render_tab_sample_fit(ctx: dict):
         name="Raw (no sig filter)",
     ), row=1, col=1)
 
-    # Playground curves (current slider values)
+    # Playground curves
     fig1.add_trace(go.Scatter(
         x=t_full, y=pg_emp_curve, mode="lines",
         line=dict(color=COLOR_BINARY, width=2.5),
@@ -97,14 +239,12 @@ def render_tab_sample_fit(ctx: dict):
     if emp is not None:
         ann_parts.append(
             f"<b>Emp best-fit:</b> f={emp['f_fit']:.3f}±{emp['f_err']:.3f}, "
-            f"σ_s={emp['sigma_s']:.1f}, χ²_r={emp['chi2_red']:.2f}"
-        )
+            f"σ_s={emp['sigma_s']:.1f}, χ²_r={emp['chi2_red']:.2f}")
     if gauss is not None:
         ann_parts.append(
             f"<b>Gauss best-fit:</b> f={gauss['f_fit']:.3f}±{gauss['f_err']:.3f}, "
             f"σ_s={gauss['sigma_s']:.1f}, σ_b={gauss['sigma_b']:.1f}, "
-            f"χ²_r={gauss['chi2_red']:.2f}"
-        )
+            f"χ²_r={gauss['chi2_red']:.2f}")
     fig1.add_annotation(
         x=0.02, y=0.05, xref="x domain", yref="y domain",
         text="<br>".join(ann_parts), showarrow=False,
@@ -144,13 +284,12 @@ def render_tab_sample_fit(ctx: dict):
 
     st.plotly_chart(fig1, use_container_width=True)
     st.caption(
-        "**Solid lines** = current slider values (playground). "
-        "**Dotted** = best-fit from last Recompute. "
-        "Red = empirical, Purple = Gaussian. "
-        "**Bottom:** normalized residuals of best-fit."
+        "**Solid lines** = current slider values. "
+        "**Dotted** = best-fit from last run. "
+        "Red = empirical, Purple = Gaussian."
     )
 
-    # ── Weighted PDFs ─────────────────────────────────────────────
+    # ── Weighted PDFs ──
     st.subheader("Weighted PDF Components")
     fig2 = go.Figure()
     for mdl, label, clr_s, clr_b, dash in [
@@ -184,18 +323,14 @@ def render_tab_sample_fit(ctx: dict):
 
     fig2.update_layout(**{
         **PLOTLY_THEME,
-        "title": dict(text="Weighted PDF Components (ΔRV Range Distribution)"),
+        "title": dict(text="Weighted PDF Components"),
         "xaxis": {**_ax, "title": "ΔRV (km/s)"},
         "yaxis": {**_ay, "title": "Weighted PDF"},
         "legend": {**_al, "x": 0.98, "y": 0.98, "xanchor": "right"},
     })
     st.plotly_chart(fig2, use_container_width=True)
-    st.caption(
-        "Solid = empirical, dashed = Gaussian. Vertical lines = optimal "
-        "threshold (PDF crossover = Bayes-optimal boundary)."
-    )
 
-    # ── Parameter tables ──────────────────────────────────────────
+    # ── Parameter tables ──
     st.subheader("Best-Fit Parameters")
     col_a, col_b = st.columns(2)
     with col_a:
@@ -236,11 +371,13 @@ def render_tab_sample_fit(ctx: dict):
         else:
             st.warning("Gaussian model failed.")
 
-    # ── Binary ΔRV histogram ──────────────────────────────────────
+    # ── Binary ΔRV histogram ──
     st.subheader("Simulated Binary ΔRV Distribution")
+    _nb_drv = resolve_nbins(binary_drvs, obs_data)
+    _hkw_drv = dict(nbinsx=_nb_drv) if _nb_drv is not None else {}
     fig_h = go.Figure()
     fig_h.add_trace(go.Histogram(
-        x=binary_drvs, nbinsx=80, marker_color=COLOR_BINARY,
+        x=binary_drvs, **_hkw_drv, marker_color=COLOR_BINARY,
         opacity=0.6, name="Simulated binary ΔRVs",
     ))
     obs_bin_mask = is_sig & (p2p > t_optimal_main)
@@ -277,43 +414,40 @@ def render_tab_sample_fit(ctx: dict):
     })
     st.plotly_chart(fig_h, use_container_width=True)
     st.caption(
-        f"Histogram of {len(binary_drvs):,} simulated binary ΔRVs "
-        f"({sim_info['period_model']} model). "
+        f"Histogram of {len(binary_drvs):,} simulated binary ΔRVs. "
         f"Median={np.median(binary_drvs):.1f}, "
         f"95th %ile={np.percentile(binary_drvs, 95):.1f} km/s."
     )
 
-    with st.expander("Simulation Details"):
-        pm = sim_info["period_model"]
-        pm_d = (f'π = {sim_info["pi"]:.1f}' if pm == "powerlaw"
-                else f'w_A = {sim_info["weight_A"]:.2f}')
-        st.markdown(
-            f"- **Period model:** {pm} ({pm_d})\n"
-            f"- **logP range:** [{sim_info.get('logP_min', '?')}, "
-            f"{sim_info.get('logP_max', '?')}]\n"
-            f"- **N_sim:** {sim_info['n_sim']:,}\n"
-            f"- **n_epochs:** {sim_info['n_epochs']}\n"
-            f"- **Time span:** {sim_info['time_span']:.0f} days\n"
-            f"- **Eccentricity:** {sim_info['e_model']} "
-            f"(e_max={sim_info['e_max']:.2f})\n"
-            f"- **Mass ratio:** {sim_info['q_model']} "
-            f"[{sim_info.get('q_min', '?')}, {sim_info.get('q_max', '?')}]"
-            f"{' (flipped)' if sim_info.get('q_flipped') else ''}\n"
-            f"- **Primary mass:** {sim_info.get('mass_model', 'fixed')} "
-            f"({sim_info.get('mass_fixed', 10.0):.1f} M☉)\n"
-            f"- **σ_single:** {sim_info.get('sigma_single', 0):.1f} km/s\n"
-            f"- **σ_measure:** {sim_info.get('sigma_measure', 0):.3f} km/s\n"
-            f"- **Seed:** {sim_info['seed']}"
-        )
 
+# ---------------------------------------------------------------------------
+# Tab E: Fraction Recovery
+# ---------------------------------------------------------------------------
 
-def render_tab_fraction_recovery(ctx: dict):
-    """Tab 2: Fraction Recovery."""
+def render_tab_fraction_recovery(obs_data: dict):
+    """Tab E: Fraction Recovery."""
     _ax, _ay, _al = _theme_parts()
-    pal = ctx["pal"]
-    t_full, f_obs = ctx["t_full"], ctx["f_obs"]
-    emp, gauss = ctx["emp"], ctx["gauss"]
-    t_optimal_main = ctx["t_optimal_main"]
+    pal = obs_data["pal"]
+    t_full = obs_data["t_full"]
+    f_obs = obs_data.get("f_obs")
+    if f_obs is None:
+        f_obs = np.array([np.sum(obs_data["is_sig"] & (obs_data["p2p"] > t))
+                          / obs_data["n_stars"] for t in t_full])
+
+    res = st.session_state.get("rvm_sf_results")
+    if res is None:
+        st.warning("Run Sample Fit first (or Simulate Binary RVs tab).")
+        return
+
+    emp, gauss = res["emp"], res["gauss"]
+
+    t_optimal_main = None
+    if emp is not None:
+        t_optimal_main = emp.get("t_optimal")
+    elif gauss is not None:
+        t_optimal_main = gauss.get("t_optimal")
+    if t_optimal_main is None:
+        t_optimal_main = 45.5
 
     st.subheader("Recovered Binary Fraction vs Threshold")
     st.caption(
@@ -394,19 +528,44 @@ def render_tab_fraction_recovery(ctx: dict):
     )
 
 
-def render_tab_global_correction(ctx: dict):
-    """Tab 3: Global Correction (+Bartzakos Prior)."""
+# ---------------------------------------------------------------------------
+# Tab F: Global Correction
+# ---------------------------------------------------------------------------
+
+def render_tab_global_correction(obs_data: dict):
+    """Tab F: Global Correction (+Bartzakos Prior)."""
     _ax, _ay, _al = _theme_parts()
-    pal = ctx["pal"]
-    t_full, f_obs = ctx["t_full"], ctx["f_obs"]
-    t_dots, f_dots, e_dots = ctx["t_dots"], ctx["f_dots"], ctx["e_dots"]
-    emp, gauss = ctx["emp"], ctx["gauss"]
-    n_stars, n_prior = ctx["n_stars"], ctx["n_prior"]
-    change_mask = ctx["change_mask"]
-    is_sig, p2p = ctx["is_sig"], ctx["p2p"]
-    names = ctx["names"]
-    star_centered_rvs = ctx["star_centered_rvs"]
-    t_optimal_main = ctx["t_optimal_main"]
+    pal = obs_data["pal"]
+    t_full = obs_data["t_full"]
+    f_obs = obs_data.get("f_obs")
+    if f_obs is None:
+        f_obs = np.array([np.sum(obs_data["is_sig"] & (obs_data["p2p"] > t))
+                          / obs_data["n_stars"] for t in t_full])
+    t_dots, f_dots, e_dots = obs_data["t_dots"], obs_data["f_dots"], obs_data["e_dots"]
+    change_mask = obs_data["change_mask"]
+    is_sig, p2p = obs_data["is_sig"], obs_data["p2p"]
+    names = obs_data["names"]
+    n_stars = obs_data["n_stars"]
+    star_centered_rvs = obs_data["star_centered_rvs"]
+    sig_err = obs_data["sig_err"]
+
+    n_prior = st.number_input("N prior (Bartzakos known binaries)",
+                              0, 10, 3, key="rvm_gc_nprior")
+
+    res = st.session_state.get("rvm_sf_results")
+    if res is None:
+        st.warning("Run Sample Fit first.")
+        return
+
+    emp, gauss = res["emp"], res["gauss"]
+
+    t_optimal_main = None
+    if emp is not None:
+        t_optimal_main = emp.get("t_optimal")
+    elif gauss is not None:
+        t_optimal_main = gauss.get("t_optimal")
+    if t_optimal_main is None:
+        t_optimal_main = 45.5
 
     st.subheader("Global Bias Correction (+Bartzakos Prior)")
     n_global = n_stars + n_prior
@@ -481,7 +640,7 @@ def render_tab_global_correction(ctx: dict):
         st.plotly_chart(fig_g, use_container_width=True)
         st.markdown("---")
 
-    # ── Centered RV histograms ────────────────────────────────────
+    # ── Centered RV histograms ──
     st.subheader("Centered RV Distributions by Classification")
     t_class = t_optimal_main
     obs_binary = is_sig & (p2p > t_class)
@@ -499,15 +658,21 @@ def render_tab_global_correction(ctx: dict):
         f"Binaries (N_stars={int(np.sum(obs_binary))})",
     ])
 
+    _nb_rv_s = resolve_nbins(np.asarray(rvs_singles), obs_data) if len(rvs_singles) > 0 else 30
+    _nb_rv_b = resolve_nbins(np.asarray(rvs_binaries), obs_data) if len(rvs_binaries) > 0 else 30
+    _hkw_s = dict(nbinsx=_nb_rv_s) if _nb_rv_s is not None else {}
+    _hkw_b = dict(nbinsx=_nb_rv_b) if _nb_rv_b is not None else {}
+
     if len(rvs_singles) > 0:
         fig_rv.add_trace(go.Histogram(
-            x=rvs_singles, nbinsx=30, marker_color=COLOR_SINGLE,
+            x=rvs_singles, **_hkw_s, marker_color=COLOR_SINGLE,
             opacity=0.7, name="Singles RVs",
         ), row=1, col=1)
         if emp is not None:
             x_g = np.linspace(min(rvs_singles), max(rvs_singles), 200)
             sig_val = emp["sigma_s"]
-            sc = len(rvs_singles) * (max(rvs_singles) - min(rvs_singles)) / 30
+            _nb_s_eff = _nb_rv_s if _nb_rv_s is not None else 30
+            sc = len(rvs_singles) * (max(rvs_singles) - min(rvs_singles)) / _nb_s_eff
             y_g = sc * np.exp(-0.5 * (x_g / sig_val) ** 2) / (
                 sig_val * np.sqrt(2 * np.pi))
             fig_rv.add_trace(go.Scatter(
@@ -518,13 +683,14 @@ def render_tab_global_correction(ctx: dict):
 
     if len(rvs_binaries) > 0:
         fig_rv.add_trace(go.Histogram(
-            x=rvs_binaries, nbinsx=30, marker_color=COLOR_BINARY,
+            x=rvs_binaries, **_hkw_b, marker_color=COLOR_BINARY,
             opacity=0.7, name="Binary RVs",
         ), row=1, col=2)
         if gauss is not None:
             x_g = np.linspace(min(rvs_binaries), max(rvs_binaries), 200)
             sig_bv = gauss["sigma_b"]
-            sc_b = len(rvs_binaries) * (max(rvs_binaries) - min(rvs_binaries)) / 30
+            _nb_b_eff = _nb_rv_b if _nb_rv_b is not None else 30
+            sc_b = len(rvs_binaries) * (max(rvs_binaries) - min(rvs_binaries)) / _nb_b_eff
             y_g = sc_b * np.exp(-0.5 * (x_g / sig_bv) ** 2) / (
                 sig_bv * np.sqrt(2 * np.pi))
             fig_rv.add_trace(go.Scatter(
@@ -545,12 +711,3 @@ def render_tab_global_correction(ctx: dict):
         fig_rv.update_yaxes(title_text="Count", row=1, col=c, **{
             k: v for k, v in _ay.items() if k != "title"})
     st.plotly_chart(fig_rv, use_container_width=True)
-
-
-def render_tab_population_sim():
-    """Tab 4: Population Sim (placeholder)."""
-    st.subheader("Population Simulation")
-    st.info(
-        "🚧 **Coming soon** — Per-emission-line simulation, sorted p2p "
-        "waterfall, two-line piecewise fit, MC confidence bands."
-    )

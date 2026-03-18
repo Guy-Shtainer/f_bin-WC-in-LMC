@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 
 import numpy as np
+import scipy.stats as sp_stats
 import streamlit as st
 from scipy.optimize import curve_fit
 
@@ -11,6 +12,14 @@ from shared import ROOT
 
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+
+# Distribution name → scipy name mapping (shared with bc.extras)
+DIST_MAP = {
+    "Normal": "norm", "Log-normal": "lognorm", "Gamma": "gamma",
+    "Weibull": "weibull_min", "Exponential": "expon",
+    "Flat (uniform)": "uniform",
+}
 
 
 @st.cache_data(show_spinner="Simulating single-star Gaussian ranges …")
@@ -169,3 +178,100 @@ def _fit_models(t_full, t_dots, f_obs, f_dots, e_dots, raw_frac, sig_err,
         st.warning(f"Gaussian fit failed: {exc}")
 
     return emp, gauss
+
+
+# ---------------------------------------------------------------------------
+# New functions for redesigned tabs
+# ---------------------------------------------------------------------------
+
+@st.cache_data(show_spinner="Simulating binary raw RVs …")
+def compute_binary_raw_rvs(
+    n_sim: int, n_epochs: int, time_span: float,
+    period_model: str, pi: float,
+    e_model: str, e_max: float, q_model: str,
+    seed: int, weight_A: float,
+    sigma_single: float = 0.0, sigma_measure: float = 0.0,
+    logP_min: float = 0.15, logP_max: float = 5.0,
+    q_min: float = 0.1, q_max: float = 2.0,
+    q_flipped: bool = False,
+    langer_q_mu: float = 0.7, langer_q_sigma: float = 0.2,
+    mass_primary_model: str = "fixed",
+    mass_primary_fixed: float = 10.0,
+    mass_primary_min: float = 10.0, mass_primary_max: float = 20.0,
+    dist_A: str = "gaussian", mu_A: float = 0.80, sigma_A: float = 0.35,
+    dist_B: str = "reflected_lognormal", mu_B: float = 2.0, sigma_B: float = 0.45,
+) -> np.ndarray:
+    """Simulate centred per-epoch RV values for a pure-binary population."""
+    from wr_bias_simulation import (
+        simulate_binary_rvs_raw, SimulationConfig, BinaryParameterConfig,
+    )
+    rng = np.random.default_rng(seed)
+    sim_cfg = SimulationConfig(
+        n_stars=n_sim, n_epochs=n_epochs, time_span=time_span,
+        sigma_single=sigma_single, sigma_measure=sigma_measure,
+    )
+    langer_params: dict = {}
+    if period_model == "langer2020":
+        langer_params = {
+            "weight_A": float(weight_A),
+            "dist_A": dist_A, "mu_A": float(mu_A), "sigma_A": float(sigma_A),
+            "dist_B": dist_B, "mu_B": float(mu_B), "sigma_B": float(sigma_B),
+        }
+    bin_cfg = BinaryParameterConfig(
+        period_model=period_model, e_model=e_model, e_max=e_max,
+        q_model=q_model, langer_period_params=langer_params,
+        logP_min=logP_min, logP_max=logP_max,
+        q_range=(q_min, q_max), q_flipped=q_flipped,
+        langer_q_mu=langer_q_mu, langer_q_sigma=langer_q_sigma,
+        mass_primary_model=mass_primary_model,
+        mass_primary_fixed=mass_primary_fixed,
+        mass_primary_range=(mass_primary_min, mass_primary_max),
+    )
+    return simulate_binary_rvs_raw(
+        sim_cfg=sim_cfg, bin_cfg=bin_cfg, pi=pi, rng=rng,
+    )
+
+
+def compute_model_fraction_curve(
+    dist_single: str, params_single: tuple,
+    dist_binary: str, params_binary: tuple,
+    f_bin: float, n_sim: int = 100_000,
+    n_epochs: int = 6, seed: int = 42,
+    t_max: int = 301,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Parametric model: draw RVs from chosen distributions, compute f(T).
+
+    For each simulated star:
+      - With probability f_bin: draw n_epochs RVs from binary distribution
+      - With probability 1-f_bin: draw n_epochs RVs from single distribution
+      - Compute ΔRV = max - min over the epochs
+
+    Returns (t_array, f_curve) where f_curve[i] = fraction with ΔRV > t_array[i].
+    """
+    rng = np.random.default_rng(seed)
+
+    scipy_single = getattr(sp_stats, DIST_MAP.get(dist_single, "norm"), sp_stats.norm)
+    scipy_binary = getattr(sp_stats, DIST_MAP.get(dist_binary, "norm"), sp_stats.norm)
+
+    is_binary = rng.random(n_sim) < f_bin
+    n_bin = int(np.sum(is_binary))
+    n_sin = n_sim - n_bin
+
+    # Draw RVs: shape (n_stars, n_epochs)
+    delta_rv = np.empty(n_sim, dtype=float)
+
+    if n_sin > 0:
+        rv_single = scipy_single.rvs(*params_single, size=(n_sin, n_epochs),
+                                     random_state=rng)
+        delta_rv[~is_binary] = rv_single.max(axis=1) - rv_single.min(axis=1)
+
+    if n_bin > 0:
+        rv_binary = scipy_binary.rvs(*params_binary, size=(n_bin, n_epochs),
+                                     random_state=rng)
+        delta_rv[is_binary] = rv_binary.max(axis=1) - rv_binary.min(axis=1)
+
+    t_arr = np.arange(0, t_max, dtype=float)
+    sorted_drv = np.sort(delta_rv)
+    f_curve = _empirical_survival(sorted_drv, t_arr)
+    return t_arr, f_curve
