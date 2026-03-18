@@ -661,6 +661,36 @@ def _render_method_expander(
         result, prefix, method_key, pal, use_cw,
     )
 
+    # ── Per-method best-fit summary table ─────────────────────────────
+    if _info is not None:
+        st.divider()
+        st.markdown(f'#### Best-fit Summary — {display_name}')
+        _bv_s = _info['best_vals']
+        _hdi_s = _info['hdi']
+
+        def _fmt_hdi_s(name, fmt='.3f'):
+            if name not in _hdi_s:
+                return '—'
+            m, lo, hi = _hdi_s[name]
+            return f'{m:{fmt}} +{hi - m:{fmt}} / −{m - lo:{fmt}}'
+
+        _sum_rows = []
+        _sum_rows.append({'Parameter': 'f_bin',
+                          'Best (grid)': f"{_bv_s.get('fbin', 0):.4f}",
+                          'Mode ± HDI68': _fmt_hdi_s('fbin', '.4f')})
+        if x_name in _bv_s:
+            _sum_rows.append({'Parameter': x_label,
+                              'Best (grid)': f"{_bv_s[x_name]:.3f}",
+                              'Mode ± HDI68': _fmt_hdi_s(x_name, '.3f')})
+        if 'sigma' in _bv_s and x_name != 'sigma':
+            _sum_rows.append({'Parameter': 'σ_single (km/s)',
+                              'Best (grid)': f"{_bv_s['sigma']:.2f}",
+                              'Mode ± HDI68': _fmt_hdi_s('sigma', '.2f')})
+        _sum_rows.append({'Parameter': score_label,
+                          'Best (grid)': f"{_info['best_score']:.6f}",
+                          'Mode ± HDI68': '—'})
+        st.table(pd.DataFrame(_sum_rows))
+
     # ── Model Explorer (best-fit CDF, histogram, detection fraction) ──
     _obs_drv_me = result.get('obs_delta_rv')
     if _obs_drv_me is not None:
