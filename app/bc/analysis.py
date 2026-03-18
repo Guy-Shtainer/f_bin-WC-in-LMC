@@ -1177,7 +1177,8 @@ def _render_cvm_analysis(
     _is_likelihood = (mode == 'likelihood')
 
     # Mode-dependent labels
-    _stat_name = '-logL' if _is_likelihood else 'S'
+    _stat_name = '−log L' if _is_likelihood else 'S'
+    _stat_display = 'Likelihood' if _is_likelihood else 'CvM S-score'
     _score_name = 'Likelihood' if _is_likelihood else 'p-value'
 
     # ── 0. Log scale toggle ─────────────────────────────────────────────
@@ -1295,12 +1296,12 @@ def _render_cvm_analysis(
         colorscale='Viridis_r', colorbar=dict(title=_cbar_title),
         hovertemplate=f'{y_label}: %{{x:.3f}}<br>{x_label}: %{{y:.3f}}<br>{_z_hover}: %{{z:.2f}}<extra></extra>',
     ))
-    _raw_title = f'{_cbar_title} (all models)' if _is_likelihood else f'Weighted {_cbar_title} (all models)'
+    _raw_title = f'{_stat_display} — {_cbar_title} (all models)' if _is_likelihood else f'Weighted {_cbar_title} (all models)'
     fig_raw.update_layout(**{**_theme, 'title': dict(text=_raw_title),
                              'xaxis': dict(title=y_label), 'yaxis': dict(title=x_label),
                              'height': height, 'width': width})
     st.plotly_chart(fig_raw, use_container_width=(width is None))
-    _raw_caption = ('Lower -logL = better fit. All models shown.'
+    _raw_caption = ('Lower −log L = better fit (higher Likelihood). All models shown.'
                     if _is_likelihood else 'Lower S = better fit. All models shown.')
     st.caption(_raw_caption)
 
@@ -1453,8 +1454,8 @@ def _render_cvm_analysis(
     _masked_slot.plotly_chart(fig_masked, use_container_width=(width is None))
 
     st.success(
-        f'**Parabolic minimum:** {x_label} = {best_x:.4f}, '
-        f'{y_label} = {best_y:.3f}, {_stat_name} = {best_S:.2f}')
+        f'**Parabolic minimum ({_stat_display}):** {x_label} = {best_x:.4f}, '
+        f'{y_label} = {best_y:.3f}, {_cbar_title} = {best_S:.2f}')
 
     # ── 3b. 3D surface plot of the parabolic fit ─────────────────────────
     if _fit_coeffs is not None and _fit_bounds is not None:
@@ -1522,7 +1523,7 @@ def _render_cvm_analysis(
                 hovertemplate=_3d_hover + '<extra>Minimum</extra>'))
             fig_3d.update_layout(**{
                 **_theme,
-                'title': dict(text=f'2D Parabolic Fit ({_cbar_title})'),
+                'title': dict(text=f'2D Parabolic Fit ({_stat_display})'),
                 'scene': dict(
                     xaxis_title=y_label,
                     yaxis_title=x_label,
@@ -1560,11 +1561,11 @@ def _render_cvm_analysis(
                               height_factor=_h_factor, n_neighbors=max(_nn_x, _nn_y))
 
         st.markdown('---')
-        st.markdown('#### 3D Quadratic Fit (all axes)')
+        st.markdown(f'#### 3D Quadratic Fit — {_stat_display}')
         st.success(
-            f'**3D minimum:** {x_label} = {_3d_bx:.4f}, '
+            f'**3D minimum ({_stat_display}):** {x_label} = {_3d_bx:.4f}, '
             f'{y_label} = {_3d_by:.3f}, σ_single = {_3d_bz:.2f} km/s, '
-            f'{_stat_name} = {_3d_bS:.2f}')
+            f'{_cbar_title} = {_3d_bS:.2f}')
 
         if _3d_coeffs is not None and _3d_bounds is not None:
             xb0, xb1, yb0, yb1, zb0, zb1 = _3d_bounds
