@@ -875,4 +875,56 @@ offset, colorbar labels, live heatmap persistence, 15+ additional UI fixes.
 
 ---
 
-*Last updated: 2026-03-17*
+### 2026-03-18 — Per-epoch error model for binaries, spectrum page enhancements, RV modeling redesign
+
+**Critical simulation fix: likelihood f_bin = 1 degeneracy (Task #140).** Investigation revealed
+that the multinomial likelihood scoring method consistently returned f_bin ≈ 1.0 with zero
+dependence on σ_single. The root cause was identified: binary RV simulations in both
+`simulate_delta_rv_sample` and `simulate_delta_rv_cadence_aware` computed pure orbital velocities
+with no measurement noise. Face-on binary systems (sin i ≈ 0) produced ΔRV ≈ 0.0 exactly, which
+meant that adding more binaries to the model was cost-free in the likelihood function — hidden
+binaries contributed zero probability mass to any bin, making f_bin = 1 the trivial maximum.
+
+The fix adds per-epoch measurement noise to all simulated RV measurements. A new function
+`_draw_measurement_noise()` supports seven distribution types (Fixed/Normal/Log-normal/Gamma/
+Weibull/Exponential/Flat), drawing from scipy distributions with random sign for symmetric errors.
+Four new fields were added to `SimulationConfig`: `error_model_single`, `error_params_single`,
+`error_model_binary`, `error_params_binary`, allowing independent error model configuration for
+single and binary populations. The error model is plumbed through all multiprocessing workers
+(`_init_worker`, `_single_grid_task_lite`, `_single_grid_task_cadence_aware`) and both grid runner
+functions. The UI was updated with separate error model selectors for singles and binaries in all
+four simulation tabs (D'Silva, Langer, Cadence D'Silva, Cadence Langer).
+
+Verification confirms the fix: with σ_measure = 5 km/s, zero binary systems now have ΔRV < 1 km/s
+(previously 5 out of 1000 had ΔRV < 1 km/s due to exact face-on geometry).
+
+**Spectrum browser enhancements.** The wavelength nm → Å conversion bug was fixed (`.npz` files
+store wavelengths in nm; the page now consistently multiplies by 10.0 for display). Eight Oxygen
+emission lines (O III/IV/V/VI) were added to the diagnostic line database. The model overlay
+system was replaced: a multi-model folder browser allows selecting multiple model spectra from
+`Data/Models_for_Guy/` with per-model scale/offset sliders. Multi-epoch spectral overlay was added
+with vertical staggering (configurable offset slider) and a 6-colour cycling palette. A new
+"Max ΔRV Epoch Comparison" section auto-identifies the epoch pair with maximum radial velocity
+separation for a user-selected emission line and displays both spectra with a zoom-to-line option.
+
+**RV Modeling page redesign.** The statistical RV modeling page was expanded from 4 to 6 tabs:
+(A) Simulate Binary RVs — orbital simulation producing centred per-epoch RVs with full
+distribution fitting (6 scipy distributions, MLE auto-fit, AIC/BIC, Q-Q plots);
+(B) Model Fitting — two-component mixture model with parametric distributions, f_bin grid
+optimisation; (C) Playground — slider-based manual exploration with snapshot comparison;
+(D–F) existing Sample Fit, Fraction Recovery, and Global Correction tabs retained. Configurable
+histogram binning was added via 5 auto-binning methods (Freedman–Diaconis, Sturges, Scott,
+√N, Plotly auto) with a manual override slider.
+
+**Bias correction UI improvements.** Across six earlier sessions today, 10 tasks from the bias
+correction page were completed: per-method p-value label fixes (#130), live sigma-vs-score graph
+persistence (#131), likelihood interpolation label fix (#137), sigma_single columns in comparison
+table (#132), file structure split into fitting.py + scoring_detail.py (#136), score-vs-sigma
+graphs for all methods (#133a), per-method sigma_single sliders (#133b), interactive Model
+Explorer (#133c), corner plots expanded to 3 parameters (#134), manual likelihood bin edges (#135),
+per-method best-fit summary tables (#138), and CDF comparison moved to top with per-method
+toggles (#139).
+
+---
+
+*Last updated: 2026-03-18*

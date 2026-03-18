@@ -32,3 +32,11 @@ First fix addressed the symptom (shape mismatch) but left downstream code vulner
 2. Is this the same approach I already tried? If yes, try something different
 3. After the fix: grep all downstream consumers — what else could break?
 4. Run `/error-check` on modified files before committing
+
+## Pre-Edit Checklist (apply before every code change — learned 2026-03-18)
+1. **Before adding a function call**: grep for the function definition — is it imported? Are all variables it uses in scope?
+2. **Before adding a parameter to a function**: grep ALL callers of that function — update every one
+3. **Before claiming a pattern fix is complete**: grep ALL instances of the pattern across the entire codebase
+4. **When user says "remove X from the page"**: trace the rendering code path to identify the EXACT lines. Don't assume which file/function renders it.
+5. **Confidence gate**: if understanding of user's request < 90%, STOP and ask. Signs of low confidence: "I think they mean...", "probably...", "I assume...". One clarifying question saves 4 wrong attempts.
+6. **If user repeats a request**: that means I misunderstood the first time. ASK what they mean rather than trying the same approach again.

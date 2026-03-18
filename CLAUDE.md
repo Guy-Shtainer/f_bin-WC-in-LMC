@@ -158,11 +158,23 @@ design a subpackage structure from the start using the thin-wrapper pattern:
 - Target 500–800 lines per module. Check `wc -l` before adding code to existing files.
 - If a file is approaching 700+ lines, split it before adding more.
 
-**Always test before finishing:** After writing any new `.py` file, run:
+**Always test before finishing:** After writing or editing any `.py` file:
+1. For `app/bc/` changes, run the runtime integration test first:
+```bash
+conda run -n guyenv python error-check-workspace/test_bc_imports.py
+```
+2. Then run py_compile as a final syntax check:
 ```bash
 conda run -n guyenv python -m py_compile path/to/file.py
 ```
-Verify zero output (no syntax or import errors) before marking work complete.
+`py_compile` alone is NOT sufficient — it misses missing imports, undefined
+variables, and wrong function signatures. The integration test catches these.
+
+3. **Test Streamlit render functions directly** — NEVER skip them. Streamlit
+widgets silently no-op in bare mode (outside `streamlit run`), so any render/tab
+function (`render_tab_*`, `render_page_*`, `_render_*_tab`) can be called with a
+mock `obs_data` dict. Only a raised Exception is a failure; Streamlit WARNING log
+lines are expected and harmless.
 
 **Check common errors:** Before and after editing any `.py` file, scan for known
 bad patterns listed in `COMMON_ERRORS.md`. Run the Quick-Scan Regex from that file

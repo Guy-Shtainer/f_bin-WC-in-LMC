@@ -150,15 +150,43 @@ For each file in `TARGET_FILES`:
 
 **What to skip (do NOT test):**
 - Functions that require file I/O (FITS loading, `Data/` directory access)
-- Streamlit page-level functions (need the runtime)
 - Class methods where the class needs complex initialization (ObservationManager, Star)
 - Functions that write to disk or modify state
 - Private helper functions called only internally (test the public API instead)
+
+**Streamlit render functions — DO test them** (they work outside the runtime):
+Streamlit page-level / tab render functions (e.g., `render_tab_*`, `render_page_*`) CAN and
+SHOULD be tested outside `streamlit run`. Streamlit widgets silently no-op in bare mode, so
+you can call any render function with a mock `obs_data` dict. Build a minimal dict with the
+keys the function reads (numpy arrays, palette dict, etc.) and call the function directly.
+Expect Streamlit WARNING log lines — those are harmless. Only a raised **Exception** is a
+failure. Example:
+
+```python
+import sys; sys.path.insert(0, 'app'); sys.path.insert(0, '.')
+import numpy as np
+from rv_modeling.tabs import render_tab_sample_fit
+
+obs_data = dict(
+    pal={'font_color': '#fff', 'muted_color': '#888', 'bg_color': '#000'},
+    t_full=np.arange(0, 301, dtype=float),
+    f_obs=np.zeros(301), raw_frac=np.zeros(301),
+    sig_err=np.ones(301)*0.01,
+    t_dots=np.array([0.0, 45.0]), f_dots=np.array([0.4, 0.1]),
+    e_dots=np.array([0.05, 0.05]),
+    change_mask=np.zeros(301, dtype=bool),
+    is_sig=np.array([True, False]), p2p=np.array([60.0, 20.0]),
+    p2p_err=np.array([5.0, 3.0]),
+    names=['s1','s2'], n_stars=2, star_centered_rvs={},
+)
+render_tab_sample_fit(obs_data)   # should not raise
+```
 
 **What to prioritize:**
 - Pure computation functions (math, statistics, array manipulation)
 - Simulation functions in `wr_bias_simulation.py`
 - Utility functions in `utils.py` (`robust_mean`, `robust_std`, etc.)
+- **Streamlit render / tab functions** — call with mock obs_data, assert no exception
 - Any function with a clear input→output contract
 
 Report: `PASS`, `FAIL (error message)`, or `SKIP (reason)` for each function.
@@ -279,10 +307,10 @@ Phase 3: Functional Testing
   ✅ compute_K1(P=5, e=0.1, M1=20, M2=10, i=1.2) — 102.4 km/s
   ✅ solve_kepler([0.5, 1.0, 2.0], 0.3) — ndarray, len=3
   ✅ ks_two_sample(d1, d2) — D=0.19, p=0.054
-  ⏭️ simulate_delta_rv_sample — needs SimulationConfig + data
+  ⏭️ simulate_delta_rv_sample — needs SimulationConfig + observed data
   ⏭️ run_bias_grid — needs full config + observed data
-  ⏭️ _render_dsilva_tab — Streamlit page function
-  ⏭️ _render_langer_tab — Streamlit page function
+  ✅ _render_dsilva_tab(mock_obs_data) — OK (Streamlit warnings, no exception)
+  ✅ _render_langer_tab(mock_obs_data) — OK (Streamlit warnings, no exception)
 
 Phase 4: Webapp Smoke Test
   ✅ from shared import * — OK
@@ -294,7 +322,7 @@ Phase 5: Learning
 
 ═══════════════════════════════════════════════════════════════
   OVERALL: ❌ FAIL — 5 issues need attention (see Phase 1)
-  Checked: 18 items | Passed: 15 | Failed: 1 | Warned: 2 | Skipped: 4
+  Checked: 18 items | Passed: 17 | Failed: 1 | Warned: 2 | Skipped: 2
 ═══════════════════════════════════════════════════════════════
 ```
 

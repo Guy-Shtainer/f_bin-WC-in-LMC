@@ -60,6 +60,34 @@ When you encounter a new error that could recur:
 2. Update the Quick-Scan Regex at the top of that file
 3. The next time this skill triggers, it will automatically include the new pattern
 
+## Testing Streamlit Render Functions
+
+Streamlit page/tab render functions (`render_tab_*`, `render_page_*`, `_render_*_tab`)
+**CAN and SHOULD be tested** outside `streamlit run`. Widgets silently no-op in bare mode.
+
+Build a minimal `obs_data` dict with required keys (numpy arrays, palette dict) and call
+the function directly. Streamlit WARNING log lines are harmless — only a raised Exception
+is a failure.
+
+```python
+import sys; sys.path.insert(0, 'app'); sys.path.insert(0, '.')
+import numpy as np
+obs_data = dict(
+    pal={'font_color':'#fff','muted_color':'#888','bg_color':'#000'},
+    t_full=np.arange(0,301,dtype=float), f_obs=np.zeros(301),
+    raw_frac=np.zeros(301), sig_err=np.ones(301)*0.01,
+    t_dots=np.array([0.,45.]), f_dots=np.array([0.4,0.1]),
+    e_dots=np.array([0.05,0.05]), change_mask=np.zeros(301,dtype=bool),
+    is_sig=np.array([True,False]), p2p=np.array([60.,20.]),
+    p2p_err=np.array([5.,3.]),
+    names=['s1','s2'], n_stars=2, star_centered_rvs={},
+)
+from <module> import <render_func>
+<render_func>(obs_data)  # should not raise
+```
+
+**NEVER skip render functions** — they always work in bare mode.
+
 ## Important
 
 - The source of truth is `COMMON_ERRORS.md` — always read it fresh
