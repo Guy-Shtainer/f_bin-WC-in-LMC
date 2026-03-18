@@ -39,7 +39,7 @@ from bc.helpers import (
 )
 from bc.analysis import (
     _render_method_summary_section, _render_method_expander,
-    _render_cvm_analysis,
+    _render_cvm_analysis, _get_method_array,
 )
 from bc.params import _render_orbital_params_dsilva
 from bc.runners import _run_dsilva_bg
@@ -244,16 +244,9 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             'N sets', 100, 50000, 1000, step=100,
             key=f'{p}_n_sets_cvm',
             help='Number of simulation sets per grid point for CvM variance estimation and likelihood')
-        from wr_bias_simulation import dsilva_likelihood_bins
-        _lk_threshold = _cvm_cols[1].number_input(
-            'Detection threshold (km/s)', value=45.5,
-            min_value=1.0, max_value=200.0, step=0.5,
-            key=f'{p}_lk_threshold',
-            help='First bin boundary (Dsilva+2023 Sec 4.2)')
-        _lk_bin_edges = dsilva_likelihood_bins(_lk_threshold)
-        _cvm_cols[1].caption(
-            f'Likelihood bins: [0, {_lk_threshold:.1f}) '
-            f'[{_lk_threshold:.1f}, 250) [250, 650) [650+) km/s')
+        from bc.params import _render_likelihood_bin_config
+        with _cvm_cols[1]:
+            _lk_bin_edges = _render_likelihood_bin_config(p)
         _run_col, _load_col, _save_col = _ac3.columns(3)
         _job_running = bool(
             st.session_state.get(f'{p}_job', {}).get('status') == 'running')
@@ -691,7 +684,7 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             disp_lp_idx = 0
 
         # ── Multi-method comparison summary (shown directly, not collapsed) ─
-        _render_method_summary_section(
+        _method_res = _render_method_summary_section(
             result, fbin_g, pi_g,
             prefix=p, x_name='pi', x_label='pi',
             ndim_mode='dsilva',
@@ -723,6 +716,7 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                     x_display_label='pi (period power-law index)',
                     ndim_mode='dsilva',
                     disp_outer_slices=_ds_outer_slices,
+                    method_results=_method_res,
                 )
 
         # (Bug 2 removed: old heatmap_slot render is now handled by per-method expanders)

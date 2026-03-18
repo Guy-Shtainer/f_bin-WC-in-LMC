@@ -39,7 +39,7 @@ from bc.helpers import (
 )
 from bc.analysis import (
     _render_method_summary_section, _render_method_expander,
-    _render_cvm_analysis,
+    _render_cvm_analysis, _get_method_array,
 )
 from bc.params import _render_orbital_params_langer
 from bc.runners import _run_langer_bg
@@ -186,16 +186,9 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             'N sets', 100, 50000, 1000, step=100,
             key=f'{p}_n_sets_cvm',
             help='Number of simulation sets per grid point for CvM variance estimation and likelihood')
-        from wr_bias_simulation import dsilva_likelihood_bins
-        _lg_lk_threshold = _lg_cvm_cols[1].number_input(
-            'Detection threshold (km/s)', value=45.5,
-            min_value=1.0, max_value=200.0, step=0.5,
-            key=f'{p}_lk_threshold',
-            help='First bin boundary (Dsilva+2023 Sec 4.2)')
-        _lg_lk_bin_edges = dsilva_likelihood_bins(_lg_lk_threshold)
-        _lg_cvm_cols[1].caption(
-            f'Likelihood bins: [0, {_lg_lk_threshold:.1f}) '
-            f'[{_lg_lk_threshold:.1f}, 250) [250, 650) [650+) km/s')
+        from bc.params import _render_likelihood_bin_config
+        with _lg_cvm_cols[1]:
+            _lg_lk_bin_edges = _render_likelihood_bin_config(p)
         _lg_run_col, _lg_load_col, _lg_save_col = _lg_ac3.columns(3)
         _lg_job_running = bool(
             st.session_state.get(f'{p}_job', {}).get('status') == 'running')
@@ -593,7 +586,7 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
             )
 
         # ── Multi-method comparison summary (Langer, shown directly) ─────
-        _render_method_summary_section(
+        _method_res = _render_method_summary_section(
             lg_result, lg_fbin_g, lg_sigma_g,
             prefix=p, x_name='sigma', x_label='sigma_single',
             ndim_mode='langer',
@@ -614,6 +607,7 @@ def _render_langer_tab(p: str, settings: dict, sm) -> None:
                     x_display_label='sigma_single (km/s)',
                     ndim_mode='langer',
                     disp_outer_slices=None,
+                    method_results=_method_res,
                 )
 
         # Best-fit point

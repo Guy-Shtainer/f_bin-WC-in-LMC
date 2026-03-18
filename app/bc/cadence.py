@@ -46,6 +46,7 @@ from bc.analysis import (
 from bc.params import (
     _render_orbital_params_dsilva, _render_orbital_params_langer,
     _render_cadence_sigma_scan, _render_cadence_adaptive_bins,
+    _render_likelihood_bin_config,
 )
 from bc.runners import _run_cadence_bg
 from bc.extras import _render_error_model_selector
@@ -1108,18 +1109,8 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
     _n_proc = os.cpu_count() - 1
 
     # All 4 scoring methods are computed in a single run
-    # Likelihood bin threshold (cadence tabs)
-    from wr_bias_simulation import dsilva_likelihood_bins
-    _lk_cols = st.columns([0.3, 0.7])
-    _lk_threshold = _lk_cols[0].number_input(
-        'Detection threshold (km/s)', value=45.5,
-        min_value=1.0, max_value=200.0, step=0.5,
-        key=f'{p}_lk_threshold',
-        help='First bin boundary (Dsilva+2023 Sec 4.2)')
-    _lk_bin_edges = dsilva_likelihood_bins(_lk_threshold)
-    _lk_cols[1].caption(
-        f'Likelihood bins: [0, {_lk_threshold:.1f}) '
-        f'[{_lk_threshold:.1f}, 250) [250, 650) [650+) km/s')
+    # Likelihood bin edges (manual or threshold-based)
+    _lk_bin_edges = _render_likelihood_bin_config(p)
 
     # Action buttons
     _a1, _a2, _a3, _a4 = st.columns(4)

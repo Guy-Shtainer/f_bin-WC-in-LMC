@@ -485,4 +485,40 @@ def _render_cadence_adaptive_bins(
         return False, None, drv_bin_width, drv_max
 
 
+def _render_likelihood_bin_config(p: str, prefix: str = '') -> np.ndarray:
+    """Render likelihood bin edges configuration. Returns bin_edges array.
 
+    Provides two modes: Threshold-based (auto-generate from detection threshold)
+    and Manual (user edits comma-separated bin edges).
+    """
+    from wr_bias_simulation import dsilva_likelihood_bins
+
+    _mode = st.radio('Likelihood bin mode', ['Threshold-based', 'Manual'],
+                     horizontal=True, key=f'{p}{prefix}_lk_bin_mode')
+
+    if _mode == 'Threshold-based':
+        _lk_threshold = st.number_input(
+            'Detection threshold (km/s)', value=45.5,
+            min_value=1.0, max_value=200.0, step=0.5,
+            key=f'{p}{prefix}_lk_threshold')
+        _lk_bin_edges = dsilva_likelihood_bins(_lk_threshold)
+    else:
+        _default = st.session_state.get(f'{p}{prefix}_manual_edges', '0, 45.5, 250, 650')
+        _edges_text = st.text_input(
+            'Bin edges (comma-separated, ∞ added automatically)',
+            value=_default, key=f'{p}{prefix}_lk_edges_text')
+        try:
+            _parsed = sorted([float(x.strip()) for x in _edges_text.split(',')
+                              if x.strip()])
+            if len(_parsed) < 2:
+                st.error('Need at least 2 bin edges.')
+                _parsed = [0, 45.5, 250, 650]
+            _lk_bin_edges = np.array(_parsed + [np.inf])
+            st.session_state[f'{p}{prefix}_manual_edges'] = _edges_text
+        except ValueError:
+            st.error('Invalid format. Use comma-separated numbers.')
+            _lk_bin_edges = dsilva_likelihood_bins(45.5)
+
+    _labels = [f'{e:.0f}' if np.isfinite(e) else '∞' for e in _lk_bin_edges]
+    st.caption(f'Likelihood bins: [{", ".join(_labels)}]')
+    return _lk_bin_edges
