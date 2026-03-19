@@ -6,7 +6,7 @@ import streamlit as st
 
 from shared import (
     get_settings_manager, cached_load_observed_delta_rvs, settings_hash,
-    get_palette, COLOR_BINARY, COLOR_SINGLE,
+    get_palette, COLOR_BINARY, COLOR_SINGLE, cached_load_cadence,
 )
 
 from rv_modeling.helpers import NSIGMA_DETECT, T_MAX, BIN_METHODS
@@ -70,6 +70,10 @@ def render_rv_modeling_page() -> None:
                 "Number of bins", 5, 200, 50, key="rvm_manual_bins",
             )
 
+    # ── Load cadence library for physics-based mode ──────────────────
+    cadence_lib, _ = cached_load_cadence(s_hash)
+    cadence_tuples = tuple(tuple(float(v) for v in t) for t in cadence_lib)
+
     # ── Package observed data for all tabs ─────────────────────────────
     obs_data = dict(
         pal=pal, t_full=t_full, f_obs=f_obs, raw_frac=raw_frac,
@@ -79,6 +83,8 @@ def render_rv_modeling_page() -> None:
         names=names, n_stars=n_stars,
         star_centered_rvs=star_centered_rvs,
         bin_method=bin_method, manual_bins=manual_bins,
+        cadence_tuples=cadence_tuples,
+        n_cadence_stars=len(cadence_lib),
     )
 
     # ── Tabs ───────────────────────────────────────────────────────────

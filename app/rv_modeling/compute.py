@@ -232,6 +232,68 @@ def compute_binary_raw_rvs(
     )
 
 
+@st.cache_data(show_spinner="Simulating binary RVs (real cadences) …")
+def compute_binary_raw_rvs_cadence(
+    n_sim: int,
+    period_model: str, pi: float,
+    e_model: str, e_max: float, q_model: str,
+    seed: int, weight_A: float,
+    # Error models
+    sigma_single: float = 0.0, sigma_measure: float = 0.0,
+    error_model_single: str = 'fixed', error_params_single: tuple = (),
+    error_model_binary: str = 'fixed', error_params_binary: tuple = (),
+    # Period / mass ratio
+    logP_min: float = 0.15, logP_max: float = 5.0,
+    q_min: float = 0.1, q_max: float = 2.0,
+    q_flipped: bool = False,
+    langer_q_mu: float = 0.7, langer_q_sigma: float = 0.2,
+    mass_primary_model: str = "fixed",
+    mass_primary_fixed: float = 10.0,
+    mass_primary_min: float = 10.0, mass_primary_max: float = 20.0,
+    dist_A: str = "gaussian", mu_A: float = 0.80, sigma_A: float = 0.35,
+    dist_B: str = "reflected_lognormal", mu_B: float = 2.0, sigma_B: float = 0.45,
+    # Cadence
+    cadence_tuples: tuple[tuple[float, ...], ...] = (),
+) -> np.ndarray:
+    """Simulate centred per-epoch RVs using real observation cadences."""
+    from wr_bias_simulation import (
+        simulate_binary_rvs_raw, SimulationConfig, BinaryParameterConfig,
+    )
+    cadence_library = [np.array(t) for t in cadence_tuples] if cadence_tuples else None
+    n_per_set = len(cadence_library) if cadence_library else 1
+    rng = np.random.default_rng(seed)
+    sim_cfg = SimulationConfig(
+        n_stars=n_sim,
+        sigma_single=sigma_single, sigma_measure=sigma_measure,
+        cadence_library=cadence_library,
+        cadence_weights=np.full(n_per_set, 1.0 / n_per_set) if cadence_library else None,
+        error_model_single=error_model_single.lower(),
+        error_params_single=error_params_single,
+        error_model_binary=error_model_binary.lower(),
+        error_params_binary=error_params_binary,
+    )
+    langer_params: dict = {}
+    if period_model == "langer2020":
+        langer_params = {
+            "weight_A": float(weight_A),
+            "dist_A": dist_A, "mu_A": float(mu_A), "sigma_A": float(sigma_A),
+            "dist_B": dist_B, "mu_B": float(mu_B), "sigma_B": float(sigma_B),
+        }
+    bin_cfg = BinaryParameterConfig(
+        period_model=period_model, e_model=e_model, e_max=e_max,
+        q_model=q_model, langer_period_params=langer_params,
+        logP_min=logP_min, logP_max=logP_max,
+        q_range=(q_min, q_max), q_flipped=q_flipped,
+        langer_q_mu=langer_q_mu, langer_q_sigma=langer_q_sigma,
+        mass_primary_model=mass_primary_model,
+        mass_primary_fixed=mass_primary_fixed,
+        mass_primary_range=(mass_primary_min, mass_primary_max),
+    )
+    return simulate_binary_rvs_raw(
+        sim_cfg=sim_cfg, bin_cfg=bin_cfg, pi=pi, rng=rng,
+    )
+
+
 def compute_model_fraction_curve(
     dist_single: str, params_single: tuple,
     dist_binary: str, params_binary: tuple,
@@ -275,3 +337,153 @@ def compute_model_fraction_curve(
     sorted_drv = np.sort(delta_rv)
     f_curve = _empirical_survival(sorted_drv, t_arr)
     return t_arr, f_curve
+
+
+# ---------------------------------------------------------------------------
+# Physics-based simulation using orbital mechanics + real cadences
+# ---------------------------------------------------------------------------
+
+def _build_configs(
+    n_total, sigma_single, sigma_measure_single,
+    cadence_tuples, error_model_single, error_params_single,
+    error_model_binary, error_params_binary,
+    period_model, logP_min, logP_max, e_model, e_max,
+    q_model, q_min, q_max, q_flipped, mass_primary_fixed,
+    weight_A, dist_A, mu_A, sigma_A, dist_B, mu_B, sigma_B,
+    langer_q_mu, langer_q_sigma,
+):
+    """Build SimulationConfig + BinaryParameterConfig from flat params."""
+    from wr_bias_simulation import SimulationConfig, BinaryParameterConfig
+
+    cadence_library = [np.array(t) for t in cadence_tuples]
+    n_per_set = len(cadence_library)
+
+    sim_cfg = SimulationConfig(
+        n_stars=n_total,
+        sigma_single=sigma_single,
+        sigma_measure=sigma_measure_single,
+        cadence_library=cadence_library,
+        cadence_weights=np.full(n_per_set, 1.0 / n_per_set),
+        error_model_single=error_model_single.lower(),
+        error_params_single=error_params_single,
+        error_model_binary=error_model_binary.lower(),
+        error_params_binary=error_params_binary,
+    )
+    langer_params: dict = {}
+    if period_model == 'langer2020':
+        langer_params = {
+            'weight_A': float(weight_A),
+            'dist_A': dist_A, 'mu_A': float(mu_A), 'sigma_A': float(sigma_A),
+            'dist_B': dist_B, 'mu_B': float(mu_B), 'sigma_B': float(sigma_B),
+        }
+    bin_cfg = BinaryParameterConfig(
+        period_model=period_model, e_model=e_model, e_max=e_max,
+        q_model=q_model, langer_period_params=langer_params,
+        logP_min=logP_min, logP_max=logP_max,
+        q_range=(q_min, q_max), q_flipped=q_flipped,
+        langer_q_mu=langer_q_mu, langer_q_sigma=langer_q_sigma,
+        mass_primary_model='fixed',
+        mass_primary_fixed=mass_primary_fixed,
+    )
+    return sim_cfg, bin_cfg
+
+
+# Shared signature for physics-based functions (avoids repeating 20+ params)
+_PHYSICS_PARAMS_DOC = """\
+    f_bin, pi, n_sets, seed,
+    error_model_single/binary, error_params_single/binary,
+    sigma_measure_single/binary, sigma_single,
+    period_model, logP range, e_model, q_model, mass, Langer params,
+    cadence_tuples (tuple-of-tuples for cache hashability)
+"""
+
+
+@st.cache_data(show_spinner="Physics-based simulation …")
+def compute_physics_fraction_curve(
+    f_bin: float, pi: float, n_sets: int, seed: int,
+    # Error models
+    error_model_single: str, error_params_single: tuple,
+    sigma_measure_single: float,
+    error_model_binary: str, error_params_binary: tuple,
+    sigma_measure_binary: float,
+    sigma_single: float,
+    # Orbital params
+    period_model: str, logP_min: float, logP_max: float,
+    e_model: str, e_max: float,
+    q_model: str, q_min: float, q_max: float, q_flipped: bool,
+    mass_primary_fixed: float,
+    # Langer params
+    weight_A: float, dist_A: str, mu_A: float, sigma_A: float,
+    dist_B: str, mu_B: float, sigma_B: float,
+    langer_q_mu: float, langer_q_sigma: float,
+    # Cadence (tuple-of-tuples for cache hashability)
+    cadence_tuples: tuple[tuple[float, ...], ...],
+    t_max: int = 301,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Physics-based f(T) curve using orbital simulation + real observation cadences."""
+    from wr_bias_simulation import simulate_delta_rv_sample
+
+    cadence_library = [np.array(t) for t in cadence_tuples]
+    n_per_set = len(cadence_library)
+    n_total = n_sets * n_per_set
+
+    rng = np.random.default_rng(seed)
+    sim_cfg, bin_cfg = _build_configs(
+        n_total, sigma_single, sigma_measure_single,
+        cadence_tuples, error_model_single, error_params_single,
+        error_model_binary, error_params_binary,
+        period_model, logP_min, logP_max, e_model, e_max,
+        q_model, q_min, q_max, q_flipped, mass_primary_fixed,
+        weight_A, dist_A, mu_A, sigma_A, dist_B, mu_B, sigma_B,
+        langer_q_mu, langer_q_sigma,
+    )
+    delta_all = simulate_delta_rv_sample(
+        f_bin=f_bin, pi=pi, sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng,
+    )
+    t_arr = np.arange(0, t_max, dtype=float)
+    sorted_drv = np.sort(delta_all)
+    f_curve = _empirical_survival(sorted_drv, t_arr)
+    return t_arr, f_curve
+
+
+@st.cache_data(show_spinner="Simulating orbital diagnostics …")
+def compute_physics_diagnostics(
+    f_bin: float, pi: float, n_sets: int, seed: int,
+    error_model_single: str, error_params_single: tuple,
+    sigma_measure_single: float,
+    error_model_binary: str, error_params_binary: tuple,
+    sigma_measure_binary: float,
+    sigma_single: float,
+    period_model: str, logP_min: float, logP_max: float,
+    e_model: str, e_max: float,
+    q_model: str, q_min: float, q_max: float, q_flipped: bool,
+    mass_primary_fixed: float,
+    weight_A: float, dist_A: str, mu_A: float, sigma_A: float,
+    dist_B: str, mu_B: float, sigma_B: float,
+    langer_q_mu: float, langer_q_sigma: float,
+    cadence_tuples: tuple[tuple[float, ...], ...],
+) -> dict:
+    """Run simulate_with_params and return orbital parameter dict for histograms.
+
+    Returns dict with: delta_rv, is_binary, P_days, e, q, i_rad, K1, M1,
+    omega, T0, idx_bin, case_A_mask.
+    """
+    from wr_bias_simulation import simulate_with_params
+
+    cadence_library = [np.array(t) for t in cadence_tuples]
+    n_per_set = len(cadence_library)
+    n_total = n_sets * n_per_set
+
+    rng = np.random.default_rng(seed)
+    sim_cfg, bin_cfg = _build_configs(
+        n_total, sigma_single, sigma_measure_single,
+        cadence_tuples, error_model_single, error_params_single,
+        error_model_binary, error_params_binary,
+        period_model, logP_min, logP_max, e_model, e_max,
+        q_model, q_min, q_max, q_flipped, mass_primary_fixed,
+        weight_A, dist_A, mu_A, sigma_A, dist_B, mu_B, sigma_B,
+        langer_q_mu, langer_q_sigma,
+    )
+    return simulate_with_params(
+        f_bin=f_bin, pi=pi, sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng,
+    )

@@ -10,8 +10,11 @@ import streamlit as st
 
 from shared import PLOTLY_THEME, COLOR_BINARY
 
-from rv_modeling.helpers import _theme_parts, _ann, resolve_nbins
-from rv_modeling.compute import compute_binary_raw_rvs
+from rv_modeling.helpers import (
+    _theme_parts, _ann, resolve_nbins,
+    render_error_model_pair,
+)
+from rv_modeling.compute import compute_binary_raw_rvs_cadence
 
 # ---------------------------------------------------------------------------
 # Distribution metadata (same definitions as bc.extras)
@@ -159,20 +162,15 @@ def _render_orbital_params() -> dict:
             st.markdown("*e = 0*")
 
     # Row 2: sim size + presets
-    r2a, r2b, r2c, r2d, r2e = st.columns(5)
+    r2a, r2b, r2c = st.columns(3)
     with r2a:
         n_sim = st.select_slider(
             "N_sim", options=[10_000, 50_000, 100_000, 200_000, 500_000],
             value=100_000, key="rvm_nsim",
         )
     with r2b:
-        n_epochs = st.number_input("N_epochs", 2, 20, 6, key="rvm_nep")
-    with r2c:
-        time_span = st.number_input("Time span (d)", 100.0, 10_000.0,
-                                    3650.0, step=100.0, key="rvm_ts")
-    with r2d:
         seed = st.number_input("Seed", 0, 99999, 42, key="rvm_seed")
-    with r2e:
+    with r2c:
         pc1, pc2 = st.columns(2)
         with pc1:
             st.button("Dsilva", key="rvm_preset_d",
@@ -255,7 +253,7 @@ def _render_orbital_params() -> dict:
     return dict(
         period_model=period_model, pi=pi_val, weight_A=weight_A,
         e_model=e_model, e_max=e_max, q_model=q_model,
-        n_sim=int(n_sim), n_epochs=int(n_epochs), time_span=float(time_span),
+        n_sim=int(n_sim),
         seed=int(seed), logP_min=float(logP_min), logP_max=float(logP_max),
         q_min=float(q_min), q_max=float(q_max), q_flipped=bool(q_flipped),
         langer_q_mu=float(langer_q_mu), langer_q_sigma=float(langer_q_sigma),
@@ -488,12 +486,26 @@ def render_tab_simulation(obs_data: dict) -> None:
     """Tab A: Binary RV Simulation — orbital sim + distribution fitting."""
     st.subheader("Binary RV Simulation")
     st.caption(
-        "Simulate binary star systems with chosen orbital parameters, then "
+        "Simulate binary star systems with chosen orbital parameters "
+        "using real observation cadences from the 25 WR stars, then "
         "fit statistical distributions to the resulting RV histogram."
     )
 
     # ── Orbital parameter UI ──
     params = _render_orbital_params()
+
+    # ── Error models ──
+    st.markdown("**RV Error Models**")
+    err = render_error_model_pair("rvm_sim")
+
+    # ── σ_single ──
+    sigma_single = st.slider("σ_single (km/s)", 0.0, 30.0, 5.5, 0.5,
+                              key="rvm_sim_sigma_s")
+
+    cadence_tuples = obs_data.get("cadence_tuples", ())
+    n_cadence = obs_data.get("n_cadence_stars", 0)
+    if n_cadence > 0:
+        st.info(f"Using real observation cadences from {n_cadence} WR stars.")
 
     # ── Recompute button ──
     recompute = st.button("Simulate Binary RVs", type="primary",
@@ -504,13 +516,18 @@ def render_tab_simulation(obs_data: dict) -> None:
 
     if should_run:
         with st.spinner("Simulating binary RVs..."):
-            raw_rvs = compute_binary_raw_rvs(
-                n_sim=params["n_sim"], n_epochs=params["n_epochs"],
-                time_span=params["time_span"],
+            raw_rvs = compute_binary_raw_rvs_cadence(
+                n_sim=params["n_sim"],
                 period_model=params["period_model"], pi=params["pi"],
                 e_model=params["e_model"], e_max=params["e_max"],
                 q_model=params["q_model"], seed=params["seed"],
                 weight_A=params["weight_A"],
+                sigma_single=sigma_single,
+                sigma_measure=err["sigma_measure"],
+                error_model_single=err["type_single"],
+                error_params_single=err["params_single"],
+                error_model_binary=err["type_binary"],
+                error_params_binary=err["params_binary"],
                 logP_min=params["logP_min"], logP_max=params["logP_max"],
                 q_min=params["q_min"], q_max=params["q_max"],
                 q_flipped=params["q_flipped"],
@@ -524,6 +541,7 @@ def render_tab_simulation(obs_data: dict) -> None:
                 sigma_A=params["sigma_A"],
                 dist_B=params["dist_B"], mu_B=params["mu_B"],
                 sigma_B=params["sigma_B"],
+                cadence_tuples=cadence_tuples,
             )
             st.session_state["rvm_raw_rvs"] = raw_rvs
             st.session_state["rvm_sim_params"] = params

@@ -9,8 +9,15 @@ import streamlit as st
 
 from shared import PLOTLY_THEME, COLOR_BINARY, COLOR_SINGLE
 
-from rv_modeling.helpers import T_MAX, COLOR_GAUSS, _theme_parts, _ann
-from rv_modeling.compute import compute_model_fraction_curve, DIST_MAP
+from rv_modeling.helpers import (
+    T_MAX, COLOR_GAUSS, _theme_parts, _ann,
+    render_error_model_pair, render_orbital_params,
+    render_orbital_histograms,
+)
+from rv_modeling.compute import (
+    compute_model_fraction_curve, compute_physics_fraction_curve,
+    compute_physics_diagnostics, DIST_MAP,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +32,6 @@ def _slider_dist_selector(label: str, key_prefix: str,
     dist_name = st.selectbox(f"{label} distribution", dist_names,
                              index=default_idx, key=f"{key_prefix}_dist")
 
-    # Slider-based parameter meta (wider ranges, coarser steps)
     _slider_meta = {
         "Normal": [("μ", -100.0, 100.0, 0.0, 0.5),
                    ("σ", 0.5, 200.0, 20.0, 0.5)],
@@ -59,103 +65,20 @@ def _slider_dist_selector(label: str, key_prefix: str,
     return dist_name, tuple(params)
 
 
-# ---------------------------------------------------------------------------
-# Main tab renderer
-# ---------------------------------------------------------------------------
-
-def render_tab_playground(obs_data: dict) -> None:
-    """Tab C: Playground — manually adjust distributions and see f(T) instantly."""
+def _render_playground_plot(
+    obs_data: dict, t_arr: np.ndarray, f_curve: np.ndarray,
+    pg_fbin: float, chi2_red: float, residuals: np.ndarray,
+    model_label: str,
+) -> None:
+    """Shared plot renderer for both parametric and physics-based modes."""
     _ax, _ay, _al = _theme_parts()
     pal = obs_data["pal"]
     t_full = obs_data["t_full"]
     t_dots, f_dots, e_dots = obs_data["t_dots"], obs_data["f_dots"], obs_data["e_dots"]
     raw_frac = obs_data["raw_frac"]
 
-    st.subheader("Playground")
-    st.caption(
-        "Adjust distribution parameters with sliders and instantly see how "
-        "the model fits the observed binary fraction vs ΔRV threshold."
-    )
-
-    # ── f_bin slider ──
-    pg_fbin = st.slider("f_bin (binary fraction)", 0.01, 0.99, 0.40, 0.01,
-                        key="rvm_pg_fbin")
-
-    # ── Distribution selectors ──
-    col_s, col_b = st.columns(2)
-    with col_s:
-        st.markdown("**Single stars**")
-        single_dist, single_params = _slider_dist_selector(
-            "Single", "rvm_pg_sin", default_dist="Normal",
-        )
-    with col_b:
-        st.markdown("**Binary stars**")
-        # Default to Tab A best fit if available
-        best_dist = st.session_state.get("rvm_best_binary_dist", "Normal")
-        binary_dist, binary_params = _slider_dist_selector(
-            "Binary", "rvm_pg_bin", default_dist=best_dist,
-        )
-
-    # ── Sim controls ──
-    sc1, sc2, sc3 = st.columns(3)
-    with sc1:
-        n_sim = st.select_slider(
-            "N_sim", [10_000, 50_000, 100_000, 200_000],
-            value=50_000, key="rvm_pg_nsim",
-        )
-    with sc2:
-        n_epochs = st.number_input("N_epochs", 2, 20, 6, key="rvm_pg_nep")
-    with sc3:
-        seed = st.number_input("Seed", 0, 99999, 42, key="rvm_pg_seed")
-
-    # ── Compute model ──
-    try:
-        t_arr, f_curve = compute_model_fraction_curve(
-            dist_single=single_dist, params_single=single_params,
-            dist_binary=binary_dist, params_binary=binary_params,
-            f_bin=pg_fbin, n_sim=int(n_sim),
-            n_epochs=int(n_epochs), seed=int(seed),
-            t_max=T_MAX,
-        )
-
-        # Chi-squared
-        f_model_dots = np.interp(t_dots, t_arr, f_curve)
-        residuals = (f_dots - f_model_dots) / e_dots
-        chi2 = float(np.sum(residuals ** 2))
-        ndof = max(1, len(t_dots) - 1)
-        chi2_red = chi2 / ndof
-    except Exception as exc:
-        st.error(f"Model computation failed: {exc}")
-        return
-
-    # ── Metrics ──
-    m1, m2, m3 = st.columns(3)
-    m1.metric("f_bin", f"{pg_fbin:.3f}")
-    m2.metric("χ²_red", f"{chi2_red:.3f}")
-    m3.metric("N_dof", str(ndof))
-
-    # ── Snapshot ──
-    snap_col1, snap_col2 = st.columns(2)
-    with snap_col1:
-        if st.button("Save snapshot", key="rvm_pg_snap_save"):
-            snap = st.session_state.get("rvm_pg_snapshots", [])
-            snap.append(dict(
-                f_bin=pg_fbin, chi2_red=chi2_red,
-                single_dist=single_dist, single_params=single_params,
-                binary_dist=binary_dist, binary_params=binary_params,
-                f_curve=f_curve.copy(), t_arr=t_arr.copy(),
-            ))
-            st.session_state["rvm_pg_snapshots"] = snap
-            st.toast(f"Snapshot #{len(snap)} saved (χ²={chi2_red:.3f})")
-    with snap_col2:
-        if st.button("Clear snapshots", key="rvm_pg_snap_clear"):
-            st.session_state["rvm_pg_snapshots"] = []
-            st.rerun()
-
-    # Also load Tab B result if available
     fit_result = st.session_state.get("rvm_fit_result")
 
-    # ── Main plot ──
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True,
         row_heights=[0.75, 0.25], vertical_spacing=0.04,
@@ -180,10 +103,10 @@ def render_tab_playground(obs_data: dict) -> None:
     fig.add_trace(go.Scatter(
         x=t_arr, y=f_curve, mode="lines",
         line=dict(color=COLOR_BINARY, width=2.5),
-        name=f"Playground (f={pg_fbin:.3f}, χ²={chi2_red:.2f})",
+        name=f"{model_label} (f={pg_fbin:.3f}, χ²={chi2_red:.2f})",
     ), row=1, col=1)
 
-    # Tab B best fit (if available)
+    # Tab B best fit
     if fit_result is not None:
         fig.add_trace(go.Scatter(
             x=fit_result["t_arr"], y=fit_result["f_curve"], mode="lines",
@@ -234,7 +157,38 @@ def render_tab_playground(obs_data: dict) -> None:
         "Dashed = saved snapshots. Bottom: residuals vs observed."
     )
 
+
+# ---------------------------------------------------------------------------
+# Main tab renderer
+# ---------------------------------------------------------------------------
+
+def render_tab_playground(obs_data: dict) -> None:
+    """Tab C: Playground — manually adjust distributions and see f(T) instantly."""
+    t_dots, f_dots, e_dots = obs_data["t_dots"], obs_data["f_dots"], obs_data["e_dots"]
+
+    st.subheader("Playground")
+    st.caption(
+        "Adjust parameters with sliders and instantly see how "
+        "the model fits the observed binary fraction vs ΔRV threshold."
+    )
+
+    # ── Mode toggle ──
+    sim_mode = st.radio(
+        "Simulation mode", ["Parametric", "Physics-based"],
+        horizontal=True, key="rvm_pg_mode",
+    )
+
+    # ── f_bin slider (shared) ──
+    pg_fbin = st.slider("f_bin (binary fraction)", 0.01, 0.99, 0.40, 0.01,
+                        key="rvm_pg_fbin")
+
+    if sim_mode == "Parametric":
+        _render_parametric_branch(obs_data, pg_fbin, t_dots, f_dots, e_dots)
+    else:
+        _render_physics_branch(obs_data, pg_fbin, t_dots, f_dots, e_dots)
+
     # ── Snapshot comparison table ──
+    snapshots = st.session_state.get("rvm_pg_snapshots", [])
     if snapshots:
         st.subheader("Saved Snapshots")
         import pandas as pd
@@ -244,7 +198,183 @@ def render_tab_playground(obs_data: dict) -> None:
                 "#": i + 1,
                 "f_bin": f"{snap['f_bin']:.4f}",
                 "χ²_red": f"{snap['chi2_red']:.3f}",
-                "Single": f"{snap['single_dist']} {tuple(round(p, 2) for p in snap['single_params'])}",
-                "Binary": f"{snap['binary_dist']} {tuple(round(p, 2) for p in snap['binary_params'])}",
+                "Mode": snap.get("mode", "Parametric"),
             })
         st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+
+def _render_parametric_branch(obs_data, pg_fbin, t_dots, f_dots, e_dots):
+    """Parametric mode: scipy distribution draws."""
+    # Distribution selectors
+    col_s, col_b = st.columns(2)
+    with col_s:
+        st.markdown("**Single stars**")
+        single_dist, single_params = _slider_dist_selector(
+            "Single", "rvm_pg_sin", default_dist="Normal",
+        )
+    with col_b:
+        st.markdown("**Binary stars**")
+        best_dist = st.session_state.get("rvm_best_binary_dist", "Normal")
+        binary_dist, binary_params = _slider_dist_selector(
+            "Binary", "rvm_pg_bin", default_dist=best_dist,
+        )
+
+    # Sim controls
+    sc1, sc2, sc3 = st.columns(3)
+    with sc1:
+        n_sim = st.select_slider(
+            "N_sim", [10_000, 50_000, 100_000, 200_000],
+            value=50_000, key="rvm_pg_nsim",
+        )
+    with sc2:
+        n_epochs = st.number_input("N_epochs", 2, 20, 6, key="rvm_pg_nep")
+    with sc3:
+        seed = st.number_input("Seed", 0, 99999, 42, key="rvm_pg_seed")
+
+    # Compute
+    try:
+        t_arr, f_curve = compute_model_fraction_curve(
+            dist_single=single_dist, params_single=single_params,
+            dist_binary=binary_dist, params_binary=binary_params,
+            f_bin=pg_fbin, n_sim=int(n_sim),
+            n_epochs=int(n_epochs), seed=int(seed),
+            t_max=T_MAX,
+        )
+        f_model_dots = np.interp(t_dots, t_arr, f_curve)
+        residuals = (f_dots - f_model_dots) / e_dots
+        chi2 = float(np.sum(residuals ** 2))
+        ndof = max(1, len(t_dots) - 1)
+        chi2_red = chi2 / ndof
+    except Exception as exc:
+        st.error(f"Model computation failed: {exc}")
+        return
+
+    # Metrics + snapshot + plot
+    _render_metrics_and_snapshot(pg_fbin, chi2_red, t_arr, f_curve, "Parametric",
+                                single_dist=single_dist, single_params=single_params,
+                                binary_dist=binary_dist, binary_params=binary_params)
+    _render_playground_plot(obs_data, t_arr, f_curve, pg_fbin, chi2_red,
+                           residuals, "Parametric")
+
+
+def _render_physics_branch(obs_data, pg_fbin, t_dots, f_dots, e_dots):
+    """Physics-based mode: orbital simulation + real cadences + error models."""
+    cadence_tuples = obs_data["cadence_tuples"]
+    n_cadence = obs_data["n_cadence_stars"]
+
+    st.info(f"Using real observation cadences from {n_cadence} WR stars. "
+            f"N_total = n_sets × {n_cadence}.")
+
+    # sigma_single + seed + n_sets
+    rc1, rc2, rc3 = st.columns(3)
+    with rc1:
+        sigma_single = st.slider("σ_single (km/s)", 0.0, 30.0, 15.0, 0.5,
+                                  key="rvm_pg_phys_sigma_s")
+    with rc2:
+        n_sets = st.select_slider(
+            "N_sets (×25 stars)", [10, 50, 100, 200, 500],
+            value=50, key="rvm_pg_phys_nsets",
+        )
+    with rc3:
+        seed = st.number_input("Seed", 0, 99999, 42, key="rvm_pg_phys_seed")
+
+    # Error models
+    st.markdown("#### RV Error Models")
+    err = render_error_model_pair("rvm_pg_phys")
+
+    # Orbital params
+    st.markdown("#### Orbital Parameters")
+    orb = render_orbital_params("rvm_pg_phys")
+
+    # Compute
+    try:
+        t_arr, f_curve = compute_physics_fraction_curve(
+            f_bin=pg_fbin, pi=orb['pi'], n_sets=int(n_sets), seed=int(seed),
+            error_model_single=err['type_single'],
+            error_params_single=err['params_single'],
+            sigma_measure_single=err['sigma_measure'],
+            error_model_binary=err['type_binary'],
+            error_params_binary=err['params_binary'],
+            sigma_measure_binary=err['sigma_measure_binary'],
+            sigma_single=sigma_single,
+            period_model=orb['period_model'],
+            logP_min=orb['logP_min'], logP_max=orb['logP_max'],
+            e_model=orb['e_model'], e_max=orb['e_max'],
+            q_model=orb['q_model'], q_min=orb['q_min'], q_max=orb['q_max'],
+            q_flipped=orb['q_flipped'],
+            mass_primary_fixed=orb['mass_primary_fixed'],
+            weight_A=orb['weight_A'], dist_A=orb['dist_A'],
+            mu_A=orb['mu_A'], sigma_A=orb['sigma_A'],
+            dist_B=orb['dist_B'], mu_B=orb['mu_B'], sigma_B=orb['sigma_B'],
+            langer_q_mu=orb['langer_q_mu'], langer_q_sigma=orb['langer_q_sigma'],
+            cadence_tuples=cadence_tuples,
+            t_max=T_MAX,
+        )
+        f_model_dots = np.interp(t_dots, t_arr, f_curve)
+        residuals = (f_dots - f_model_dots) / e_dots
+        chi2 = float(np.sum(residuals ** 2))
+        ndof = max(1, len(t_dots) - 1)
+        chi2_red = chi2 / ndof
+    except Exception as exc:
+        st.error(f"Physics simulation failed: {exc}")
+        return
+
+    # Metrics + snapshot + plot
+    _render_metrics_and_snapshot(pg_fbin, chi2_red, t_arr, f_curve, "Physics-based")
+    _render_playground_plot(obs_data, t_arr, f_curve, pg_fbin, chi2_red,
+                           residuals, "Physics-based")
+
+    # Orbital parameter histograms
+    st.markdown("---")
+    st.markdown("### Binary Orbital Properties")
+    try:
+        diag = compute_physics_diagnostics(
+            f_bin=pg_fbin, pi=orb['pi'], n_sets=int(n_sets), seed=int(seed),
+            error_model_single=err['type_single'],
+            error_params_single=err['params_single'],
+            sigma_measure_single=err['sigma_measure'],
+            error_model_binary=err['type_binary'],
+            error_params_binary=err['params_binary'],
+            sigma_measure_binary=err['sigma_measure_binary'],
+            sigma_single=sigma_single,
+            period_model=orb['period_model'],
+            logP_min=orb['logP_min'], logP_max=orb['logP_max'],
+            e_model=orb['e_model'], e_max=orb['e_max'],
+            q_model=orb['q_model'], q_min=orb['q_min'], q_max=orb['q_max'],
+            q_flipped=orb['q_flipped'],
+            mass_primary_fixed=orb['mass_primary_fixed'],
+            weight_A=orb['weight_A'], dist_A=orb['dist_A'],
+            mu_A=orb['mu_A'], sigma_A=orb['sigma_A'],
+            dist_B=orb['dist_B'], mu_B=orb['mu_B'], sigma_B=orb['sigma_B'],
+            langer_q_mu=orb['langer_q_mu'], langer_q_sigma=orb['langer_q_sigma'],
+            cadence_tuples=cadence_tuples,
+        )
+        render_orbital_histograms(diag, pg_fbin, "rvm_pg_phys")
+    except Exception as exc:
+        st.warning(f"Orbital diagnostics failed: {exc}")
+
+
+def _render_metrics_and_snapshot(
+    pg_fbin, chi2_red, t_arr, f_curve, mode, **extra_snap,
+):
+    """Render metrics row and snapshot buttons."""
+    m1, m2, m3 = st.columns(3)
+    m1.metric("f_bin", f"{pg_fbin:.3f}")
+    m2.metric("χ²_red", f"{chi2_red:.3f}")
+    m3.metric("Mode", mode)
+
+    snap_col1, snap_col2 = st.columns(2)
+    with snap_col1:
+        if st.button("Save snapshot", key="rvm_pg_snap_save"):
+            snap = st.session_state.get("rvm_pg_snapshots", [])
+            snap.append(dict(
+                f_bin=pg_fbin, chi2_red=chi2_red,
+                f_curve=f_curve.copy(), t_arr=t_arr.copy(),
+                mode=mode, **extra_snap,
+            ))
+            st.session_state["rvm_pg_snapshots"] = snap
+            st.toast(f"Snapshot #{len(snap)} saved (χ²={chi2_red:.3f})")
+    with snap_col2:
+        if st.button("Clear snapshots", key="rvm_pg_snap_clear"):
+            st.session_state["rvm_pg_snapshots"] = []
+            st.rerun()
