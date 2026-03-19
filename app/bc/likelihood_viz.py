@@ -117,11 +117,12 @@ def render_likelihood_cdf(
         y=np.concatenate([hi_y, lo_y[::-1]]),
         fill='toself', fillcolor='rgba(226, 90, 83, 0.2)',
         line=dict(color='rgba(0,0,0,0)'),
-        showlegend=False, hoverinfo='skip',
+        legendgroup='sim_lk', showlegend=False, hoverinfo='skip',
     ))
     fig.add_trace(go.Scatter(
         x=med_x, y=med_y,
         mode='lines', name=f'Simulated (f_bin={fb:.3f}, π={pi_v:.2f}, σ={sig_v:.1f})',
+        legendgroup='sim_lk',
         line=dict(color='#E25A53', width=2.5, dash='dash'),
     ))
 

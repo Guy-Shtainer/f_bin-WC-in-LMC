@@ -31,6 +31,7 @@ def _render_cvm_analysis(
     x_label: str = 'f_bin',
     y_label: str = 'π',
     sigma_grid: np.ndarray | None = None,
+    logPmax_grid: np.ndarray | None = None,
     ks_D_3d: np.ndarray | None = None,
     ks_p_3d: np.ndarray | None = None,
     ks_S_raw_2d: np.ndarray | None = None,
@@ -332,18 +333,19 @@ def _render_cvm_analysis(
         f'**Parabolic minimum ({_stat_display}):** {x_label} = {best_x:.4f}, '
         f'{y_label} = {best_y:.3f}, {_cbar_title} = {best_S:.2f}')
 
+    # Camera presets (shared by 2D and 3D surface plots)
+    _cam_presets = {
+        'Default': dict(eye=dict(x=1.5, y=1.5, z=1.2)),
+        'Top-down': dict(eye=dict(x=0, y=0, z=2.5)),
+        'Front': dict(eye=dict(x=0, y=2.5, z=0.5)),
+        'Side': dict(eye=dict(x=2.5, y=0, z=0.5)),
+    }
+
     # ── 3b. 3D surface plot of the parabolic fit ─────────────────────────
     if _fit_coeffs is not None and _fit_bounds is not None:
         st.markdown('---')
         st.markdown('#### 3D Parabolic Surface')
 
-        # Camera presets
-        _cam_presets = {
-            'Default': dict(eye=dict(x=1.5, y=1.5, z=1.2)),
-            'Top-down': dict(eye=dict(x=0, y=0, z=2.5)),
-            'Front': dict(eye=dict(x=0, y=2.5, z=0.5)),
-            'Side': dict(eye=dict(x=2.5, y=0, z=0.5)),
-        }
         _cam_choice = st.radio('Camera', list(_cam_presets.keys()),
                                horizontal=True, key=f'{prefix}_cam_3d')
 
@@ -415,8 +417,15 @@ def _render_cvm_analysis(
                            key=f'{prefix}_3d_fbpi')
 
     # ── 3c. 3D quadratic fit + projected surfaces (3-axis grids) ────────
-    _do_3d_fit = (sigma_grid is not None and ks_D_3d is not None
-                  and len(sigma_grid) > 1)
+    # Determine which 3rd axis to use: sigma (if multi-valued) or logPmax
+    _do_3d_sigma = (sigma_grid is not None and ks_D_3d is not None
+                    and len(sigma_grid) > 1)
+    _do_3d_logPmax = (not _do_3d_sigma and logPmax_grid is not None
+                      and ks_D_3d is not None and len(logPmax_grid) > 1)
+    _do_3d_fit = _do_3d_sigma or _do_3d_logPmax
+    _3d_z_grid = sigma_grid if _do_3d_sigma else logPmax_grid
+    _3d_z_label = 'σ_single' if _do_3d_sigma else 'logP_max'
+    _3d_z_key = 'sigma' if _do_3d_sigma else 'logPmax'  # key in _interp_result
     if _do_3d_fit:
         _cam = _cam_presets.get(
             _cam_choice if '_cam_choice' in dir() else 'Default',
@@ -428,40 +437,44 @@ def _render_cvm_analysis(
         for _is3 in range(_S3d_work.shape[0]):
             _S3d_work[_is3][_exc_mask_2d] = np.nan
 
-        # Single 3D quadratic fit over (x=fbin, y=pi, z=sigma)
-        # _S3d_work is (n_sig, n_fb, n_pi) → transpose to (n_fb, n_pi, n_sig)
+        # Single 3D quadratic fit over (x=fbin, y=pi/sigma, z=sigma/logPmax)
+        # _S3d_work is (n_z, n_fb, n_y) → transpose to (n_fb, n_y, n_z)
         _S3d_for_fit = _S3d_work.transpose(1, 2, 0)
         _3d_bx, _3d_by, _3d_bz, _3d_bS, _3d_coeffs, _3d_bounds = \
-            _parabolic_min_3d(x_grid, y_grid, sigma_grid, _S3d_for_fit,
+            _parabolic_min_3d(x_grid, y_grid, _3d_z_grid, _S3d_for_fit,
                               height_factor=_h_factor, n_neighbors=max(_nn_x, _nn_y))
 
         st.markdown('---')
         st.markdown(f'#### 3D Quadratic Fit — {_stat_display}')
-        st.success(
-            f'**3D minimum ({_stat_display}):** {x_label} = {_3d_bx:.4f}, '
-            f'{y_label} = {_3d_by:.3f}, σ_single = {_3d_bz:.2f} km/s, '
-            f'{_cbar_title} = {_3d_bS:.2f}')
+        if _3d_bx is None or _3d_by is None or _3d_bz is None:
+            st.warning('3D quadratic fit did not converge.')
+            _do_3d_fit = False  # skip projections
+        else:
+            st.success(
+                f'**3D minimum ({_stat_display}):** {x_label} = {_3d_bx:.4f}, '
+                f'{y_label} = {_3d_by:.3f}, {_3d_z_label} = {_3d_bz:.2f}, '
+                f'{_cbar_title} = {_3d_bS:.2f}')
 
-        if _3d_coeffs is not None and _3d_bounds is not None:
+        if _do_3d_fit and _3d_coeffs is not None and _3d_bounds is not None:
             xb0, xb1, yb0, yb1, zb0, zb1 = _3d_bounds
             _ns3 = 50
 
             # 3 projections: fix one variable at best, show surface for other two
             _proj_configs = [
-                (x_grid, y_grid, x_label, y_label, 'σ_single',
+                (x_grid, y_grid, x_label, y_label, _3d_z_label,
                  _3d_bx, _3d_by, _3d_bz,
                  lambda xx, yy: _eval_3d_quadratic(_3d_coeffs, xx, yy, _3d_bz),
-                 f'{x_label} × {y_label}  (σ={_3d_bz:.1f})',
+                 f'{x_label} × {y_label}  ({_3d_z_label}={_3d_bz:.2f})',
                  xb0, xb1, yb0, yb1, _S3d_work[:, :, :]),
-                (x_grid, sigma_grid, x_label, 'σ_single', y_label,
+                (x_grid, _3d_z_grid, x_label, _3d_z_label, y_label,
                  _3d_bx, _3d_bz, _3d_by,
                  lambda xx, zz: _eval_3d_quadratic(_3d_coeffs, xx, _3d_by, zz),
-                 f'{x_label} × σ  (π={_3d_by:.3f})',
+                 f'{x_label} × {_3d_z_label}  ({y_label}={_3d_by:.3f})',
                  xb0, xb1, zb0, zb1, None),
-                (y_grid, sigma_grid, y_label, 'σ_single', x_label,
+                (y_grid, _3d_z_grid, y_label, _3d_z_label, x_label,
                  _3d_by, _3d_bz, _3d_bx,
                  lambda yy, zz: _eval_3d_quadratic(_3d_coeffs, _3d_bx, yy, zz),
-                 f'{y_label} × σ  (f_bin={_3d_bx:.4f})',
+                 f'{y_label} × {_3d_z_label}  (f_bin={_3d_bx:.4f})',
                  yb0, yb1, zb0, zb1, None),
             ]
 
@@ -474,8 +487,8 @@ def _render_cvm_analysis(
 
                 # Grid data in fit region
                 if _ip == 0:
-                    # f_bin × pi: need best sigma slice from 3D data
-                    _iz_best = int(np.argmin(np.abs(sigma_grid - _3d_bz)))
+                    # f_bin × y: need best z-axis slice from 3D data
+                    _iz_best = int(np.argmin(np.abs(_3d_z_grid - _3d_bz)))
                     _sl_data = _S3d_work[_iz_best]  # (n_fb, n_pi)
                 elif _ip == 1:
                     # f_bin × sigma: fix pi at best
@@ -599,7 +612,8 @@ def _render_cvm_analysis(
     _interp_result = {'f_bin': best_x, 'y_val': best_y, 'S': best_S}
     if do_3d and '_3d_bx' in dir() and _3d_bx is not None:
         _interp_result = {
-            'f_bin': _3d_bx, 'pi': _3d_by, 'sigma': _3d_bz, 'S': _3d_bS
+            'f_bin': _3d_bx, 'pi': _3d_by,
+            _3d_z_key: _3d_bz, 'S': _3d_bS,
         }
     elif bsig is not None:
         _interp_result['sigma'] = bsig
@@ -616,7 +630,7 @@ def _render_cvm_analysis(
                         line=dict(width=1, color='black')),
             name='Interpolated',
             hovertemplate=(f'{x_label}={_interp_fb_val:.4f}<br>'
-                           f'{y_label}={_interp_y_val:.3f}<extra></extra>'),
+                           f'{y_label}={_interp_y_val:.3f}<extra>Interpolated best</extra>'),
         )
         fig_masked.add_trace(_star_trace)
         _masked_slot.plotly_chart(fig_masked, use_container_width=(width is None))

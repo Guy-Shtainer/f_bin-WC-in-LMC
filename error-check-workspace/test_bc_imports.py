@@ -60,10 +60,10 @@ except ImportError as e:
     check('cadence._get_method_array import', False, str(e))
 
 try:
-    from bc.dsilva import _get_method_array as _gma_dsilva
-    check('dsilva._get_method_array import', True)
+    from bc.analysis import _get_method_array as _gma_dsilva
+    check('analysis._get_method_array import (used by dsilva via subtabs)', True)
 except ImportError as e:
-    check('dsilva._get_method_array import', False, str(e))
+    check('analysis._get_method_array import (used by dsilva via subtabs)', False, str(e))
 
 try:
     from bc.langer import _get_method_array as _gma_langer

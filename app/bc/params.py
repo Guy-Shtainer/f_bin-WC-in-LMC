@@ -485,7 +485,7 @@ def _render_cadence_adaptive_bins(
         return False, None, drv_bin_width, drv_max
 
 
-def _render_likelihood_bin_config(p: str, prefix: str = '') -> np.ndarray:
+def _render_likelihood_bin_config(p: str, prefix: str = '', sm=None) -> np.ndarray:
     """Render likelihood bin edges configuration. Returns bin_edges array.
 
     Provides two modes: Threshold-based (auto-generate from detection threshold)
@@ -493,20 +493,43 @@ def _render_likelihood_bin_config(p: str, prefix: str = '') -> np.ndarray:
     """
     from wr_bias_simulation import dsilva_likelihood_bins
 
+    # Pre-populate session_state from saved settings
+    if sm is not None:
+        _lk_cfg = sm.load().get('likelihood_bin_config', {})
+        _sk = f'{p}{prefix}_lk_bin_mode'
+        if _sk not in st.session_state and 'mode' in _lk_cfg:
+            st.session_state[_sk] = _lk_cfg['mode']
+        _tk = f'{p}{prefix}_lk_threshold'
+        if _tk not in st.session_state and 'threshold' in _lk_cfg:
+            st.session_state[_tk] = float(_lk_cfg['threshold'])
+        _mk = f'{p}{prefix}_manual_edges'
+        if _mk not in st.session_state and 'manual_edges' in _lk_cfg:
+            st.session_state[_mk] = str(_lk_cfg['manual_edges'])
+
+    def _lk_save(key, val):
+        if sm is not None:
+            sm.save(['likelihood_bin_config', key], value=val)
+
     _mode = st.radio('Likelihood bin mode', ['Threshold-based', 'Manual'],
-                     horizontal=True, key=f'{p}{prefix}_lk_bin_mode')
+                     horizontal=True, key=f'{p}{prefix}_lk_bin_mode',
+                     on_change=lambda: _lk_save('mode',
+                                                st.session_state[f'{p}{prefix}_lk_bin_mode']))
 
     if _mode == 'Threshold-based':
         _lk_threshold = st.number_input(
             'Detection threshold (km/s)', value=45.5,
             min_value=1.0, max_value=200.0, step=0.5,
-            key=f'{p}{prefix}_lk_threshold')
+            key=f'{p}{prefix}_lk_threshold',
+            on_change=lambda: _lk_save('threshold',
+                                       st.session_state[f'{p}{prefix}_lk_threshold']))
         _lk_bin_edges = dsilva_likelihood_bins(_lk_threshold)
     else:
         _default = st.session_state.get(f'{p}{prefix}_manual_edges', '0, 45.5, 250, 650')
         _edges_text = st.text_input(
             'Bin edges (comma-separated, ∞ added automatically)',
-            value=_default, key=f'{p}{prefix}_lk_edges_text')
+            value=_default, key=f'{p}{prefix}_lk_edges_text',
+            on_change=lambda: _lk_save('manual_edges',
+                                       st.session_state[f'{p}{prefix}_lk_edges_text']))
         try:
             _parsed = sorted([float(x.strip()) for x in _edges_text.split(',')
                               if x.strip()])
@@ -522,3 +545,50 @@ def _render_likelihood_bin_config(p: str, prefix: str = '') -> np.ndarray:
     _labels = [f'{e:.0f}' if np.isfinite(e) else '∞' for e in _lk_bin_edges]
     st.caption(f'Likelihood bins: [{", ".join(_labels)}]')
     return _lk_bin_edges
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# logP_max scan expander (shared by cadence tabs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_logPmax_scan(p: str, sec: str, sm, default_logP_max: float = 5.0,
+                         ) -> np.ndarray:
+    """Render the logP_max scan toggle + sliders inside an expander.
+
+    Returns an ndarray of logPmax values to scan (length 1 if scan is off).
+    """
+    _scan_lp = st.toggle(
+        'Scan logP_max over a range',
+        key=f'{p}_scan_logPmax',
+        on_change=lambda: sm.save(
+            [sec, 'scan_logPmax'],
+            value=st.session_state[f'{p}_scan_logPmax']))
+    if _scan_lp:
+        _lpc1, _lpc2, _lpc3 = st.columns(3)
+        _lp_min = _lpc1.number_input(
+            'logP_max min', 0.5, 10.0,
+            float(st.session_state[f'{p}_logPmax_scan_min']), 0.1,
+            key=f'{p}_logPmax_scan_min',
+            on_change=lambda: sm.save(
+                [sec, 'logPmax_scan_min'],
+                value=st.session_state[f'{p}_logPmax_scan_min']))
+        _lp_max = _lpc2.number_input(
+            'logP_max max', 1.0, 10.0,
+            float(st.session_state[f'{p}_logPmax_scan_max']), 0.1,
+            key=f'{p}_logPmax_scan_max',
+            on_change=lambda: sm.save(
+                [sec, 'logPmax_scan_max'],
+                value=st.session_state[f'{p}_logPmax_scan_max']))
+        _lp_steps = _lpc3.number_input(
+            'logP_max steps', 3, 100,
+            int(st.session_state[f'{p}_logPmax_scan_steps']), 1,
+            key=f'{p}_logPmax_scan_steps',
+            on_change=lambda: sm.save(
+                [sec, 'logPmax_scan_steps'],
+                value=st.session_state[f'{p}_logPmax_scan_steps']))
+        return np.linspace(
+            float(_lp_min),
+            max(float(_lp_min) + 0.1, float(_lp_max)),
+            int(_lp_steps))
+    return np.array([float(
+        st.session_state.get(f'{p}_logP_max', default_logP_max))])

@@ -17,6 +17,20 @@ if _ROOT not in sys.path:
 from shared import PLOTLY_THEME
 
 
+def _squeeze_to_match(arr: np.ndarray, target_ndim: int) -> np.ndarray:
+    """Squeeze array to target_ndim by removing size-1 axes first, then slicing."""
+    while arr.ndim > target_ndim:
+        squeezed = False
+        for ax in range(arr.ndim):
+            if arr.shape[ax] == 1:
+                arr = np.squeeze(arr, axis=ax)
+                squeezed = True
+                break
+        if not squeezed:
+            arr = arr[0]
+    return arr
+
+
 def _add_1d_posterior(fig, row, col, grid, post_1d, hdi_tuple, color='#4A90D9'):
     """Add 1D posterior trace with HDI shading + mode line to a subplot cell."""
     mode_val, lo, hi = hdi_tuple
@@ -92,24 +106,62 @@ def _render_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
     st.divider()
     with st.expander(f'Corner Plot — {display_name}', expanded=False):
         # Build grids/names matching p_nd dimensions
+        # Build grids matching p_nd dimensions.
+        # logPmax and sigma are "outer" axes prepended when scanned.
+        _sigma_g = np.asarray(result.get('sigma_grid', [0.0]))
+        _logPmax_g = np.asarray(result.get('logPmax_grid', [0.0]))
+        _has_lp = _logPmax_g.size > 1
+        _has_sig = _sigma_g.size > 1
+
         if ndim_mode == 'dsilva':
-            _sigma_g = np.asarray(result.get('sigma_grid', [0.0]))
-            _logPmax_g = np.asarray(result.get('logPmax_grid', [0.0]))
-            _all_grids = [_logPmax_g, _sigma_g, fbin_g, x_g]
-            _all_names = ['logPmax', 'sigma', 'fbin', x_name]
-        elif ndim_mode == 'langer':
-            _all_grids = [fbin_g, x_g]
-            _all_names = ['fbin', x_name]
-        else:
-            # cadence modes — build from p_nd shape
+            # Dsilva: shape is [logPmax?, sigma?, fbin, pi]
             _all_grids = []
             _all_names = []
-            _sig_g_c = np.asarray(result.get('sigma_grid', [0.0]))
-            if p_nd.ndim >= 3 and _sig_g_c.size > 1:
-                _all_grids.append(_sig_g_c)
+            if _has_lp:
+                _all_grids.append(_logPmax_g)
+                _all_names.append('logPmax')
+            if _has_sig:
+                _all_grids.append(_sigma_g)
                 _all_names.append('sigma')
             _all_grids.extend([fbin_g, x_g])
             _all_names.extend(['fbin', x_name])
+            # Squeeze p_nd to match grid count — remove size-1 axes
+            p_nd = _squeeze_to_match(p_nd, len(_all_grids))
+        elif ndim_mode == 'langer':
+            # Langer: shape is [logPmax?, fbin, sigma]
+            _all_grids = []
+            _all_names = []
+            if _has_lp:
+                _all_grids.append(_logPmax_g)
+                _all_names.append('logPmax')
+            _all_grids.extend([fbin_g, x_g])
+            _all_names.extend(['fbin', x_name])
+            p_nd = _squeeze_to_match(p_nd, len(_all_grids))
+        else:
+            # cadence modes — build dynamically from scanned axes
+            _all_grids = []
+            _all_names = []
+            if _has_lp:
+                _all_grids.append(_logPmax_g)
+                _all_names.append('logPmax')
+            if _has_sig:
+                _all_grids.append(_sigma_g)
+                _all_names.append('sigma')
+            _all_grids.append(fbin_g)
+            _all_names.append('fbin')
+            # For cadence_langer x_name='sigma' but sigma is already added;
+            # use pi_grid as last axis only if it has >1 value (not size-1)
+            if x_name == 'sigma' and 'sigma' in _all_names:
+                _pi_g = np.asarray(result.get('pi_grid', [0.0]))
+                # Only include pi if it has >1 value AND matches array's last dim
+                if _pi_g.size > 1 and p_nd.shape[-1] == _pi_g.size:
+                    _all_grids.append(_pi_g)
+                    _all_names.append('pi')
+                # else: skip pi — degenerate or mismatched axis, squeeze it out
+            else:
+                _all_grids.append(x_g)
+                _all_names.append(x_name)
+            p_nd = _squeeze_to_match(p_nd, len(_all_grids))
 
         _info = _method_best_and_hdi(p_nd, _all_grids, _all_names,
                                      is_likelihood=_is_likelihood)
@@ -186,17 +238,12 @@ def _render_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
         })
         st.plotly_chart(fig_c, use_container_width=True,
                         key=f'{prefix}_{method_key}_corner')
-        if n_params == 3:
-            st.caption(
-                f'3-parameter corner plot for {display_name}. '
-                f'Diagonal: 1D posteriors with 68% HDI (blue shading) and mode (red dashed). '
-                f'Off-diagonal: 2D marginalized heatmaps with 68%/95% contours and best fit (gold star).'
-            )
-        else:
-            st.caption(
-                f'2-parameter corner plot for {display_name}. '
-                f'Diagonal: 1D posteriors with 68% HDI (blue shading) and mode (red dashed). '
-                f'Off-diagonal: 2D marginalized heatmap with 68%/95% contours and best fit (gold star).'
-            )
+        _param_list = ' × '.join(lbl for _, _, lbl in show_axes)
+        st.caption(
+            f'{n_params}-parameter corner plot for {display_name} ({_param_list}). '
+            f'Diagonal: 1D posteriors with 68% HDI (blue shading) and mode (red dashed). '
+            f'Off-diagonal: 2D marginalized heatmap{"s" if n_params > 2 else ""} '
+            f'with 68%/95% contours and best fit (gold star).'
+        )
 
     return _info

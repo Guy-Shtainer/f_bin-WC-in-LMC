@@ -116,9 +116,9 @@
     "pi_min": -3.0,
     "pi_max": 3.0,
     "pi_steps": 50,
-    "n_sets": 1000,
-    "scan_sigma": true,
-    "sigma_single": 15.0,
+    "n_sets": 500,
+    "scan_sigma": false,
+    "sigma_single": 6.0,
     "sigma_min": 3.0,
     "sigma_max": 13.0,
     "sigma_steps": 50,
@@ -154,7 +154,9 @@
     "errp_binary_2": 1.8592,
     "errp_single_0": 1.2412,
     "errp_single_1": 0.7986,
-    "errp_single_2": 0.7744
+    "errp_single_2": 0.7744,
+    "scan_logPmax": true,
+    "logPmax_scan_steps": 5
   },
   "grid_cadence_langer": {
     "fbin_min": 0.01,
@@ -208,5 +210,9 @@
     "last_band": "COMBINED",
     "last_result": "results/dsilva_result.npz",
     "last_page": "Home"
+  },
+  "likelihood_bin_config": {
+    "mode": "Manual",
+    "manual_edges": "0, 45.5, 100, 250"
   }
 }

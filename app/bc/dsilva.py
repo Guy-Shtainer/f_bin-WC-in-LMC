@@ -6,10 +6,8 @@ import json
 import os
 import sys
 import threading
-import time
 
 import numpy as np
-import plotly.graph_objects as go
 import streamlit as st
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -20,26 +18,17 @@ if _ROOT not in sys.path:
 from shared import (
     cached_load_observed_delta_rvs, cached_load_cadence,
     cached_load_grid_result, settings_hash,
-    find_best_grid_point, make_heatmap_fig,
-    PLOTLY_THEME, get_palette,
 )
 
 from bc.helpers import (
-    SCORING_METHODS, _METHOD_COLORS, _METHOD_SCORING_LABELS, _METHOD_COLORBAR_OVERRIDE,
-    _RESULT_DIR, _HISTORY_PATH, _FILENAME_FORMAT_HELP,
-    _hex_to_rgba, _fmt_eta, _result_path, _stable_cfg_hash,
-    _build_descriptive_filename, _list_saved_results,
-    _build_partial_filename, _list_partial_results,
+    _METHOD_SCORING_LABELS, _METHOD_COLORBAR_OVERRIDE,
+    _RESULT_DIR,
+    _fmt_eta, _result_path,
+    _build_descriptive_filename,
     _scan_partial_metadata, _render_partial_table,
     _scan_result_metadata,
-    _make_max_pval_fig, _make_min_score_fig, _make_3d_stacked_fig,
-    _find_reusable_fbin, _append_run_history,
-    _render_methodology_expander,
-    _best_point, _make_heatmap_fig,
-)
-from bc.analysis import (
-    _render_method_summary_section, _render_method_expander,
-    _render_cvm_analysis, _get_method_array,
+    _make_max_pval_fig,
+    _make_heatmap_fig,
 )
 from bc.params import _render_orbital_params_dsilva
 from bc.runners import _run_dsilva_bg
@@ -151,33 +140,43 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
         # These survive page navigation even when the widgets are not rendered.
         _sigma_default = float(simcfg.get('sigma_single', 5.5))
         _bc_defaults = {
-            f'{p}_sigma_min':          max(0.1, _sigma_default - 2.0),
-            f'{p}_sigma_max':          _sigma_default + 2.0,
-            f'{p}_sigma_steps':        5,
-            f'{p}_logPmax_scan_min':   1.0,
-            f'{p}_logPmax_scan_max':   6.0,
-            f'{p}_logPmax_scan_steps': 20,
+            f'{p}_scan_sigma':         bool(gcfg.get('scan_sigma', False)),
+            f'{p}_sigma_min':          float(gcfg.get('sigma_min', max(0.1, _sigma_default - 2.0))),
+            f'{p}_sigma_max':          float(gcfg.get('sigma_max', _sigma_default + 2.0)),
+            f'{p}_sigma_steps':        int(gcfg.get('sigma_steps', 5)),
+            f'{p}_scan_logPmax':       bool(gcfg.get('scan_logPmax', False)),
+            f'{p}_logPmax_scan_min':   float(gcfg.get('logPmax_scan_min', 1.0)),
+            f'{p}_logPmax_scan_max':   float(gcfg.get('logPmax_scan_max', 6.0)),
+            f'{p}_logPmax_scan_steps': int(gcfg.get('logPmax_scan_steps', 20)),
         }
         for _k, _v in _bc_defaults.items():
             if _k not in st.session_state:
                 st.session_state[_k] = _v
 
         with st.expander('🎚️ σ_single scan (intrinsic single-star scatter)', expanded=True):
-            scan_sigma = st.toggle('Scan σ_single over a range', key=f'{p}_scan_sigma')
+            scan_sigma = st.toggle('Scan σ_single over a range', key=f'{p}_scan_sigma',
+                                    on_change=lambda: sm.save(['grid_dsilva', 'scan_sigma'],
+                                                              value=st.session_state[f'{p}_scan_sigma']))
             if scan_sigma:
                 _sc1, _sc2, _sc3 = st.columns(3)
                 sigma_min = _sc1.number_input(
                     'σ_single min (km/s)', 0.1, 500.0,
                     float(st.session_state[f'{p}_sigma_min']), 0.1,
-                    key=f'{p}_sigma_min')
+                    key=f'{p}_sigma_min',
+                    on_change=lambda: sm.save(['grid_dsilva', 'sigma_min'],
+                                              value=st.session_state[f'{p}_sigma_min']))
                 sigma_max_val_w = _sc2.number_input(
                     'σ_single max (km/s)', 0.5, 500.0,
                     float(st.session_state[f'{p}_sigma_max']), 0.1,
-                    key=f'{p}_sigma_max')
+                    key=f'{p}_sigma_max',
+                    on_change=lambda: sm.save(['grid_dsilva', 'sigma_max'],
+                                              value=st.session_state[f'{p}_sigma_max']))
                 sigma_steps = _sc3.number_input(
                     'σ_single steps', 2, 500,
                     int(st.session_state[f'{p}_sigma_steps']), 1,
-                    key=f'{p}_sigma_steps')
+                    key=f'{p}_sigma_steps',
+                    on_change=lambda: sm.save(['grid_dsilva', 'sigma_steps'],
+                                              value=st.session_state[f'{p}_sigma_steps']))
                 sigma_vals = np.linspace(max(0.1, sigma_min),
                                          max(sigma_min + 0.1, sigma_max_val_w),
                                          int(sigma_steps))
@@ -192,21 +191,29 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 sigma_vals = np.array([float(sigma_single)])
 
         with st.expander('🎚️ logP_max scan (period upper bound)', expanded=False):
-            scan_logPmax = st.toggle('Scan logP_max over a range', key=f'{p}_scan_logPmax')
+            scan_logPmax = st.toggle('Scan logP_max over a range', key=f'{p}_scan_logPmax',
+                                      on_change=lambda: sm.save(['grid_dsilva', 'scan_logPmax'],
+                                                                value=st.session_state[f'{p}_scan_logPmax']))
             if scan_logPmax:
                 _lp_c1, _lp_c2, _lp_c3 = st.columns(3)
                 logPmax_scan_min = _lp_c1.number_input(
                     'logP_max min', 0.5, 10.0,
                     float(st.session_state[f'{p}_logPmax_scan_min']), 0.1,
-                    key=f'{p}_logPmax_scan_min')
+                    key=f'{p}_logPmax_scan_min',
+                    on_change=lambda: sm.save(['grid_dsilva', 'logPmax_scan_min'],
+                                              value=st.session_state[f'{p}_logPmax_scan_min']))
                 logPmax_scan_max = _lp_c2.number_input(
                     'logP_max max', 1.0, 10.0,
                     float(st.session_state[f'{p}_logPmax_scan_max']), 0.1,
-                    key=f'{p}_logPmax_scan_max')
+                    key=f'{p}_logPmax_scan_max',
+                    on_change=lambda: sm.save(['grid_dsilva', 'logPmax_scan_max'],
+                                              value=st.session_state[f'{p}_logPmax_scan_max']))
                 logPmax_scan_steps = _lp_c3.number_input(
                     'logP_max steps', 3, 100,
                     int(st.session_state[f'{p}_logPmax_scan_steps']), 1,
-                    key=f'{p}_logPmax_scan_steps')
+                    key=f'{p}_logPmax_scan_steps',
+                    on_change=lambda: sm.save(['grid_dsilva', 'logPmax_scan_steps'],
+                                              value=st.session_state[f'{p}_logPmax_scan_steps']))
                 logPmax_scan_vals = np.linspace(
                     float(logPmax_scan_min),
                     max(float(logPmax_scan_min) + 0.1, float(logPmax_scan_max)),
@@ -246,7 +253,7 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
             help='Number of simulation sets per grid point for CvM variance estimation and likelihood')
         from bc.params import _render_likelihood_bin_config
         with _cvm_cols[1]:
-            _lk_bin_edges = _render_likelihood_bin_config(p)
+            _lk_bin_edges = _render_likelihood_bin_config(p, sm=sm)
         _run_col, _load_col, _save_col = _ac3.columns(3)
         _job_running = bool(
             st.session_state.get(f'{p}_job', {}).get('status') == 'running')
@@ -687,146 +694,33 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
         else:
             disp_lp_idx = 0
 
-        # ── Multi-method comparison summary (shown directly, not collapsed) ─
-        _method_res = _render_method_summary_section(
-            result, fbin_g, pi_g,
-            prefix=p, x_name='pi', x_label='pi',
-            ndim_mode='dsilva',
-        )
-
-        # ── Per-method expanders ────────────────────────────────────────
-        _ds_outer_slices = (disp_lp_idx, disp_sig_idx)
-        for _mk, _mname, _pk, _dk, _mcolor in SCORING_METHODS:
-            _m_p_arr = _get_method_array(result, _pk)
-            if _m_p_arr is None:
-                continue
-            # Ensure 4D
-            if _m_p_arr.ndim == 2:
-                _m_p_arr = _m_p_arr[np.newaxis, np.newaxis, ...]
-            elif _m_p_arr.ndim == 3:
-                _m_p_arr = _m_p_arr[np.newaxis, ...]
-            _m_d_arr = _get_method_array(result, _dk)
-            if _m_d_arr is not None:
-                if _m_d_arr.ndim == 2:
-                    _m_d_arr = _m_d_arr[np.newaxis, np.newaxis, ...]
-                elif _m_d_arr.ndim == 3:
-                    _m_d_arr = _m_d_arr[np.newaxis, ...]
-            with st.expander(f'{_mname}', expanded=(_mk == 'ks')):
-                _render_method_expander(
-                    _mk, _mname, _m_p_arr, _m_d_arr,
-                    result, fbin_g, pi_g, prefix=p,
-                    height=_ch, width=_cw, use_cw=_use_cw,
-                    x_label='pi', x_name='pi',
-                    x_display_label='pi (period power-law index)',
-                    ndim_mode='dsilva',
-                    disp_outer_slices=_ds_outer_slices,
-                    method_results=_method_res,
-                )
-
-        # (Bug 2 removed: old heatmap_slot render is now handled by per-method expanders)
-
-        # Best across ALL dimensions
-        best_fbin_v   = float(fbin_g[best_fb_idx])
-        best_pi_v     = float(pi_g[best_pi_idx])
-        best_sigma_v  = float(sigma_g[best_sig_idx])
-        best_logPmax_v = float(logPmax_g[best_lp_idx])
-        best_pval_v   = float(ks_p_4d[best_lp_idx, best_sig_idx, best_fb_idx, best_pi_idx])
-
-        # Current slice best
-        _cur_slice_2d = ks_p_4d[disp_lp_idx, disp_sig_idx]
-        _slice_fb, _slice_pi, _slice_pval = _best_point(
-            _cur_slice_2d, fbin_g, pi_g)
-        _cur_logPmax_v = float(logPmax_g[disp_lp_idx])
-        _cur_sigma_v = float(sigma_g[disp_sig_idx])
-
-        # (Bug 11+12 removed: old CvM expander and orphaned metrics are now in per-method expanders)
-
-        # Apply grid exclusion mask to 4D arrays for downstream sections
-        # Use stored 1D per-axis masks (includes range sliders + per-value exclusions)
-        _cvm_fb_exc = st.session_state.get(f'{p}_cvm_exc_x_mask_1d')
-        _cvm_pi_exc = st.session_state.get(f'{p}_cvm_exc_y_mask_1d')
-        _has_fb_exc = _cvm_fb_exc is not None and np.any(_cvm_fb_exc)
-        _has_pi_exc = _cvm_pi_exc is not None and np.any(_cvm_pi_exc)
-        if _has_fb_exc or _has_pi_exc:
-            _fb_exc = _cvm_fb_exc if _has_fb_exc else np.zeros(len(fbin_g), dtype=bool)
-            _pi_exc = _cvm_pi_exc if _has_pi_exc else np.zeros(len(pi_g), dtype=bool)
-            _exc_2d = _fb_exc[:, None] | _pi_exc[None, :]
-            ks_p_4d = ks_p_4d.copy()
-            ks_D_4d = ks_D_4d.copy()
-            for _i_lp in range(ks_p_4d.shape[0]):
-                for _i_sig in range(ks_p_4d.shape[1]):
-                    ks_p_4d[_i_lp, _i_sig][_exc_2d] = np.nan
-                    ks_D_4d[_i_lp, _i_sig][_exc_2d] = np.nan
-            # Recompute best across all dimensions
-            _valid_mask = np.isfinite(ks_p_4d)
-            if _valid_mask.any():
-                _flat_best_4d = int(np.nanargmax(ks_p_4d))
-                best_lp_idx  = _flat_best_4d // (_n_sig * _n_fb * _n_pi)
-                best_sig_idx = (_flat_best_4d // (_n_fb * _n_pi)) % _n_sig
-                best_fb_idx  = (_flat_best_4d // _n_pi) % _n_fb
-                best_pi_idx  = _flat_best_4d % _n_pi
-                best_fbin_v  = float(fbin_g[best_fb_idx])
-                best_pi_v    = float(pi_g[best_pi_idx])
-                best_sigma_v = float(sigma_g[best_sig_idx])
-                best_logPmax_v = float(logPmax_g[best_lp_idx])
-                best_pval_v  = float(ks_p_4d[best_lp_idx, best_sig_idx, best_fb_idx, best_pi_idx])
-
-        # Toggle: use current slice for downstream analysis
-        _use_slice = st.checkbox(
-            'Use current slice for analysis plots below',
-            value=False,
-            key=f'{p}_use_slice',
-            help='When checked, downstream graphs use the best-fit from '
-                 'the currently selected σ/logP_max slice instead of the '
-                 'global argmax.',
-        )
-
-        # Determine which values drive downstream analysis
-        if _use_slice:
-            _ana_fbin = _slice_fb
-            _ana_pi = _slice_pi
-            _ana_sigma = _cur_sigma_v
-            _ana_logPmax = _cur_logPmax_v
-        else:
-            _ana_fbin = best_fbin_v
-            _ana_pi = best_pi_v
-            _ana_sigma = best_sigma_v
-            _ana_logPmax = best_logPmax_v
-
-        bartzakos = cls.get('bartzakos_binaries', 3)
-        total_pop = cls.get('total_population', 28)
-
-        sh_curr = settings_hash(settings)
-        try:
-            obs_drv, _ = cached_load_observed_delta_rvs(sh_curr)
-            n_det = int(np.sum(obs_drv > cls.get('threshold_dRV', 45.5)))
-        except Exception:
-            n_det = 0
-
-
-        # ── Import simulation functions for analysis plots ─────────────────
-        from wr_bias_simulation import (
-            SimulationConfig, BinaryParameterConfig,
-            simulate_delta_rv_sample, _simulate_rv_sample_full,
-            simulate_with_params, ks_two_sample,
-        )
-
-        # Load observed data for analysis plots
+        # ── Load observed data for model_ctx ──────────────────────────────
         sh_analysis = settings_hash(settings)
         try:
             obs_drv_analysis, obs_detail = cached_load_observed_delta_rvs(sh_analysis)
             cadence_list_a, cadence_weights_a = cached_load_cadence(sh_analysis)
             _has_obs = True
         except Exception:
+            obs_drv_analysis = None
+            obs_detail = None
+            cadence_list_a = None
+            cadence_weights_a = None
             _has_obs = False
 
+        # ── Compute gap_sim at best-fit for analysis plots ────────────────
+        gap_sim = None
+        _bin_cfg_explore = None
+        ana_logPmax = float(logPmax_g[best_lp_idx])
         if _has_obs:
+            from wr_bias_simulation import (
+                SimulationConfig, BinaryParameterConfig,
+                simulate_with_params,
+            )
             thresh_dRV = float(cls.get('threshold_dRV', 45.5))
 
-            # Build shared configs (use analysis logP_max)
             _bin_cfg_explore = BinaryParameterConfig(
                 logP_min=float(logP_min_val),
-                logP_max=float(_ana_logPmax),
+                logP_max=ana_logPmax,
                 period_model='powerlaw',
                 e_model=str(e_model),
                 e_max=float(e_max),
@@ -839,743 +733,64 @@ def _render_dsilva_tab(p: str, settings: dict, sm) -> None:
                 langer_q_sigma=float(langer_q_sig),
             )
 
-            # ── Simulate at analysis best-fit for analysis plots ─────
+            best_fbin_v = float(fbin_g[best_fb_idx])
+            best_pi_v = float(pi_g[best_pi_idx])
+            best_sigma_v = float(sigma_g[best_sig_idx])
+
             _sim_cfg_gap = SimulationConfig(
                 n_stars=int(n_stars_sim),
-                sigma_single=float(_ana_sigma),
+                sigma_single=best_sigma_v,
                 sigma_measure=float(sigma_meas),
                 cadence_library=cadence_list_a,
                 cadence_weights=cadence_weights_a,
             )
-            # Invalidate gap_sim when analysis params change
-            _gap_fingerprint = (_ana_fbin, _ana_pi, _ana_sigma, _ana_logPmax,
-                                ks_p_4d.shape)
+            _gap_fingerprint = (best_fbin_v, best_pi_v, best_sigma_v,
+                                ana_logPmax, ks_p_4d.shape)
             if (st.session_state.get(f'{p}_gap_fingerprint') != _gap_fingerprint
                     or f'{p}_gap_sim' not in st.session_state):
                 rng_gap = np.random.default_rng(99)
                 st.session_state[f'{p}_gap_sim'] = simulate_with_params(
-                    _ana_fbin, _ana_pi,
+                    best_fbin_v, best_pi_v,
                     _sim_cfg_gap, _bin_cfg_explore, rng_gap,
                 )
                 st.session_state[f'{p}_gap_fingerprint'] = _gap_fingerprint
-                # Also clear model explorer cache
                 st.session_state.pop(f'{p}_sim_drv', None)
             gap_sim = st.session_state[f'{p}_gap_sim']
 
-            gap_drv = gap_sim['delta_rv']
-            gap_is_bin = gap_sim['is_binary']
-            gap_idx_bin = gap_sim['idx_bin']
-
-            intrinsic_fbin = float(gap_is_bin.mean())
-            detected_mask = gap_drv > thresh_dRV
-            observed_fbin = float(detected_mask.mean())
-            missed_count = int(np.sum(gap_is_bin & ~detected_mask))
-            detected_bin_count = int(np.sum(gap_is_bin & detected_mask))
-            total_bin = int(gap_is_bin.sum())
-
-            # Classify binaries for both logP and missed-binaries plots
-            _bin_drv = gap_drv[gap_idx_bin] if gap_idx_bin.size > 0 else np.array([])
-            _bin_detected_mask = _bin_drv > thresh_dRV
-            _bin_missed_mask = ~_bin_detected_mask
-
-            # ── logP distribution + Intrinsic vs Observed fraction ───────
-            st.markdown('---')
-            _lp_col, _bf_col = st.columns(2)
-
-            with _lp_col:
-                st.markdown('### Period Distribution  (log P)')
-
-                # Use simulated periods from gap_sim
-                _CLR_DETECTED = '#E25A53'   # tomato red
-                _CLR_MISSED   = '#F5A623'   # amber/orange
-
-                fig_logP = go.Figure()
-
-                if gap_sim['P_days'].size > 0:
-                    _logP_det = np.log10(gap_sim['P_days'][_bin_detected_mask]) if np.any(_bin_detected_mask) else np.array([])
-                    _logP_mis = np.log10(gap_sim['P_days'][_bin_missed_mask]) if np.any(_bin_missed_mask) else np.array([])
-
-                    if _logP_det.size > 0:
-                        fig_logP.add_trace(go.Histogram(
-                            x=_logP_det, nbinsx=35,
-                            histnorm='probability density',
-                            name=f'Detected ({_logP_det.size})',
-                            marker_color=_CLR_DETECTED, opacity=0.6,
-                        ))
-                    if _logP_mis.size > 0:
-                        fig_logP.add_trace(go.Histogram(
-                            x=_logP_mis, nbinsx=35,
-                            histnorm='probability density',
-                            name=f'Missed ({_logP_mis.size})',
-                            marker_color=_CLR_MISSED, opacity=0.6,
-                        ))
-
-                fig_logP.add_vline(x=float(logP_min_val), line_dash='dash',
-                                   line_color='#888', line_width=1.5,
-                                   annotation_text='logP_min',
-                                   annotation_position='top left',
-                                   annotation_font_color='#888')
-                fig_logP.add_vline(x=float(logP_max_val), line_dash='dash',
-                                   line_color='#888', line_width=1.5,
-                                   annotation_text='logP_max',
-                                   annotation_position='top right',
-                                   annotation_font_color='#888')
-                fig_logP.update_layout(**{
-                    **PLOTLY_THEME,
-                    'barmode': 'overlay',
-                    'title': dict(text=f'Simulated Period Distribution  (π = {_ana_pi:.3f})',
-                                  font=dict(size=14)),
-                    'xaxis_title': 'log₁₀(P / days)',
-                    'yaxis_title': 'Probability density',
-                    'height': 400,
-                    'margin': dict(l=60, r=20, t=50, b=50),
-                    'legend': dict(x=0.65, y=0.95),
-                })
-                st.plotly_chart(fig_logP, use_container_width=True, key=f'{p}_logP_hist')
-                st.caption(
-                    'Period distribution of simulated binaries at the best-fit model. '
-                    'Red: detected binaries (ΔRV above threshold). '
-                    'Amber: missed binaries (below threshold). '
-                    'Missed systems are concentrated at longer periods. '
-                    'Dashed lines mark the logP bounds used in the simulation.'
-                )
-
-            with _bf_col:
-                st.markdown('### Observed Binary Fraction vs Threshold')
-
-                # Compute binary fraction as a function of ΔRV threshold
-                _n_sim = len(gap_drv)
-                _thresh_arr = np.linspace(0, float(np.max(gap_drv) * 1.05), 200)
-                _fbin_curve = np.array([float(np.sum(gap_drv > t)) / _n_sim
-                                        for t in _thresh_arr])
-
-                # Also compute fraction of binaries detected and singles mis-classified
-                _bin_drv_all = gap_drv[gap_is_bin]
-                _sin_drv_all = gap_drv[~gap_is_bin]
-                _missed_bin_curve = np.array(
-                    [float(np.sum(_bin_drv_all <= t)) / _n_sim for t in _thresh_arr])
-                _false_pos_curve = np.array(
-                    [float(np.sum(_sin_drv_all > t)) / _n_sim for t in _thresh_arr])
-
-                fig_gap = go.Figure()
-
-                # Shaded region: missed binaries (left of threshold)
-                fig_gap.add_trace(go.Scatter(
-                    x=_thresh_arr, y=_missed_bin_curve,
-                    fill='tozeroy', fillcolor='rgba(242,166,35,0.25)',
-                    line=dict(width=0), mode='lines',
-                    name='Missed binaries', showlegend=True,
-                ))
-
-                # Shaded region: false positives / singles above threshold (right of threshold)
-                if np.any(_false_pos_curve > 0):
-                    fig_gap.add_trace(go.Scatter(
-                        x=_thresh_arr, y=_false_pos_curve,
-                        fill='tozeroy', fillcolor='rgba(74,144,217,0.25)',
-                        line=dict(width=0), mode='lines',
-                        name='Singles above threshold', showlegend=True,
-                    ))
-
-                # Observed f_bin curve
-                fig_gap.add_trace(go.Scatter(
-                    x=_thresh_arr, y=_fbin_curve,
-                    mode='lines',
-                    name='Observed f_bin(threshold)',
-                    line=dict(color='#4A90D9', width=2.5),
-                ))
-
-                # Intrinsic f_bin horizontal line
-                fig_gap.add_hline(
-                    y=intrinsic_fbin, line_dash='dot',
-                    line_color='#E25A53', line_width=2,
-                    annotation_text=f'Intrinsic f_bin = {intrinsic_fbin:.1%}',
-                    annotation_position='top left',
-                    annotation_font=dict(size=11, color='#E25A53'),
-                )
-
-                # Vertical line at current threshold
-                fig_gap.add_vline(
-                    x=thresh_dRV, line_dash='dash',
-                    line_color='#F5A623', line_width=2,
-                    annotation_text=f'Threshold = {thresh_dRV} km/s',
-                    annotation_position='top right',
-                    annotation_font=dict(size=11, color='#F5A623'),
-                )
-
-                # Mark the observed f_bin at the threshold
-                fig_gap.add_trace(go.Scatter(
-                    x=[thresh_dRV], y=[observed_fbin],
-                    mode='markers+text',
-                    marker=dict(size=12, color='#FFD700', symbol='star',
-                                line=dict(width=1, color='#fff')),
-                    text=[f'{observed_fbin:.1%}'],
-                    textposition='top left',
-                    textfont=dict(size=12, color='#FFD700'),
-                    name=f'Observed @ {thresh_dRV} km/s',
-                    showlegend=True,
-                ))
-
-                # Gap annotation between intrinsic and observed
-                gap_pct = intrinsic_fbin - observed_fbin
-                fig_gap.add_annotation(
-                    x=thresh_dRV + 15,
-                    y=(intrinsic_fbin + observed_fbin) / 2,
-                    text=f'Gap: {gap_pct:.1%}<br>({missed_count} missed / {total_bin} binaries)',
-                    showarrow=False,
-                    font=dict(size=11, color='#F5A623'),
-                    bgcolor=pal['annotation_bg'],
-                    bordercolor='#F5A623',
-                    borderwidth=1,
-                    borderpad=4,
-                )
-                # Arrow connecting intrinsic to observed at threshold
-                fig_gap.add_annotation(
-                    x=thresh_dRV, y=intrinsic_fbin,
-                    ax=thresh_dRV, ay=observed_fbin,
-                    xref='x', yref='y', axref='x', ayref='y',
-                    showarrow=True, arrowhead=3,
-                    arrowwidth=2, arrowcolor='#F5A623',
-                )
-
-                fig_gap.update_layout(**{
-                    **PLOTLY_THEME,
-                    'title': dict(
-                        text='Binary Fraction vs ΔRV Threshold',
-                        font=dict(size=14)),
-                    'xaxis_title': 'ΔRV threshold (km/s)',
-                    'yaxis_title': 'Fraction of sample',
-                    'height': 400,
-                    'margin': dict(l=60, r=80, t=50, b=50),
-                    'showlegend': True,
-                    'legend': dict(x=0.55, y=0.95, font=dict(size=10)),
-                    'yaxis': dict(range=[0, min(1.0, intrinsic_fbin * 1.5)]),
-                })
-                st.plotly_chart(fig_gap, use_container_width=True, key=f'{p}_gap_chart')
-                st.caption(
-                    f'Observed binary fraction as a function of ΔRV threshold. '
-                    f'The blue curve shows the fraction of stars classified as '
-                    f'binary at each threshold. The dashed red line is the '
-                    f'intrinsic f_bin = {intrinsic_fbin:.1%}. At our threshold '
-                    f'({thresh_dRV} km/s), the observed fraction is '
-                    f'{observed_fbin:.1%} — a gap of {gap_pct:.1%} due to '
-                    f'{missed_count} undetectable binaries. '
-                    f'Amber shading shows missed binaries; blue shading shows '
-                    f'singles scattered above each threshold.'
-                )
-
-            # ── Binary Orbital Parameter Histograms ─────────────────────
-            st.markdown('---')
-            st.markdown('### Binary Orbital Properties')
-
-            _mb_view = st.radio(
-                'Show populations',
-                ['Compare detected vs missed', 'Detected binaries only',
-                 'Missed binaries only', 'All binaries (combined)'],
-                horizontal=True, key=f'{p}_mb_view',
-            )
-
-            # Extract orbital params for detected and missed
-            def _safe_mask(arr, mask):
-                return arr[mask] if arr.size > 0 else np.array([])
-
-            P_det = _safe_mask(gap_sim['P_days'], _bin_detected_mask)
-            P_mis = _safe_mask(gap_sim['P_days'], _bin_missed_mask)
-            e_det = _safe_mask(gap_sim['e'], _bin_detected_mask)
-            e_mis = _safe_mask(gap_sim['e'], _bin_missed_mask)
-            q_det = _safe_mask(gap_sim['q'], _bin_detected_mask)
-            q_mis = _safe_mask(gap_sim['q'], _bin_missed_mask)
-            K1_det = _safe_mask(gap_sim['K1'], _bin_detected_mask)
-            K1_mis = _safe_mask(gap_sim['K1'], _bin_missed_mask)
-            M1_det = _safe_mask(gap_sim['M1'], _bin_detected_mask)
-            M1_mis = _safe_mask(gap_sim['M1'], _bin_missed_mask)
-            i_det = np.degrees(_safe_mask(gap_sim['i_rad'], _bin_detected_mask))
-            i_mis = np.degrees(_safe_mask(gap_sim['i_rad'], _bin_missed_mask))
-
-            # New: omega, T0, M2
-            _has_omega = 'omega' in gap_sim
-            if _has_omega:
-                omega_det = np.degrees(_safe_mask(gap_sim['omega'], _bin_detected_mask))
-                omega_mis = np.degrees(_safe_mask(gap_sim['omega'], _bin_missed_mask))
-                T0_det = _safe_mask(gap_sim['T0'], _bin_detected_mask)
-                T0_mis = _safe_mask(gap_sim['T0'], _bin_missed_mask)
-            else:
-                omega_det = omega_mis = T0_det = T0_mis = np.array([])
-
-            M2_det = q_det * M1_det if q_det.size > 0 and M1_det.size > 0 else np.array([])
-            M2_mis = q_mis * M1_mis if q_mis.size > 0 and M1_mis.size > 0 else np.array([])
-
-            # All binaries (combined) arrays
-            P_all = gap_sim['P_days']
-            e_all = gap_sim['e']
-            q_all = gap_sim['q']
-            K1_all = gap_sim['K1']
-            M1_all = gap_sim['M1']
-            i_all = np.degrees(gap_sim['i_rad'])
-            omega_all = np.degrees(gap_sim['omega']) if _has_omega else np.array([])
-            T0_all = gap_sim['T0'] if _has_omega else np.array([])
-            M2_all = q_all * M1_all if q_all.size > 0 else np.array([])
-
-            from plotly.subplots import make_subplots
-
-            _param_titles = [
-                'log₁₀(P / days)', 'Eccentricity', 'Mass ratio q',
-                'K₁ (km/s)', 'M₁ (M⊙)', 'M₂ (M⊙)',
-                'Inclination (°)', 'ω (°)', 'T₀ (rad)',
-            ]
-            _x_labels = [
-                'log₁₀(P / days)', 'e', 'q = M₂/M₁',
-                'K₁ (km/s)', 'M₁ (M⊙)', 'M₂ (M⊙)',
-                'i (degrees)', 'ω (degrees)', 'T₀ (rad)',
-            ]
-            _n_panels = 9
-            _n_cols = 3
-            _n_rows = 3
-            _nbins_hist = 30
-
-            fig_mb = make_subplots(rows=_n_rows, cols=_n_cols,
-                                   subplot_titles=_param_titles,
-                                   horizontal_spacing=0.08, vertical_spacing=0.10)
-
-            _CLR_ALL = '#52B788'  # green for combined
-
-            def _add_hist(fig, row, col, data, name, color, show_legend):
-                if data.size == 0:
-                    return
-                d_min, d_max = float(data.min()), float(data.max())
-                bin_sz = (d_max - d_min) / _nbins_hist if d_max > d_min else 1.0
-                fig.add_trace(go.Histogram(
-                    x=data,
-                    xbins=dict(start=d_min, end=d_max + bin_sz * 0.01, size=bin_sz),
-                    histnorm='probability density',
-                    name=name,
-                    marker_color=color, opacity=0.6,
-                    legendgroup=name,
-                    showlegend=show_legend,
-                ), row=row, col=col)
-
-            def _pos(idx):
-                """Convert 0-indexed panel to (row, col)."""
-                return (idx // _n_cols + 1, idx % _n_cols + 1)
-
-            if _mb_view == 'All binaries (combined)':
-                _data_sets = [
-                    np.log10(P_all) if P_all.size > 0 else P_all,
-                    e_all, q_all, K1_all, M1_all, M2_all, i_all,
-                    omega_all, T0_all,
-                ]
-                for pi, d in enumerate(_data_sets):
-                    r, c = _pos(pi)
-                    _add_hist(fig_mb, r, c, d, 'All binaries', _CLR_ALL, pi == 0)
-            else:
-                _det_data = [
-                    np.log10(P_det) if P_det.size > 0 else P_det,
-                    e_det, q_det, K1_det, M1_det, M2_det, i_det,
-                    omega_det, T0_det,
-                ]
-                _mis_data = [
-                    np.log10(P_mis) if P_mis.size > 0 else P_mis,
-                    e_mis, q_mis, K1_mis, M1_mis, M2_mis, i_mis,
-                    omega_mis, T0_mis,
-                ]
-
-                if _mb_view in ('Compare detected vs missed', 'Detected binaries only'):
-                    for pi, d in enumerate(_det_data):
-                        r, c = _pos(pi)
-                        _add_hist(fig_mb, r, c, d, 'Detected', _CLR_DETECTED, pi == 0)
-
-                if _mb_view in ('Compare detected vs missed', 'Missed binaries only'):
-                    for pi, d in enumerate(_mis_data):
-                        r, c = _pos(pi)
-                        _add_hist(fig_mb, r, c, d, 'Missed', _CLR_MISSED, pi == 0)
-
-            fig_mb.update_layout(**{
-                **PLOTLY_THEME,
-                'barmode': 'overlay',
-                'height': 850,
-                'margin': dict(l=40, r=20, t=40, b=60),
-                'legend': dict(
-                    orientation='h', yanchor='bottom', y=1.04,
-                    xanchor='center', x=0.5,
-                ),
-            })
-            for pi in range(_n_panels):
-                r, c = _pos(pi)
-                fig_mb.update_xaxes(title_text=_x_labels[pi],
-                                    showgrid=False, row=r, col=c)
-                fig_mb.update_yaxes(showgrid=False, row=r, col=c)
-            for row_i in range(1, _n_rows + 1):
-                fig_mb.update_yaxes(title_text='Prob. density', row=row_i, col=1)
-
-            st.plotly_chart(fig_mb, use_container_width=True, key=f'{p}_missed_binaries')
-            st.caption(
-                f'Orbital parameter distributions of simulated binaries at the '
-                f'best-fit model (f_bin={_ana_fbin:.3f}, π={_ana_pi:.2f}). '
-                f'**Detected** (red): {detected_bin_count} binaries with '
-                f'ΔRV > {thresh_dRV} km/s. '
-                f'**Missed** (amber): {missed_count} binaries below threshold. '
-                f'Use "All binaries" to view the full population as a sanity check '
-                f'that input distributions match expectations.'
-            )
-
-        # ── Model Explorer ───────────────────────────────────────────────
-        if _has_obs:
-            st.markdown('---')
-            st.markdown('## Model Explorer')
-
-            # Model selector
-            _me_c1, _me_c2, _me_c3, _me_c4 = st.columns([0.25, 0.25, 0.25, 0.25])
-            explore_fbin = _me_c1.number_input(
-                'f_bin', 0.0, 1.0, _ana_fbin, 0.001, format='%.4f',
-                key=f'{p}_explore_fbin')
-            explore_pi = _me_c2.number_input(
-                'π', -5.0, 5.0, _ana_pi, 0.01, format='%.3f',
-                key=f'{p}_explore_pi')
-            explore_sigma = _me_c3.number_input(
-                'σ_single (km/s)', 0.1, 500.0, _ana_sigma, 0.1,
-                key=f'{p}_explore_sigma')
-            sim_btn = _me_c4.button('Simulate model', type='primary',
-                                     key=f'{p}_sim_model')
-            st.caption(
-                'Pre-filled with best-fit values. Adjust to explore any model point.'
-            )
-
-            # Build configs for simulation
-            _sim_cfg_explore = SimulationConfig(
-                n_stars=int(n_stars_sim),
-                sigma_single=float(explore_sigma),
-                sigma_measure=float(sigma_meas),
-                cadence_library=cadence_list_a,
-                cadence_weights=cadence_weights_a,
-            )
-
-            # Auto-simulate at best fit on first visit, or re-simulate on button
-            _need_sim = sim_btn or f'{p}_sim_drv' not in st.session_state
-            if _need_sim:
-                rng_explore = np.random.default_rng(42)
-                st.session_state[f'{p}_sim_drv'] = simulate_delta_rv_sample(
-                    float(explore_fbin), float(explore_pi),
-                    _sim_cfg_explore, _bin_cfg_explore, rng_explore,
-                )
-                rng_explore2 = np.random.default_rng(42)
-                rv_s, rv_b = _simulate_rv_sample_full(
-                    float(explore_fbin), float(explore_pi),
-                    _sim_cfg_explore, _bin_cfg_explore, rng_explore2,
-                )
-                st.session_state[f'{p}_sim_rv_single'] = rv_s
-                st.session_state[f'{p}_sim_rv_binary'] = rv_b
-                st.session_state[f'{p}_explore_vals'] = (
-                    float(explore_fbin), float(explore_pi), float(explore_sigma))
-
-            sim_drv = st.session_state.get(f'{p}_sim_drv')
-            sim_rv_single = st.session_state.get(f'{p}_sim_rv_single')
-            sim_rv_binary = st.session_state.get(f'{p}_sim_rv_binary')
-            ex_fb, ex_pi, ex_sig = st.session_state.get(
-                f'{p}_explore_vals', (_ana_fbin, _ana_pi, _ana_sigma))
-
-            if sim_drv is not None:
-                # ── 1) CDF Comparison (binned) ──────────────────────────────
-                st.markdown('### CDF Comparison  (ΔRV)')
-
-                from wr_bias_simulation import binned_cdf, ks_two_sample_binned, DEFAULT_DRV_BIN_EDGES
-                _bin_edges = DEFAULT_DRV_BIN_EDGES
-                obs_cdf_binned = binned_cdf(obs_drv_analysis, _bin_edges)
-                sim_cdf_binned = binned_cdf(sim_drv, _bin_edges)
-
-                D_val, p_val = ks_two_sample_binned(sim_drv, obs_drv_analysis, _bin_edges)
-
-                fig_cdf = go.Figure()
-                fig_cdf.add_trace(go.Scatter(
-                    x=_bin_edges, y=obs_cdf_binned,
-                    mode='lines', name='Observed',
-                    line=dict(color='#4A90D9', width=2.5, shape='hv'),
-                    hovertemplate='ΔRV=%{x:.0f} km/s<br>CDF=%{y:.3f}<extra>Observed</extra>',
-                ))
-                fig_cdf.add_trace(go.Scatter(
-                    x=_bin_edges, y=sim_cdf_binned,
-                    mode='lines', name='Simulated',
-                    line=dict(color='#E25A53', width=2.5, dash='dash', shape='hv'),
-                    hovertemplate='ΔRV=%{x:.0f} km/s<br>CDF=%{y:.3f}<extra>Simulated</extra>',
-                ))
-                fig_cdf.update_layout(**{
-                    **PLOTLY_THEME,
-                    'title': dict(
-                        text=(f'Binned ΔRV CDF — Observed vs Model  '
-                              f'(f_bin={ex_fb:.3f}, π={ex_pi:.2f}, '
-                              f'σ={ex_sig:.1f})'),
-                        font=dict(size=14),
-                    ),
-                    'xaxis_title': 'ΔRV (km/s)',
-                    'yaxis_title': 'Cumulative fraction',
-                    'height': 420,
-                    'legend': dict(x=0.65, y=0.15),
-                    'annotations': [dict(
-                        x=0.98, y=0.95, xref='paper', yref='paper',
-                        text=f'Binned {_stat_name} {_stat_sym} = {D_val:.4f}<br>p = {p_val:.4f}',
-                        showarrow=False,
-                        font=dict(size=12, color=pal['annotation_font']),
-                        bgcolor=pal['annotation_bg'],
-                        borderpad=6,
-                        xanchor='right',
-                    )],
-                })
-                st.plotly_chart(fig_cdf, use_container_width=True, key=f'{p}_cdf')
-                st.caption(
-                    'Binned cumulative distribution of peak-to-peak ΔRV '
-                    f'(10 km/s bins up to 350 km/s). '
-                    f'The {_stat_name} statistic ({_stat_sym}) measures the '
-                    'distance between the two CDFs; a higher p-value indicates '
-                    'a better match between model and observations.'
-                )
-
-                # ── 2) RV Distribution ───────────────────────────────────────
-                st.markdown('### RV Distribution')
-
-                obs_rv_single_list = []
-                obs_rv_binary_list = []
-                obs_rv_all_list = []
-                for star_name, info in obs_detail.items():
-                    rv_arr = info.get('rv')
-                    if rv_arr is None or len(rv_arr) == 0:
-                        continue
-                    obs_rv_all_list.append(rv_arr)
-                    if bool(info.get('is_binary', False)):
-                        obs_rv_binary_list.append(rv_arr)
-                    else:
-                        obs_rv_single_list.append(rv_arr)
-
-                obs_rv_all = np.concatenate(obs_rv_all_list) if obs_rv_all_list else np.array([])
-                obs_rv_singles = np.concatenate(obs_rv_single_list) if obs_rv_single_list else np.array([])
-                obs_rv_binaries = np.concatenate(obs_rv_binary_list) if obs_rv_binary_list else np.array([])
-
-                _rv_c1, _rv_c2 = st.columns([0.4, 0.6])
-                rv_split_mode = _rv_c1.radio(
-                    'Observed RVs', ['All combined', 'Split by classification'],
-                    horizontal=True, key=f'{p}_rv_split')
-                show_sim_rv = _rv_c2.checkbox(
-                    'Overlay simulated RVs', value=True, key=f'{p}_show_sim_rv')
-
-                fig_rv = go.Figure()
-                nbins = 40
-
-                if rv_split_mode == 'All combined':
-                    if obs_rv_all.size > 0:
-                        fig_rv.add_trace(go.Histogram(
-                            x=obs_rv_all, nbinsx=nbins,
-                            histnorm='probability density',
-                            name='Observed (all)',
-                            marker_color='#4A90D9', opacity=0.6,
-                        ))
-                else:
-                    if obs_rv_singles.size > 0:
-                        fig_rv.add_trace(go.Histogram(
-                            x=obs_rv_singles, nbinsx=nbins,
-                            histnorm='probability density',
-                            name='Observed — single',
-                            marker_color='#4A90D9', opacity=0.5,
-                        ))
-                    if obs_rv_binaries.size > 0:
-                        fig_rv.add_trace(go.Histogram(
-                            x=obs_rv_binaries, nbinsx=nbins,
-                            histnorm='probability density',
-                            name='Observed — binary',
-                            marker_color='#E25A53', opacity=0.5,
-                        ))
-
-                if show_sim_rv and sim_rv_single is not None:
-                    if rv_split_mode == 'All combined':
-                        sim_rv_combined = np.concatenate([sim_rv_single, sim_rv_binary])
-                        if sim_rv_combined.size > 0:
-                            fig_rv.add_trace(go.Histogram(
-                                x=sim_rv_combined, nbinsx=nbins,
-                                histnorm='probability density',
-                                name='Simulated (all)',
-                                marker_color='#8C8C8C', opacity=0.4,
-                            ))
-                    else:
-                        if sim_rv_single.size > 0:
-                            fig_rv.add_trace(go.Histogram(
-                                x=sim_rv_single, nbinsx=nbins,
-                                histnorm='probability density',
-                                name='Simulated — single',
-                                marker_color='#7EC8E3', opacity=0.4,
-                            ))
-                        if sim_rv_binary.size > 0:
-                            fig_rv.add_trace(go.Histogram(
-                                x=sim_rv_binary, nbinsx=nbins,
-                                histnorm='probability density',
-                                name='Simulated — binary',
-                                marker_color='#F0A0A0', opacity=0.4,
-                            ))
-
-                fig_rv.update_layout(**{
-                    **PLOTLY_THEME,
-                    'barmode': 'overlay',
-                    'title': dict(text='RV Distribution', font=dict(size=14)),
-                    'xaxis_title': 'RV (km/s)',
-                    'yaxis_title': 'Probability density',
-                    'height': 420,
-                    'legend': dict(x=0.01, y=0.99),
-                })
-                st.plotly_chart(fig_rv, use_container_width=True, key=f'{p}_rv_dist')
-                st.caption(
-                    'Distribution of individual RV measurements. Observed data '
-                    'can be shown combined or split by binary classification; '
-                    'simulated data is drawn from the selected model. All '
-                    'histograms are normalized to probability density for '
-                    'comparison.'
-                )
-
-                # ── 3) Detection fraction vs threshold ───────────────────────
-                st.markdown('### Detection Fraction vs Threshold')
-
-                max_drv = max(float(np.max(obs_drv_analysis)),
-                              float(np.max(sim_drv)))
-                thresholds = np.linspace(0, max_drv * 1.1, 150)
-                frac_obs_arr = np.array(
-                    [(obs_drv_analysis > T).mean() for T in thresholds])
-                frac_sim_arr = np.array(
-                    [(sim_drv > T).mean() for T in thresholds])
-
-                frac_obs_at_thresh = float(
-                    (obs_drv_analysis > thresh_dRV).mean())
-                frac_sim_at_thresh = float((sim_drv > thresh_dRV).mean())
-
-                fig_frac = go.Figure()
-                fig_frac.add_trace(go.Scatter(
-                    x=thresholds, y=frac_obs_arr,
-                    mode='lines', name='Observed',
-                    line=dict(color='#4A90D9', width=2.5),
-                ))
-                fig_frac.add_trace(go.Scatter(
-                    x=thresholds, y=frac_sim_arr,
-                    mode='lines', name='Simulated',
-                    line=dict(color='#E25A53', width=2.5, dash='dash'),
-                ))
-                fig_frac.add_vline(
-                    x=thresh_dRV, line_dash='dot',
-                    line_color='#DAA520', line_width=1.5,
-                    annotation_text=f'Threshold = {thresh_dRV} km/s',
-                    annotation_position='top right',
-                    annotation_font_color='#DAA520',
-                )
-                fig_frac.add_trace(go.Scatter(
-                    x=[thresh_dRV, thresh_dRV],
-                    y=[frac_obs_at_thresh, frac_sim_at_thresh],
-                    mode='markers+text',
-                    marker=dict(size=10, color=['#4A90D9', '#E25A53'],
-                                symbol='circle',
-                                line=dict(color=pal['plot_bg'], width=1)),
-                    text=[f'  {frac_obs_at_thresh:.2%}',
-                          f'  {frac_sim_at_thresh:.2%}'],
-                    textposition='middle right',
-                    textfont=dict(size=11),
-                    showlegend=False,
-                ))
-                fig_frac.update_layout(**{
-                    **PLOTLY_THEME,
-                    'title': dict(
-                        text=(f'Detection Fraction vs ΔRV Threshold  '
-                              f'(model: f_bin={ex_fb:.3f}, π={ex_pi:.2f})'),
-                        font=dict(size=14),
-                    ),
-                    'xaxis_title': 'ΔRV threshold (km/s)',
-                    'yaxis_title': 'Fraction above threshold',
-                    'height': 420,
-                    'legend': dict(x=0.70, y=0.95),
-                    'yaxis': dict(range=[0, 1.05]),
-                })
-                st.plotly_chart(fig_frac, use_container_width=True, key=f'{p}_det_frac')
-                st.caption(
-                    'Fraction of stars with ΔRV exceeding a given threshold. '
-                    'The vertical line marks the detection threshold used for '
-                    'binary classification. A good model should match the '
-                    'observed curve across all thresholds, not just at the '
-                    'chosen cutoff.'
-                )
-
-
-        # ── Simulation Methodology & Equations ───────────────────────────────
-        st.markdown('---')
-        with st.expander('Simulation methodology & equations', expanded=False):
-            st.markdown('''
-    **Simulation overview** — for each grid point (f_bin, π, σ_single):
-
-    1. **Draw N systems** (default 3,000). Each system is assigned as binary
-       with probability f_bin, or single with probability 1 − f_bin.
-
-    2. **Assign observation cadences.** Each simulated system is randomly
-       paired with a real star's observation times (MJD from FITS headers),
-       preserving the actual time sampling of the survey.
-
-    3. **Single stars:** draw RV at each epoch from
-       N(v_sys, σ_total) where σ_total = √(σ_single² + σ_measure²).
-       Compute ΔRV = max(v) − min(v).
-
-    4. **Binary stars:** for each system, sample orbital parameters:
-       - Period P from power-law distribution p(log P) ∝ (log P)^π
-       - Eccentricity e from uniform [0, e_max] (or fixed at 0)
-       - Primary mass M₁ (fixed or uniform)
-       - Mass ratio q = M₂/M₁ (flat or Gaussian)
-       - Inclination i from sin(i) distribution
-       - Argument of periastron ω ~ U[0, 2π]
-       - Initial mean anomaly T₀ ~ U[0, 2π]
-
-    5. **Compute the RV semi-amplitude K₁:**
-    ''')
-            st.latex(
-                r'K_1 = \left(\frac{2\pi G}{P}\right)^{1/3}'
-                r'\frac{M_2 \sin i}{(M_1 + M_2)^{2/3}}'
-                r'\frac{1}{\sqrt{1 - e^2}}'
-            )
-
-            st.markdown('''
-    6. **Solve Kepler's equation** at each observation time t
-       via Newton-Raphson iteration:
-    ''')
-            st.latex(r'E - e \sin E = M, \quad M = T_0 + \frac{2\pi t}{P}')
-
-            st.markdown('7. **Compute the true anomaly** ν from E:')
-            st.latex(
-                r'\tan\frac{\nu}{2} = '
-                r'\sqrt{\frac{1+e}{1-e}} \, \tan\frac{E}{2}'
-            )
-
-            st.markdown('8. **Compute the radial velocity curve:**')
-            st.latex(
-                r'v(t) = v_{\rm sys} + K_1 '
-                r'\left[\cos(\omega + \nu) + e\cos\omega\right]'
-            )
-
-            st.markdown(r'''
-       Then ΔRV = max(v) − min(v) over the observed epochs.
-
-    9. **Compare the simulated ΔRV distribution** to the observed one using
-       the two-sample Kolmogorov-Smirnov test. The K-S statistic D is the
-       maximum absolute difference between the two empirical CDFs:
-    ''')
-            st.latex(
-                r'D = \max_x \left| F_{\rm obs}(x) - F_{\rm sim}(x) \right|'
-            )
-
-            st.markdown(r'''
-       The associated p-value quantifies the probability that both samples
-       are drawn from the same underlying distribution. Higher p → better match.
-
-    10. **Binary detection criteria** (both required):
-    ''')
-            st.latex(
-                r'\Delta\mathrm{RV} > 45.5 \; \mathrm{km/s}'
-                r'\quad \text{and} \quad'
-                r'\Delta\mathrm{RV} - 4\sigma > 0'
-            )
-            st.markdown(
-                'where σ is the combined measurement error of the epoch pair.'
-            )
-
-
-    # ─────────────────────────────────────────────────────────────────────────────
-    # Langer 2020 tab
-    # ─────────────────────────────────────────────────────────────────────────────
-
-
+        # ── Build model_ctx and delegate to subtabs ───────────────────────
+        from bc.subtabs import render_model_subtabs
+
+        model_ctx = {
+            'model_type': 'dsilva',
+            'ndim_mode': 'dsilva',
+            'x_name': 'pi',
+            'x_label': 'pi',
+            'x_display_label': 'pi (period power-law index)',
+            'period_model': 'powerlaw',
+            'has_case_AB': False,
+            'result': result,
+            'fbin_g': fbin_g,
+            'x_g': pi_g,
+            'sigma_g': sigma_g,
+            'logPmax_g': logPmax_g,
+            'gap_sim': gap_sim,
+            'obs_delta_rv': obs_drv_analysis,
+            'obs_detail': obs_detail,
+            'cadence_list': cadence_list_a,
+            'cadence_weights': cadence_weights_a,
+            'n_stars_sim': int(n_stars_sim),
+            'sigma_meas': float(sigma_meas),
+            'bin_cfg': _bin_cfg_explore,
+            'logP_min': float(logP_min_val),
+            'logP_max': ana_logPmax,
+            'thresh_dRV': float(cls.get('threshold_dRV', 45.5)),
+            'canvas_height': _ch,
+            'canvas_width': _cw,
+            'use_container_width': _use_cw,
+            'disp_outer_slices': (disp_lp_idx, disp_sig_idx),
+            'settings': settings,
+            'classification': cls,
+        }
+
+        render_model_subtabs(p, model_ctx)
 
