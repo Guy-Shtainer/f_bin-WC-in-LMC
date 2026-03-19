@@ -6,6 +6,25 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-19 — BC architecture overhaul, RV modeling physics mode, plots page plan
+
+| Hash | Summary |
+|------|---------|
+| `be1377b` | Plots page overhaul plan + agent task + design skills installation |
+| `84e7488` | End-of-day docs: DOCUMENTATION.md, daily log, TODO #151-152, COMMON_ERRORS E039 |
+| `77fb68e` | RV Modeling: physics-based simulation with real cadences + error models + orbital histograms |
+| `d2d27a1` | Bias correction architecture overhaul: sub-tab structure + file splits + logPmax parameter |
+
+**Tag:** `v260319-working`
+
+**Highlights:**
+- BC page split 7 oversized files into 13 modules (all under 800 lines), added 5 sub-tabs per model, logPmax as full grid parameter
+- RV Modeling dual-mode (Parametric/Physics-based) with real cadences, 6 error model distributions, 9-panel orbital histograms
+- Plots page gap analysis: 9 missing plots identified, 410-line agent task plan created with 3× improvement + 3× error check passes
+- Installed 3 design skills (Streamlit, UI/UX Pro Max, Scientific Dashboard Design)
+
+---
+
 ## 2026-03-18 — Per-epoch error model, spectrum enhancements, RV modeling redesign
 
 | Hash | Summary |
