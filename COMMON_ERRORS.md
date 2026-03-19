@@ -430,6 +430,17 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 ---
 
+### E039 — Squeezing ND arrays with `arr[0]` removes wrong axis
+
+| | |
+|---|---|
+| **Bad** | `while arr.ndim > target: arr = arr[0]` — always removes axis 0 regardless of which axis has size 1 |
+| **Fix** | Find the first size-1 axis and `np.squeeze(arr, axis=ax)` it. Only fall back to `arr[0]` if no size-1 axis exists. Use `_squeeze_to_match(arr, target_ndim)` from `bc.corner_plots`. |
+| **Why** | When logP_max (axis 0) and sigma (axis 1) are grid axes, but sigma has only 1 value, `arr[0]` removes the logP_max axis instead of the trivial sigma axis. This causes grid/array dimension mismatches downstream (e.g., `compute_hdi68` gets arrays of incompatible shapes). |
+| **Found in** | `app/bc/corner_plots.py` — recurring bug with 4D arrays where only some outer axes are scanned |
+
+---
+
 ## Adding New Errors
 
 When you encounter a new recurring error, add it here with:

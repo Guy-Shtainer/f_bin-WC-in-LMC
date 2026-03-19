@@ -927,4 +927,89 @@ toggles (#139).
 
 ---
 
-*Last updated: 2026-03-18*
+### 2026-03-19 — Bias correction architecture overhaul, RV modeling physics mode, Plots page planning
+
+**What was done:**
+
+*Dsilva+2023 methodology review.* The Dsilva et al. 2023 (Paper III, A&A 674, A88) approach
+to single-star modelling was reviewed in detail. A key finding: Dsilva does not simulate singles
+at all — single stars contribute ΔRV = 0 in the Monte Carlo, with wind variability absorbed
+into the detection threshold C = 50 km/s (approximately 3× the observed ~15 km/s variability).
+This explains why σ_single is insensitive in our likelihood implementation: when using coarse
+bins [0, 45.5, 250, 650, ∞], the distinction between singles and undetected long-period binaries
+(both contributing to bin 1) is lost, creating a degeneracy ridge in (f_bin, π) space. Dsilva
+breaks this with prior information on known orbital periods. For our analysis, the K-S test on
+the continuous CDF may provide greater discriminating power within bin 1 compared to the
+multinomial likelihood.
+
+*Bias correction architecture overhaul.* The bias correction page underwent a major refactoring
+to support sub-tab structure within each model tab. Each model (Dsilva, Langer, Cadence×2) now
+contains 5 sub-tabs: Simulation, K-S, K-S Weighted, CvM, and Likelihood, orchestrated through
+a shared `subtabs.py` module. Seven oversized files were split: `dsilva.py` (1599→796 lines),
+`langer.py` (1479→791), `cadence.py` (1668→819), `helpers.py` (1008→445), and `runners.py`
+(1382→4, split into three model-specific runner files). Six new files were created: `subtabs.py`
+(317 lines), `sim_plots.py` (432), `file_ops.py` (589), `polling.py` (198), `runners_dsilva.py`
+(420), `runners_langer.py` (409), `runners_cadence.py` (599). A logP_max scanning feature was
+added as a full grid parameter alongside σ_single, with 4D corner plots and per-slice heatmaps.
+CDF legendgroup linking ensures that toggling a CDF line also hides its uncertainty shadow.
+
+*RV Modeling physics-based simulation.* The RV Modeling page was expanded with a physics-based
+simulation mode alongside the existing parametric mode. In both the Playground (Tab C) and
+Model Fitting (Tab B) tabs, a Parametric/Physics-based toggle now selects between analytical
+Gaussian models and full orbital simulations using `simulate_delta_rv_sample` from
+`wr_bias_simulation.py`. The physics mode uses real observation cadences (MJD-OBS timestamps
+from FITS headers for all 25 WR stars) and supports separate error model selectors for singles
+and binaries (6 distribution types: Normal, Log-normal, Gamma, Weibull, Exponential, Uniform).
+A 9-panel orbital parameter histogram grid was added showing the distributions of log P, e, q,
+K₁, M₁, M₂, i, ω, and T₀ with Detected/Missed/All view modes. Comprehensive end-to-end testing
+verified that all 11 simulation parameters (f_bin, π, period model, both error models, mass,
+logP bounds, eccentricity bounds) affect the output independently.
+
+*Plots page gap analysis.* A systematic comparison was performed between all plots in the
+Thesis work.ipynb notebook (27 plot cells), Plots.ipynb (25+ publication figures), and the
+webapp Plots page. Nine missing or partially missing plots were identified: ΔRV vs emission
+line wavelength scatter, piecewise f_bin(threshold) fit with elbow detection, equivalent
+thresholds across lines, correlation-weighted agreement ranking, interactive epoch-strip
+dashboard, SNR requirements on template spectrum, f_bin(t) survival function, PDF intersection
+for threshold optimization, and normalized flux anchor points. A 410-line implementation plan
+was created at `plans/plots_page_overhaul.md` with built-in iterative improvement and error
+checking protocols for autonomous agent execution.
+
+**Key results:**
+- Dsilva's methodology confirmed: σ_single insensitivity in likelihood is methodological, not a bug
+- f_bin = 1 degeneracy in multinomial likelihood arises from coarse binning (0–45.5 bin absorbs both singles and undetected long-period binaries)
+- 9 missing plots identified for webapp completion
+- Physics-based simulation validated with 11 independent parameter checks
+
+**Methodology notes for paper:**
+- The multinomial likelihood (Dsilva+2023 §4.2) provides complementary information to the K-S
+  test: it constrains f_bin via binned detection rates, while K-S constrains via the full CDF
+  shape. The choice of bin edges affects the degeneracy structure — finer binning within the
+  0–45.5 km/s range may improve discrimination between singles and undetected binaries.
+- Real observation cadences (as opposed to uniform or randomised cadences) can significantly
+  affect the detection completeness, particularly for systems with periods comparable to the
+  observation baseline.
+
+**Decisions:**
+- Sub-tab architecture adopted for bias correction: one shared orchestrator (`subtabs.py`)
+  ensures feature/bug fixes apply once across all 4 model tabs.
+- logP_max treated as a full model parameter (not fixed) — enables exploration of period range
+  sensitivity.
+- RV Modeling uses random cadence assignment (not deterministic like bias correction) —
+  appropriate for exploratory parameter space exploration.
+
+**Bugs found and fixed:**
+- E039: ND squeeze removing wrong axis (new COMMON_ERRORS entry)
+- Binary mask size mismatch (N_total vs N_binary) causing IndexError
+- `_cam_presets` variable unbound in scoring_detail.py
+- Corner plot dimension guard for cadence_langer mode
+- Period model selectbox used `'dsilva'` instead of `'powerlaw'`
+
+**Open questions:**
+- Does the K-S test (continuous CDF) give a different best-fit f_bin than likelihood for the same data?
+- Should period-bin priors (à la Dsilva) be implemented to break the f_bin=1 degeneracy?
+- Task #151: Playground f(T) must apply the 4σ significance criterion
+
+---
+
+*Last updated: 2026-03-19*
