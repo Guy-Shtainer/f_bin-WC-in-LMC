@@ -179,7 +179,7 @@ def render_nres_tab():
                         'Min RV': f'{np.min(ep_rvs):.1f}',
                         'Max RV': f'{np.max(ep_rvs):.1f}',
                     })
-                st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+                st.dataframe(pd.DataFrame(summary_rows), width='stretch')
             else:
                 st.info(f'No RV measurements found for {nres_rv_star}.')
         else:

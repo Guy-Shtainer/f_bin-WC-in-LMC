@@ -43,7 +43,7 @@ def _academic_fig(**overrides) -> go.Figure:
 
 def _show(fig, caption=None, **kwargs):
     """Display Plotly figure + optional caption."""
-    st.plotly_chart(fig, use_container_width=True, theme=None, **kwargs)
+    st.plotly_chart(fig, width='stretch', theme=None, **kwargs)
     if caption:
         st.caption(caption)
 
