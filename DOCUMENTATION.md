@@ -1012,4 +1012,79 @@ checking protocols for autonomous agent execution.
 
 ---
 
-*Last updated: 2026-03-19*
+### 2026-03-21 — Bias correction UI overhaul, cadence 4D display fixes, Dash bias-correction webapp
+
+**What was done:**
+
+*Scoring method UI restructure.* The five sub-tabs per model (Simulation, K-S, K-S Weighted, CvM,
+Likelihood) were replaced with horizontal radio buttons for scoring method selection. The Simulation
+overview (summary table, CDF comparison, analysis plots) now remains always visible above the radio
+selector, reducing navigation friction when comparing scoring methods. This change was implemented
+in `render_model_subtabs()` in `subtabs.py`.
+
+*Cadence-aware 4D array handling fixes.* Multiple fixes were applied to the cadence-aware simulation
+display pipeline. For cadence_langer with logPmax scanning, the raw scoring arrays carry a trailing
+pi=1 dimension that was not being squeezed, causing shape mismatches throughout the display code.
+Fixes included: (1) proper pi-dimension squeeze at the start of `_render_method_expander`,
+(2) dynamic grid construction in `_render_method_summary_section` based on which axes were actually
+scanned (replacing hardcoded `[fbin, sigma]`), (3) a 2D transpose fix after slicing 3D→2D for
+cadence_langer (`[sigma, fbin]` → `[fbin, sigma]`), (4) correct global_best_idx axis mapping for
+cadence_langer 3D `[logPmax, sigma, fbin]`, (5) logPmax slider support in per-method expanders.
+
+*Extra marginalized heatmaps.* Two additional heatmaps (f_bin × logPmax, σ × logPmax) were added
+side-by-side below the main heatmap when both logPmax and sigma are scanned axes. These show the
+score surface marginalized (via nanmax) over the remaining axes, providing a quick overview of the
+parameter space structure. A critical IndexError was found and fixed in the marginalization code:
+for cadence_dsilva 4D arrays `[logPmax, sigma, fbin, pi]`, the original code marginalized only over
+axis=1 (sigma) leaving a 3D result, which then crashed `find_best_grid_point` via manual index
+unraveling. The fix uses `axis=(1,3)` for 4D arrays to correctly collapse both sigma and pi.
+Additionally, `find_best_grid_point` in `shared.py` was hardened to use `np.unravel_index` instead
+of manual integer division.
+
+*Corner plots with logPmax.* The corner plot renderer (`corner_plots.py`) was extended to include
+logPmax as an axis when it is a scanned parameter, enabling visual inspection of parameter
+correlations across all grid dimensions.
+
+*Live sigma graph 4D fix.* The `runners_cadence.py` live sigma-scan progress graph was fixed to
+correctly marginalize over the logPmax axis first when working with 4D result arrays, preventing
+incorrect per-sigma indexing.
+
+*Dash bias-correction webapp.* A parallel implementation of the bias correction interface was built
+using Plotly Dash + Dash Mantine Components (DMC), motivated by Streamlit's inability to support
+nested tabs. The `bias_app/` directory contains 28 Python files (4,372 lines) with 6 pages, nested
+scoring method tabs, localStorage persistence, and 28/70 scoring plots implemented. Both webapps
+coexist: Streamlit on :8501, Dash on :8050, sharing `results/` and `settings/`.
+
+**Key results:**
+- E040 and E041 added to COMMON_ERRORS: grid/array dimension mismatch (E040) and colorbar label
+  mismatch (E041) are now documented with grep-ready patterns
+- IndexError in cadence_dsilva likelihood heatmaps resolved (variant of E040)
+- Dash webapp validates that nested-tab architecture is feasible for the bias correction UI
+
+**Methodology notes for paper:**
+- No changes to the underlying simulation methodology or statistical approach — all fixes are
+  display/UI-level corrections that ensure the correct data is shown to the user.
+
+**Decisions:**
+- Radio buttons over sub-tabs: cleaner UX, simulation overview always visible
+- Extra heatmaps use `np.nanmax` marginalization (conservative: shows best-case score across
+  marginalized axes)
+- `np.unravel_index` adopted as standard for all argmax→index conversions (defensive against
+  shape mismatches)
+
+**Bugs found and fixed:**
+- E040 variant: 4D cadence_dsilva arrays passed to 3D-assuming marginalization code
+- `find_best_grid_point` manual index unraveling (replaced with `np.unravel_index`)
+- cadence_langer pi=1 trailing dimension not squeezed
+- cadence_langer `[sigma, fbin]` not transposed to `[fbin, sigma]` after slicing
+- `_build_extra_grids()` not including sigma for cadence_dsilva mode
+- runners_cadence live sigma graph: missing logPmax axis marginalization for 4D
+
+**Open questions:**
+- Dash background callbacks in v4.0 unreliable — synchronous callbacks work but freeze UI
+- 42/70 scoring plots still unimplemented in Dash app
+- Task #147: 3D/4D parabolic fit including sigma_single still open
+
+---
+
+*Last updated: 2026-03-21*
