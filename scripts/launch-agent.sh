@@ -42,17 +42,30 @@ echo "  Monitor:  tmux attach -t $SESSION_NAME"
 echo "  Stop:     tmux kill-session -t $SESSION_NAME"
 echo ""
 
-# Build the claude command
+# Build the claude command (no cd — the runner script handles it)
 if [ -n "$TASK_ARGS" ]; then
-    CLAUDE_CMD="cd '$PROJECT_DIR' && claude --dangerously-skip-permissions '/ralph-loop \"/run-task $TASK_ARGS\" --max-iterations $MAX_ITER --completion-promise ALL_DONE'"
+    CLAUDE_CMD="claude --dangerously-skip-permissions '/ralph-loop \"/run-task $TASK_ARGS\" --max-iterations $MAX_ITER --completion-promise ALL_DONE'"
 else
-    CLAUDE_CMD="cd '$PROJECT_DIR' && claude --dangerously-skip-permissions '/ralph-loop \"/run-task\" --max-iterations $MAX_ITER --completion-promise ALL_DONE'"
+    CLAUDE_CMD="claude --dangerously-skip-permissions '/ralph-loop \"/run-task\" --max-iterations $MAX_ITER --completion-promise ALL_DONE'"
 fi
+
+# Write a runner script to avoid nested quoting issues
+# (PROJECT_DIR contains spaces and Hebrew chars that break inline bash -c)
+RUNNER=$(mktemp /tmp/agent-runner.XXXXXX.sh)
+cat > "$RUNNER" <<RUNNER_EOF
+#!/bin/bash
+cd "$PROJECT_DIR" || exit 1
+$CLAUDE_CMD
+echo ""
+echo "Agent loop finished. Press enter to close."
+read
+RUNNER_EOF
+chmod +x "$RUNNER"
 
 # Start tmux session with caffeinate wrapping
 # caffeinate -s: prevent sleep while on AC power
 # caffeinate -i: prevent idle sleep (works on battery too but drains faster)
-tmux new-session -d -s "$SESSION_NAME" "caffeinate -s bash -c '$CLAUDE_CMD; echo; echo Agent loop finished. Press enter to close.; read'"
+tmux new-session -d -s "$SESSION_NAME" "caffeinate -s '$RUNNER'"
 
 echo "Agent launched! Session: $SESSION_NAME"
 echo "Caffeinate is preventing sleep (AC power required for lid-closed mode)."
