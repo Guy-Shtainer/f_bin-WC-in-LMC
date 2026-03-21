@@ -172,7 +172,7 @@ def _render_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
         _hdi = _info['hdi']
         _bv = _info['best_vals']
 
-        # Determine which axes to show: pi first, then fbin, then sigma
+        # Determine which axes to show: all scanned grids with >1 value
         show_axes = []  # list of (name, grid, display_label)
         show_axes.append((x_name, x_g, x_display_label))
         show_axes.append(('fbin', fbin_g, 'f_bin'))
@@ -180,6 +180,10 @@ def _render_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
             _sig_idx = _all_names.index('sigma')
             if _all_grids[_sig_idx].size > 1:
                 show_axes.append(('sigma', _all_grids[_sig_idx], 'σ_single (km/s)'))
+        if 'logPmax' in _all_names:
+            _lp_idx = _all_names.index('logPmax')
+            if _all_grids[_lp_idx].size > 1:
+                show_axes.append(('logPmax', _all_grids[_lp_idx], 'log₁₀(P_max / days)'))
 
         n_params = len(show_axes)
         fig_c = make_subplots(

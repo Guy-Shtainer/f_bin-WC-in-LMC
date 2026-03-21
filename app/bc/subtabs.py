@@ -1,7 +1,7 @@
-"""bc.subtabs — Sub-tab orchestrator for model tabs.
+"""bc.subtabs — Scoring-method view orchestrator for model tabs.
 
-Creates 5 sub-tabs (Simulation + 4 scoring methods) that all 4 model tabs
-(Dsilva, Langer, Cadence-Dsilva, Cadence-Langer) share.
+Shows simulation overview + radio button to switch between 4 scoring methods.
+All 4 model tabs (Dsilva, Langer, Cadence-Dsilva, Cadence-Langer) share this.
 """
 from __future__ import annotations
 
@@ -34,11 +34,16 @@ from bc.sim_plots import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_extra_grids(ctx: dict) -> list[tuple[str, np.ndarray]] | None:
-    """Build the extra_grids list for multi-dim models (Dsilva 4D)."""
+    """Build the extra_grids list for multi-dim models.
+
+    Dsilva 4D: [logPmax, sigma, fbin, pi] — both sigma and logPmax.
+    Cadence Dsilva 3D: [sigma, fbin, pi] — only sigma.
+    """
+    ndim = ctx['ndim_mode']
     extras: list[tuple[str, np.ndarray]] = []
-    if ctx.get('sigma_g') is not None and ctx['ndim_mode'] == 'dsilva':
+    if ctx.get('sigma_g') is not None and ndim in ('dsilva', 'cadence_dsilva'):
         extras.append(('sigma', ctx['sigma_g']))
-    if ctx.get('logPmax_g') is not None and ctx['ndim_mode'] == 'dsilva':
+    if ctx.get('logPmax_g') is not None and ndim == 'dsilva':
         extras.append(('logPmax', ctx['logPmax_g']))
     return extras if extras else None
 
@@ -258,7 +263,7 @@ def _render_sigma_scan_chart(ctx: dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_model_subtabs(p: str, model_ctx: dict) -> None:
-    """Create 5 sub-tabs within a model tab: Simulation + 4 scoring methods.
+    """Show simulation overview + radio-selected scoring method detail.
 
     Parameters
     ----------
@@ -270,48 +275,56 @@ def render_model_subtabs(p: str, model_ctx: dict) -> None:
     """
     result = model_ctx.get('result')
 
-    tab_names = ['Simulation', 'K-S', 'K-S Weighted', 'CvM', 'Likelihood']
-    tabs = st.tabs(tab_names)
-
     if result is None:
-        with tabs[0]:
-            st.info('Run a simulation or load a saved result to see analysis.')
-        for i in range(1, 5):
-            with tabs[i]:
-                st.info('No result loaded yet.')
+        st.info('Run a simulation or load a saved result to see analysis.')
         return
 
-    # Pre-compute method_results in Simulation tab so we can pass to method tabs
+    # ── Simulation overview (always visible) ──────────────────────────────
     extra_grids = _build_extra_grids(model_ctx)
-    method_results = {}
 
-    with tabs[0]:
-        method_results = _render_method_summary_section(
-            result, model_ctx['fbin_g'], model_ctx['x_g'],
-            extra_grids=extra_grids,
-            prefix=p,
-            x_name=model_ctx['x_name'],
-            x_label=model_ctx['x_label'],
-            ndim_mode=model_ctx['ndim_mode'],
-        )
+    method_results = _render_method_summary_section(
+        result, model_ctx['fbin_g'], model_ctx['x_g'],
+        extra_grids=extra_grids,
+        prefix=p,
+        x_name=model_ctx['x_name'],
+        x_label=model_ctx['x_label'],
+        ndim_mode=model_ctx['ndim_mode'],
+    )
 
-        _render_all_methods_cdf(
-            result, method_results,
-            model_ctx['fbin_g'], model_ctx['x_g'],
-            prefix=p,
-            x_name=model_ctx['x_name'],
-            x_label=model_ctx['x_label'],
-        )
+    _render_all_methods_cdf(
+        result, method_results,
+        model_ctx['fbin_g'], model_ctx['x_g'],
+        prefix=p,
+        x_name=model_ctx['x_name'],
+        x_label=model_ctx['x_label'],
+    )
 
-        # Max p-value line chart across σ scan
-        _render_sigma_scan_chart(model_ctx)
+    # Max p-value line chart across σ scan
+    _render_sigma_scan_chart(model_ctx)
 
-        gap_sim = model_ctx.get('gap_sim')
-        if gap_sim is not None:
-            _render_analysis_plots(p, model_ctx, gap_sim, method_results)
+    gap_sim = model_ctx.get('gap_sim')
+    if gap_sim is not None:
+        _render_analysis_plots(p, model_ctx, gap_sim, method_results)
 
-        render_methodology_equations(model_ctx['model_type'])
+    render_methodology_equations(model_ctx['model_type'])
 
-    for i, (mk, mname, pk, dk, _mcolor) in enumerate(SCORING_METHODS):
-        with tabs[i + 1]:
-            _render_method_tab(p, mk, mname, pk, dk, model_ctx, method_results)
+    # ── Scoring method radio selector ─────────────────────────────────────
+    st.markdown('---')
+    _RADIO_LABELS = ['K-S (standard)', 'K-S (weighted)', 'CvM (S-score)', 'Likelihood']
+    _LABEL_TO_KEY = {
+        'K-S (standard)': 0,
+        'K-S (weighted)': 1,
+        'CvM (S-score)': 2,
+        'Likelihood': 3,
+    }
+
+    selected_label = st.radio(
+        'Scoring method',
+        _RADIO_LABELS,
+        key=f'{p}_scoring',
+        horizontal=True,
+    )
+
+    idx = _LABEL_TO_KEY[selected_label]
+    mk, mname, pk, dk, _mcolor = SCORING_METHODS[idx]
+    _render_method_tab(p, mk, mname, pk, dk, model_ctx, method_results)

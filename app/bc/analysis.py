@@ -83,6 +83,10 @@ def _method_best_and_hdi(
     if not np.any(valid):
         return None
 
+    # E040: validate grid count matches array dimensions
+    if len(grids) != p_nd.ndim:
+        return None
+
     flat_best = int(np.nanargmax(p_nd))
     best_idx = np.unravel_index(flat_best, p_nd.shape)
     best_score = float(p_nd[best_idx])
@@ -90,6 +94,11 @@ def _method_best_and_hdi(
     hdi = {}
 
     for i, (g, name) in enumerate(zip(grids, grid_names)):
+        # E040: skip if grid size doesn't match array dimension
+        if i >= p_nd.ndim or len(g) != p_nd.shape[i]:
+            best_vals[name] = float('nan')
+            hdi[name] = (float('nan'), float('nan'), float('nan'))
+            continue
         best_vals[name] = float(g[best_idx[i]])
         # Marginalize over all other axes
         sum_axes = tuple(j for j in range(p_nd.ndim) if j != i)
@@ -158,10 +167,23 @@ def _render_method_summary_section(
         grids = [fbin_g, x_g]
         grid_names = ['fbin', x_name]
     elif ndim_mode == 'cadence_langer':
-        # Cadence Langer: arrays are [n_sig, n_fb, n_pi=1]
-        # Squeeze pi dim and transpose to [n_fb, n_sig] → treat as 2D like Langer
-        grids = [fbin_g, x_g]
-        grid_names = ['fbin', x_name]
+        # Cadence Langer: arrays are [logPmax?, n_sig, n_fb, n_pi=1]
+        # Build grids dynamically based on scanned axes
+        _sigma_g_cl = np.asarray(result.get('sigma_grid', [0.0]))
+        _logPmax_g_cl = np.asarray(result.get('logPmax_grid', [0.0]))
+        grids = []
+        grid_names = []
+        if _logPmax_g_cl.size > 1:
+            grids.append(_logPmax_g_cl)
+            grid_names.append('logPmax')
+        if _sigma_g_cl.size > 1:
+            grids.append(_sigma_g_cl)
+            grid_names.append('sigma')
+        grids.append(fbin_g)
+        grid_names.append('fbin')
+        if x_name not in grid_names:
+            grids.append(x_g)
+            grid_names.append(x_name)
     elif ndim_mode == 'cadence_dsilva':
         # 3D: [sigma, fbin, pi]
         grids = []
@@ -194,15 +216,25 @@ def _render_method_summary_section(
             elif p_arr.ndim == 3:
                 p_arr = p_arr[np.newaxis, ...]
 
-        # For cadence Langer: squeeze pi dim and transpose to [n_fb, n_sig]
+        # For cadence Langer: squeeze pi dim (last, always size 1)
         if ndim_mode == 'cadence_langer':
-            if p_arr.ndim == 3 and p_arr.shape[2] == 1:
-                p_arr = p_arr[:, :, 0].T  # [n_sig, n_fb, 1] → [n_fb, n_sig]
-            elif p_arr.ndim == 3:
-                # Multi-pi cadence langer — shouldn't happen but handle gracefully
-                p_arr = p_arr[:, :, 0].T
+            # Remove trailing pi=1 dimension
+            if p_arr.ndim >= 3 and p_arr.shape[-1] == 1:
+                p_arr = p_arr[..., 0]
+            # 2D [n_sig, n_fb] → transpose to [n_fb, n_sig] to match grids
+            if p_arr.ndim == 2:
+                p_arr = p_arr.T
+            # 3D [logPmax, n_sig, n_fb] → keep as-is (grids already ordered)
+            # Safety: squeeze remaining size-1 dims
             while p_arr.ndim > len(grids):
-                p_arr = p_arr[0]
+                squeezed = False
+                for _ax in range(p_arr.ndim):
+                    if p_arr.shape[_ax] == 1:
+                        p_arr = np.squeeze(p_arr, axis=_ax)
+                        squeezed = True
+                        break
+                if not squeezed:
+                    break
         # For cadence Dsilva: squeeze leading dims if needed
         elif ndim_mode == 'cadence_dsilva':
             while p_arr.ndim > len(grids):
@@ -478,6 +510,12 @@ def _render_method_expander(
     _theme = PLOTLY_THEME
     pal = get_palette()
 
+    # ── Squeeze trailing pi=1 dimension for cadence_langer ─────────
+    if ndim_mode == 'cadence_langer' and p_nd.ndim >= 3 and p_nd.shape[-1] == 1:
+        p_nd = p_nd[..., 0]
+        if D_nd is not None:
+            D_nd = D_nd[..., 0]
+
     # ── Per-method sigma slider (when sigma has >1 values) ─────────
     _sigma_g_sl = np.asarray(result.get('sigma_grid', []))
     _has_sig_slider = (_sigma_g_sl.size > 1 and p_nd.ndim >= 3
@@ -498,8 +536,27 @@ def _render_method_expander(
             key=f'{prefix}_{method_key}_sig_slider',
         )
 
+    # ── logPmax slider for cadence_langer with logPmax scan ──────
+    _logPmax_g_sl = np.asarray(result.get('logPmax_grid', []))
+    _user_lp_idx = None
+    if (_logPmax_g_sl.size > 1 and p_nd.ndim >= 3
+            and ndim_mode == 'cadence_langer'):
+        _tmp_best_lp = np.unravel_index(int(np.nanargmax(p_nd)), p_nd.shape)
+        _default_lp = int(_tmp_best_lp[0])  # [logPmax, sigma, fbin]
+        _user_lp_idx = st.select_slider(
+            f'logP_max slice ({display_name})',
+            options=list(range(len(_logPmax_g_sl))),
+            format_func=lambda i: f'{_logPmax_g_sl[i]:.2f}',
+            value=_default_lp,
+            key=f'{prefix}_{method_key}_lp_slider',
+        )
+
     # Slice down to 2D: [fbin, x]
-    if _user_sig_idx is not None:
+    if _user_lp_idx is not None:
+        # cadence_langer logPmax slider: slice axis 0 → [sigma, fbin]
+        p_2d = p_nd[_user_lp_idx]
+        D_2d = D_nd[_user_lp_idx] if D_nd is not None else None
+    elif _user_sig_idx is not None:
         # User-selected sigma slice overrides disp_outer_slices
         if ndim_mode == 'dsilva' and p_nd.ndim == 4:
             _lp_s = disp_outer_slices[0] if disp_outer_slices else 0
@@ -520,6 +577,15 @@ def _render_method_expander(
         p_2d = p_2d[0]
         if D_2d is not None:
             D_2d = D_2d[0]
+
+    # For cadence_langer: sliced p_2d may be [sigma, fbin] → transpose to [fbin, sigma]
+    if (ndim_mode == 'cadence_langer'
+            and p_2d.ndim == 2
+            and p_2d.shape[0] != len(fbin_g)
+            and p_2d.shape[1] == len(fbin_g)):
+        p_2d = p_2d.T
+        if D_2d is not None:
+            D_2d = D_2d.T
 
     # Global best across all dimensions
     valid = np.isfinite(p_nd)
@@ -547,10 +613,18 @@ def _render_method_expander(
     if ndim_mode == 'dsilva':
         g_fb = float(fbin_g[global_best_idx[2]])
         g_x = float(x_g[global_best_idx[3]])
-    elif ndim_mode in ('cadence_dsilva', 'cadence_langer'):
-        # 3D: [sigma, fbin, pi] or [sigma, fbin, sigma]
+    elif ndim_mode == 'cadence_dsilva':
+        # cadence_dsilva 3D: [sigma, fbin, pi]
         g_fb = float(fbin_g[global_best_idx[-2]])
         g_x = float(x_g[global_best_idx[-1]])
+    elif ndim_mode == 'cadence_langer':
+        # cadence_langer after pi squeeze: 3D [logPmax, sigma, fbin] or 2D [fbin, sigma]
+        if p_nd.ndim == 3:
+            g_fb = float(fbin_g[global_best_idx[2]])   # fbin is axis 2
+            g_x = float(x_g[global_best_idx[1]])       # sigma is axis 1
+        else:
+            g_fb = float(fbin_g[global_best_idx[0]])
+            g_x = float(x_g[global_best_idx[1]])
     else:
         # 2D: [fbin, x]
         g_fb = float(fbin_g[global_best_idx[0]])
@@ -574,9 +648,45 @@ def _render_method_expander(
         x_label=x_display_label,
         x_name=x_name,
         scoring_label=display_name,
+        colorbar_title_override=score_label if _is_likelihood else None,
     )
     st.plotly_chart(fig_hm, use_container_width=use_cw,
                     key=f'{prefix}_{method_key}_hm')
+
+    # ── Extra heatmaps for multi-axis models ─────────────────────
+    _logPmax_g_extra = np.asarray(result.get('logPmax_grid', []))
+    _sigma_g_extra = np.asarray(result.get('sigma_grid', []))
+    if _logPmax_g_extra.size > 1 and _sigma_g_extra.size > 1 and p_nd.ndim >= 3:
+        # Marginalize to show additional 2D views
+        # p_nd axes for cadence_langer after pi squeeze: [logPmax, sigma, fbin]
+        _ec1, _ec2 = st.columns(2)
+        with _ec1:
+            # f_bin vs logPmax (max over sigma axis=1)
+            _fb_lp = np.nanmax(p_nd, axis=(1, 3)) if p_nd.ndim == 4 else np.nanmax(p_nd, axis=1)  # [logPmax, fbin]
+            _fb_lp_fig = _make_heatmap_fig(
+                _fb_lp.T, fbin_g, _logPmax_g_extra,
+                title=f'{display_name} — f_bin × logP_max (max over σ)',
+                show_d=False, height=400,
+                x_label='log₁₀(P_max / days)', x_name='logP_max',
+                scoring_label=display_name,
+                colorbar_title_override=score_label if _is_likelihood else None,
+            )
+            st.plotly_chart(_fb_lp_fig, use_container_width=True,
+                            key=f'{prefix}_{method_key}_hm_fb_lp')
+        with _ec2:
+            # σ vs logPmax (max over fbin axis=2)
+            _sig_lp = np.nanmax(p_nd, axis=(2, 3)) if p_nd.ndim == 4 else np.nanmax(p_nd, axis=2)  # [logPmax, sigma]
+            _sig_lp_fig = _make_heatmap_fig(
+                _sig_lp.T, _sigma_g_extra, _logPmax_g_extra,
+                title=f'{display_name} — σ × logP_max (max over f_bin)',
+                show_d=False, height=400,
+                x_label='log₁₀(P_max / days)', x_name='logP_max',
+                y_label='σ_single (km/s)',
+                scoring_label=display_name,
+                colorbar_title_override=score_label if _is_likelihood else None,
+            )
+            st.plotly_chart(_sig_lp_fig, use_container_width=True,
+                            key=f'{prefix}_{method_key}_hm_sig_lp')
 
     # ── Slice vs Global metrics ──────────────────────────────────
     # For 2D arrays (Langer, cadence_langer) the slice IS the global — show

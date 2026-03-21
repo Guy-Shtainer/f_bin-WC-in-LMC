@@ -441,6 +441,30 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 ---
 
+### E040 — Grid/array dimension mismatch in `_method_best_and_hdi`
+
+| | |
+|---|---|
+| **Bad** | Building `grids = [fbin_g, x_g]` (2 grids) for a 3D or 4D scoring array, then passing to `_method_best_and_hdi` which zips grids with `p_nd.shape` — axis indices don't match |
+| **Fix** | (1) Build grids dynamically based on which axes were actually scanned (`sigma_grid.size > 1`, `logPmax_grid.size > 1`). (2) Add a guard: `if len(grids) != p_nd.ndim: return None`. (3) Per-axis check: `if len(g) != p_nd.shape[i]: skip`. |
+| **Grep** | `_method_best_and_hdi` |
+| **Why** | Cadence Langer with logPmax scanning produces 4D arrays `[logPmax, sigma, fbin, pi=1]` but the `cadence_langer` branch only built 2D grids `[fbin, sigma]`. The `while p_arr.ndim > len(grids): p_arr = p_arr[0]` hack silently sliced away the wrong leading dims, causing `compute_hdi68` to receive incompatible shapes (e.g., grid of 8 values vs marginalized array of 0 values). |
+| **Found in** | `app/bc/analysis.py` — `_render_method_summary_section` cadence_langer branch + `_method_best_and_hdi` |
+
+---
+
+### E041 — Heatmap colorbar label must match scoring method
+
+| | |
+|---|---|
+| **Bad** | `scoring_label='Likelihood'` → colorbar renders "Likelihood p-value" (via shared.py appending " p-value") |
+| **Fix** | Pass `colorbar_title_override='Likelihood'` for likelihood method, `'CvM S-score'` for CvM. Only K-S methods should say "p-value". |
+| **Grep** | `scoring_label=` in `_make_heatmap_fig` calls |
+| **Why** | `shared.py:make_heatmap_fig` appends " p-value" to ALL non-D scoring labels. Likelihood is not a p-value. User flagged this >10 times. |
+| **Found in** | `app/bc/analysis.py` — `_render_method_expander` heatmap call |
+
+---
+
 ## Adding New Errors
 
 When you encounter a new recurring error, add it here with:

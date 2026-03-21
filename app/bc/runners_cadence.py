@@ -375,10 +375,14 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             _live_sig_pvals = []
                             _live_sig_scores = []
                             _live_sig_likelihood = []
+                            # For 4D (logPmax scan): marginalize over logPmax axis first
+                            _ks_p_sig = np.nanmax(ks_p, axis=0) if ks_p.ndim == 4 else ks_p
+                            _ks_D_sig = np.nanmin(ks_D, axis=0) if ks_D.ndim == 4 else ks_D
+                            _logL_sig = np.nanmax(logL_raw, axis=0) if logL_raw.ndim == 4 else logL_raw
                             # Compute global logL max across ALL sigma slices
                             _logL_global = job.get('_logL_global_max', -np.inf)
                             for _ls in range(n_sig):
-                                _lsL = logL_raw[_ls]
+                                _lsL = _logL_sig[_ls]
                                 if np.any(~np.isnan(_lsL)):
                                     _sm = np.nanmax(_lsL)
                                     if np.isfinite(_sm):
@@ -386,9 +390,9 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             if np.isfinite(_logL_global):
                                 job['_logL_global_max'] = _logL_global
                             for _ls in range(n_sig):
-                                _lsp = ks_p[_ls]
-                                _lsd = ks_D[_ls]
-                                _lsL = logL_raw[_ls]
+                                _lsp = _ks_p_sig[_ls]
+                                _lsd = _ks_D_sig[_ls]
+                                _lsL = _logL_sig[_ls]
                                 if np.any(~np.isnan(_lsp)):
                                     _live_sig_pvals.append(float(np.nanmax(_lsp)))
                                 else:
@@ -430,9 +434,10 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                         ]
                         if n_sig > 1:
                             _overall_best_sig = 0
+                            _ks_p_sig2 = np.nanmax(ks_p, axis=0) if ks_p.ndim == 4 else ks_p
                             _pmax_per_sig = [
-                                float(np.nanmax(ks_p[s]))
-                                if np.any(~np.isnan(ks_p[s]))
+                                float(np.nanmax(_ks_p_sig2[s]))
+                                if np.any(~np.isnan(_ks_p_sig2[s]))
                                 else -1.0
                                 for s in range(n_sig)
                             ]
