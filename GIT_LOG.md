@@ -6,6 +6,28 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-21 — BC radio buttons, 4D cadence fixes, Dash bias-correction webapp
+
+| Hash | Summary |
+|------|---------|
+| `7180822` | BC display fixes: radio buttons, 4D cadence marginalization, extra heatmaps |
+| `cbfe6d9` | Add Dash bias-correction webapp (bias_app/) + developing-with-dash skill |
+| `38281d6` | Install developing-with-streamlit and ui-ux-pro-max skills |
+| `5c55267` | Update settings and add Streamlit dark theme config |
+| `5d4c733` | End-of-day docs: DOCUMENTATION.md, TODO #141-148 to-test, daily log, memories |
+
+**Tag:** `v260321-working`
+
+**Highlights:**
+- BC scoring method sub-tabs replaced with radio buttons; simulation overview always visible
+- Fixed cadence_dsilva 4D marginalization IndexError in extra heatmaps + hardened find_best_grid_point
+- Fixed cadence_langer pi-squeeze, transpose, logPmax slider, corner plots with logPmax axis
+- Built complete Dash bias-correction webapp (bias_app/) with 28 files, nested DMC tabs, 28/70 plots
+- Installed 3 skills: developing-with-dash, developing-with-streamlit, ui-ux-pro-max
+- E040 (grid/array mismatch), E041 (colorbar labels) added to COMMON_ERRORS
+
+---
+
 ## 2026-03-19 — BC architecture overhaul, RV modeling physics mode, plots page plan
 
 | Hash | Summary |
