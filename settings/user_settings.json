@@ -112,16 +112,16 @@
   "grid_cadence_dsilva": {
     "fbin_min": 0.01,
     "fbin_max": 1.0,
-    "fbin_steps": 49,
+    "fbin_steps": 99,
     "pi_min": -3.0,
-    "pi_max": 3.0,
-    "pi_steps": 50,
-    "n_sets": 500,
-    "scan_sigma": false,
+    "pi_max": 5.0,
+    "pi_steps": 100,
+    "n_sets": 3000,
+    "scan_sigma": true,
     "sigma_single": 6.0,
     "sigma_min": 3.0,
     "sigma_max": 13.0,
-    "sigma_steps": 50,
+    "sigma_steps": 20,
     "sigma_meas": 1.622,
     "orbital": {
       "logP_min": 0.15,
@@ -156,7 +156,8 @@
     "errp_single_1": 0.7986,
     "errp_single_2": 0.7744,
     "scan_logPmax": true,
-    "logPmax_scan_steps": 5
+    "logPmax_scan_steps": 12,
+    "logPmax_scan_min": 3.0
   },
   "grid_cadence_langer": {
     "fbin_min": 0.01,
@@ -165,9 +166,9 @@
     "n_sets": 1000,
     "scan_sigma": true,
     "sigma_single": 15.0,
-    "sigma_min": 0.1,
+    "sigma_min": 1.0,
     "sigma_max": 9.0,
-    "sigma_steps": 100,
+    "sigma_steps": 9,
     "sigma_meas": 1.622,
     "logP_min": 0.5,
     "logP_max": 3.5,
@@ -202,7 +203,9 @@
     "errp_2": 0.8982,
     "adaptive_bins": true,
     "likelihood_threshold": 45.5,
-    "sigma_measure": 1.628
+    "sigma_measure": 1.628,
+    "scan_logPmax": true,
+    "logPmax_scan_steps": 12
   },
   "ui": {
     "last_star": "HD  38448",
