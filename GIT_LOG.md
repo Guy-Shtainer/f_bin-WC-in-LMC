@@ -6,6 +6,29 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-22 — BC simplification: 2 scoring methods, cadence-only, graph split
+
+| Hash | Summary |
+|------|---------|
+| `3359956` | Simplify bias correction: 2 scoring methods, cadence-only, graph split |
+| `fca8dce` | Add "Do Not Touch Working Code — 5 Mandatory Blocks" rule |
+| `ddfdf23` | Add bias correction feature catalog and per-method graph inventory |
+| `43b0759` | Update paper: dual scoring methods, cadence-aware sim, error model |
+| `d70c38f` | End-of-day docs: DOCUMENTATION.md, TODO #156-159, daily log |
+
+**Tag:** `v260322-working`
+
+**Highlights:**
+- Removed weighted K-S and CvM scoring methods; retained K-S + multinomial likelihood
+- Removed non-cadence Dsilva/Langer tabs; cadence-aware simulation is sole approach
+- Deleted 4 files (~2400 lines), created 9 independent render files (all < 800 lines)
+- Fixed cadence checkpoint resume bug (UI params vs saved params)
+- Added "5 Mandatory Blocks" code protection rule to CLAUDE.md
+- Created FEATURES.md (128 features) and GRAPHS_PER_METHOD.md (per-method graph catalog)
+- Paper updated: dual scoring methods, cadence-aware description, error model for binaries
+
+---
+
 ## 2026-03-21 — BC radio buttons, 4D cadence fixes, Dash bias-correction webapp
 
 | Hash | Summary |
