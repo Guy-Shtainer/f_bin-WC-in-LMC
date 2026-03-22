@@ -87,6 +87,7 @@ def _list_saved_results(model: str) -> list[tuple[str, str]]:
     return [(os.path.basename(f).replace('.npz', ''), f) for f in files]
 
 
+# ── WORKING · cancel-save-resume ──
 def _build_partial_filename(
     model: str,
     fbin_vals: np.ndarray,
@@ -112,6 +113,7 @@ def _build_partial_filename(
     return desc.replace(f'{model}_', f'{model}_partial_', 1)
 
 
+# ── WORKING · cancel-save-resume ──
 def _list_partial_results(model: str) -> list[tuple[str, str]]:
     """List partial .npz files for a model, newest first."""
     pattern = os.path.join(_RESULT_DIR, f'{model}_partial_*.npz')
@@ -129,6 +131,7 @@ def _list_partial_results(model: str) -> list[tuple[str, str]]:
     return [(os.path.basename(f), f) for f in files]
 
 
+# ── WORKING · cancel-save-resume ──
 @st.cache_data(ttl=30)
 def _scan_partial_metadata(model: str) -> pd.DataFrame:
     """Scan partial .npz files and return a DataFrame of metadata.
@@ -295,6 +298,7 @@ def _scan_partial_metadata(model: str) -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
+# ── WORKING · cancel-save-resume ──
 def _render_partial_table(p: str, model: str, status_slot) -> None:
     """Render partial results table with Load / Delete / Resume actions.
 

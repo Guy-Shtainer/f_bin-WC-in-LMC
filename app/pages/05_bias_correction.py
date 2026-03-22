@@ -24,8 +24,6 @@ if _ROOT not in sys.path:
 from shared import inject_theme, render_sidebar, get_settings_manager
 
 from bc import (
-    _render_dsilva_tab,
-    _render_langer_tab,
     _render_cadence_dsilva_tab,
     _render_cadence_langer_tab,
     _render_rv_errors_tab,
@@ -62,8 +60,6 @@ _use_cw = (_cw is None)
 # \u2500\u2500\u2500\u2500\u2500\u2500\u2500 Dynamic tab management
 if 'bc_tabs' not in st.session_state:
     st.session_state['bc_tabs'] = [
-        {'type': 'dsilva', 'name': 'Dsilva (power-law)', 'prefix': 'bc'},
-        {'type': 'langer', 'name': 'Langer 2020', 'prefix': 'lg'},
         {'type': 'cadence_dsilva', 'name': 'Cadence (Dsilva)', 'prefix': 'cad'},
         {'type': 'cadence_langer', 'name': 'Cadence (Langer)', 'prefix': 'cal'},
         {'type': 'rv_errors', 'name': 'RV Errors', 'prefix': 'rve'},
@@ -76,15 +72,14 @@ with _tab_mgmt_cols[1]:
     with st.popover('\u2795 Add tab'):
         _add_type = st.radio(
             'Tab type',
-            ['Dsilva', 'Langer', 'Cadence (Dsilva)', 'Cadence (Langer)', 'RV Errors', 'Compare'],
+            ['Cadence (Dsilva)', 'Cadence (Langer)', 'RV Errors', 'Compare'],
             key='_bc_add_tab_type',
         )
         _add_name = st.text_input('Tab name (optional)', key='_bc_add_tab_name')
         _add_col1, _add_col2 = st.columns(2)
         if _add_col1.button('Add', key='_bc_add_tab_btn', type='primary'):
             _idx = len(st.session_state['bc_tabs'])
-            _type_map = {'dsilva': 'dsilva', 'langer': 'langer',
-                         'cadence (dsilva)': 'cadence_dsilva',
+            _type_map = {'cadence (dsilva)': 'cadence_dsilva',
                          'cadence (langer)': 'cadence_langer',
                          'rv errors': 'rv_errors',
                          'compare': 'compare'}
@@ -108,11 +103,7 @@ _tab_widgets = st.tabs(_tab_names)
 
 for _tw, _ti in zip(_tab_widgets, st.session_state['bc_tabs']):
     with _tw:
-        if _ti['type'] == 'dsilva':
-            _render_dsilva_tab(_ti['prefix'], settings, sm)
-        elif _ti['type'] == 'langer':
-            _render_langer_tab(_ti['prefix'], settings, sm)
-        elif _ti['type'] == 'cadence_dsilva':
+        if _ti['type'] == 'cadence_dsilva':
             _render_cadence_dsilva_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'cadence_langer':
             _render_cadence_langer_tab(_ti['prefix'], settings, sm)

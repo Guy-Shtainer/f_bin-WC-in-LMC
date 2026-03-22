@@ -1,0 +1,565 @@
+"""bc.render_lk_explorer -- Likelihood interactive exploration tools.
+
+Model explorer (sliders + CDF + histogram + detection fraction),
+re-simulation at interpolated best-fit, and CDF sanity check (cadence).
+Hardcoded for Likelihood scoring -- no K-S/CvM branches.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from typing import Tuple
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(os.path.dirname(_HERE))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from shared import PLOTLY_THEME
+
+_METHOD_KEY = 'likelihood'
+_DISPLAY_NAME = 'Likelihood'
+_METHOD_COLOR = '#DAA520'
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    """Convert hex color to rgba string."""
+    h = hex_color.lstrip('#')
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f'rgba({r},{g},{b},{alpha})'
+
+
+# ---------------------------------------------------------------------------
+# Cached CDF band helper
+# ---------------------------------------------------------------------------
+
+@st.cache_data(show_spinner=False)
+def _me_cdf_band(
+    fb: float, x_val: float, sigma_s: float, sigma_m: float,
+    bin_edges_tuple: tuple, n_sets: int = 50,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Run *n_sets* simulations and return (median_cdf, lo_cdf, hi_cdf, pooled_drv)."""
+    from wr_bias_simulation import (
+        simulate_delta_rv_sample, SimulationConfig,
+        BinaryParameterConfig, binned_cdf,
+    )
+    _be = np.array(bin_edges_tuple)
+    all_cdfs, all_drv = [], []
+    for si in range(n_sets):
+        cfg = SimulationConfig(n_stars=1000, sigma_single=sigma_s,
+                               sigma_measure=sigma_m)
+        drv = simulate_delta_rv_sample(fb, x_val, cfg,
+                                       BinaryParameterConfig(),
+                                       np.random.default_rng(42 + si))
+        all_cdfs.append(binned_cdf(drv, _be))
+        all_drv.append(drv)
+    all_cdfs = np.array(all_cdfs)
+    return (np.median(all_cdfs, axis=0),
+            np.percentile(all_cdfs, 16, axis=0),
+            np.percentile(all_cdfs, 84, axis=0),
+            np.concatenate(all_drv))
+
+
+# ---------------------------------------------------------------------------
+# Re-simulation at interpolated best-fit point
+# ---------------------------------------------------------------------------
+
+def _render_lk_resim_interp(interp, result, x_label, pfx):
+    """Re-simulate CDF at interpolated best-fit point for Likelihood scoring."""
+    st.markdown('#### Re-simulate at Interpolated Point')
+    c1, c2, c3 = st.columns([0.3, 0.3, 0.4])
+    ns = c1.number_input('N_sets', 100, 50000, 1000, step=100,
+                         key=f'{pfx}_lk_resim_n')
+    if not c2.button('Re-simulate', key=f'{pfx}_lk_resim_btn',
+                     type='primary'):
+        return
+    try:
+        from wr_bias_simulation import (
+            binned_cdf, DEFAULT_DRV_BIN_EDGES,
+            multinomial_log_likelihood,
+        )
+        fb = float(interp.get('f_bin', 0.5))
+        xv = float(interp.get('pi', interp.get('sigma',
+                   interp.get('y_val', 0.0))))
+        sig = float(interp.get('sigma', result.get('sigma_meas', 5.0)))
+        be = (np.asarray(result['bin_edges'])
+              if 'bin_edges' in result else DEFAULT_DRV_BIN_EDGES)
+        lk_be = (np.asarray(result['likelihood_bin_edges'])
+                 if 'likelihood_bin_edges' in result else be)
+        med_c, lo_c, hi_c, pooled = _me_cdf_band(
+            fb, xv, sig, float(result.get('sigma_meas', 3.0)),
+            tuple(be.tolist()), n_sets=int(ns))
+        obs = np.asarray(result.get('obs_delta_rv', []))
+        rx = np.concatenate([[0.0], be])
+
+        # Compute likelihood score
+        logL = multinomial_log_likelihood(obs, pooled, lk_be)
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=be, y=binned_cdf(obs, be), mode='lines',
+            name='Observed',
+            line=dict(color='#4A90D9', width=2.5, shape='hv')))
+        _hi_y = np.concatenate([[0.0], hi_c])
+        _lo_y = np.concatenate([[0.0], lo_c])
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([rx, rx[::-1]]),
+            y=np.concatenate([_hi_y, _lo_y[::-1]]),
+            fill='toself',
+            fillcolor=_hex_to_rgba(_METHOD_COLOR, 0.2),
+            line=dict(color='rgba(0,0,0,0)'),
+            showlegend=False, hoverinfo='skip'))
+        fig.add_trace(go.Scatter(
+            x=rx, y=np.concatenate([[0.0], med_c]),
+            mode='lines', name='Simulated (interp)',
+            line=dict(color=_METHOD_COLOR, width=2.5, dash='dash',
+                      shape='hv')))
+        fig.update_layout(**{
+            **PLOTLY_THEME, 'height': 380,
+            'title': dict(
+                text=f'Re-sim: f_bin={fb:.4f}, {x_label}={xv:.3f}',
+                font=dict(size=14)),
+            'xaxis_title': 'DeltaRV (km/s)',
+            'yaxis_title': 'Cumulative fraction',
+        })
+        st.plotly_chart(fig, use_container_width=True,
+                        key=f'{pfx}_lk_resim_cdf')
+        c3.metric('ln L (interp)', f"{logL:.3f}")
+    except Exception as err:
+        st.error(f'Re-simulation failed: {err}')
+
+
+# ---------------------------------------------------------------------------
+# CDF Sanity Check (cadence tabs only)
+# ---------------------------------------------------------------------------
+
+def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
+                                obs_delta_rv, period_model, result,
+                                p_prefix: str) -> None:
+    """Render 5 random CDF draws vs observed for cadence sanity check.
+
+    Generates 5 independent sets of 25 simulated stars at the best-fit
+    parameters, overlaid on the observed CDF.
+    """
+    from wr_bias_simulation import (
+        simulate_delta_rv_sample, BinaryParameterConfig,
+        binned_cdf, DEFAULT_DRV_BIN_EDGES,
+    )
+
+    cadence_library = result.get('cadence_library')
+    if cadence_library is None:
+        return
+
+    _bin_edges = DEFAULT_DRV_BIN_EDGES
+    obs_cdf_b = binned_cdf(obs_delta_rv, _bin_edges)
+
+    st.markdown('### CDF Sanity Check')
+    st.caption(
+        '5 random draws of 25 simulated stars at the best-fit parameters, '
+        'compared to the observed CDF. Each draw uses different random seeds '
+        'but identical cadence assignments.'
+    )
+
+    # Build BinaryParameterConfig from result metadata
+    _bcfg_dict = result.get('bin_cfg', {})
+    bcfg = (BinaryParameterConfig(**_bcfg_dict)
+            if _bcfg_dict else BinaryParameterConfig())
+
+    fig = go.Figure()
+
+    # Observed CDF
+    fig.add_trace(go.Scatter(
+        x=_bin_edges, y=obs_cdf_b,
+        mode='lines', name='Observed',
+        line=dict(color='#4A90D9', width=3, shape='hv'),
+    ))
+
+    # 5 random draws
+    _draw_colors = ['#E25A53', '#50C878', '#9B59B6', '#F39C12', '#1ABC9C']
+    for i, seed in enumerate([42, 43, 44, 45, 46]):
+        try:
+            drv = simulate_delta_rv_sample(
+                n_stars=25,
+                f_bin=best_fbin,
+                sigma_single=sigma_single,
+                sigma_measure=float(result.get('sigma_meas', 1.622)),
+                binary_config=bcfg,
+                rng_seed=seed,
+                period_model=period_model,
+                cadence_library=cadence_library,
+            )
+            sim_cdf = binned_cdf(drv, _bin_edges)
+            fig.add_trace(go.Scatter(
+                x=_bin_edges, y=sim_cdf,
+                mode='lines', name=f'Draw {i+1} (seed={seed})',
+                line=dict(color=_draw_colors[i], width=1.5,
+                          dash='dash', shape='hv'),
+                opacity=0.7,
+            ))
+        except Exception:
+            pass
+
+    fig.update_layout(**{
+        **PLOTLY_THEME,
+        'title': dict(
+            text=(f'CDF Sanity Check  (f_bin={best_fbin:.3f}, '
+                  f'25 stars x 5 draws)'),
+            font=dict(size=14)),
+        'xaxis_title': 'DeltaRV (km/s)',
+        'yaxis_title': 'Cumulative fraction',
+        'height': 420,
+        'legend': dict(x=0.55, y=0.35, font=dict(size=10)),
+    })
+    st.plotly_chart(fig, use_container_width=True,
+                    key=f'{p_prefix}_cdf_sanity')
+
+
+# ---------------------------------------------------------------------------
+# Model Explorer -- interactive grid browser
+# ---------------------------------------------------------------------------
+
+def _render_lk_model_explorer(
+    result: dict, display_name: str,
+    fbin_g: np.ndarray, x_g: np.ndarray, x_name: str, x_label: str,
+    prefix: str, info: dict | None,
+    p_nd: np.ndarray,
+) -> None:
+    """Interactive Likelihood model explorer: sliders -> CDF + score + histogram + det frac."""
+    try:
+        from wr_bias_simulation import (
+            simulate_delta_rv_sample, SimulationConfig,
+            BinaryParameterConfig, binned_cdf, DEFAULT_DRV_BIN_EDGES,
+            multinomial_log_likelihood,
+        )
+    except ImportError:
+        st.info('wr_bias_simulation not available for model explorer.')
+        return
+
+    from bc.analysis import _method_best_and_hdi
+
+    # Best-fit defaults for sliders
+    me_info = info
+    if me_info is None:
+        me_info = _method_best_and_hdi(
+            p_nd,
+            [fbin_g, x_g], ['fbin', x_name],
+            is_likelihood=True,
+        )
+    if me_info is None:
+        st.info('Could not determine best-fit parameters.')
+        return
+
+    bv = me_info['best_vals']
+    def_fb = float(bv.get('fbin', 0.5))
+    def_x = float(bv.get(x_name, 0.0))
+    def_sig = float(bv.get('sigma', result.get('sigma_meas', 5.0)))
+
+    # Sliders -- add logPmax column when grid has >1 value
+    _lp_g = np.asarray(result.get('logPmax_grid', []))
+    _ncols = 4 if _lp_g.size > 1 else 3
+    cols = st.columns(_ncols)
+    me_fb = cols[0].slider('f_bin', 0.0, 1.0, def_fb, 0.01,
+                           key=f'{prefix}_lk_me_fb')
+    x_lo, x_hi = (float(x_g[0]) if len(x_g) else -3.0,
+                   float(x_g[-1]) if len(x_g) else 3.0)
+    me_x = cols[1].slider(x_label, x_lo, x_hi,
+                          min(max(def_x, x_lo), x_hi), 0.01,
+                          key=f'{prefix}_lk_me_x')
+    sig_g = np.asarray(result.get('sigma_grid', []))
+    if sig_g.size > 1:
+        me_sig = cols[2].slider(
+            'sigma_single (km/s)', float(sig_g[0]), float(sig_g[-1]),
+            min(max(def_sig, float(sig_g[0])), float(sig_g[-1])),
+            0.1, key=f'{prefix}_lk_me_sig')
+    else:
+        me_sig = def_sig
+    me_logPmax = None
+    if _lp_g.size > 1:
+        _dlp = float(bv.get('logPmax', float(_lp_g[0])))
+        _c = cols[3] if sig_g.size > 1 else cols[2]
+        me_logPmax = _c.slider(
+            'logP_max', float(_lp_g[0]), float(_lp_g[-1]),
+            min(max(_dlp, float(_lp_g[0])), float(_lp_g[-1])),
+            0.1, key=f'{prefix}_lk_me_logPmax')
+
+    obs_drv = np.asarray(result.get('obs_delta_rv'))
+    be = result.get('bin_edges')
+    be = np.asarray(be) if be is not None else DEFAULT_DRV_BIN_EDGES
+    lk_be = result.get('likelihood_bin_edges')
+    lk_be = np.asarray(lk_be) if lk_be is not None else be
+    sigma_m = float(result.get('sigma_meas', 3.0))
+
+    # Multi-seed CDF band (cached)
+    med_cdf, lo_cdf, hi_cdf, pooled_drv = _me_cdf_band(
+        me_fb, me_x, me_sig, sigma_m, tuple(be.tolist()), n_sets=50)
+
+    # -- Score metric (Likelihood) ---------------------------------
+    _logL = multinomial_log_likelihood(obs_drv, pooled_drv, lk_be)
+    _score_val = f'{_logL:.3f}'
+
+    sc1, sc2 = st.columns([0.35, 0.65])
+    sc1.metric('ln L', _score_val)
+    sc2.caption(
+        f'f_bin={me_fb:.3f}, {x_label}={me_x:.2f}, '
+        f'sigma_single={me_sig:.1f} km/s'
+    )
+
+    # -- CDF with error shadow ------------------------------------
+    obs_cdf = binned_cdf(obs_drv, be)
+    med_x = np.concatenate([[0.0], be])
+    med_y = np.concatenate([[0.0], med_cdf])
+    lo_y = np.concatenate([[0.0], lo_cdf])
+    hi_y = np.concatenate([[0.0], hi_cdf])
+
+    fig_cdf = go.Figure()
+    fig_cdf.add_trace(go.Scatter(
+        x=be, y=obs_cdf, mode='lines', name='Observed',
+        line=dict(color='#4A90D9', width=2.5, shape='hv'),
+    ))
+    # Error band
+    fig_cdf.add_trace(go.Scatter(
+        x=np.concatenate([med_x, med_x[::-1]]),
+        y=np.concatenate([hi_y, lo_y[::-1]]),
+        fill='toself', fillcolor=_hex_to_rgba(_METHOD_COLOR, 0.2),
+        line=dict(color='rgba(0,0,0,0)'),
+        legendgroup='sim', showlegend=False, hoverinfo='skip',
+    ))
+    fig_cdf.add_trace(go.Scatter(
+        x=med_x, y=med_y, mode='lines', name='Simulated (median)',
+        legendgroup='sim',
+        line=dict(color=_METHOD_COLOR, width=2.5, dash='dash',
+                  shape='hv'),
+    ))
+    fig_cdf.update_layout(**{
+        **PLOTLY_THEME,
+        'title': dict(
+            text=f'CDF -- ln L = {_score_val}',
+            font=dict(size=14)),
+        'xaxis_title': 'DeltaRV (km/s)',
+        'yaxis_title': 'Cumulative fraction',
+        'height': 380,
+        'legend': dict(x=0.6, y=0.15),
+    })
+    # -- Bin overlay toggle ----------------------------------------
+    _show_bins_me = st.checkbox('Show bin edges on CDF', value=False,
+                                key=f'{prefix}_lk_me_show_bins')
+    if _show_bins_me:
+        _alt = ['rgba(100,100,100,0.08)', 'rgba(100,100,100,0.15)']
+        for _bi in range(len(be) - 1):
+            fig_cdf.add_vrect(
+                x0=float(be[_bi]), x1=float(be[_bi + 1]),
+                fillcolor=_alt[_bi % 2], layer='below', line_width=0)
+        for _ei in range(len(be)):
+            fig_cdf.add_vline(
+                x=float(be[_ei]),
+                line=dict(color='grey', width=1, dash='dot'))
+    st.plotly_chart(fig_cdf, use_container_width=True,
+                    key=f'{prefix}_lk_me_cdf')
+    if _show_bins_me:
+        _no = np.histogram(obs_drv, bins=be)[0]
+        _ns = np.histogram(pooled_drv, bins=be)[0]
+        _sf = _ns / max(_ns.sum(), 1)
+        _br = [{'Bin': f'{be[i]:.0f}-{be[i+1]:.0f}',
+                'N_obs': int(_no[i]),
+                'N_sim': int(_ns[i]),
+                'Sim frac': f'{_sf[i]:.3f}'}
+               for i in range(len(be) - 1)]
+        st.dataframe(pd.DataFrame(_br), use_container_width=True,
+                     hide_index=True)
+
+    # -- Histogram overlay ----------------------------------------
+    sim_drv_single = pooled_drv[:1000]
+    fig_hist = go.Figure()
+    fig_hist.add_trace(go.Histogram(
+        x=obs_drv, nbinsx=30, histnorm='probability density',
+        name='Observed', marker_color='#4A90D9', opacity=0.6,
+    ))
+    fig_hist.add_trace(go.Histogram(
+        x=sim_drv_single, nbinsx=30, histnorm='probability density',
+        name='Simulated', marker_color=_METHOD_COLOR, opacity=0.5,
+    ))
+    fig_hist.update_layout(**{
+        **PLOTLY_THEME,
+        'barmode': 'overlay',
+        'title': dict(text='DeltaRV Distribution', font=dict(size=14)),
+        'xaxis_title': 'DeltaRV (km/s)',
+        'yaxis_title': 'Probability density',
+        'height': 380,
+        'legend': dict(x=0.65, y=0.95),
+    })
+    st.plotly_chart(fig_hist, use_container_width=True,
+                    key=f'{prefix}_lk_me_hist')
+
+    # -- Detection fraction vs threshold --------------------------
+    max_drv = max(float(np.max(obs_drv)),
+                  float(np.max(sim_drv_single)))
+    thresholds = np.linspace(0, max_drv * 1.1, 100)
+    frac_obs = np.array([(obs_drv > T).mean() for T in thresholds])
+    frac_sim = np.array([(sim_drv_single > T).mean()
+                         for T in thresholds])
+
+    fig_det = go.Figure()
+    fig_det.add_trace(go.Scatter(
+        x=thresholds, y=frac_obs, mode='lines', name='Observed',
+        line=dict(color='#4A90D9', width=2.5),
+    ))
+    fig_det.add_trace(go.Scatter(
+        x=thresholds, y=frac_sim, mode='lines', name='Simulated',
+        line=dict(color=_METHOD_COLOR, width=2.5, dash='dash'),
+    ))
+    thresh_dRV = float(result.get('thresh_dRV', 45.5))
+    fig_det.add_vline(
+        x=thresh_dRV, line_dash='dot', line_color='#E25A53',
+        line_width=1.5,
+        annotation_text=f'Threshold={thresh_dRV:.0f}',
+        annotation_position='top right',
+        annotation_font_color='#E25A53',
+    )
+    fig_det.update_layout(**{
+        **PLOTLY_THEME,
+        'title': dict(
+            text=(f'Detection Fraction (f_bin={me_fb:.3f}, '
+                  f'{x_label}={me_x:.2f})'),
+            font=dict(size=14)),
+        'xaxis_title': 'DeltaRV threshold (km/s)',
+        'yaxis_title': 'Fraction above threshold',
+        'height': 380,
+        'yaxis': dict(range=[0, 1.05]),
+        'legend': dict(x=0.65, y=0.95),
+    })
+    st.plotly_chart(fig_det, use_container_width=True,
+                    key=f'{prefix}_lk_me_det')
+
+    st.caption(
+        f'Likelihood model explorer for {display_name}. '
+        f'CDF shows median +/- 68% band from 50 simulations. '
+        f'ln L computed from pooled simulated data.'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def render_lk_explorer(
+    p: str, result: dict,
+    fbin_g, x_g, x_label, x_name,
+    method_key='likelihood', display_name='Likelihood',
+    best_fb=None, best_x=None, best_sig=None,
+    obs_delta_rv=None, cadence_library=None,
+    height=400, width=None,
+) -> None:
+    """Render Likelihood model explorer, re-sim CDF, and CDF sanity check.
+
+    Parameters
+    ----------
+    p : str
+        Key prefix for session state.
+    result : dict
+        Full result dictionary.
+    fbin_g, x_g : 1D arrays
+        Grid values for f_bin and second axis.
+    x_label, x_name : str
+        Display label and internal name for the x-axis.
+    method_key : str
+        Scoring method key (always 'likelihood' for this module).
+    display_name : str
+        Display name for the method.
+    best_fb, best_x, best_sig : float or None
+        Best-fit values to use as slider defaults.
+    obs_delta_rv : array or None
+        Observed delta-RV values.
+    cadence_library : dict or None
+        Cadence library for cadence-aware sanity checks.
+    height : int
+        Plot height.
+    width : int or None
+        Plot width.
+    """
+    fbin_g = np.asarray(fbin_g)
+    x_g = np.asarray(x_g)
+
+    # Get likelihood array for info computation
+    lk_p = result.get('likelihood')
+    if lk_p is not None:
+        p_nd = np.asarray(lk_p, dtype=float)
+    else:
+        st.info('No Likelihood data available.')
+        return
+
+    # Compute info for default slider values
+    from bc.analysis import _method_best_and_hdi
+    _grids = [fbin_g, x_g]
+    _names = ['fbin', x_name]
+    _sigma_g = np.asarray(result.get('sigma_grid', [0.0]))
+    _logPmax_g = np.asarray(result.get('logPmax_grid', [0.0]))
+    if _logPmax_g.size > 1:
+        _grids.insert(0, _logPmax_g)
+        _names.insert(0, 'logPmax')
+    if _sigma_g.size > 1:
+        _grids.insert(0 if _logPmax_g.size <= 1 else 1, _sigma_g)
+        _names.insert(0 if _logPmax_g.size <= 1 else 1, 'sigma')
+
+    # Squeeze p_nd to match grids
+    while p_nd.ndim > len(_grids):
+        squeezed = False
+        for ax in range(p_nd.ndim):
+            if p_nd.shape[ax] == 1:
+                p_nd = np.squeeze(p_nd, axis=ax)
+                squeezed = True
+                break
+        if not squeezed:
+            p_nd = p_nd[0]
+
+    info = _method_best_and_hdi(p_nd, _grids, _names, is_likelihood=True)
+
+    # Override info best values if caller provided explicit ones
+    if info is not None and (best_fb is not None or best_x is not None
+                             or best_sig is not None):
+        bv = dict(info['best_vals'])
+        if best_fb is not None:
+            bv['fbin'] = best_fb
+        if best_x is not None:
+            bv[x_name] = best_x
+        if best_sig is not None:
+            bv['sigma'] = best_sig
+        info = dict(info)
+        info['best_vals'] = bv
+
+    # -- Model Explorer -------------------------------------------
+    obs_drv_me = result.get('obs_delta_rv')
+    if obs_drv_me is not None:
+        st.divider()
+        with st.expander(f'Model Explorer -- {display_name}',
+                         expanded=False):
+            _render_lk_model_explorer(
+                result, display_name,
+                fbin_g, x_g, x_name, x_label,
+                p, info, p_nd,
+            )
+
+    # -- Re-simulate at interpolated point ------------------------
+    _interp = st.session_state.get(f'{p}_interp')
+    if _interp is not None:
+        _render_lk_resim_interp(_interp, result, x_label, p)
+
+    # -- CDF Sanity Check (cadence tabs) --------------------------
+    _cadence_lib = cadence_library or result.get('cadence_library')
+    if _cadence_lib is not None and obs_delta_rv is not None:
+        _bv = info['best_vals'] if info is not None else {}
+        _pm = 'dsilva'
+        if result.get('period_model') == 'langer':
+            _pm = 'langer'
+        try:
+            _render_lk_cdf_sanity_check(
+                _bv.get('fbin', 0.5), _bv.get(x_name, 0.0),
+                _bv.get('sigma', float(result.get('sigma_meas', 5.0))),
+                np.asarray(obs_delta_rv), _pm, result,
+                f'{p}_{method_key}')
+        except Exception:
+            pass

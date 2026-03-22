@@ -110,26 +110,31 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         else:
             _cad_shape = (n_sig, n_fb, n_pi)
 
-        # Support resuming from partial checkpoint (only for non-logPmax scans)
+        # ── WORKING · cancel-save-resume ──
+        # Support resuming from partial checkpoint (including logPmax scans)
         _pre_p = params.get('prefilled_ks_p')
         _pre_D = params.get('prefilled_ks_D')
         if (_pre_p is not None and _pre_D is not None
-                and _pre_p.shape == _cad_shape and not _scan_logPmax):
+                and _pre_p.shape == _cad_shape):
             ks_p = _pre_p.copy()
             ks_D = _pre_D.copy()
         else:
             ks_D = np.full(_cad_shape, np.nan)
             ks_p = np.full(_cad_shape, np.nan)
-        weighted_D = np.full(_cad_shape, np.nan)
-        weighted_p = np.full(_cad_shape, np.nan)
-        cvm_D      = np.full(_cad_shape, np.nan)
-        cvm_p      = np.full(_cad_shape, np.nan)
-        cvm_S_raw  = np.full(_cad_shape, np.nan)
-        logL_raw   = np.full(_cad_shape, np.nan)
 
+        def _prefill_or_nan(key):
+            _arr = params.get(f'prefilled_{key}')
+            if _arr is not None and _arr.shape == _cad_shape:
+                return _arr.copy()
+            return np.full(_cad_shape, np.nan)
+
+        logL_raw   = _prefill_or_nan('logL_raw')
+
+        # ── WORKING · cancel-save-resume ──
         # Track overall progress
         _total_original = n_logPmax * n_sig * n_fb * n_pi
-        _pre_done = 0
+        _pre_done = (int(np.count_nonzero(~np.isnan(ks_p)))
+                     if _pre_p is not None else 0)
 
         best_p = -1.0
         best_fb = 0.0
@@ -141,6 +146,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         import time as _time
         t_start = _time.time()
 
+        # ── WORKING · cancel-save-resume ──
         def _save_partial_cadence():
             _partial_path = resume_from_path
             if not _partial_path:
@@ -162,9 +168,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             np.savez(
                 _partial_path,
                 ks_p=ks_p, ks_D=ks_D,
-                weighted_D=weighted_D, weighted_p=weighted_p,
-                cvm_D=cvm_D, cvm_p=cvm_p,
-                cvm_S_raw=cvm_S_raw, logL_raw=logL_raw,
+                logL_raw=logL_raw,
                 scoring_version=np.array(2),
                 fbin_grid=fbin_grid, pi_grid=pi_grid,
                 sigma_grid=sigma_grid,
@@ -186,6 +190,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                      initializer=_init_worker,
                      initargs=_initargs) as pool:
 
+         # ── WORKING · cancel-save-resume ──
          for i_lp, logPmax_v in enumerate(logPmax_scan_vals):
             if job.get('cancel'):
                 if job.get('cancel_mode') == 'save' and (_pre_done + completed) > 0:
@@ -195,21 +200,24 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
 
             slice_tasks = _build_tasks_for_slice(i_lp)
 
-            # Filter pre-completed tasks (only for non-logPmax scans)
-            if _pre_p is not None and not _scan_logPmax:
+            # ── WORKING · cancel-save-resume ──
+            # Filter pre-completed tasks (3-D and 4-D)
+            if _pre_p is not None:
+                def _cell_is_nan(t, _ilp):
+                    _is = int(np.searchsorted(sigma_grid, t[2]))
+                    _if = int(np.searchsorted(fbin_grid, t[0]))
+                    _ip = int(np.searchsorted(pi_grid, t[1]))
+                    if _is >= n_sig or _if >= n_fb or _ip >= n_pi:
+                        return True
+                    if _scan_logPmax:
+                        return bool(np.isnan(ks_p[_ilp, _is, _if, _ip]))
+                    return bool(np.isnan(ks_p[_is, _if, _ip]))
                 slice_tasks = [t for t in slice_tasks
-                               if (int(np.searchsorted(sigma_grid, t[2])) < n_sig
-                                   and int(np.searchsorted(fbin_grid, t[0])) < n_fb
-                                   and int(np.searchsorted(pi_grid, t[1])) < n_pi
-                                   and np.isnan(ks_p[
-                                       int(np.searchsorted(sigma_grid, t[2])),
-                                       int(np.searchsorted(fbin_grid, t[0])),
-                                       int(np.searchsorted(pi_grid, t[1]))]))]
-                if i_lp == 0:
-                    _pre_done = _total_original - len(slice_tasks)
+                               if _cell_is_nan(t, i_lp)]
 
             n_tasks = len(slice_tasks)
 
+            # ── WORKING · cancel-save-resume ──
             for res in pool.imap_unordered(
                     _single_grid_task_cadence_aware, slice_tasks):
                 if job.get('cancel'):
@@ -225,6 +233,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                  _cvm_D, _cvm_p, _cvm_S,
                  _logL,
                  med_cdf, lo_cdf, hi_cdf) = res
+                # weighted/CvM values unpacked but not stored (kept for worker compat)
                 i_sig = int(np.searchsorted(sigma_grid, sigma))
                 i_fb  = int(np.searchsorted(fbin_grid, fb))
                 i_pi  = int(np.searchsorted(pi_grid, pi_val))
@@ -233,20 +242,10 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                     if _scan_logPmax:
                         ks_D[i_lp, i_sig, i_fb, i_pi] = _ks_D
                         ks_p[i_lp, i_sig, i_fb, i_pi] = _ks_p
-                        weighted_D[i_lp, i_sig, i_fb, i_pi] = _w_D
-                        weighted_p[i_lp, i_sig, i_fb, i_pi] = _w_p
-                        cvm_D[i_lp, i_sig, i_fb, i_pi] = _cvm_D
-                        cvm_p[i_lp, i_sig, i_fb, i_pi] = _cvm_p
-                        cvm_S_raw[i_lp, i_sig, i_fb, i_pi] = _cvm_S
                         logL_raw[i_lp, i_sig, i_fb, i_pi] = _logL
                     else:
                         ks_D[i_sig, i_fb, i_pi] = _ks_D
                         ks_p[i_sig, i_fb, i_pi] = _ks_p
-                        weighted_D[i_sig, i_fb, i_pi] = _w_D
-                        weighted_p[i_sig, i_fb, i_pi] = _w_p
-                        cvm_D[i_sig, i_fb, i_pi] = _cvm_D
-                        cvm_p[i_sig, i_fb, i_pi] = _cvm_p
-                        cvm_S_raw[i_sig, i_fb, i_pi] = _cvm_S
                         logL_raw[i_sig, i_fb, i_pi] = _logL
                 if _ks_p > best_p:
                     best_p = _ks_p
@@ -281,8 +280,6 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                     # Build per-method live heatmaps
                     _method_arrays = [
                         ('ks', ks_p, ks_D, 'K-S p'),
-                        ('weighted', weighted_p, weighted_D, 'K-S weighted p'),
-                        ('cvm', cvm_p, cvm_D, 'CvM p'),
                         ('likelihood', logL_raw, logL_raw, 'Likelihood'),
                     ]
                     _method_live = {}
@@ -482,11 +479,6 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             'logPmax_grid': logPmax_scan_vals,
             'ks_D': ks_D,
             'ks_p': ks_p,
-            'weighted_D': weighted_D,
-            'weighted_p': weighted_p,
-            'cvm_D': cvm_D,
-            'cvm_p': cvm_p,
-            'cvm_S_raw': cvm_S_raw,
             'likelihood': likelihood,
             'logL_raw': logL_raw,
             'scoring_version': np.array(2),

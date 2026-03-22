@@ -50,8 +50,6 @@ _CMP_DASHES = [
 # (key, display_name, p_key, D_key, color)
 SCORING_METHODS = [
     ('ks',         'K-S (standard)',  'ks_p',       'ks_D',       '#4A90D9'),
-    ('weighted',   'K-S (weighted)',  'weighted_p', 'weighted_D', '#50C878'),
-    ('cvm',        'CvM (S-score)',   'cvm_p',      'cvm_D',      '#E25A53'),
     ('likelihood', 'Likelihood',      'likelihood', 'logL_raw',   '#DAA520'),
 ]
 
@@ -60,16 +58,12 @@ _METHOD_COLORS = {m[0]: m[4] for m in SCORING_METHODS}
 # Scoring label for make_heatmap_fig colorbar per method
 _METHOD_SCORING_LABELS = {
     'ks': 'K-S',
-    'weighted': 'K-S weighted',
-    'cvm': 'CvM',
     'likelihood': 'Likelihood',
 }
 
 # Colorbar title override for score display (not p-values)
 _METHOD_COLORBAR_OVERRIDE = {
     'ks': 'K-S D-statistic',
-    'weighted': 'χ² statistic',
-    'cvm': 'CvM S-score',
     'likelihood': 'Normalized Likelihood',
 }
 

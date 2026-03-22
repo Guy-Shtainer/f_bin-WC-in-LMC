@@ -279,44 +279,13 @@ def render_model_subtabs(p: str, model_ctx: dict) -> None:
         st.info('Run a simulation or load a saved result to see analysis.')
         return
 
-    # ── Simulation overview (always visible) ──────────────────────────────
-    extra_grids = _build_extra_grids(model_ctx)
-
-    method_results = _render_method_summary_section(
-        result, model_ctx['fbin_g'], model_ctx['x_g'],
-        extra_grids=extra_grids,
-        prefix=p,
-        x_name=model_ctx['x_name'],
-        x_label=model_ctx['x_label'],
-        ndim_mode=model_ctx['ndim_mode'],
-    )
-
-    _render_all_methods_cdf(
-        result, method_results,
-        model_ctx['fbin_g'], model_ctx['x_g'],
-        prefix=p,
-        x_name=model_ctx['x_name'],
-        x_label=model_ctx['x_label'],
-    )
-
-    # Max p-value line chart across σ scan
-    _render_sigma_scan_chart(model_ctx)
-
-    gap_sim = model_ctx.get('gap_sim')
-    if gap_sim is not None:
-        _render_analysis_plots(p, model_ctx, gap_sim, method_results)
-
-    render_methodology_equations(model_ctx['model_type'])
+    # ── Shared section (render_shared.py) ─────────────────────────────────
+    from bc.render_shared import render_shared_section
+    method_results = render_shared_section(p, model_ctx)
 
     # ── Scoring method radio selector ─────────────────────────────────────
     st.markdown('---')
-    _RADIO_LABELS = ['K-S (standard)', 'K-S (weighted)', 'CvM (S-score)', 'Likelihood']
-    _LABEL_TO_KEY = {
-        'K-S (standard)': 0,
-        'K-S (weighted)': 1,
-        'CvM (S-score)': 2,
-        'Likelihood': 3,
-    }
+    _RADIO_LABELS = ['K-S (standard)', 'Likelihood']
 
     selected_label = st.radio(
         'Scoring method',
@@ -325,6 +294,9 @@ def render_model_subtabs(p: str, model_ctx: dict) -> None:
         horizontal=True,
     )
 
-    idx = _LABEL_TO_KEY[selected_label]
-    mk, mname, pk, dk, _mcolor = SCORING_METHODS[idx]
-    _render_method_tab(p, mk, mname, pk, dk, model_ctx, method_results)
+    if selected_label == 'K-S (standard)':
+        from bc.render_ks import render_ks_tab
+        render_ks_tab(p, model_ctx, method_results)
+    else:
+        from bc.render_lk import render_lk_tab
+        render_lk_tab(p, model_ctx, method_results)

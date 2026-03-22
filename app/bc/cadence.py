@@ -374,6 +374,7 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
         '\u25b6\ufe0f Run', key=f'{p}_run_btn', type='primary')
     _save_clicked = _a2.button(
         '\U0001f4be Save result', key=f'{p}_save_btn')
+    # ── WORKING · cancel-save-resume ──
     _cancel_btn = _a3.button(
         '\u23f9 Cancel', key=f'{p}_cancel_btn')
     _cancel_save_btn = _a4.button(
@@ -407,6 +408,7 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
         else:
             st.warning('No result to save. Run first.')
 
+    # ── WORKING · cancel-save-resume ──
     if _cancel_btn and f'{p}_job' in st.session_state:
         st.session_state[f'{p}_job']['cancel'] = True
         st.session_state[f'{p}_job']['cancel_mode'] = 'discard'
@@ -414,6 +416,7 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
         st.session_state[f'{p}_job']['cancel'] = True
         st.session_state[f'{p}_job']['cancel_mode'] = 'save'
 
+    # ── WORKING · cancel-save-resume ──
     _cad_auto_resume = st.session_state.pop(f'{p}_auto_resume', False)
     _job_running = (f'{p}_job' in st.session_state
                     and st.session_state[f'{p}_job'].get('status')
@@ -422,6 +425,7 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
         st.warning(
             'A simulation is already running. Cancel or wait before '
             'starting a new run.')
+    # ── WORKING · cancel-save-resume ──
     if (_run_btn or _cad_auto_resume) and not _job_running:
         _sh = settings_hash(settings)
         obs_drv, obs_det = cached_load_observed_delta_rvs(_sh)
@@ -505,6 +509,7 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
             },
         }
 
+        # ── WORKING · cancel-save-resume ──
         # Check for partial resume
         _cad_resume_path = st.session_state.pop(
             f'{p}_resume_from', None)
@@ -512,10 +517,39 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
             try:
                 _cad_ptl = np.load(
                     _cad_resume_path, allow_pickle=True)
+                # Load ALL scoring arrays
                 params['prefilled_ks_p'] = np.asarray(
                     _cad_ptl['ks_p'])
                 params['prefilled_ks_D'] = np.asarray(
                     _cad_ptl['ks_D'])
+                for _arr_key in ('weighted_D', 'weighted_p',
+                                 'cvm_D', 'cvm_p',
+                                 'cvm_S_raw', 'logL_raw'):
+                    if _arr_key in _cad_ptl:
+                        params[f'prefilled_{_arr_key}'] = (
+                            np.asarray(_cad_ptl[_arr_key]))
+                # Override grid params from checkpoint
+                params['fbin_vals'] = (
+                    _cad_ptl['fbin_grid'].tolist())
+                params['pi_vals'] = (
+                    _cad_ptl['pi_grid'].tolist())
+                params['sigma_vals'] = (
+                    _cad_ptl['sigma_grid'].tolist())
+                if 'logPmax_grid' in _cad_ptl:
+                    params['logPmax_scan_vals'] = np.asarray(
+                        _cad_ptl['logPmax_grid'])
+                if 'n_sets' in _cad_ptl:
+                    params['n_sets'] = int(_cad_ptl['n_sets'])
+                if 'drv_bin_width' in _cad_ptl:
+                    params['drv_bin_width'] = float(
+                        _cad_ptl['drv_bin_width'])
+                if 'drv_max' in _cad_ptl:
+                    params['drv_max'] = float(
+                        _cad_ptl['drv_max'])
+                if 'adaptive_bins' in _cad_ptl:
+                    params['adaptive_bins'] = bool(
+                        _cad_ptl['adaptive_bins'])
+                # Progress info
                 _n_pre = int(np.count_nonzero(
                     ~np.isnan(params['prefilled_ks_p'])))
                 _n_tot = params['prefilled_ks_p'].size
@@ -525,8 +559,9 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
                     f'({_n_pre}/{_n_tot} cells, '
                     f'{_n_pre / _n_tot * 100:.0f}%).')
                 _cad_ptl.close()
-            except Exception:
-                pass
+            except Exception as e:
+                st.warning(
+                    f'\u26a0\ufe0f Failed to load checkpoint: {e}')
 
         t = threading.Thread(
             target=_run_cadence_bg, args=(job, params), daemon=True)
