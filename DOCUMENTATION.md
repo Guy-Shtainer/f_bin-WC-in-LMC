@@ -1087,4 +1087,84 @@ coexist: Streamlit on :8501, Dash on :8050, sharing `results/` and `settings/`.
 
 ---
 
-*Last updated: 2026-03-21*
+### 2026-03-22 — Bias correction simplification: two scoring methods, cadence-only simulation, graph rendering split
+
+*Cadence checkpoint resume fix.* The cadence-aware simulation's checkpoint resume logic contained
+a bug: on resume, the code used the current UI grid parameters (which may have changed) rather
+than the grid parameters stored in the checkpoint file. This caused shape mismatches and incorrect
+grid indexing when the user changed grid settings between a cancel and a resume. The fix overrides
+`fbin_vals`, `pi_vals`, `sigma_vals`, `logPmax_scan_vals`, and `n_sets` from the checkpoint file
+before resuming. Additionally, all 8 scoring arrays (K-S D, K-S p, weighted K-S, CvM D, CvM p,
+CvM S, likelihood, chi2) are now loaded from partial results (previously only 2 were loaded).
+
+*Scoring method simplification.* The bias correction page previously offered four scoring methods:
+K-S test, inverse-variance weighted K-S, Cramér–von Mises (CvM) S-score, and multinomial
+likelihood. After evaluation, the weighted K-S and CvM methods were removed, retaining only the
+two-sample K-S test and the multinomial likelihood as the primary scoring methods. The K-S test
+provides a distribution-free comparison of simulated and observed CDFs (Sect.~4.2 of Dsilva+2023),
+while the multinomial likelihood (Sect.~4.2 of Dsilva+2023) bins the ΔRV distribution into coarse
+intervals and computes the probability of the observed bin counts given the simulated fractions.
+These two methods complement each other: K-S is sensitive to the overall CDF shape, while the
+likelihood is sensitive to the bin-level population fractions. The removed methods remain available
+in `wr_bias_simulation.py` (functions `ks_weighted_D`, `cvm_weighted_score`) for future use if
+needed (tracked in TODO #153–155).
+
+*Non-cadence tab removal.* The non-cadence Dsilva and Langer simulation tabs were removed from
+the webapp. All simulation now uses the cadence-aware approach (Task #92): each simulated set
+contains one star per real target, sampled at that star's actual observation epochs (MJD
+timestamps from FITS headers). This is scientifically more appropriate than the original approach
+of drawing N independent stars with arbitrary time baselines, as it faithfully reproduces the
+observational sampling and accounts for per-star cadence limitations. Files deleted:
+`dsilva.py`, `langer.py`, `runners_dsilva.py`, `runners_langer.py` (~2400 lines total).
+Backups preserved in `Backups/bc_backup_20260322/`.
+
+*Graph rendering hard-split.* The graph rendering code for the bias correction results was
+reorganised into 9 independent files, separating K-S and Likelihood rendering completely:
+`render_shared.py` (common graphs: summary table, CDF comparison, simulation diagnostics),
+`render_ks.py`/`render_ks_scoring.py`/`render_ks_fit.py`/`render_ks_explorer.py` (K-S specific),
+and the corresponding `render_lk_*` files for Likelihood. Code is intentionally duplicated
+between K-S and Likelihood rather than shared, per user decision — this prevents cross-method
+bugs where a fix for one scoring method inadvertently breaks another.
+
+*Feature and graph catalog documentation.* Two reference documents were created in `app/bc/`:
+`FEATURES.md` (374 lines, 128 features across 23 categories) cataloguing every UI widget,
+parameter, and control in the bias correction page, and `GRAPHS_PER_METHOD.md` (516 lines)
+documenting every Plotly chart that appears for each scoring method, including conditional
+visibility rules and the heatmap factory specification.
+
+*Code protection rules.* Five mandatory blocks were established to prevent modification of
+working code during bug fixes: (1) identify root cause before editing, (2) one file only,
+(3) revert test, (4) ask before refactoring, (5) flag working code with
+`# ── WORKING · {feature} ──` comments. Sixteen such flags were added across the cadence
+checkpoint resume code.
+
+**Key results:**
+- Bias correction page reduced from 4 scoring methods to 2 (K-S + Likelihood)
+- All simulation now cadence-aware (no non-cadence mode)
+- ~2400 lines of dead code removed; 9 new render files created (all < 800 lines)
+- Cadence checkpoint resume bug fixed
+
+**Methodology notes for paper:**
+- The simplification to K-S + multinomial likelihood as the two retained scoring methods should
+  be described in the bias correction methodology section. The K-S test is the standard
+  comparison tool (Dsilva+2023); the multinomial likelihood provides complementary bin-level
+  sensitivity.
+- Cadence-aware simulation is now the sole approach — the paper should not describe a
+  non-cadence variant.
+
+**Decisions:**
+- Duplicated graph code between K-S and Likelihood (no shared rendering functions) for isolation
+- Retained weighted KS/CvM functions in simulation engine for potential future use
+- Added WORKING code flags as a lightweight protection mechanism
+
+**Bugs found and fixed:**
+- Cadence checkpoint resume using UI params instead of saved params (logic bug, not greppable)
+
+**Open questions:**
+- GRAPHS_PER_METHOD.md review in progress — graphs A1-A4 have user comments, need implementation
+- Old render files (analysis.py, scoring_detail.py, etc.) not yet deleted pending webapp testing
+- Task #147: 3D/4D parabolic fit including sigma_single still open
+
+---
+
+*Last updated: 2026-03-22*

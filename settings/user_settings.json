@@ -114,10 +114,10 @@
     "fbin_max": 1.0,
     "fbin_steps": 99,
     "pi_min": -3.0,
-    "pi_max": 5.0,
+    "pi_max": 3.0,
     "pi_steps": 100,
     "n_sets": 3000,
-    "scan_sigma": true,
+    "scan_sigma": false,
     "sigma_single": 6.0,
     "sigma_min": 3.0,
     "sigma_max": 13.0,
@@ -164,7 +164,7 @@
     "fbin_max": 1.0,
     "fbin_steps": 100,
     "n_sets": 1000,
-    "scan_sigma": true,
+    "scan_sigma": false,
     "sigma_single": 15.0,
     "sigma_min": 1.0,
     "sigma_max": 9.0,
@@ -204,7 +204,7 @@
     "adaptive_bins": true,
     "likelihood_threshold": 45.5,
     "sigma_measure": 1.628,
-    "scan_logPmax": true,
+    "scan_logPmax": false,
     "logPmax_scan_steps": 12
   },
   "ui": {
@@ -215,7 +215,7 @@
     "last_page": "Home"
   },
   "likelihood_bin_config": {
-    "mode": "Manual",
+    "mode": "Threshold-based",
     "manual_edges": "0, 45.5, 100, 250"
   }
 }
