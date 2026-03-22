@@ -148,6 +148,18 @@ If missing, restore with: `ln -s ../Data Data`. NEVER delete this symlink.
 
 **Printing:** Classes accept `to_print=True/False`; internal output via `self.print(text)`.
 
+## Do Not Touch Working Code — 5 Mandatory Blocks
+
+When fixing a bug, follow ALL five blocks. No exceptions.
+
+1. **ROOT CAUSE FIRST** — Before editing ANY file, state: "The bug is at file:line because X." No edits until the root cause is identified.
+2. **ONE FILE ONLY** — If the bug is in one file, edit only that file. Touching a second file requires explicit justification to the user first.
+3. **REVERT TEST** — After fixing, check: "If I revert every OTHER change, does the fix still work?" If not, the extra changes are unnecessary — remove them.
+4. **ASK BEFORE REFACTORING** — If code near the bug looks "wrong" or "improvable", do NOT touch it. Mention it in text and let the user decide.
+5. **FLAG WORKING CODE** — Use `# ── WORKING · {feature} ──` flags above working functions/segments. NEVER modify flagged code unless the user explicitly asks to change THAT feature.
+
+See `memory/feedback_error_patterns.md` for full details and examples.
+
 ## Code Quality Rules
 
 **File size limit (800 lines max):** No single `.py` file should exceed ~800 lines.

@@ -40,3 +40,37 @@ First fix addressed the symptom (shape mismatch) but left downstream code vulner
 4. **When user says "remove X from the page"**: trace the rendering code path to identify the EXACT lines. Don't assume which file/function renders it.
 5. **Confidence gate**: if understanding of user's request < 90%, STOP and ask. Signs of low confidence: "I think they mean...", "probably...", "I assume...". One clarifying question saves 4 wrong attempts.
 6. **If user repeats a request**: that means I misunderstood the first time. ASK what they mean rather than trying the same approach again.
+## DO NOT TOUCH WORKING CODE — 5 Mandatory Blocks (learned 2026-03-22)
+
+**Why:** Cadence resume fix — rewrote task filter, array init, removed guards in
+runners_cadence.py when the entire fix was 10 lines in cadence.py. Broke features
+that were working. User explicitly set these rules.
+
+### Block 1: ROOT CAUSE FIRST
+Before editing ANY file, identify the single root cause and write it down.
+No edits until I can state: "The bug is at file:line because X."
+**How to apply:** State the root cause in my response before touching code.
+
+### Block 2: ONE FILE ONLY
+If the bug is in one file, edit only that file. Touching a second file requires
+explicit justification to the user first.
+**How to apply:** If I'm about to open a second file for editing, STOP and ask.
+
+### Block 3: REVERT TEST
+After making a fix, mentally check: "If I revert every OTHER change I made,
+does the fix still work?" If not, I'm editing unnecessary code.
+**How to apply:** Before committing, list all changes. For each non-root-cause
+change, ask: "Is the fix broken without this?" If no → revert it.
+
+### Block 4: ASK BEFORE REFACTORING
+If I see code I think is "wrong" or "improvable" near the bug, I must NOT
+touch it. If I really think it matters, mention it and let the user decide.
+**How to apply:** Never edit code that isn't the root cause. Mention concerns
+in text, don't act on them.
+
+### Block 5: FLAG WORKING CODE
+Use `# ── WORKING · {feature} ──` comment flags above functions or code segments
+that implement a working feature. These flags mean: DO NOT MODIFY this code
+unless the user explicitly asks to change THIS feature.
+**How to apply:** When I encounter or verify working code during investigation,
+add the flag. When I see the flag during a fix, skip that code entirely.
