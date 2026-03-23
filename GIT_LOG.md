@@ -6,6 +6,20 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-23 — Likelihood-only: KS removal, graph review, Sessions 1-3 fixes
+
+| Hash | Summary |
+|------|---------|
+| `c50c828` | Slim CLAUDE.md + create references/ directory for context management |
+| `567a481` | Remove KS/CvM/weighted scoring — likelihood only (backend 2922→2291, 4 KS files deleted) |
+| `5ffa312` | Likelihood graph review: Sessions 1-3 fixes + documentation (D1/D5a/D9/A3/D4/D17/B1/D11/D16) |
+| `84adbff` | End-of-day docs: E042, TODO #162, daily log, learnings |
+| `8fb510c` | Agent app v2: phase-based visualization + v2 launch controls |
+
+**Tag:** `v260323-working` — KS removal complete, likelihood-only graph review (3 sessions), agent v2
+
+---
+
 ## 2026-03-22 — BC simplification: 2 scoring methods, cadence-only, graph split
 
 | Hash | Summary |
