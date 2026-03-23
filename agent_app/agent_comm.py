@@ -538,3 +538,82 @@ def save_agent_settings(settings: dict) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(SETTINGS_PATH, 'w') as f:
         json.dump(settings, f, indent=2, default=str)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agent v2 — direct launch and status
+# ─────────────────────────────────────────────────────────────────────────────
+
+def launch_agent_v2(
+    quadrant: str = 'eliminate',
+    max_tasks: int = 5,
+    include_critical: bool = False,
+    freeform_task: str | None = None,
+    task_ids: list[int] | None = None,
+    model: str = 'sonnet',
+) -> tuple[bool, str]:
+    """Launch agent_v2/runner.py as a background subprocess."""
+    if is_running():
+        return False, 'Agent is already running.'
+
+    cmd = [
+        sys.executable,
+        str(_SCRIPTS / 'agent_v2' / 'runner.py'),
+        '--daemon',
+        '--model', model,
+        '--max-tasks', str(max_tasks),
+    ]
+
+    if freeform_task:
+        cmd.extend(['--task', freeform_task])
+    elif task_ids:
+        cmd.extend(['--task-ids', ','.join(str(i) for i in task_ids)])
+    else:
+        cmd.extend(['--quadrant', quadrant])
+        if include_critical:
+            cmd.append('--include-critical')
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(_ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        if freeform_task:
+            return True, f'Agent v2 launched (PID {proc.pid}), free-form task'
+        elif task_ids:
+            return True, f'Agent v2 launched (PID {proc.pid}), tasks={task_ids}'
+        else:
+            return True, f'Agent v2 launched (PID {proc.pid}), quadrant={quadrant}'
+    except Exception as e:
+        return False, f'Failed to launch: {e}'
+
+
+def get_v2_state() -> dict | None:
+    """Read agent v2 state from .agent_state.json (version 2 format)."""
+    state = get_state()
+    if state and state.get('version') == 2:
+        return state
+    return state  # Return whatever we have — backward compatible
+
+
+def get_v2_phase_display(state: dict | None) -> tuple[str, str, list[str]]:
+    """Extract phase display info from v2 state.
+
+    Returns (phase_name, phase_emoji, phases_done_list).
+    """
+    if not state:
+        return 'idle', '⏸️', []
+
+    phase = state.get('phase', 'idle')
+    phases_done = state.get('phases_done', [])
+
+    emoji_map = {
+        'implement': '🔨',
+        'verify': '🔍',
+        'fix': '🔧',
+        'idle': '⏸️',
+    }
+    return phase, emoji_map.get(phase, '⚙️'), phases_done

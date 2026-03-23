@@ -1,14 +1,13 @@
 """
-agent_app/pages/01_pipeline.py — Live Pipeline Monitor
-───────────────────────────────────────────────────────
-Shows real-time stage-by-stage tracking of the current agent pipeline.
-Supports both architectures:
-  - 'pipeline': Fixed 5-stage horizontal view
-  - 'opus-manager': Dynamic subagent timeline
+agent_app/pages/01_pipeline.py — Live Phase Monitor
+────────────────────────────────────────────────────
+Real-time monitoring of agent v2 phases: IMPLEMENT → VERIFY → FIX.
+Auto-refreshes every 5 seconds.
 """
 
 import os
 import sys
+from datetime import datetime
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
@@ -18,188 +17,147 @@ if _ROOT not in sys.path:
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-st.set_page_config(page_title='Pipeline Monitor', page_icon='\U0001f504', layout='wide')
+st.set_page_config(page_title='Phase Monitor', page_icon='\U0001f504', layout='wide')
 
 from shared import (
-    inject_theme, render_sidebar, render_pipeline_stages,
-    render_subagent_timeline, is_opus_architecture, metric_card,
-    PIPELINE_STAGES, COLOR_DONE, COLOR_ACTIVE, COLOR_FAILED, COLOR_WAITING,
-    SUBAGENT_COLORS,
+    inject_theme, render_sidebar, metric_card,
+    render_v2_phases, render_v2_phase_history,
+    COLOR_DONE, COLOR_ACTIVE, COLOR_FAILED, COLOR_WAITING,
+    # Keep v1 imports for backward compat
+    render_pipeline_stages, render_subagent_timeline, is_opus_architecture,
+    PIPELINE_STAGES, SUBAGENT_COLORS,
 )
-from agent_comm import get_state, is_running, get_log_tail, get_artifacts
+from agent_comm import (
+    get_state, is_running, get_log_tail, get_artifacts,
+    get_v2_state, get_v2_phase_display, stop_agent,
+)
 
 inject_theme()
-settings = render_sidebar('Pipeline Monitor')
+settings = render_sidebar('Phase Monitor')
 
 st_autorefresh(interval=5000, limit=None, key='pipeline_refresh')
 
-st.markdown('# Pipeline Monitor')
+st.markdown('# Phase Monitor')
 
 state = get_state()
 running = is_running()
 
-if not state or not state.get('current_task_id'):
+if not state:
     if running:
-        st.info('Agent is running but no task state available yet...')
+        st.info('Agent is running but no state available yet...')
     else:
-        st.info('No active pipeline. Start an agent from the Dashboard.')
+        st.info('No active agent. Start one from the Dashboard.')
     st.stop()
+
+# Detect v2 vs v1 state
+is_v2 = state.get('version') == 2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Task header
 # ─────────────────────────────────────────────────────────────────────────────
-tid = state['current_task_id']
-title = state.get('current_task_title', 'Unknown')
+tid = state.get('task_id', state.get('current_task_id', '?'))
+title = state.get('task_title', state.get('current_task_title', 'Unknown'))
 branch = state.get('branch', '?')
-current_stage = state.get('current_stage', '')
-waiting = bool(state.get('awaiting_intervention'))
-opus_mode = is_opus_architecture(state)
 
-arch_label = 'Opus Manager' if opus_mode else 'Fixed Pipeline'
 st.markdown(f'**Task #{tid}:** {title}')
-st.caption(f'Branch: `{branch}` | Architecture: {arch_label}')
+st.caption(f'Branch: `{branch}` | Engine: {"Agent v2" if is_v2 else "Legacy v1"}')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pipeline / Subagent visualization
+# Status cards
 # ─────────────────────────────────────────────────────────────────────────────
-if opus_mode:
-    timeline_html = render_subagent_timeline(state)
-    st.markdown(timeline_html, unsafe_allow_html=True)
+c1, c2, c3, c4 = st.columns(4)
+
+# Status
+if running:
+    metric_card(c1, 'Status', 'RUNNING', color=COLOR_ACTIVE)
 else:
-    stages_done = state.get('pipeline_stages_done', [])
-    failed_stage = current_stage if state.get('error') else None
-    pipeline_html = render_pipeline_stages(stages_done, current_stage, failed_stage, waiting)
-    st.markdown(pipeline_html, unsafe_allow_html=True)
+    metric_card(c1, 'Status', 'IDLE', color=COLOR_FAILED)
+
+# Phase
+phase_name, phase_emoji, phases_done = get_v2_phase_display(state)
+round_num = state.get('phase_round', 0)
+metric_card(c2, 'Phase', f'{phase_emoji} {phase_name.title()}',
+            sub=f'Round {round_num}')
+
+# Fix rounds
+fix_rounds = sum(1 for pd in phases_done if pd.startswith('fix'))
+verify_fails = sum(1 for pd in phases_done if 'fail' in pd)
+metric_card(c3, 'Fix Rounds', str(fix_rounds), sub=f'{verify_fails} verification failure(s)')
+
+# Elapsed
+if state.get('started_at'):
+    try:
+        started = datetime.fromisoformat(state['started_at'])
+        delta = datetime.now() - started
+        mins = int(delta.total_seconds() // 60)
+        secs = int(delta.total_seconds() % 60)
+        elapsed_val = f'{mins}m {secs}s'
+    except (ValueError, TypeError):
+        elapsed_val = '--'
+else:
+    elapsed_val = '--'
+metric_card(c4, 'Elapsed', elapsed_val)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Intervention banner
+# Phase visualization
 # ─────────────────────────────────────────────────────────────────────────────
-if waiting:
-    itype = state.get('intervention_type', 'unknown')
-    st.markdown(f"""
-    <div class="intervention-banner">
-        <div class="title">Awaiting Human Input</div>
-        <div class="detail">Type: {itype} | Go to <b>Interventions</b> page to respond.</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# Rate limit
-if state.get('rate_limited'):
-    resume = state.get('rate_limit_resume_at', '?')
-    st.warning(f'Rate limited. Expected resume: {resume}')
-
 st.markdown('---')
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage timeline / Subagent activity
-# ─────────────────────────────────────────────────────────────────────────────
-from datetime import datetime
+if is_v2:
+    # V2: phase progress bar
+    phase_html = render_v2_phases(state)
+    st.markdown(phase_html, unsafe_allow_html=True)
 
-if opus_mode:
-    # Opus mode: show subagent invocation timeline
-    st.markdown('### Subagent Activity')
+    # Rate limit warning
+    if state.get('rate_limited'):
+        resume = state.get('rate_limit_resume_at', '?')
+        st.warning(f'Rate limited — waiting until {resume}')
 
-    completed = state.get('subagents_completed', [])
-    if completed:
-        rows = []
-        for entry in completed:
-            agent_type = entry.get('type', 'unknown')
-            ts = entry.get('time', '')
-            rows.append({
-                'Subagent': agent_type.replace('-', ' ').title(),
-                'Type': agent_type,
-                'Completed': ts[11:19] if len(ts) > 19 else ts,
-            })
-
-        # Add current if running
-        if current_stage.startswith('subagent:'):
-            agent_type = current_stage.split(':', 1)[1]
-            started = state.get('updated_at', '')
-            rows.append({
-                'Subagent': agent_type.replace('-', ' ').title(),
-                'Type': agent_type,
-                'Completed': 'Running...',
-            })
-
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+    # Phase history table
+    st.markdown('### Phase History')
+    history = render_v2_phase_history(phases_done)
+    if history:
+        st.dataframe(history, use_container_width=True, hide_index=True)
     else:
-        if current_stage == 'opus_starting':
-            st.caption('Opus manager is starting up...')
-        elif current_stage == 'opus_running':
-            elapsed = ''
-            if state.get('started_at'):
-                try:
-                    started = datetime.fromisoformat(state['started_at'])
-                    delta = datetime.now() - started
-                    mins = int(delta.total_seconds() // 60)
-                    secs = int(delta.total_seconds() % 60)
-                    elapsed = f' ({mins}m {secs}s elapsed)'
-                except (ValueError, TypeError):
-                    pass
-            st.caption(f'Opus manager is actively working...{elapsed}')
-        else:
-            st.caption('No subagent invocations yet.')
-
-    # Show progress.md if available
-    st.markdown('### Progress Log')
-    artifacts = get_artifacts(tid)
-    if artifacts and 'progress.md' in artifacts:
-        st.markdown(artifacts['progress.md'])
-    else:
-        st.caption('No progress updates yet.')
+        st.caption('No phases completed yet.')
 
 else:
-    # Pipeline mode: show fixed stage timeline table
-    st.markdown('### Stage Timeline')
-    stages_done = state.get('pipeline_stages_done', [])
-    failed_stage = current_stage if state.get('error') else None
+    # V1 fallback: pipeline or opus visualization
+    opus_mode = is_opus_architecture(state)
+    if opus_mode:
+        timeline_html = render_subagent_timeline(state)
+        st.markdown(timeline_html, unsafe_allow_html=True)
+    else:
+        stages_done = state.get('pipeline_stages_done', [])
+        current_stage = state.get('current_stage', '')
+        failed_stage = current_stage if state.get('error') else None
+        waiting = bool(state.get('awaiting_intervention'))
+        pipeline_html = render_pipeline_stages(stages_done, current_stage, failed_stage, waiting)
+        st.markdown(pipeline_html, unsafe_allow_html=True)
 
-    rows = []
-    for stage in PIPELINE_STAGES:
-        if stage in stages_done:
-            status = 'Done'
-        elif stage == current_stage:
-            status = 'Waiting' if waiting else 'In Progress'
-        elif stage == failed_stage:
-            status = 'Failed'
+# ─────────────────────────────────────────────────────────────────────────────
+# Stop button
+# ─────────────────────────────────────────────────────────────────────────────
+if running:
+    st.markdown('---')
+    if st.button('Stop Agent', type='secondary', key='stop_from_monitor'):
+        stopped = stop_agent()
+        if stopped:
+            st.success('Agent stopped.')
         else:
-            status = 'Pending'
-
-        duration = '--'
-        if stage == current_stage and state.get('stage_started_at'):
-            try:
-                started = datetime.fromisoformat(state['stage_started_at'])
-                delta = datetime.now() - started
-                mins = int(delta.total_seconds() // 60)
-                secs = int(delta.total_seconds() % 60)
-                duration = f'{mins}m {secs}s'
-            except (ValueError, TypeError):
-                pass
-
-        rows.append({
-            'Stage': stage.replace('_', ' ').title(),
-            'Status': status,
-            'Duration': duration,
-        })
-
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+            st.info('Agent was not running.')
+        st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Current artifacts preview
+# Artifacts preview
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown('### Latest Artifacts')
+st.markdown('### Artifacts')
 artifacts = get_artifacts(tid)
 if artifacts:
-    # Filter out progress.md from artifact tabs (shown above in opus mode)
-    display_artifacts = {k: v for k, v in artifacts.items()
-                         if not (opus_mode and k == 'progress.md')}
-    if display_artifacts:
-        tabs = st.tabs(list(display_artifacts.keys()))
-        for tab, (name, content) in zip(tabs, display_artifacts.items()):
-            with tab:
-                st.markdown(content)
-    else:
-        st.caption('No artifacts generated yet.')
+    tabs = st.tabs(list(artifacts.keys()))
+    for tab, (name, content) in zip(tabs, artifacts.items()):
+        with tab:
+            st.markdown(content)
 else:
     st.caption('No artifacts generated yet.')
 
@@ -207,7 +165,7 @@ else:
 # Live log tail
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown('### Live Log')
-log = get_log_tail(20)
+log = get_log_tail(25)
 if log:
     st.code(log, language='markdown')
 else:

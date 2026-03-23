@@ -446,6 +446,101 @@ def is_opus_architecture(state: dict | None) -> bool:
     return state.get('architecture') == 'opus-manager'
 
 
+# ── Agent v2 phase visualization ──────────────────────────────────────────────
+
+V2_PHASES = ['implement', 'verify', 'fix']
+
+V2_PHASE_EMOJIS = {
+    'implement': '\U0001f528',  # hammer
+    'verify': '\U0001f50d',     # magnifying glass
+    'fix': '\U0001f527',        # wrench
+}
+
+V2_PHASE_COLORS = {
+    'implement': '#4A90D9',  # blue
+    'verify': '#DAA520',     # gold
+    'fix': '#E25A53',        # red
+}
+
+
+def render_v2_phases(state: dict) -> str:
+    """Return HTML for agent v2 phase progress visualization.
+
+    Shows: IMPLEMENT → VERIFY → FIX with round numbers and pass/fail indicators.
+    """
+    current_phase = state.get('phase', 'idle')
+    phases_done = state.get('phases_done', [])
+    phase_round = state.get('phase_round', 0)
+
+    html_parts = []
+
+    for i, phase in enumerate(V2_PHASES):
+        emoji = V2_PHASE_EMOJIS.get(phase, '')
+        label = f'{emoji} {phase.title()}'
+
+        # Determine box state
+        is_current = (phase == current_phase)
+        # Check if any phases_done entry starts with this phase name
+        is_done = any(pd.startswith(phase) for pd in phases_done)
+        is_passed = any(f'{phase}-pass' in pd or pd == phase for pd in phases_done)
+        is_failed = any(f'{phase}-fail' in pd for pd in phases_done)
+
+        if is_current:
+            bg = V2_PHASE_COLORS.get(phase, COLOR_ACTIVE)
+            fg = '#fff'
+            extra_style = 'animation:pulse 1.5s infinite;'
+            if phase_round > 0:
+                label += f' (R{phase_round})'
+        elif is_passed:
+            bg = COLOR_DONE
+            fg = '#fff'
+            extra_style = ''
+        elif is_failed:
+            bg = COLOR_FAILED
+            fg = '#fff'
+            extra_style = ''
+        elif is_done:
+            bg = COLOR_DONE
+            fg = '#fff'
+            extra_style = ''
+        else:
+            bg = COLOR_PENDING
+            fg = '#ccc'
+            extra_style = ''
+
+        html_parts.append(
+            f'<span class="stage-box" style="background:{bg};color:{fg};{extra_style}">'
+            f'{label}</span>'
+        )
+        if i < len(V2_PHASES) - 1:
+            html_parts.append('<span class="stage-arrow">&rarr;</span>')
+
+    return ''.join(html_parts)
+
+
+def render_v2_phase_history(phases_done: list[str]) -> list[dict]:
+    """Convert phases_done list to a display table.
+
+    Returns list of dicts suitable for st.dataframe().
+    """
+    rows = []
+    for pd in phases_done:
+        parts = pd.split('-')
+        phase = parts[0] if parts else pd
+        outcome = parts[1] if len(parts) > 1 else 'done'
+        round_num = parts[2] if len(parts) > 2 else '0'
+
+        emoji = V2_PHASE_EMOJIS.get(phase, '')
+        status_emoji = '\u2705' if outcome in ('pass', 'done') else '\u274c' if outcome == 'fail' else '\u2699\ufe0f'
+
+        rows.append({
+            'Phase': f'{emoji} {phase.title()}',
+            'Outcome': f'{status_emoji} {outcome.title()}',
+            'Round': round_num,
+        })
+    return rows
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar
 # ─────────────────────────────────────────────────────────────────────────────

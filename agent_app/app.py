@@ -37,6 +37,8 @@ from agent_comm import (
     load_todos, get_quadrant,
     QUADRANT_LABELS, QUADRANT_COLORS,
     get_log_tail,
+    launch_agent_v2, is_running, stop_agent,
+    get_v2_state, get_v2_phase_display,
 )
 
 inject_theme()
@@ -80,17 +82,22 @@ st_autorefresh(interval=5000, limit=None, key='dashboard_refresh')
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown('# Agent Control Panel')
 
-status = _read_status()
+# Read status from BOTH v1 (.claude/agent-status.json) and v2 (.agent_state.json)
+status_v1 = _read_status()
+status_v2 = get_v2_state()
 
-# Determine agent status from the status file
-if status and status.get('phase') not in (None, 'idle', 'all_done'):
+# Prefer v2 state if available, fall back to v1
+status = status_v2 if status_v2 and status_v2.get('version') == 2 else status_v1
+agent_running = is_running()
+
+if agent_running:
     is_active = True
     status_val = 'RUNNING'
     status_color = COLOR_RUNNING
-elif status and status.get('phase') == 'all_done':
+elif status and status.get('phase') in ('all_done', None):
     is_active = False
-    status_val = 'DONE'
-    status_color = COLOR_DONE
+    status_val = 'DONE' if status.get('phase') == 'all_done' else 'IDLE'
+    status_color = COLOR_DONE if status_val == 'DONE' else COLOR_FAILED
 else:
     is_active = False
     status_val = 'IDLE'
@@ -103,16 +110,19 @@ metric_card(c1, 'Status', status_val, color=status_color)
 # Current task
 if status and status.get('task_id'):
     task_val = f"#{status['task_id']}"
-    task_sub = status.get('title', '')[:40]
+    task_sub = status.get('task_title', status.get('title', ''))[:40]
 else:
     task_val = '--'
     task_sub = 'No active task'
 metric_card(c2, 'Current Task', task_val, sub=task_sub)
 
-# Phase
-phase_val = '--'
-if status and status.get('phase'):
-    phase_val = status['phase'].replace('_', ' ').title()
+# Phase (v2 format: implement/verify/fix with round)
+phase_name, phase_emoji, phases_done = get_v2_phase_display(status)
+if phase_name != 'idle':
+    phase_round = status.get('phase_round', 0) if status else 0
+    phase_val = f'{phase_emoji} {phase_name.title()} R{phase_round}'
+else:
+    phase_val = '--'
 metric_card(c3, 'Phase', phase_val)
 
 # Elapsed
@@ -131,13 +141,26 @@ else:
 completed_count = len(status.get('completed_tasks', [])) if status else 0
 metric_card(c4, 'Elapsed', elapsed_val, sub=f'{completed_count} task(s) completed')
 
-# Live log if active
+# Rate limit warning
+if status and status.get('rate_limited'):
+    resume = status.get('rate_limit_resume_at', '?')
+    st.warning(f'Rate limited — waiting until {resume}')
+
+# Phase progress bar (v2)
+if is_active and phases_done:
+    phase_labels = ['implement', 'verify', 'fix', 're-verify']
+    progress_text = ' → '.join(
+        f'**{p}**' if p == phase_name else f'~~{p}~~' if any(p in pd for pd in phases_done) else p
+        for p in phase_labels
+    )
+    st.markdown(f'Progress: {progress_text}', unsafe_allow_html=True)
+
+# Live log
 if is_active:
-    log = status.get('log', [])
-    if log:
-        log_text = '\n'.join(f"[{e.get('time', '')}] {e.get('msg', '')}" for e in log[-10:])
-        st.code(log_text, language='text')
-    if status.get('error'):
+    log_tail = get_log_tail(10)
+    if log_tail:
+        st.code(log_tail, language='text')
+    if status and status.get('error'):
         st.error(f"Error: {status['error']}")
 
 st.markdown('---')
@@ -336,42 +359,90 @@ else:  # Free-form
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown('---')
 
-max_iter = st.number_input('Max iterations', min_value=1, max_value=200, value=20, key='max_iter')
+lc1, lc2, lc3 = st.columns(3)
+max_tasks = lc1.number_input('Max tasks', min_value=1, max_value=20, value=5, key='max_tasks_v2')
+model_choice = lc2.selectbox('Model', ['sonnet', 'opus', 'haiku'], key='model_v2')
+lc3.markdown('')  # spacer
 
-lc1, lc2 = st.columns(2)
+bc1, bc2, bc3 = st.columns(3)
 
-with lc1:
-    if st.button('Save Task Queue', type='primary', key='save_queue'):
+with bc1:
+    if st.button('Launch Agent v2', type='primary', key='launch_v2', disabled=agent_running):
+        if mode == 'Free-form task':
+            text = st.session_state.get('freeform_text', '').strip()
+            if not text:
+                st.error('Please enter a task description.')
+            else:
+                ok, msg = launch_agent_v2(
+                    freeform_task=text, max_tasks=int(max_tasks),
+                    model=model_choice,
+                )
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+        elif mode == 'Quadrant batch':
+            ok, msg = launch_agent_v2(
+                quadrant=st.session_state.get('batch_quadrant', 'eliminate'),
+                max_tasks=int(max_tasks), model=model_choice,
+            )
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+        else:
+            ids = sorted(st.session_state.get('_selected_task_ids', set()))
+            if not ids:
+                st.error('No tasks selected.')
+            else:
+                ok, msg = launch_agent_v2(
+                    task_ids=ids, max_tasks=int(max_tasks),
+                    model=model_choice,
+                )
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+with bc2:
+    if st.button('Stop Agent', key='stop_v2', disabled=not agent_running):
+        stopped = stop_agent()
+        if stopped:
+            st.success('Agent stopped.')
+        else:
+            st.info('Agent was not running.')
+        st.rerun()
+
+with bc3:
+    if st.button('Save Task Queue (legacy)', key='save_queue'):
         if mode == 'Free-form task':
             text = st.session_state.get('freeform_text', '').strip()
             if not text:
                 st.error('Please enter a task description.')
             else:
                 _write_task_file(queue=[], freeform_text=text)
-                st.success('Saved freeform task to queue.')
+                st.success('Saved to legacy queue.')
         else:
             ids = selected_ids if mode == 'Quadrant batch' else sorted(
                 st.session_state.get('_selected_task_ids', set())
             )
             if not ids:
-                st.error('No tasks selected. Check at least one task.')
+                st.error('No tasks selected.')
             else:
                 _write_task_file(queue=ids)
-                st.success(f'Saved {len(ids)} task(s) to queue.')
-
-with lc2:
-    if st.button('Clear Queue', key='clear_queue'):
-        if TASK_FILE.exists():
-            TASK_FILE.unlink()
-            st.info('Queue cleared.')
+                st.success(f'Saved {len(ids)} task(s) to legacy queue.')
 
 # Terminal command
-st.markdown('#### Run in Terminal')
-st.code(f'bash scripts/launch-agent.sh {max_iter}', language='bash')
-st.caption(
-    'Or run directly: '
-    f'`/ralph-loop "/run-task" --max-iterations {max_iter} --completion-promise ALL_DONE`'
-)
+with st.expander('CLI commands'):
+    st.code(
+        f'conda run -n guyenv python scripts/agent_v2/runner.py '
+        f'--max-tasks {int(max_tasks)} --model {model_choice}',
+        language='bash'
+    )
+    st.caption('Add --daemon to run in background, --task "..." for free-form')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Recent Activity
