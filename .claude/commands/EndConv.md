@@ -43,7 +43,18 @@ Run this command before closing a conversation to preserve context for the end-o
      - Commit the update
    - If no new patterns were found, note "No new COMMON_ERRORS patterns" in the log entry.
 
-6. **Confirm to the user:**
+6. **Capture learnings (Pattern 4 — Self-Learning):**
+   - Review corrections and mistakes from this session:
+     - Did the user correct my approach? ("no not that", "don't", "stop doing X")
+     - Did I make the same mistake twice?
+     - Did a non-obvious approach work well? (user confirmed or accepted without pushback)
+   - For each learning, check `.claude/references/learnings.md`:
+     - If the rule already exists → update `last_triggered` date
+     - If it's a new pattern → add it to the top of the relevant section with `last_triggered: {today}`
+     - Never delete existing rules — only archive when underlying code is verified gone
+   - If no learnings this session, note "No new learnings" in the log entry.
+
+7. **Confirm to the user:**
    - Show the entry that was written.
    - Remind them to run `/EnDay` at the end of the day if they haven't already.
 

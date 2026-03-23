@@ -1,6 +1,7 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+For detailed architecture, plot styles, and learnings, see `.claude/references/`.
 
 ## Project Overview
 
@@ -10,251 +11,79 @@ Spectroscopic analysis pipeline for Wolf-Rayet (WR) stars in the LMC. Goal: meas
 **Stars:** 25 WR stars listed in `specs.py`
 **Key algorithm:** Cross-Correlation Function (CCF) via Zucker & Mazeh (1994) / Zucker et al. (2003)
 
-## Project Structure (evolving)
+## Project Structure
 
-New directories added alongside existing root files (nothing moved, no import breakage):
-- `pipeline/` — standalone analysis scripts (each starts with `sys.path.insert(0, parent_dir)`)
+- `pipeline/` — standalone CLI scripts (each starts with `sys.path.insert(0, parent_dir)`)
 - `app/` — Streamlit web app (`streamlit run app/app.py`)
 - `settings/` — `user_settings.json` (master), `run_history.json`, `states/`, `presets/`
 - `results/` — saved grid outputs (.npz) with embedded `config_hash`
 - `plots/` — saved publication figures
 - `../output/` — **NEVER CHANGE THIS PATH** — existing CCF plot output one level above project root
+- `.claude/references/` — detailed architecture, plot style, code standards, learnings
 
-## Performance Preferences
-
-**Multiprocessing:** Always use `os.cpu_count() - 1` cores (auto-detected; reserves 1 for OS).
-
-**Speed over memory:** Prefer faster code at the expense of memory — use pre-allocation,
-vectorization, lookup tables, and in-memory caching freely. Storage is not a constraint.
-
-## Webapp Conventions (app/)
-
-- **State saving:** Sidebar must always include a "Save state" button accessible on every page.
-  Saved states store: all settings + active page + active star + loaded result file path.
-  States are JSON files in `settings/states/{timestamp}_{name}.json`.
-- **Computation caching:** Every `.npz` result file stores a `config_hash` of the settings used.
-  Before running any grid, check for an existing result with a matching hash — offer to load it.
-- **Memory:** `@st.cache_data` with no expiry. A manual "Clear cache" button in Settings only.
-- **Plots:** Use Plotly for all interactive charts in the webapp (not matplotlib).
-- **Launch:** `conda run -n guyenv streamlit run app/app.py` → http://localhost:8501
-
-## Documentation for Paper Writing
-
-The user is a Masters student at Tel Aviv University writing a thesis (to be published on Overleaf).
-Maintain `DOCUMENTATION.md` at the project root. After significant results or decisions, append:
-- What was done and why (scientific context)
-- Key numbers (fractions, best-fit parameters, thresholds)
-- Methodology details and caveats
-This is **not** a changelog — it is scientific prose for writing the paper.
+**Architecture details:** See `.claude/references/architecture.md`
 
 ## Running the Analysis
 
 ```bash
-# Streamlit web app (primary workflow)
-conda run -n guyenv streamlit run app/app.py
-
-# Pipeline scripts (CLI, also called by app)
-conda run -n guyenv python pipeline/dsilva_grid.py
-conda run -n guyenv python pipeline/dsilva_grid.py --load-cached
-
-# Legacy scripts (still work from root)
-conda run -n guyenv python ccf_tasks.py
+conda run -n guyenv streamlit run app/app.py          # primary workflow
+conda run -n guyenv python pipeline/dsilva_grid.py     # CLI pipeline
+conda run -n guyenv python ccf_tasks.py                # legacy
 ```
 
-Interactive processing tools (open matplotlib GUI, run from terminal):
-```bash
-python ISE.py       # interactive spectrum normalization
-python INnres.py    # same but for NRES multi-fiber data
-python IC2D.py      # interactive 2D image spatial cleaning
-```
+## Performance Preferences
 
-Jupyter notebooks (reference / archive):
-- `Thesis work.ipynb` — main analysis pipeline
-- `Tests.ipynb` — validation and exploration
-- `bias_simulation.ipynb` — binary fraction & bias grid search
-- `Plots.ipynb` — publication figures
+- **Multiprocessing:** Always use `os.cpu_count() - 1` cores
+- **Speed over memory:** Pre-allocation, vectorization, lookup tables, in-memory caching freely
 
-## Architecture
+## Webapp Conventions (app/)
 
-### Class Hierarchy
-
-```
-ObservationManager (ObservationClass.py)
-    └─ creates/manages ──→ Star (StarClass.py)       # X-SHOOTER observations
-                      └─→ NRES (NRESClass.py)        # NRES observations
-                               └─ both use ──→ FITSFile (FitsClass.py)  # astropy wrapper
-```
-
-**ObservationManager** (`ObservationClass.ObservationManager`): factory that routes `star_name` → correct class, organizes raw FITS into structured directories.
-
-**Star / NRES**: per-star data stores. Properties (RVs, normalized flux, etc.) are saved/loaded as `.npz` files.
-- XShooter path: `Data/{star}/epoch{N}/{band}/output/{property}.npz`
-- NRES path: `Data/{star}/epoch{N}/{spectra_num}/{data_type}/output/{property}.npz`
-- Methods are symmetric: `get_file_path`, `load_observation`, `load_property`, `save_property`, `backup_property`, `delete_files`, `clean`, `list_available_properties`
-
-**CCFclass** (`CCF.py`): pure numpy/scipy, no file I/O. Takes `(obs_wave, obs_flux, tpl_wave, tpl_flux)` → returns `(RV_km_s, sigma_RV)`. Key init params: `CrossCorRangeA` (list of wavelength interval pairs in nm), `CrossVeloMin/Max`.
-
-**SimulationClass** (`SimulationClass.py`): generates mock SB2 spectra with Kepler orbital mechanics for testing the CCF pipeline.
-
-### Support Modules
-
-- `specs.py` — `star_names` list (25 WR stars) + `obs_file_names` dict mapping `star → epoch → band → filename`
-- `ccf_settings_with_global_lines.json` — 11 emission lines with wavelength ranges; per-star epoch/line skipping and fit-fraction overrides
-- `settings/user_settings.json` — master runtime settings for webapp and pipeline scripts
-- `utils.py` — `robust_mean`, `double_robust_mean`, `robust_std` (σ-clipping)
-- `catalogs.py` — schema dicts for SIMBAD, Gaia DR3, BAT99, etc.
-- `ccf_tasks.py` — multiprocessing orchestrator: reads the JSON config, runs CCF for all stars/lines
-- `pipeline/load_observations.py` — loads RVs + MJDs (from FITS `MJD-OBS` header), applies binary criteria
-- `wr_bias_simulation.py` — simulation engine: `SimulationConfig`, `BinaryParameterConfig`, `run_bias_grid()`
-
-### Interactive Processing Tools
-
-- `TwoDImage.py` — 2D FITS spectral image visualization
-- `plot.py` / `plot2.py` — multi-instrument FITS reader supporting X-SHOOTER, HERMES, FEROS, UVES, COS, STIS, MUSE
-
-### Bias Simulation
-
-`wr_bias_simulation.py` — Monte-Carlo grid search over `(f_bin, π)`:
-- Draws binary populations, computes RV curves with observational noise
-- Compares simulated ΔRV CDFs to observed via K-S test
-- Parallelized with `multiprocessing`
-- `SimulationConfig` + `BinaryParameterConfig` dataclasses hold all parameters
-- Two period models: power-law (Dsilva) and Langer+2020
+- Sidebar "Save state" button on every page → `settings/states/{timestamp}_{name}.json`
+- `.npz` result files store `config_hash` — check for matching hash before rerunning
+- `@st.cache_data` with no expiry. Manual "Clear cache" in Settings only
+- Plotly for all interactive charts (not matplotlib)
+- Import convention for `app/pages/`: `from shared import ...` (NOT `from app.shared import ...`)
 
 ## Key Conventions
 
-**Git branching:** Always commit to `main` unless explicitly told otherwise. `agent/*` branches
-are unconfirmed work — if one exists, it hasn't been approved yet. Before committing, verify
-the current branch with `git branch`. If on an agent branch, switch to main first.
+- **Git:** Always commit to `main`. `agent/*` branches = unconfirmed. Check `git branch` before committing
+- **Data symlink:** `Data/` → `../Data`. Git ops destroy it. Fix: `ln -s ../Data Data`
+- **Binary detection:** (1) ΔRV > 45.5 km/s AND (2) ΔRV − 4σ > 0. Line: `C IV 5808-5812`. Result: 13/28 ≈ 46%
+- **MJD source:** `fit.header['MJD-OBS']` — NOT in RV property dict
+- **numpy.bool_:** Always cast with `bool()` before `is True` checks
+- **Wavelengths:** FITS files in nm. Display in Å: `wave_nm * 10.0`. NRES already in Å
 
-**Data symlink:** `Data/` in the project root is a symlink to `../Data`.
-Git operations (checkout, stash, branch switch) can destroy symlinks.
-After ANY git operation, verify `Data/` exists: `ls -la Data`.
-If missing, restore with: `ln -s ../Data Data`. NEVER delete this symlink.
-
-**Property persistence:** All computed results (RVs, normalized flux, EWs, SNR bounds) stored as `.npz` files using `star.save_property(name, data, epoch, band)`. Load with `star.load_property(name, epoch, band)`.
-
-**Binary detection:** Two criteria must both be met: (1) ΔRV > 45.5 km/s, and (2) significance: ΔRV − 4σ > 0 (where σ is combined epoch-pair error). Applied to the max-separation epoch pair first; if not satisfied, all pairs are scanned. Single emission line used: `C IV 5808-5812`. Result: 10/25 detected + 3 Bartzakos (2001) = **13/28 ≈ 46%** total binary fraction.
-
-**MJD source:** Observation times come from FITS headers (`fit.header['MJD-OBS']`), NOT from the RV property dict. The RV property only contains `full_RV` and `full_RV_err`.
-
-**numpy.bool_ pitfall:** Comparisons on numpy arrays return `numpy.bool_`, not Python `bool`. Always cast with `bool()` before storing or using `is True` checks.
-
-**Spectral bands:** COMBINED (full stitched), UVB (~300–560 nm), VIS (~560–1020 nm), NIR (~1020–2480 nm).
-
-**Emission lines for CCF:** defined in `ccf_settings_with_global_lines.json` — 11 WR wind lines (O V, O IV, C IV, He II, O VI, C III, etc.).
-
-**Parallelism:** `ccf_tasks.py` uses `multiprocessing.Pool`; logging uses file-based thread-safe `log_msg()` to `debug_parallel.log`.
-
-**Printing:** Classes accept `to_print=True/False`; internal output via `self.print(text)`.
-
-## Do Not Touch Working Code — 5 Mandatory Blocks
+## Do Not Touch Working Code
 
 When fixing a bug, follow ALL five blocks. No exceptions.
 
-1. **ROOT CAUSE FIRST** — Before editing ANY file, state: "The bug is at file:line because X." No edits until the root cause is identified.
-2. **ONE FILE ONLY** — If the bug is in one file, edit only that file. Touching a second file requires explicit justification to the user first.
-3. **REVERT TEST** — After fixing, check: "If I revert every OTHER change, does the fix still work?" If not, the extra changes are unnecessary — remove them.
-4. **ASK BEFORE REFACTORING** — If code near the bug looks "wrong" or "improvable", do NOT touch it. Mention it in text and let the user decide.
-5. **FLAG WORKING CODE** — Use `# ── WORKING · {feature} ──` flags above working functions/segments. NEVER modify flagged code unless the user explicitly asks to change THAT feature.
+1. **ROOT CAUSE FIRST** — State: "The bug is at file:line because X." No edits until identified.
+2. **ONE FILE ONLY** — Touching a second file requires explicit user justification.
+3. **REVERT TEST** — "If I revert every OTHER change, does the fix still work?"
+4. **ASK BEFORE REFACTORING** — Don't touch "improvable" code near the bug.
+5. **FLAG WORKING CODE** — Use `# WORKING — do not change this code` above verified working segments. NEVER modify flagged code unless user explicitly asks.
 
-See `memory/feedback_error_patterns.md` for full details and examples.
+See `.claude/references/learnings.md` for the full pre-fix checklist.
 
 ## Code Quality Rules
 
-**File size limit (800 lines max):** No single `.py` file should exceed ~800 lines.
-Before writing any new feature, estimate the line count. If it will exceed ~500 lines,
-design a subpackage structure from the start using the thin-wrapper pattern:
-- `pages/NN_name.py` (≤30 lines) → imports from `app/{name}/page.py`
-- `app/{name}/` contains modules split by responsibility: config, data, UI tabs, compute
-- Target 500–800 lines per module. Check `wc -l` before adding code to existing files.
-- If a file is approaching 700+ lines, split it before adding more.
+- **File size:** Max ~800 lines. Pre-plan splits using thin-wrapper pattern
+- **Testing:** integration test → py_compile → render test. See `.claude/references/code-standards.md`
+- **Common errors:** Check `COMMON_ERRORS.md` before/after edits. Add new errors immediately after fixing
+- **Commits:** Each logical change separately. After push → update `GIT_LOG.md`
+- **Backups:** `cp app/pages/{file} Backups/{file}.bak` before editing pages
+- **TODO:** Set status to `to-test` on completion — NEVER `done`
+- **Progress bars:** `st.progress()` for any computation >5 seconds
+- **Documentation:** Update `DOCUMENTATION.md` at session end (scientific prose, not changelog)
 
-**Always test before finishing:** After writing or editing any `.py` file:
-1. For `app/bc/` changes, run the runtime integration test first:
-```bash
-conda run -n guyenv python error-check-workspace/test_bc_imports.py
-```
-2. Then run py_compile as a final syntax check:
-```bash
-conda run -n guyenv python -m py_compile path/to/file.py
-```
-`py_compile` alone is NOT sufficient — it misses missing imports, undefined
-variables, and wrong function signatures. The integration test catches these.
+## Context Management
 
-3. **Test Streamlit render functions directly** — NEVER skip them. Streamlit
-widgets silently no-op in bare mode (outside `streamlit run`), so any render/tab
-function (`render_tab_*`, `render_page_*`, `_render_*_tab`) can be called with a
-mock `obs_data` dict. Only a raised Exception is a failure; Streamlit WARNING log
-lines are expected and harmless.
+- Use `/compact` after completing each major task within a session
+- Use `/clear` when switching between unrelated work areas
+- After ANY code edit: run `/error-check` → if clean, offer to `/git` commit
 
-**Check common errors:** Before and after editing any `.py` file, scan for known
-bad patterns listed in `COMMON_ERRORS.md`. Run the Quick-Scan Regex from that file
-against modified files. Fix any matches before committing. When encountering a new
-recurring error, add it to `COMMON_ERRORS.md` with an ID, grep pattern, fix, and
-explanation.
+## Graph Style
 
-**Import convention for `app/pages/`:** Always use `from shared import ...`
-(NOT `from app.shared import ...`). Streamlit adds the `app/` directory to
-`sys.path` when running pages, so `shared` is importable directly.
-
-**Commit after each change:** When making multiple changes to the codebase,
-commit each logical change separately with a descriptive message before moving
-to the next change. This provides fine-grained rollback points and clear history.
-
-**Backup before editing app pages:** Before modifying any file in `app/pages/`,
-run `cp app/pages/{file} Backups/{file}.bak` to create a rollback point.
-Always verify the backup compiles before overwriting it with a newer version.
-
-**Git changelog:** After every push, update `GIT_LOG.md` at the project root with
-the commit hashes, summaries, and a brief description. This is the human-readable
-changelog for easy revert communication between sessions.
-
-**To-Do list:** Maintain `TODO.md` at the project root. Format: 12-column Open
-Tasks table (ID, Title, Description, Priority, Tags, Status, Added by,
-Suggested by, Date added, Urgent, Important, Notes), 13-column Done table
-(adds Date done), and 4-column Deleted table (ID, Title, Date deleted, Notes).
-When new tasks arise from user/Tomer conversations, add them with status `open`,
-proper attribution, and full datetime (`datetime.now().isoformat(timespec='seconds')`).
-**CRITICAL:** After completing tasks, set their status to `to-test` — NEVER to
-`done`. Only the user can confirm and move tasks to the Done section. The webapp
-page `app/pages/10_todo.py` reads and writes this same file.
-
-**Documentation for paper:** At the end of each working session, update
-`DOCUMENTATION.md` Section 7 (Work Log) with a dated entry summarizing what was
-done, key results, scientific decisions, and open questions. If methodology
-changed, also update Sections 1–6. Use scientific language — this is reference
-material for the thesis, not a dev changelog.
-
-**Progress bars for long runs:** Any computation taking >5 seconds must show
-`st.progress()`. For multi-slice loops (e.g., sigma scan in the bias correction
-page), update the progress bar and the live heatmap slot after each slice
-completes. Use `st.empty()` as a placeholder for the live-updating chart.
-
-## Graph Style Preferences
-
-When producing plots, consider what best communicates the data — sometimes
-simple and clean is best, sometimes more detailed with color coding helps
-explain the science. Always add a short `st.caption(...)` below each plot.
-
-Learn from user feedback: when they are unhappy with a graph, note what they
-disliked; when they seem satisfied, note what worked. Update this section with
-short descriptions of preferred graph styles as patterns emerge.
-
-**Current preferences (update as feedback arrives):**
-- **Plots page (06_plots.py):** White academic Plotly theme (`_ACADEMIC_THEME`). White bg,
-  serif fonts (Times New Roman), black mirrored axes, no gridlines, outside ticks.
-  Matches A&A / ApJ paper style. Interactive (zoom/pan/hover via Plotly).
-- **Rest of app:** Centralized via `PLOTLY_THEME` dict in `app/shared.py` — always use
-  `**PLOTLY_THEME` in `update_layout()` calls, never hardcode plot colors
-- **CRITICAL (E018):** `PLOTLY_THEME` / `_ACADEMIC_THEME` contains `title`, `legend`, `xaxis`,
-  `yaxis`, `font`. NEVER use these as keyword args alongside spread — Python raises
-  `TypeError: got multiple values`. Use dict literal override instead:
-  `fig.update_layout(**{**_ACADEMIC_THEME, 'title': dict(text='...')})`
-- Gold star markers for best-fit points (use darker gold #DAA520 for readability on white)
-- Observed data: solid lines in steel blue (#4A90D9)
-- Simulated/model data: dashed lines in tomato red (#E25A53)
-- Annotations with key statistics: semi-transparent white boxes with dark text
-- Contour lines on heatmaps (dark grey, dotted)
-- Semi-transparent histogram overlays for distribution comparisons
-- **Auto-learn:** After any plot feedback, update `memory/plot_preferences.md`
+See `.claude/references/plot-style.md` for full style guide.
+Key rule: Use `PLOTLY_THEME` from `app/shared.py` — never hardcode plot colors.
+After ANY plot feedback → update `memory/plot_preferences.md`.
