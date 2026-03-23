@@ -179,69 +179,97 @@ def render_lk_scoring_detail(
     _p_work = lk_p_2d.copy().astype(float)
     _p_work[_exc_mask_2d] = np.nan
 
-    # -- D5a: Raw -logL heatmap ------------------------------------
+    # -- D5a: Raw -logL heatmap (LEFT) + σ×logPmax max-L (RIGHT) ---
     st.markdown('#### Likelihood Analysis')
 
-    fig_raw = go.Figure(go.Heatmap(
-        z=_to_display(_S_work), x=y_grid, y=x_grid,
-        colorscale='Viridis_r', colorbar=dict(title=_cbar_title),
-        hovertemplate=(
-            f'{y_label}: %{{x:.3f}}<br>'
-            f'{x_label}: %{{y:.3f}}<br>'
-            f'{_z_hover}: %{{z:.2f}}<extra></extra>'
-        ),
-    ))
-    _raw_title = f'{_STAT_DISPLAY} -- {_cbar_title} (all models)'
-    fig_raw.update_layout(**{
-        **_theme,
-        'title': dict(text=_raw_title),
-        'xaxis': dict(title=y_label),
-        'yaxis': dict(title=x_label),
-        'height': height,
-        'width': width,
-    })
-    st.plotly_chart(fig_raw, use_container_width=(width is None))
-    st.caption('Lower -log L = better fit (higher Likelihood). All models shown.')
+    _has_right_panel = (sigma_grid is not None and logPmax_grid is not None
+                        and sigma_grid.size > 1 and logPmax_grid.size > 1
+                        and lk_p_3d is not None)
+    _has_1d_right = (not _has_right_panel
+                     and ((sigma_grid is not None and sigma_grid.size > 1)
+                          or (logPmax_grid is not None and logPmax_grid.size > 1))
+                     and lk_p_3d is not None)
 
-    # -- D5b: Score-masked -logL -----------------------------------
-    S_masked = _S_work.copy()
-    # Likelihood masking: L < 5% of max -> NaN
-    _L_max = np.nanmax(_p_work)
-    p_mask = (_p_work < (0.05 * _L_max)) if _L_max > 0 else np.ones_like(_p_work, dtype=bool)
-    S_masked[p_mask] = np.nan
-    _masked_title = f'{_cbar_title} (L >= 5% of max)'
-    fig_masked = go.Figure(go.Heatmap(
-        z=_to_display(S_masked), x=y_grid, y=x_grid,
-        colorscale='Viridis_r', colorbar=dict(title=_cbar_title),
-        hovertemplate=(
-            f'{y_label}: %{{x:.3f}}<br>'
-            f'{x_label}: %{{y:.3f}}<br>'
-            f'{_z_hover}: %{{z:.2f}}<extra></extra>'
-        ),
-    ))
-    fig_masked.update_layout(**{
-        **_theme,
-        'title': dict(text=_masked_title),
-        'xaxis': dict(title=y_label),
-        'yaxis': dict(title=x_label),
-        'height': height,
-        'width': width,
-    })
-    _masked_slot = st.empty()
-    _masked_slot.plotly_chart(fig_masked, use_container_width=(width is None))
-    st.caption('White = models with L < 5% of max (implausible).')
+    if _has_right_panel or _has_1d_right:
+        _d5_left, _d5_right = st.columns(2)
+    else:
+        _d5_left = st.container()
 
-    # -- D5c: Normalized Likelihood [0,1] --------------------------
-    _fig_pval = _make_heatmap_fig(
-        _p_work, x_grid, y_grid,
-        title=_SCORE_NAME,
-        show_d=False, height=height, width=width,
-        x_label=y_label, x_name=y_label,
-        scoring_label='L',
-    )
-    _pval_slot = st.empty()
-    _pval_slot.plotly_chart(_fig_pval, use_container_width=(width is None))
-    st.caption('Higher = better fit. Normalized so max = 1.')
+    with _d5_left:
+        fig_raw = go.Figure(go.Heatmap(
+            z=_to_display(_S_work), x=y_grid, y=x_grid,
+            colorscale='Viridis_r', colorbar=dict(title=_cbar_title),
+            hovertemplate=(
+                f'{y_label}: %{{x:.3f}}<br>'
+                f'{x_label}: %{{y:.3f}}<br>'
+                f'{_z_hover}: %{{z:.2f}}<extra></extra>'
+            ),
+        ))
+        _raw_title = f'{_STAT_DISPLAY} -- {_cbar_title} (f_bin × {y_label})'
+        fig_raw.update_layout(**{
+            **_theme,
+            'title': dict(text=_raw_title),
+            'xaxis': dict(title=y_label),
+            'yaxis': dict(title=x_label),
+            'height': height,
+            'width': width,
+        })
+        st.plotly_chart(fig_raw, use_container_width=True)
+        st.caption('Lower −log L = better fit. All models shown.')
+
+    if _has_right_panel:
+        with _d5_right:
+            # 2D heatmap: max likelihood per (σ, logPmax)
+            _lk_full = lk_p_3d
+            if _lk_full.ndim == 4:
+                _sig_lp_max = np.nanmax(_lk_full, axis=(2, 3))  # → [logPmax, sigma]
+            elif _lk_full.ndim == 3:
+                _sig_lp_max = np.nanmax(_lk_full, axis=2)
+            else:
+                _sig_lp_max = _lk_full
+            _fig_right = _make_heatmap_fig(
+                _sig_lp_max, logPmax_grid, sigma_grid,
+                title='Max Likelihood (σ × logP_max)',
+                show_d=False, height=height,
+                x_label='σ_single (km/s)',
+                y_label='log₁₀(P_max / days)',
+                x_name='σ',
+                scoring_label='Likelihood',
+                colorbar_title_override='Max Likelihood',
+            )
+            st.plotly_chart(_fig_right, use_container_width=True,
+                            key=f'{prefix}_d5a_sig_lp')
+            st.caption('Max likelihood across f_bin × π at each (σ, logP_max).')
+    elif _has_1d_right:
+        with _d5_right:
+            # 1D profile for whichever extra axis exists
+            _lk_full = lk_p_3d
+            if sigma_grid is not None and sigma_grid.size > 1:
+                _ax_g = sigma_grid
+                _ax_label = 'σ_single (km/s)'
+                if _lk_full.ndim == 3:
+                    _max_1d = [float(np.nanmax(_lk_full[i]))
+                               if np.any(np.isfinite(_lk_full[i])) else 0.0
+                               for i in range(_ax_g.size)]
+                else:
+                    _max_1d = [0.0] * _ax_g.size
+            else:
+                _ax_g = logPmax_grid
+                _ax_label = 'logP_max'
+                if _lk_full.ndim >= 3:
+                    _max_1d = [float(np.nanmax(_lk_full[i]))
+                               if np.any(np.isfinite(_lk_full[i])) else 0.0
+                               for i in range(_ax_g.size)]
+                else:
+                    _max_1d = [0.0] * _ax_g.size
+            from bc.helpers import _make_max_pval_fig as _mpf
+            st.plotly_chart(
+                _mpf(_ax_g, _max_1d, height=height,
+                     x_label=_ax_label, stat_label='Likelihood'),
+                use_container_width=True,
+                key=f'{prefix}_d5a_1d_right')
+
+    # -- D5b, D5c: REMOVED (user review 2026-03-23) ----------------
 
     # -- Likelihood CDF, per-bin stats, and explanation ------------
     if obs_delta_rv is not None and likelihood_bin_edges is not None and result is not None:
@@ -279,14 +307,14 @@ def render_lk_scoring_detail(
 
     if _mode == 'height':
         _h_factor = _fc2.number_input(
-            '2D fit: S < S_min x', min_value=1.1, max_value=1000.0,
+            '2D fit: S < S_min x', min_value=1.01, max_value=1000.0,
             value=2.0, step=0.5, key=f'{prefix}_h_factor')
         _h1, _h2 = st.columns(2)
         _h_factor_x = _h1.number_input(
-            f'{x_label} slice factor', min_value=1.1, max_value=1000.0,
+            f'{x_label} slice factor', min_value=1.01, max_value=1000.0,
             value=2.0, step=0.5, key=f'{prefix}_h_factor_x')
         _h_factor_y = _h2.number_input(
-            f'{y_label} slice factor', min_value=1.1, max_value=1000.0,
+            f'{y_label} slice factor', min_value=1.01, max_value=1000.0,
             value=2.0, step=0.5, key=f'{prefix}_h_factor_y')
     elif _mode == 'neighborhood':
         _max_nn_x = max(1, len(x_grid) // 2)
@@ -621,6 +649,54 @@ def render_lk_scoring_detail(
                     fig_proj, use_container_width=True,
                     key=f'{prefix}_3d_proj_{_ip}',
                 )
+
+    # -- 4D quadratic fit (optional, when BOTH σ AND logPmax scanned) -
+    _has_both_outer = (
+        sigma_grid is not None and logPmax_grid is not None
+        and sigma_grid.size > 1 and logPmax_grid.size > 1
+        and lk_D_3d is not None
+    )
+    if _has_both_outer:
+        _do_4d = st.checkbox(
+            'Enable full 4D quadratic fit (f_bin × π × σ × logPmax)',
+            value=False, key=f'{prefix}_4d_fit_toggle')
+        if _do_4d:
+            from bc.fitting import _parabolic_min_4d
+            # lk_D_3d shape: [logPmax, sigma, fbin, pi] → negate for minimization
+            _S4d = (-lk_D_3d).copy().astype(float)
+            # Apply exclusion mask per outer slice
+            for _i0 in range(_S4d.shape[0]):
+                for _i1 in range(_S4d.shape[1]):
+                    _S4d[_i0, _i1][_exc_mask_2d] = np.nan
+            # Reorder to [fbin, pi, sigma, logPmax] for fit
+            _S4d_fit = _S4d.transpose(2, 3, 1, 0)
+            (_4d_bfb, _4d_bpi, _4d_bsig, _4d_blp, _4d_bS,
+             _4d_coeffs, _4d_bounds) = _parabolic_min_4d(
+                x_grid, y_grid, sigma_grid, logPmax_grid,
+                _S4d_fit,
+                height_factor=_h_factor,
+                n_neighbors=max(_nn_x, _nn_y),
+            )
+            st.markdown('---')
+            st.markdown(f'#### 4D Quadratic Fit -- {_STAT_DISPLAY}')
+            if _4d_bfb is not None:
+                st.success(
+                    f'**4D minimum:** f_bin = {_4d_bfb:.4f}, '
+                    f'{y_label} = {_4d_bpi:.3f}, '
+                    f'σ_single = {_4d_bsig:.2f} km/s, '
+                    f'logP_max = {_4d_blp:.2f}, '
+                    f'{_cbar_title} = {_4d_bS:.2f}'
+                )
+                # Store interpolated result in session_state
+                st.session_state[f'{prefix}_interp'] = {
+                    'f_bin': _4d_bfb,
+                    y_label: _4d_bpi,
+                    'sigma': _4d_bsig,
+                    'logPmax': _4d_blp,
+                    'S': _4d_bS,
+                }
+            else:
+                st.warning('4D quadratic fit did not converge.')
 
     # -- 1D slices -------------------------------------------------
     i_x_best = int(np.argmin(np.abs(x_grid - best_x)))

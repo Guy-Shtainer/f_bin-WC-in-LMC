@@ -118,42 +118,41 @@ def _render_running_fragment(p: str) -> None:
                     text=_j.get('progress_text', 'Running...'))
         if _j.get('live_heatmaps'):
             _lhm = _j['live_heatmaps']
-            _render_heatmap_row([('ks', st.columns(2)[0]),
-                                 ('weighted', st.columns(2)[1])], _lhm)
-            _render_heatmap_row([('cvm', st.columns(2)[0]),
-                                 ('likelihood', st.columns(2)[1])], _lhm)
+            # Single likelihood tile (full width)
+            if 'likelihood' in _lhm:
+                _hd = _lhm['likelihood']
+                st.plotly_chart(
+                    _make_heatmap_fig(
+                        _hd['p'], _hd['fbin'], _hd['x'],
+                        title=_hd['title'], height=400,
+                        live=not _hd.get('is_final', True),
+                        scoring_label='Likelihood',
+                        colorbar_title_override='Normalized Likelihood'),
+                    use_container_width=True)
         if _j.get('live_status'):
             st.markdown(_j['live_status'])
-        # Live 1D sigma graph
+        # Live 1D sigma graph (likelihood only)
         _lsig = _j.get('live_sigma_1d')
         if _lsig and len(_lsig.get('sigma_vals', [])) > 1:
-            _lsig_lk = _lsig.get('max_likelihood')
+            _lsig_lk = _lsig.get('max_likelihood', [])
             if _lsig_lk and any(v > 0 for v in _lsig_lk):
                 st.plotly_chart(
                     _make_max_pval_fig(
                         np.array(_lsig['sigma_vals']),
                         _lsig_lk, height=250,
-                        x_label='\u03c3_single (km/s)',
+                        x_label='σ_single (km/s)',
                         stat_label='Likelihood',
                     ), use_container_width=True)
-            else:
-                st.plotly_chart(
-                    _make_max_pval_fig(
-                        np.array(_lsig['sigma_vals']),
-                        _lsig['max_pvals'], height=250,
-                        x_label='\u03c3_single (km/s)',
-                        stat_label='K-S',
-                    ), use_container_width=True)
-        # Live 1D logP_max graph
+        # Live 1D logP_max graph (likelihood only)
         _llp = _j.get('live_logPmax_1d')
         if _llp and len(_llp.get('logPmax_vals', [])) > 1:
-            _llp_pv = _llp.get('max_pvals', [])
-            if any(v > 0 for v in _llp_pv):
+            _llp_lk = _llp.get('max_likelihood', [])
+            if _llp_lk and any(v > 0 for v in _llp_lk):
                 st.plotly_chart(
                     _make_max_pval_fig(
                         np.array(_llp['logPmax_vals']),
-                        _llp_pv, height=250,
-                        x_label='logP_max', stat_label='K-S',
+                        _llp_lk, height=250,
+                        x_label='logP_max', stat_label='Likelihood',
                     ), use_container_width=True)
     _cadence_live_poll()
 
@@ -166,10 +165,17 @@ def _render_final_heatmaps(p: str) -> None:
     # Mark all as final
     for mk in _final_lhm:
         _final_lhm[mk]['is_final'] = True
-    _lc1, _lc2 = st.columns(2)
-    _render_heatmap_row([('ks', _lc1), ('weighted', _lc2)], _final_lhm)
-    _lc3, _lc4 = st.columns(2)
-    _render_heatmap_row([('cvm', _lc3), ('likelihood', _lc4)], _final_lhm)
+    # Single likelihood tile (full width)
+    if 'likelihood' in _final_lhm:
+        _hd = _final_lhm['likelihood']
+        st.plotly_chart(
+            _make_heatmap_fig(
+                _hd['p'], _hd['fbin'], _hd['x'],
+                title=_hd['title'], height=400,
+                live=False,
+                scoring_label='Likelihood',
+                colorbar_title_override='Normalized Likelihood'),
+            use_container_width=True)
 
 
 def _render_final_sigma_1d(p: str) -> None:

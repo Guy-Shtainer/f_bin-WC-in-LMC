@@ -57,8 +57,8 @@
 | F-014 | **sigma_measure**: measurement uncertainty [km/s], default ~1.622. Rendered via error model selector (F-015). Added as Gaussian noise to every simulated RV epoch | all 4 model tabs | Default visible; changing it affects all simulations |
 | F-015 | **Error model selector**: 7 distribution types (Fixed, Normal, Log-normal, Gamma, Weibull, Exponential, Flat) in dual-column layout — separate selector for singles and binaries. Each type shows distribution-specific parameter inputs (loc, scale, shape). Live caption shows "Distribution mean = X km/s (per-epoch draws)". Returns dict with type, sigma_measure, and params per population | `extras.py` (`_render_error_model_selector`) | Select "Log-normal" → shape/loc/scale inputs appear; "Fixed" → single σ slider |
 | F-016 | **Workers count**: number_input (1 to `os.cpu_count()-1`, default=max). Controls multiprocessing Pool size for grid computation | all 4 model tabs | Value capped at available cores; used in Pool(n_proc) |
-| F-017 | **View mode toggle**: horizontal radio ("K-S p-value" / "K-S D-statistic"). Switches which scoring array is displayed in the primary heatmap | all 4 model tabs | Toggle changes heatmap colorbar title and data source |
-| F-018 | **N sets for CvM/Likelihood**: number_input (100–50,000, default 1000). Controls how many Monte Carlo repetitions are used for CvM variance estimation and empirical p-value computation | all 4 model tabs | Higher N = more stable p-values but slower |
+| F-017 | ~~View mode toggle~~ | REMOVED | Likelihood-only — no K-S D vs p-value toggle needed |
+| F-018 | **N sets for Likelihood**: number_input (100–50,000, default 1000). Controls how many Monte Carlo repetitions are used per grid point for multinomial likelihood computation | all 4 model tabs | Higher N = more stable likelihood but slower |
 
 ---
 
@@ -148,7 +148,7 @@
 | F-081 | **ETA formatting**: `_fmt_eta()` formats elapsed/remaining time as "HH:MM:SS" for <24h, "Xd HH:MM:SS" for longer runs. Based on elapsed time × (remaining/completed) ratio | `helpers.py` (`_fmt_eta`) | ETA decreases as run progresses; format switches at 24h boundary |
 | F-082 | **Status text**: shows current computation slice — "σ=X.XX km/s, logPmax=Y.YY" (if scanning), plus "cells done/total" count. Updated by background thread into `job['progress_text']` | `polling.py`, runners | Text shows correct sigma/logPmax value for current slice |
 | F-083 | **@st.fragment(run_every=3) polling**: `_render_running_fragment()` decorated with `@st.fragment(run_every=3)` — rerenders only this UI section every 3 seconds, not the entire page. Non-blocking: main UI stays responsive | `polling.py` | Progress updates without full page reload; widgets remain interactive |
-| F-084 | **Live 2×2 heatmap grid**: during run, shows 4 heatmaps side-by-side (K-S p-value, K-S weighted, CvM p-value, Likelihood) that progressively fill in as grid cells complete. Uses `job['live_heatmaps']` dict updated by background thread | `polling.py` (`_render_heatmap_row`) | Heatmaps partially filled during run; fully complete at end |
+| F-084 | **Live heatmap**: during run, shows Likelihood heatmap that progressively fills in as grid cells complete. Uses `job['live_heatmaps']` dict updated by background thread. **MODIFY: single tile, not 4-method 2×2** | `polling.py` (`_render_heatmap_row`) | Heatmap partially filled during run; fully complete at end |
 | F-085 | **Live 1D sigma profile**: line chart of max p-value vs σ_single. Only shown if sigma is scanned (n_sig > 1). Updates after each sigma slice completes. Uses `_make_max_pval_fig()` from helpers | `polling.py`, `helpers.py` | Chart grows one point per sigma slice during run |
 | F-086 | **Live 1D logPmax profile**: line chart of max p-value vs logP_max. Only shown if logPmax is scanned. Updates per logPmax slice | `polling.py`, `helpers.py` | Same progressive update pattern as sigma profile |
 | F-087 | **Final heatmaps persisted**: after job completes, live heatmaps and 1D profiles are copied from `job` dict to `{p}_final_live_heatmaps` / `{p}_final_live_sigma_1d` session_state keys. Job dict is then cleaned up, but final renders survive | `polling.py` | Job finishes → heatmaps still visible after cleanup; navigate away and back → still there |
@@ -177,13 +177,13 @@
 
 | ID | Feature | Files | Verify |
 |----|---------|-------|--------|
-| F-100 | **4 scoring methods computed per run**: K-S standard (two-sample on binned CDF), K-S weighted (variance-weighted max deviation), CvM (Cramér–von Mises with inverse-variance weighting), Likelihood (binned multinomial log-likelihood normalized to [0,1]). All 4 computed in single simulation pass | `wr_bias_simulation.py`, all runners | Result dict contains ks_p, ks_D, weighted_p, weighted_D, cvm_p, cvm_D, cvm_S_raw, logL_raw, likelihood |
-| F-101 | **Summary table**: st.dataframe with columns — Method, Best f_bin, 68% HDI f_bin (mode ⁺ᵘᵖ₋ₗₒ), Best [π or σ], 68% HDI [π or σ], Best σ_single (if multi-sigma), Score (best value), Agreement. One row per method. Handles 2D/3D/4D grid modes | `analysis.py` (`_render_method_summary_section`) | Table has 4 rows; HDI bounds make sense; best values match heatmap stars |
+| F-100 | **Likelihood-only scoring**: binned multinomial log-likelihood (Dsilva+2023) normalized to [0,1]. Single scoring method computed per grid point | `wr_bias_simulation.py`, all runners | Result dict contains `logL_raw`, `likelihood` only (no ks_p, cvm_p, etc.) |
+| F-101 | **Summary table**: st.dataframe with columns — Best f_bin, 68% HDI f_bin, Best [π or σ], 68% HDI [π or σ], Best σ_single (if multi-sigma), Likelihood (best). Single row. **MODIFY: rename from "Scoring Method Comparison" to "Summary Table"** | `render_shared.py` (`_render_method_summary_section`) | Single row; HDI bounds make sense; best values match heatmap star |
 | F-102 | **68% HDI computation**: `compute_hdi68()` uses binary search for horizontal line height enclosing 68% area under 1D posterior curve. Linear interpolation for smooth bounds. Returns (mode, lower_bound, upper_bound) | `wr_bias_simulation.py` (`compute_hdi68`) | HDI interval contains mode; width reasonable for grid resolution |
-| F-103 | **Radio button method selector**: st.radio (horizontal) with 4 options (K-S Standard, K-S Weighted, CvM, Likelihood). Switching changes which method's detail analysis is displayed below | `subtabs.py` (`render_model_subtabs`) | Click each radio → different heatmap/analysis appears |
-| F-104 | **Agreement check**: for each method, checks if its best-fit f_bin falls within every OTHER method's 68% HDI. Shown as "Yes"/"No" in Agreement column of summary table | `analysis.py` | If all methods agree, all show "Yes"; outlier method shows "No" |
-| F-105 | **Score vs sigma profile** (per-method): in each method's expander, line chart showing best score (max p-value or min S-score) at each sigma value. Uses `_make_max_pval_fig()` or `_make_min_score_fig()` from helpers. Only shown when n_sig > 1 | `analysis.py` | Line chart with n_sig points; peak/minimum identifiable |
-| F-106 | **Score vs logPmax profile** (per-method): same as F-105 but for logPmax axis. Only shown when n_logPmax > 1 | `analysis.py` | Line chart with n_logPmax points |
+| F-103 | ~~Radio button method selector~~ | REMOVED | Likelihood-only — no method selector needed. Directly renders likelihood tab |
+| F-104 | ~~Agreement check~~ | REMOVED | Only 1 method — agreement column irrelevant |
+| F-105 | ~~Score vs sigma profile~~ | REMOVED | Covered by A3 upgrade (σ×logPmax heatmap/line) |
+| F-106 | ~~Score vs logPmax profile~~ | REMOVED | Covered by A3 upgrade |
 | F-107 | **Per-method summary table**: within each method expander, compact table with rows for each parameter — columns: Parameter, Best (grid), Mode ± HDI68, Interpolated (if parabolic fit available). Shows f_bin, x_axis, sigma (if multi), logPmax (if multi), Score | `analysis.py` | Table inside expander; interpolated column populated after fit |
 
 ---
@@ -192,8 +192,8 @@
 
 | ID | Feature | Files | Verify |
 |----|---------|-------|--------|
-| F-110 | **4-trace CDF comparison plot**: observed ΔRV as solid black step function (width 2.5). For each of 3 scoring methods' best-fit point, **re-simulates 100 times** (seeds 42–141, N_stars = observed count) → computes median binned CDF (dashed line, method color) + 16th–84th percentile band (semi-transparent fill). Method colors from `SCORING_METHODS` constant | `analysis.py` (`_render_all_methods_cdf`) | 4 traces visible; observed clearly distinguished; shading shows spread |
-| F-111 | **Confidence bands**: 16th–84th percentile envelope from 100 CDF realizations per method. Semi-transparent fill (opacity ~0.2) in method-specific color. Shows simulation variability at each bin edge | `analysis.py` | Shading width varies — wider at bins with fewer observed stars |
+| F-110 | ~~4-trace CDF comparison plot~~ | REMOVED | Was multi-method comparison. Redundant with E5 (likelihood CDF with bins) |
+| F-111 | ~~Confidence bands (multi-method)~~ | REMOVED | See E5 for single-method CDF with confidence band |
 | F-112 | **CDF sanity check** (cadence tabs only): st.expander showing 5 random CDF draws vs observed at best-fit point. Each draw rendered as semi-transparent line. Verifies that observed CDF falls within typical simulation spread | `helpers.py` (`_render_cdf_sanity_check`) | 5 thin lines + 1 thick observed line; observed should be "among" the simulated |
 | F-113 | **Legend & shadow toggling**: st.checkbox to show/hide CDF confidence bands and legend. Toggling updates plot without recomputation — purely visual control | `analysis.py` | Uncheck → shading disappears; legend toggles on/off |
 | F-114 | **Model Explorer**: interactive exploration of parameter space with live feedback. Sliders for f_bin [0,1], x_val [grid range], σ_single [grid range] (if multi-sigma), logPmax [grid range] (if present). Updates in real-time: CDF plot (observed + simulated median ± 68% band), ΔRV histogram, detection fraction metric, and per-method score value. Uses `_me_cdf_band()` (cached, N_sets=50) | `analysis.py` (`_render_model_explorer`) | Move f_bin slider → CDF and histogram update; detection % changes |
@@ -225,7 +225,7 @@
 | F-132 | **Methodology explainer**: st.expander "How is the likelihood calculated?" with 3 sections — (1) Raw log-likelihood formula with LaTeX: ln L = Σ nᵢ ln(pᵢ); (2) Normalization to [0,1] by dividing by max; (3) Why many points cluster near 1.0. Uses worked example with actual observed ΔRV bin counts | `likelihood_viz.py` (`render_likelihood_explanation`) | LaTeX renders; worked example uses real numbers |
 | F-133 | **Threshold-based auto bin generation**: `dsilva_likelihood_bins(threshold)` returns `[0, threshold, 250, 650, ∞]`. Default threshold = 45.5 km/s (binary detection limit). Creates 4 bins matching Dsilva+2023 convention | `wr_bias_simulation.py`, `params.py` | Default bins = [0, 45.5, 250, 650, inf] |
 | F-134 | **Likelihood normalization to [0,1]**: after computing log-likelihood for all grid points, divides by global max across entire grid (including all sigma/logPmax slices). Enables cross-slice comparison where "1.0 = best fit found anywhere" | `wr_bias_simulation.py`, runners | Max normalized likelihood = 1.0; other values ≤ 1.0 |
-| F-135 | **Scoring version field**: .npz files contain `scoring_version=2` for forward-compatibility. Allows future changes to scoring methods without breaking old result loading | runners | Key exists in saved .npz; can be checked before loading |
+| F-135 | **Scoring version field**: .npz files contain `scoring_version=3` (likelihood-only). Old files (version=2) with KS/CvM arrays are backward-compatible — extra keys ignored, `likelihood` computed from `logL_raw` on load | runners | Key exists in saved .npz; old results load correctly |
 
 ---
 

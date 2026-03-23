@@ -220,6 +220,100 @@ def _eval_3d_quadratic(coeffs_10, x, y, z):
             + g*x + h*y + i*z + j)
 
 
+def _parabolic_min_4d(x_grid, y_grid, z_grid, w_grid, S_4d,
+                      height_factor=2.0, n_neighbors=2):
+    """Find sub-grid minimum via 4D quadratic fit over (x, y, z, w).
+
+    Fits S = a1·x² + a2·y² + a3·z² + a4·w² + a5·xy + a6·xz + a7·xw
+           + a8·yz + a9·yw + a10·zw + a11·x + a12·y + a13·z + a14·w + a15
+    (15 coefficients).
+
+    Returns (best_x, best_y, best_z, best_w, best_S, coeffs_15, fit_bounds_8)
+    where fit_bounds_8 = (x_min, x_max, y_min, y_max, z_min, z_max, w_min, w_max).
+    """
+    _empty = (None, None, None, None, None, None, None)
+    finite = np.isfinite(S_4d)
+    if finite.sum() == 0:
+        return _empty
+    if finite.sum() < 15:
+        idx = np.unravel_index(np.nanargmin(S_4d), S_4d.shape)
+        return (float(x_grid[idx[0]]), float(y_grid[idx[1]]),
+                float(z_grid[idx[2]]), float(w_grid[idx[3]]),
+                float(S_4d[idx]), None, None)
+
+    idx = np.unravel_index(np.nanargmin(S_4d), S_4d.shape)
+    S_min = float(S_4d[idx])
+
+    xs, ys, zs, ws = np.meshgrid(x_grid, y_grid, z_grid, w_grid, indexing='ij')
+    xf = xs.ravel(); yf = ys.ravel(); zf = zs.ravel(); wf = ws.ravel()
+    sf = S_4d.ravel()
+    fin = np.isfinite(sf)
+
+    sel = fin & (sf <= S_min * max(height_factor, 1.01))
+
+    if sel.sum() < 15:
+        ix, iy, iz, iw = idx
+        n = n_neighbors
+        mask = np.zeros_like(S_4d, dtype=bool)
+        mask[max(0, ix-n):min(len(x_grid), ix+n+1),
+             max(0, iy-n):min(len(y_grid), iy+n+1),
+             max(0, iz-n):min(len(z_grid), iz+n+1),
+             max(0, iw-n):min(len(w_grid), iw+n+1)] = True
+        sel = fin & mask.ravel()
+
+    if sel.sum() < 15:
+        return (float(x_grid[idx[0]]), float(y_grid[idx[1]]),
+                float(z_grid[idx[2]]), float(w_grid[idx[3]]),
+                S_min, None, None)
+
+    xf, yf, zf, wf, sf = xf[sel], yf[sel], zf[sel], wf[sel], sf[sel]
+    fit_bounds = (float(xf.min()), float(xf.max()),
+                  float(yf.min()), float(yf.max()),
+                  float(zf.min()), float(zf.max()),
+                  float(wf.min()), float(wf.max()))
+
+    # Design matrix: [x², y², z², w², xy, xz, xw, yz, yw, zw, x, y, z, w, 1]
+    A = np.column_stack([
+        xf**2, yf**2, zf**2, wf**2,
+        xf*yf, xf*zf, xf*wf, yf*zf, yf*wf, zf*wf,
+        xf, yf, zf, wf, np.ones_like(xf),
+    ])
+    coeffs, _, _, _ = np.linalg.lstsq(A, sf, rcond=None)
+    (a1, a2, a3, a4,
+     a5, a6, a7, a8, a9, a10,
+     a11, a12, a13, a14, a15) = coeffs
+
+    # Hessian / 2:
+    M = np.array([
+        [2*a1, a5,   a6,   a7],
+        [a5,   2*a2, a8,   a9],
+        [a6,   a8,   2*a3, a10],
+        [a7,   a9,   a10,  2*a4],
+    ])
+    eigvals = np.linalg.eigvalsh(M)
+    x0 = (float(x_grid[idx[0]]), float(y_grid[idx[1]]),
+           float(z_grid[idx[2]]), float(w_grid[idx[3]]))
+    if not np.all(eigvals > 0):
+        return x0[0], x0[1], x0[2], x0[3], S_min, tuple(coeffs), fit_bounds
+
+    rhs = np.array([-a11, -a12, -a13, -a14])
+    try:
+        sol = np.linalg.solve(M, rhs)
+        bx, by, bz, bw = [float(s) for s in sol]
+        bS = float(
+            a1*bx**2 + a2*by**2 + a3*bz**2 + a4*bw**2
+            + a5*bx*by + a6*bx*bz + a7*bx*bw
+            + a8*by*bz + a9*by*bw + a10*bz*bw
+            + a11*bx + a12*by + a13*bz + a14*bw + a15
+        )
+        if bS < 0 or bS > S_min * 10:
+            bx, by, bz, bw, bS = *x0, S_min
+    except np.linalg.LinAlgError:
+        bx, by, bz, bw, bS = *x0, S_min
+
+    return bx, by, bz, bw, bS, tuple(coeffs), fit_bounds
+
+
 def _render_cvm_1d_plot(col, t_grid, S_grid, label, best_t, best_S,
                         coeffs, fit_range, caption_text, height=300,
                         log_transform=False):

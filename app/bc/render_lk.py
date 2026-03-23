@@ -224,12 +224,11 @@ def _render_lk_expander(
             key=f'{prefix}_{_METHOD_KEY}_sig_slider',
         )
 
-    # -- logPmax slider for cadence_langer with logPmax scan ------
+    # -- logPmax slider (any mode with logPmax scan) ---------------
     _logPmax_g_sl = np.asarray(result.get('logPmax_grid', []))
     _user_lp_idx = None
     if (_logPmax_g_sl.size > 1
-            and p_nd.ndim >= 3
-            and ndim_mode == 'cadence_langer'):
+            and p_nd.ndim >= 3):
         _tmp_best_lp = np.unravel_index(int(np.nanargmax(p_nd)), p_nd.shape)
         _default_lp = int(_tmp_best_lp[0])
         _user_lp_idx = st.select_slider(
@@ -322,48 +321,12 @@ def _render_lk_expander(
         x_label=x_display_label,
         x_name=x_name,
         scoring_label=_DISPLAY_NAME,
+        colorbar_title_override='Normalized Likelihood',
     )
     st.plotly_chart(fig_hm, use_container_width=use_cw,
                     key=f'{prefix}_{_METHOD_KEY}_hm')
 
-    # -- D2-D3: Extra heatmaps for multi-axis models --------------
-    _logPmax_g_extra = np.asarray(result.get('logPmax_grid', []))
-    _sigma_g_extra = np.asarray(result.get('sigma_grid', []))
-    if (_logPmax_g_extra.size > 1
-            and _sigma_g_extra.size > 1
-            and p_nd.ndim >= 3):
-        _ec1, _ec2 = st.columns(2)
-        with _ec1:
-            # D2: f_bin vs logPmax (max over sigma)
-            if p_nd.ndim == 4:
-                _fb_lp = np.nanmax(p_nd, axis=(1, 3))
-            else:
-                _fb_lp = np.nanmax(p_nd, axis=1)
-            _fb_lp_fig = make_heatmap_fig(
-                _fb_lp.T, fbin_g, _logPmax_g_extra,
-                title=f'{_DISPLAY_NAME} -- f_bin x logP_max (max over sigma)',
-                show_d=False, height=400,
-                x_label='log10(P_max / days)', x_name='logP_max',
-                scoring_label=_DISPLAY_NAME,
-            )
-            st.plotly_chart(_fb_lp_fig, use_container_width=True,
-                            key=f'{prefix}_{_METHOD_KEY}_hm_fb_lp')
-        with _ec2:
-            # D3: sigma vs logPmax (max over fbin)
-            if p_nd.ndim == 4:
-                _sig_lp = np.nanmax(p_nd, axis=(2, 3))
-            else:
-                _sig_lp = np.nanmax(p_nd, axis=2)
-            _sig_lp_fig = make_heatmap_fig(
-                _sig_lp.T, _sigma_g_extra, _logPmax_g_extra,
-                title=f'{_DISPLAY_NAME} -- sigma x logP_max (max over f_bin)',
-                show_d=False, height=400,
-                x_label='log10(P_max / days)', x_name='logP_max',
-                y_label='sigma_single (km/s)',
-                scoring_label=_DISPLAY_NAME,
-            )
-            st.plotly_chart(_sig_lp_fig, use_container_width=True,
-                            key=f'{prefix}_{_METHOD_KEY}_hm_sig_lp')
+    # -- D2-D3: REMOVED (covered by A3 σ×logPmax heatmap upgrade) --
 
     # -- D4: Best-fit metrics -------------------------------------
     _is_2d_mode = ndim_mode in ('langer', 'cadence_langer') or p_nd.ndim <= 2
@@ -424,8 +387,13 @@ def _render_lk_expander(
 
     # Likelihood bin edges for CDF / stats
     _lk_bin_edges = result.get('likelihood_bin_edges')
-    if _lk_bin_edges is not None:
-        _lk_bin_edges = np.asarray(_lk_bin_edges)
+    if _lk_bin_edges is None:
+        try:
+            from wr_bias_simulation import DSILVA_LIKELIHOOD_BINS
+            _lk_bin_edges = DSILVA_LIKELIHOOD_BINS
+        except ImportError:
+            _lk_bin_edges = np.array([0.0, 45.5, 250.0, 650.0, np.inf])
+    _lk_bin_edges = np.asarray(_lk_bin_edges)
 
     try:
         from bc.render_lk_scoring import render_lk_scoring_detail
@@ -454,55 +422,14 @@ def _render_lk_expander(
     except ImportError:
         st.warning('render_lk_scoring module not available.')
 
-    # -- D12: Score vs sigma_single profile ------------------------
-    _sigma_g = np.asarray(result.get('sigma_grid', []))
-    if _sigma_g.size > 1:
-        _full_arr = _get_method_array(result, _P_KEY)
-        if _full_arr is not None:
-            _per_sig = None
-            if _full_arr.ndim == 4:
-                _per_sig = np.nanmax(_full_arr, axis=(0, 2, 3))
-            elif _full_arr.ndim == 3:
-                _per_sig = np.nanmax(_full_arr, axis=(1, 2))
-            elif _full_arr.ndim == 2:
-                _per_sig = np.nanmax(_full_arr, axis=0)
-
-            if _per_sig is not None and _per_sig.size == _sigma_g.size:
-                st.divider()
-                _fig_sig = _make_max_score_fig(
-                    _sigma_g, list(_per_sig), height=350,
-                    x_label='sigma_single (km/s)', stat_label=_DISPLAY_NAME,
-                )
-                st.plotly_chart(
-                    _fig_sig, use_container_width=use_cw,
-                    key=f'{prefix}_{_METHOD_KEY}_sig_profile',
-                )
-
-    # -- D13: Score vs logPmax profile -----------------------------
-    _logPmax_g = np.asarray(result.get('logPmax_grid', []))
-    if _logPmax_g.size > 1:
-        _full_lp = _get_method_array(result, _P_KEY)
-        if _full_lp is not None:
-            _other_axes = tuple(range(1, _full_lp.ndim))
-            if _other_axes:
-                _per_lp = np.nanmax(_full_lp, axis=_other_axes)
-                if _per_lp.size == _logPmax_g.size:
-                    st.divider()
-                    _fig_lp = _make_max_score_fig(
-                        _logPmax_g, list(_per_lp), height=350,
-                        x_label='logP_max', stat_label=_DISPLAY_NAME,
-                    )
-                    st.plotly_chart(
-                        _fig_lp, use_container_width=use_cw,
-                        key=f'{prefix}_{_METHOD_KEY}_logPmax_profile',
-                    )
+    # -- D12, D13: REMOVED (covered by A3 σ/logPmax upgrade) ------
 
     # -- Corner plot -----------------------------------------------
     try:
         from bc.render_lk_fit import _render_lk_corner_plot
         _info = _render_lk_corner_plot(
             p_nd, fbin_g, x_g, x_name, x_display_label,
-            _DISPLAY_NAME, ndim_mode,
+            ndim_mode,
             result, prefix, pal, use_cw,
         )
     except ImportError:
@@ -579,6 +506,17 @@ def _render_lk_expander(
         _sum_rows.append(_row_score)
 
         st.table(pd.DataFrame(_sum_rows))
+
+        # -- D16: Re-simulate at interpolated best-fit ----------------
+        if _interp is not None:
+            try:
+                from bc.render_lk_explorer import _render_lk_resim_interp
+                _render_lk_resim_interp(
+                    _interp, result, x_label,
+                    pfx=f'{prefix}_{_METHOD_KEY}',
+                )
+            except ImportError:
+                pass
 
     # -- Model Explorer --------------------------------------------
     _obs_drv_me = result.get('obs_delta_rv')
