@@ -33,6 +33,11 @@ First fix addressed the symptom (shape mismatch) but left downstream code vulner
 3. After the fix: grep all downstream consumers — what else could break?
 4. Run `/error-check` on modified files before committing
 
+## COMMON_ERRORS.md Auto-Update Rule (user repeated request — 2026-03-23)
+**Rule:** After fixing ANY runtime error, IMMEDIATELY add it to `COMMON_ERRORS.md` with ID, grep pattern, fix, and explanation.
+**Why:** User has asked for this multiple times. CLAUDE.md explicitly says to do it. Not doing it means the same error can recur and waste time.
+**How to apply:** Treat COMMON_ERRORS.md update as part of the fix — it's not done until the error is documented.
+
 ## Pre-Edit Checklist (apply before every code change — learned 2026-03-18)
 1. **Before adding a function call**: grep for the function definition — is it imported? Are all variables it uses in scope?
 2. **Before adding a parameter to a function**: grep ALL callers of that function — update every one

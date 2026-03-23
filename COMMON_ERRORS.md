@@ -465,6 +465,19 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 ---
 
+### E042 — Function call passes extra positional argument after refactor
+
+| | |
+|---|---|
+| **Bad** | `_render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label, _DISPLAY_NAME, ndim_mode, result, prefix, pal, use_cw)` — 11 args for a function that takes 10 |
+| **Fix** | Remove the extra arg (`_DISPLAY_NAME` was left over from when KS/Likelihood shared a common call pattern with a `display_name` param). Always verify arg count matches function signature after splitting/refactoring. |
+| **Grep** | N/A (not machine-detectable — caught at runtime as `TypeError: ... takes from N to M positional arguments but M+1 were given`) |
+| **Why** | When duplicating a function call for a new render file (e.g., splitting KS and Likelihood into separate files), extra arguments from the original generic call may be left in. The code compiles fine (`py_compile` passes) because the error is only raised at call time. |
+| **Found in** | `app/bc/render_lk.py` — call to `_render_lk_corner_plot()` had `_DISPLAY_NAME` as an extra arg |
+| **Prevention** | After any refactor that changes function signatures: (1) grep all callers, (2) count positional args vs function def, (3) test the actual code path (not just import). |
+
+---
+
 ## Adding New Errors
 
 When you encounter a new recurring error, add it here with:
