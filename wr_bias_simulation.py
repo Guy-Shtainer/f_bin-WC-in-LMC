@@ -16,7 +16,8 @@ Main ideas
     * omega: flat in [0, 2π].
     * T0: flat in [0, P] (implemented via a random mean anomaly M0 at t=0).
 - We compute RV curves for the visible star, add noise, compute ΔRV per star,
-  and compare the ΔRV distribution to the observed one with a K-S test.
+  and compare the ΔRV distribution to the observed one with multinomial
+  likelihood (Dsilva et al. 2023).
 - We scan a grid of (f_bin, pi) and run each grid point in parallel using
   multiprocessing.Pool. For the Langer+2020 period model, pi is ignored.
 
@@ -25,14 +26,14 @@ Key public pieces
 - SimulationConfig
 - BinaryParameterConfig
 - simulate_delta_rv_sample
-- run_bias_grid
-- plot_ks_heatmap (optional helper)
+- run_bias_grid / run_bias_grid_cadence_aware
+- multinomial_log_likelihood
 
 You can import this file from a Jupyter notebook:
 
     from wr_bias_simulation import (
         SimulationConfig, BinaryParameterConfig,
-        run_bias_grid, plot_ks_heatmap
+        run_bias_grid, multinomial_log_likelihood,
     )
 
 and then call run_bias_grid(...) from a cell.
@@ -1000,7 +1001,8 @@ def simulate_delta_rv_cadence_aware(
     n_bins = len(bin_edges)
     all_cdfs = np.empty((n_sets, n_bins), dtype=float)
     for s in range(n_sets):
-        all_cdfs[s] = binned_cdf(all_drv[s], bin_edges)
+        _sorted = np.sort(all_drv[s])
+        all_cdfs[s] = np.searchsorted(_sorted, bin_edges, side='right') / len(_sorted)
 
     median_cdf = np.median(all_cdfs, axis=0)
     lo_cdf = np.percentile(all_cdfs, 16, axis=0)
@@ -1138,218 +1140,6 @@ def simulate_with_params(
     }
 
 
-# ---------------------------------------------------------------------------
-# K-S comparison
-# ---------------------------------------------------------------------------
-
-def ks_two_sample(
-    sim_data: np.ndarray,
-    obs_data: np.ndarray,
-) -> Tuple[float, float]:
-    """
-    Two-sample Kolmogorov-Smirnov test between simulated and observed ΔRV.
-
-    Returns (D, p_value). If SciPy is available, we use scipy.stats.ks_2samp;
-    otherwise we fall back to a simple implementation with an approximate
-    p-value.
-    """
-    sim_data = np.asarray(sim_data, dtype=float)
-    obs_data = np.asarray(obs_data, dtype=float)
-
-    # Try SciPy if present
-    try:
-        from scipy import stats  # type: ignore
-        D, p_value = stats.ks_2samp(sim_data, obs_data)
-        return float(D), float(p_value)
-    except Exception:
-        pass
-
-    # Manual K-S computation
-    x1 = np.sort(sim_data)
-    x2 = np.sort(obs_data)
-    n1 = x1.size
-    n2 = x2.size
-
-    data_all = np.concatenate([x1, x2])
-    cdf1 = np.searchsorted(x1, data_all, side="right") / n1
-    cdf2 = np.searchsorted(x2, data_all, side="right") / n2
-    D = np.max(np.abs(cdf1 - cdf2))
-
-    # Approximate p-value for large n using the usual Kolmogorov series
-    en = math.sqrt(n1 * n2 / (n1 + n2))
-    x = (en + 0.12 + 0.11 / en) * D
-
-    # Q_KS(x) ~ 2 * sum_{j=1}^\infty (-1)^{j-1} exp(-2 j^2 x^2)
-    term_sum = 0.0
-    for j in range(1, 101):
-        term = 2.0 * ((-1) ** (j - 1)) * math.exp(-2.0 * (j ** 2) * (x ** 2))
-        term_sum += term
-        if abs(term) < 1e-8:
-            break
-    p_value = max(0.0, min(1.0, term_sum))
-    return float(D), float(p_value)
-
-
-# ---------------------------------------------------------------------------
-# Binned CDF K-S comparison
-# ---------------------------------------------------------------------------
-
-def binned_cdf(data: np.ndarray, bin_edges: np.ndarray) -> np.ndarray:
-    """Empirical CDF evaluated at *bin_edges*: CDF(x) = fraction of data <= x."""
-    sorted_data = np.sort(data)
-    return np.searchsorted(sorted_data, bin_edges, side='right') / len(sorted_data)
-
-
-def ks_two_sample_binned(
-    sim_data: np.ndarray,
-    obs_data: np.ndarray,
-    bin_edges: np.ndarray | None = None,
-) -> Tuple[float, float]:
-    """Binned K-S test: D = max|CDF_sim(b) - CDF_obs(b)| over *bin_edges*.
-
-    Uses the same Kolmogorov-series p-value approximation as ks_two_sample
-    with effective sample sizes n1=len(sim_data), n2=len(obs_data).
-    """
-    if bin_edges is None:
-        bin_edges = DEFAULT_DRV_BIN_EDGES
-
-    sim_data = np.asarray(sim_data, dtype=float)
-    obs_data = np.asarray(obs_data, dtype=float)
-    n1 = sim_data.size
-    n2 = obs_data.size
-
-    cdf_sim = binned_cdf(sim_data, bin_edges)
-    cdf_obs = binned_cdf(obs_data, bin_edges)
-    D = float(np.max(np.abs(cdf_sim - cdf_obs)))
-
-    # Approximate p-value (Kolmogorov series)
-    en = math.sqrt(n1 * n2 / (n1 + n2))
-    x = (en + 0.12 + 0.11 / en) * D
-    term_sum = 0.0
-    for j in range(1, 101):
-        term = 2.0 * ((-1) ** (j - 1)) * math.exp(-2.0 * (j ** 2) * (x ** 2))
-        term_sum += term
-        if abs(term) < 1e-8:
-            break
-    p_value = max(0.0, min(1.0, term_sum))
-    return D, p_value
-
-
-def ks_weighted_D(
-    sim_median_cdf: np.ndarray,
-    obs_cdf: np.ndarray,
-    sim_cdf_var: np.ndarray,
-) -> float:
-    """Inverse-variance weighted K-S D statistic.
-
-    D_w = max(|sim_i - obs_i| × w_i)
-
-    where w_i = (1/σ_i²) / max(1/σ_j²) — normalized so the best-constrained
-    bin (lowest variance) has weight 1.0.  High-variance bins get weight < 1,
-    suppressing their contribution to the supremum.
-
-    This preserves the max-based nature of the KS statistic while
-    down-weighting bins where the simulation CDF is uncertain.
-    """
-    sim_median_cdf = np.asarray(sim_median_cdf, dtype=float)
-    obs_cdf = np.asarray(obs_cdf, dtype=float)
-    sim_cdf_var = np.asarray(sim_cdf_var, dtype=float)
-
-    valid = sim_cdf_var > 1e-12
-    if valid.sum() < 2:
-        # Fallback to standard D if too few informative bins
-        return float(np.max(np.abs(sim_median_cdf - obs_cdf)))
-    w = 1.0 / sim_cdf_var[valid]
-    w /= w.max()  # normalize: best-constrained bin = 1.0, others < 1.0
-    diffs = np.abs(sim_median_cdf[valid] - obs_cdf[valid])
-    return float(np.max(diffs * w))
-
-
-def chi2_weighted_score(
-    sim_median_cdf: np.ndarray,
-    obs_cdf: np.ndarray,
-    sim_cdf_var: np.ndarray,
-) -> Tuple[float, float]:
-    """Chi-squared goodness-of-fit between simulated and observed CDFs.
-
-    χ² = Σ (sim_i - obs_i)² / σ²_i
-
-    Bins with high simulation variance (σ²_i) contribute less to the
-    statistic.  Returns ``(chi2_value, p_value)`` where the p-value is
-    the survival function of the chi-squared distribution.
-    """
-    sim_median_cdf = np.asarray(sim_median_cdf, dtype=float)
-    obs_cdf = np.asarray(obs_cdf, dtype=float)
-    sim_cdf_var = np.asarray(sim_cdf_var, dtype=float)
-
-    valid = sim_cdf_var > 1e-12
-    n_valid = int(valid.sum())
-    if n_valid < 2:
-        D = float(np.max(np.abs(sim_median_cdf - obs_cdf)))
-        return D, 1.0 - D
-
-    diffs = sim_median_cdf[valid] - obs_cdf[valid]
-    chi2_val = float(np.sum(diffs ** 2 / sim_cdf_var[valid]))
-    n_dof = max(n_valid - 1, 1)
-
-    from scipy.stats import chi2 as chi2_dist
-    p_value = float(chi2_dist.sf(chi2_val, n_dof))
-    return chi2_val, p_value
-
-
-def cvm_weighted_score(
-    sim_median_cdf: np.ndarray,
-    obs_cdf: np.ndarray,
-    sim_cdf_var: np.ndarray,
-    all_delta_rv: np.ndarray,
-    bin_edges: np.ndarray,
-) -> Tuple[float, float, float]:
-    """Variance-weighted Cramér–von Mises score with empirical p-value.
-
-    S = Σ (F_obs(bᵢ) - F_sim_median(bᵢ))² / σ²ᵢ
-
-    Uses ALL bins (unlike KS which only uses the max).  Bins with high
-    simulation variance contribute less.  The p-value is empirical:
-    fraction of the simulated sets whose S score ≥ S_obs.
-
-    Parameters
-    ----------
-    sim_median_cdf : (n_bins,)  median CDF across simulation sets
-    obs_cdf        : (n_bins,)  observed empirical CDF
-    sim_cdf_var    : (n_bins,)  variance of simulated CDF across sets
-    all_delta_rv   : (n_sets, n_stars)  raw ΔRV per set (for empirical p)
-    bin_edges      : (n_bins,)  CDF evaluation points
-
-    Returns (S_obs, p_value, S_raw).
-        S_raw = Σ (F_obs - F_sim_median)² (unweighted, comparable across models).
-    """
-    sim_median_cdf = np.asarray(sim_median_cdf, dtype=float)
-    obs_cdf = np.asarray(obs_cdf, dtype=float)
-    sim_cdf_var = np.asarray(sim_cdf_var, dtype=float)
-
-    # Unweighted CvM distance (always computable, cross-model comparable)
-    all_diffs = obs_cdf - sim_median_cdf
-    S_raw = float(np.sum(all_diffs ** 2))
-
-    valid = sim_cdf_var > 1e-12
-    n_valid = int(valid.sum())
-    if n_valid < 2:
-        return float(np.max(np.abs(sim_median_cdf - obs_cdf))), 0.5, S_raw
-
-    inv_var = 1.0 / sim_cdf_var[valid]
-    obs_diffs = obs_cdf[valid] - sim_median_cdf[valid]
-    S_obs = float(np.sum(obs_diffs ** 2 * inv_var))
-
-    # Empirical p-value: compute S for each simulated set vs the median
-    n_sets = all_delta_rv.shape[0]
-    all_cdfs = np.empty((n_sets, bin_edges.size), dtype=float)
-    for s in range(n_sets):
-        all_cdfs[s] = binned_cdf(all_delta_rv[s], bin_edges)
-    set_diffs = all_cdfs[:, valid] - sim_median_cdf[valid]   # (n_sets, n_valid)
-    S_all = np.sum(set_diffs ** 2 * inv_var, axis=1)         # (n_sets,)
-    p_value = float(np.mean(S_all >= S_obs))
-
-    return S_obs, p_value, S_raw
 
 
 # ---------------------------------------------------------------------------
@@ -1520,39 +1310,6 @@ def compute_hdi68(
 # Grid runner with multiprocessing
 # ---------------------------------------------------------------------------
 
-def _single_grid_task(args):
-    """Worker for a single (f_bin, pi, sigma_single) point. Defined at top level for pickling."""
-    (
-        f_bin,
-        pi,
-        sigma_single,
-        sim_cfg,
-        bin_cfg,
-        obs_delta_rv,
-        period_model,
-        seed,
-    ) = args
-
-    # ensure period model is set on cfg copy
-    bin_cfg_local = BinaryParameterConfig(**vars(bin_cfg))
-    bin_cfg_local.period_model = period_model
-
-    # apply sigma_single override on a local copy of sim_cfg
-    from dataclasses import replace as dc_replace
-    sim_cfg_local = dc_replace(sim_cfg, sigma_single=sigma_single)
-
-    rng = np.random.default_rng(seed)
-    delta_sim = simulate_delta_rv_sample(
-        f_bin=f_bin,
-        pi=pi,
-        sim_cfg=sim_cfg_local,
-        bin_cfg=bin_cfg_local,
-        rng=rng,
-    )
-    D, p = ks_two_sample_binned(delta_sim, obs_delta_rv)
-    return f_bin, pi, sigma_single, D, p
-
-
 # ── Pool initializer pattern (avoids pickle overhead per task) ────────────
 _WORKER_GLOBALS: dict = {}
 
@@ -1562,7 +1319,7 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
                  n_epochs=6, time_span=3650.0,
                  observation_times=None, v_sys=0.0,
                  bin_edges=None,
-                 n_sets_cvm=1000, likelihood_bin_edges=None,
+                 n_sets=1000, likelihood_bin_edges=None,
                  error_model_single='fixed', error_params_single=(),
                  error_model_binary='fixed', error_params_binary=()):
     """Pool initializer: store shared data as process-level globals."""
@@ -1578,7 +1335,7 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
         'observation_times': observation_times,
         'v_sys': v_sys,
         'bin_edges': bin_edges,
-        'n_sets_cvm': n_sets_cvm,
+        'n_sets': n_sets,
         'likelihood_bin_edges': likelihood_bin_edges,
         'error_model_single': error_model_single,
         'error_params_single': error_params_single,
@@ -1588,17 +1345,13 @@ def _init_worker(cadence_library, cadence_weights, obs_delta_rv,
 
 
 def _single_grid_task_lite(args):
-    """Lightweight worker: compute ALL 4 scoring methods from the same simulated data.
+    """Worker: compute likelihood score at one (f_bin, pi, sigma_single) grid point.
 
     args = (f_bin, pi, sigma_single, bin_cfg, period_model, seed)
 
     Returns
     -------
-    (f_bin, pi, sigma_single,
-     ks_D, ks_p,              # KS standard
-     weighted_D, weighted_p,  # KS variance-weighted (chi2)
-     cvm_D, cvm_p, cvm_S_raw, # CvM
-     logL)                     # raw log-likelihood
+    (f_bin, pi, sigma_single, logL)
     """
     f_bin, pi, sigma_single, bin_cfg, period_model, seed = args
     g = _WORKER_GLOBALS
@@ -1623,10 +1376,6 @@ def _single_grid_task_lite(args):
 
     rng = np.random.default_rng(seed)
 
-    # Bin edges for CDF scoring
-    _be = g.get('bin_edges')
-    if _be is None:
-        _be = DEFAULT_DRV_BIN_EDGES
     # Bin edges for likelihood scoring
     _lbe = g.get('likelihood_bin_edges')
     if _lbe is None:
@@ -1634,51 +1383,17 @@ def _single_grid_task_lite(args):
     if _lbe is None:
         _lbe = DEFAULT_DRV_BIN_EDGES
 
-    # Always draw n_sets samples (needed for CvM/weighted variance estimation)
-    n_sets = g.get('n_sets_cvm', 1000)
+    # Draw n_sets samples and pool for likelihood
+    n_sets = g.get('n_sets', 1000)
     all_drv = np.empty((n_sets, sim_cfg_local.n_stars))
     for s in range(n_sets):
         all_drv[s] = simulate_delta_rv_sample(
             f_bin=f_bin, pi=pi,
             sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng)
 
-    # Compute CDFs: one per set, then median + variance
-    all_cdfs = np.empty((n_sets, _be.size), dtype=float)
-    for s in range(n_sets):
-        all_cdfs[s] = binned_cdf(all_drv[s], _be)
-    median_cdf = np.median(all_cdfs, axis=0)
-    cdf_var = np.var(all_cdfs, axis=0)
-    obs_cdf = binned_cdf(g['obs_delta_rv'], _be)
-
-    # 1) KS standard: D = max|median_cdf - obs_cdf|, Kolmogorov-series p-value
-    ks_D = float(np.max(np.abs(median_cdf - obs_cdf)))
-    n1 = n_sets * sim_cfg_local.n_stars
-    n2 = len(g['obs_delta_rv'])
-    en = math.sqrt(n1 * n2 / (n1 + n2))
-    x = (en + 0.12 + 0.11 / en) * ks_D
-    term_sum = 0.0
-    for j in range(1, 101):
-        term = 2.0 * ((-1) ** (j - 1)) * math.exp(-2.0 * (j ** 2) * (x ** 2))
-        term_sum += term
-        if abs(term) < 1e-8:
-            break
-    ks_p = max(0.0, min(1.0, term_sum))
-
-    # 2) KS variance-weighted (chi2)
-    weighted_D, weighted_p = chi2_weighted_score(median_cdf, obs_cdf, cdf_var)
-
-    # 3) CvM S-score
-    cvm_D, cvm_p, cvm_S_raw = cvm_weighted_score(
-        median_cdf, obs_cdf, cdf_var, all_drv, _be)
-
-    # 4) Likelihood (Dsilva+2023)
     logL = multinomial_log_likelihood(g['obs_delta_rv'], all_drv.ravel(), _lbe)
 
-    return (f_bin, pi, sigma_single,
-            ks_D, ks_p,
-            weighted_D, weighted_p,
-            cvm_D, cvm_p, cvm_S_raw,
-            logL)
+    return (f_bin, pi, sigma_single, logL)
 
 
 def run_bias_grid(
@@ -1692,61 +1407,29 @@ def run_bias_grid(
     n_processes: Optional[int] = None,
     seed_base: int = 1234,
     use_multiprocessing: bool = True,
-    n_sets_cvm: int = 1000,
+    n_sets: int = 1000,
     bin_edges: Optional[np.ndarray] = None,
     likelihood_bin_edges: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
-    """
-    Run a (f_bin, pi[, sigma_single]) grid computing ALL 4 scoring methods.
-
-    All methods (KS standard, KS weighted, CvM, Likelihood) are computed
-    simultaneously from the same simulated data at each grid point.
+    """Run a (f_bin, pi[, sigma_single]) grid computing multinomial likelihood.
 
     Parameters
     ----------
     fbin_values : iterable of float
         Grid of intrinsic binary fractions f_bin (0..1).
     pi_values : iterable of float
-        Grid of power-law indices π for the logP distribution. For
-        period_model="langer2020", π is ignored but still looped over.
+        Grid of power-law indices π for the logP distribution.
     obs_delta_rv : array-like
         Observed ΔRV values for your WR sample [km/s].
-    sim_cfg : SimulationConfig or None
-        Simulation configuration; if None, uses default SimulationConfig().
-    bin_cfg : BinaryParameterConfig or None
-        Binary parameter configuration; if None, uses default BinaryParameterConfig().
-    period_model : str
-        "powerlaw" or "langer2020".
-    sigma_values : iterable of float or None
-        Grid of sigma_single values (km/s) to scan. If None, uses the
-        single value already set in sim_cfg (2D grid as before).
-    n_processes : int or None
-        Number of worker processes; if None, mp.Pool chooses.
-    seed_base : int
-        Base seed; each grid point gets seed = seed_base + idx.
-    use_multiprocessing : bool
-        If False, run everything serially (useful for debugging).
-    n_sets_cvm : int
-        Number of simulation sets per grid point (for CvM variance, etc.).
-    likelihood_bin_edges : array or None
-        Coarse bin edges for multinomial likelihood (Dsilva+2023).
-        If None, uses DSILVA_LIKELIHOOD_BINS.
+    sim_cfg, bin_cfg : config dataclasses (default if None).
+    period_model : str — "powerlaw" or "langer2020".
+    sigma_values : iterable of float or None — sigma_single grid.
+    n_sets : int — simulation sets per grid point.
+    likelihood_bin_edges : array or None — coarse bins (Dsilva+2023).
 
     Returns
     -------
-    result : dict with keys:
-        "fbin_grid"   : 1D array of f_bin values.
-        "pi_grid"     : 1D array of π values.
-        "sigma_grid"  : 1D array of sigma_single values (length 1 if not scanned).
-        "ks_D"        : 3D [n_sigma, n_fbin, n_pi] KS standard D-statistic.
-        "ks_p"        : 3D KS standard p-values.
-        "weighted_D"  : 3D KS variance-weighted chi2 statistic.
-        "weighted_p"  : 3D KS variance-weighted p-values.
-        "cvm_D"       : 3D CvM weighted S-score (D-stat equivalent).
-        "cvm_p"       : 3D CvM empirical p-values.
-        "cvm_S_raw"   : 3D CvM unweighted S (cross-model comparable).
-        "likelihood"  : 3D normalized likelihood [0,1].
-        "logL_raw"    : 3D raw log-likelihood values.
+    dict with keys: fbin_grid, pi_grid, sigma_grid, likelihood, logL_raw.
     """
     if sim_cfg is None:
         sim_cfg = SimulationConfig()
@@ -1791,7 +1474,7 @@ def run_bias_grid(
         sim_cfg.observation_times,
         sim_cfg.v_sys,
         _used_bin_edges,
-        n_sets_cvm,
+        n_sets,
         likelihood_bin_edges,
         sim_cfg.error_model_single,
         sim_cfg.error_params_single,
@@ -1824,31 +1507,13 @@ def run_bias_grid(
     n_sig = sigma_grid.size
     n_fb  = fbin_grid.size
     n_pi  = pi_grid.size
-    ks_D       = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    ks_p       = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    weighted_D = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    weighted_p = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    cvm_D      = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    cvm_p      = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    cvm_S_raw  = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
-    logL_raw   = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
+    logL_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
 
     for idx, res in enumerate(results):
-        (fb, pi, sigma,
-         _ks_D, _ks_p,
-         _w_D, _w_p,
-         _cvm_D, _cvm_p, _cvm_S,
-         _logL) = res
+        (fb, pi, sigma, _logL) = res
         i_sig = idx // (n_fb * n_pi)
         i_fb  = (idx % (n_fb * n_pi)) // n_pi
         i_pi  = idx % n_pi
-        ks_D[i_sig, i_fb, i_pi] = _ks_D
-        ks_p[i_sig, i_fb, i_pi] = _ks_p
-        weighted_D[i_sig, i_fb, i_pi] = _w_D
-        weighted_p[i_sig, i_fb, i_pi] = _w_p
-        cvm_D[i_sig, i_fb, i_pi] = _cvm_D
-        cvm_p[i_sig, i_fb, i_pi] = _cvm_p
-        cvm_S_raw[i_sig, i_fb, i_pi] = _cvm_S
         logL_raw[i_sig, i_fb, i_pi] = _logL
 
     # Normalize logL → likelihood [0, 1] (Dsilva+2023 style posterior weight)
@@ -1862,13 +1527,6 @@ def run_bias_grid(
         "fbin_grid":   fbin_grid,
         "pi_grid":     pi_grid,
         "sigma_grid":  sigma_grid,
-        "ks_D":        ks_D,
-        "ks_p":        ks_p,
-        "weighted_D":  weighted_D,
-        "weighted_p":  weighted_p,
-        "cvm_D":       cvm_D,
-        "cvm_p":       cvm_p,
-        "cvm_S_raw":   cvm_S_raw,
         "likelihood":  likelihood,
         "logL_raw":    logL_raw,
     }
@@ -1879,18 +1537,13 @@ def run_bias_grid(
 # ---------------------------------------------------------------------------
 
 def _single_grid_task_cadence_aware(args):
-    """Worker for cadence-aware grid search: compute ALL 4 scoring methods.
+    """Worker for cadence-aware grid: compute likelihood + CDF band.
 
     args = (f_bin, pi, sigma_single, bin_cfg, period_model, seed, n_sets)
 
     Returns
     -------
-    (f_bin, pi, sigma_single,
-     ks_D, ks_p,              # KS standard
-     weighted_D, weighted_p,  # KS variance-weighted (chi2)
-     cvm_D, cvm_p, cvm_S_raw, # CvM
-     logL,                     # raw log-likelihood
-     median_cdf, lo_cdf, hi_cdf)
+    (f_bin, pi, sigma_single, logL, median_cdf, lo_cdf, hi_cdf)
     """
     f_bin, pi, sigma_single, bin_cfg, period_model, seed, n_sets = args
     g = _WORKER_GLOBALS
@@ -1914,7 +1567,6 @@ def _single_grid_task_cadence_aware(args):
     bin_cfg_local.period_model = period_model
 
     _bin_edges = g.get('bin_edges')
-    _be = _bin_edges if _bin_edges is not None else DEFAULT_DRV_BIN_EDGES
     _lbe = g.get('likelihood_bin_edges')
     if _lbe is None:
         _lbe = g.get('bin_edges')
@@ -1928,40 +1580,11 @@ def _single_grid_task_cadence_aware(args):
         n_sets=n_sets, bin_edges=_bin_edges,
     )
 
-    obs_cdf = binned_cdf(g['obs_delta_rv'], _be)
-    median_cdf = result['median_cdf']
-    cdf_var = result['cdf_var']
-    n2 = len(g['obs_delta_rv'])
-
-    # 1) KS standard: D = max|median_cdf - obs_cdf|, Kolmogorov-series p-value
-    ks_D = float(np.max(np.abs(median_cdf - obs_cdf)))
-    n1 = n_sets * len(g['cadence_library'])
-    en = math.sqrt(n1 * n2 / (n1 + n2))
-    x = (en + 0.12 + 0.11 / en) * ks_D
-    term_sum = 0.0
-    for j in range(1, 101):
-        term = 2.0 * ((-1) ** (j - 1)) * math.exp(-2.0 * (j ** 2) * (x ** 2))
-        term_sum += term
-        if abs(term) < 1e-8:
-            break
-    ks_p = max(0.0, min(1.0, term_sum))
-
-    # 2) KS variance-weighted (chi2)
-    weighted_D, weighted_p = chi2_weighted_score(median_cdf, obs_cdf, cdf_var)
-
-    # 3) CvM S-score
-    cvm_D, cvm_p, cvm_S_raw = cvm_weighted_score(
-        median_cdf, obs_cdf, cdf_var, result['all_delta_rv'], _be)
-
-    # 4) Likelihood (Dsilva+2023)
+    # Likelihood (Dsilva+2023)
     logL = multinomial_log_likelihood(
         g['obs_delta_rv'], result['all_delta_rv'].ravel(), _lbe)
 
-    return (f_bin, pi, sigma_single,
-            ks_D, ks_p,
-            weighted_D, weighted_p,
-            cvm_D, cvm_p, cvm_S_raw,
-            logL,
+    return (f_bin, pi, sigma_single, logL,
             result['median_cdf'], result['lo_cdf'], result['hi_cdf'])
 
 
@@ -1981,11 +1604,11 @@ def run_bias_grid_cadence_aware(
     bin_edges: Optional[np.ndarray] = None,
     likelihood_bin_edges: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
-    """Cadence-aware grid search computing ALL 4 scoring methods.
+    """Cadence-aware grid search computing multinomial likelihood.
 
     Like ``run_bias_grid`` but each grid point uses
     ``simulate_delta_rv_cadence_aware`` with *n_sets* repetitions of 25-star
-    sets, comparing the **median binned CDF** to the observed CDF.
+    sets.
 
     Extra parameter *callback(completed, total, result_tuple)* is called after
     each completed task (useful for live progress updates in the webapp).
@@ -2032,7 +1655,7 @@ def run_bias_grid_cadence_aware(
         sim_cfg.observation_times,
         sim_cfg.v_sys,
         _used_bin_edges,
-        n_sets,              # n_sets_cvm positional slot
+        n_sets,
         likelihood_bin_edges,
         sim_cfg.error_model_single,
         sim_cfg.error_params_single,
@@ -2040,8 +1663,8 @@ def run_bias_grid_cadence_aware(
         sim_cfg.error_params_binary,
     )
 
-    # Storage for best-fit CDF band (tracked by KS p-value)
-    best_ks_p = -1.0
+    # Storage for best-fit CDF band (tracked by likelihood)
+    best_logL = -np.inf
     best_median_cdf = None
     best_lo_cdf = None
     best_hi_cdf = None
@@ -2049,37 +1672,19 @@ def run_bias_grid_cadence_aware(
     n_sig = sigma_grid.size
     n_fb  = fbin_grid.size
     n_pi  = pi_grid.size
-    ks_D       = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    ks_p       = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    weighted_D = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    weighted_p = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    cvm_D      = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    cvm_p      = np.empty((n_sig, n_fb, n_pi), dtype=float)
-    cvm_S_raw  = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
-    logL_raw   = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
+    logL_raw = np.full((n_sig, n_fb, n_pi), np.nan, dtype=float)
 
     def _process_result(res_tuple, completed):
-        nonlocal best_ks_p, best_median_cdf, best_lo_cdf, best_hi_cdf
-        (fb, pi_val, sigma,
-         _ks_D, _ks_p,
-         _w_D, _w_p,
-         _cvm_D, _cvm_p, _cvm_S,
-         _logL,
+        nonlocal best_logL, best_median_cdf, best_lo_cdf, best_hi_cdf
+        (fb, pi_val, sigma, _logL,
          med_cdf, lo_cdf, hi_cdf) = res_tuple
         i_sig = np.searchsorted(sigma_grid, sigma)
         i_fb  = np.searchsorted(fbin_grid, fb)
         i_pi  = np.searchsorted(pi_grid, pi_val)
         if i_sig < n_sig and i_fb < n_fb and i_pi < n_pi:
-            ks_D[i_sig, i_fb, i_pi] = _ks_D
-            ks_p[i_sig, i_fb, i_pi] = _ks_p
-            weighted_D[i_sig, i_fb, i_pi] = _w_D
-            weighted_p[i_sig, i_fb, i_pi] = _w_p
-            cvm_D[i_sig, i_fb, i_pi] = _cvm_D
-            cvm_p[i_sig, i_fb, i_pi] = _cvm_p
-            cvm_S_raw[i_sig, i_fb, i_pi] = _cvm_S
             logL_raw[i_sig, i_fb, i_pi] = _logL
-        if _ks_p > best_ks_p:
-            best_ks_p = _ks_p
+        if _logL > best_logL:
+            best_logL = _logL
             best_median_cdf = med_cdf
             best_lo_cdf = lo_cdf
             best_hi_cdf = hi_cdf
@@ -2110,13 +1715,6 @@ def run_bias_grid_cadence_aware(
         "fbin_grid":       fbin_grid,
         "pi_grid":         pi_grid,
         "sigma_grid":      sigma_grid,
-        "ks_D":            ks_D,
-        "ks_p":            ks_p,
-        "weighted_D":      weighted_D,
-        "weighted_p":      weighted_p,
-        "cvm_D":           cvm_D,
-        "cvm_p":           cvm_p,
-        "cvm_S_raw":       cvm_S_raw,
         "likelihood":      likelihood,
         "logL_raw":        logL_raw,
         "best_median_cdf": best_median_cdf,
@@ -2126,41 +1724,9 @@ def run_bias_grid_cadence_aware(
     }
 
 
-# ---------------------------------------------------------------------------
-# Plotting helper (optional)
-# ---------------------------------------------------------------------------
-
-def plot_ks_heatmap(
-    grid_result: Dict[str, np.ndarray],
-    use_pvalue: bool = False,
-    ax=None,
-):
-
-
-    fbin_grid = grid_result["fbin_grid"]
-    pi_grid   = grid_result["pi_grid"]
-    Z = grid_result["ks_p" if use_pvalue else "ks_D"]
-
-    # rows = f_bin, columns = π  -> meshgrid in that order
-    Pi, Fb = np.meshgrid(pi_grid, fbin_grid)  # x = π, y = f_bin
-
-    if ax is None:
-        fig, ax = plt.subplots()
-
-    im = ax.pcolormesh(Pi, Fb, Z, shading="auto")
-    cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label("K-S p-value" if use_pvalue else "K-S D")
-
-    ax.set_xlabel("π (period power-law index)")
-    ax.set_ylabel("f_bin")
-    ax.set_title("K-S p-value over (f_bin, π)" if use_pvalue
-                 else "K-S D over (f_bin, π)")
-
-    return ax
-
 def _find_best_grid_point(
     grid_result: Dict[str, np.ndarray],
-    by: str = "p",
+    by: str = "likelihood",
 ) -> Tuple[int, int, float, float]:
     """
     Internal helper: find best (f_bin, pi) indices in the grid.
@@ -2169,9 +1735,8 @@ def _find_best_grid_point(
     ----------
     grid_result : dict
         Output of run_bias_grid.
-    by : {"p", "D"}
-        If "p": maximize K-S p-value.
-        If "D": minimize K-S D statistic.
+    by : str
+        "likelihood" (default): maximize normalized likelihood.
 
     Returns
     -------
@@ -2183,14 +1748,8 @@ def _find_best_grid_point(
     fbin_grid = grid_result["fbin_grid"]
     pi_grid = grid_result["pi_grid"]
 
-    if by.lower() == "p":
-        Z = grid_result["ks_p"]
-        i_fb, i_pi = np.unravel_index(np.argmax(Z), Z.shape)
-    elif by.lower() == "d":
-        Z = grid_result["ks_D"]
-        i_fb, i_pi = np.unravel_index(np.argmin(Z), Z.shape)
-    else:
-        raise ValueError("by must be 'p' or 'D'.")
+    Z = grid_result["likelihood"]
+    i_fb, i_pi = np.unravel_index(np.nanargmax(Z), Z.shape)
 
     best_fbin = float(fbin_grid[i_fb])
     best_pi = float(pi_grid[i_pi])
@@ -2202,33 +1761,19 @@ def simulate_best_model(
     sim_cfg: SimulationConfig,
     bin_cfg: BinaryParameterConfig,
     period_model: str = "powerlaw",
-    by: str = "p",
     seed: int = 1234,
 ) -> Tuple[float, float, np.ndarray]:
     """
-    Re-simulate one sample at the best (f_bin, pi) grid point.
-
-    Parameters
-    ----------
-    grid_result : dict
-        Output of run_bias_grid.
-    sim_cfg, bin_cfg :
-        Same configs used for run_bias_grid.
-    period_model : str
-        "powerlaw" or "langer2020".
-    by : {"p", "D"}
-        How to choose the best grid point (max p or min D).
-    seed : int
-        RNG seed for the new simulation.
+    Re-simulate one sample at the best (f_bin, pi) grid point (max likelihood).
 
     Returns
     -------
     best_fbin, best_pi : float
         Best-fitting grid point.
     delta_rv_sim : ndarray
-        Simulated ΔRV sample (one 10k-star population) at that point.
+        Simulated ΔRV sample at that point.
     """
-    _, _, best_fbin, best_pi = _find_best_grid_point(grid_result, by=by)
+    _, _, best_fbin, best_pi = _find_best_grid_point(grid_result)
 
     # Local copy of binary config with correct period_model
     bin_cfg_local = BinaryParameterConfig(**vars(bin_cfg))
@@ -2256,15 +1801,17 @@ def resimulate_at_point(
     bin_edges: Optional[np.ndarray] = None,
     n_sets: int = 10_000,
     seed: int = 9999,
+    likelihood_bin_edges: Optional[np.ndarray] = None,
 ) -> Dict[str, float]:
-    """Re-simulate at exact (f_bin, pi, sigma) and compute S_weighted, S_raw, p-value.
+    """Re-simulate at exact (f_bin, pi, sigma) and compute likelihood.
 
     Runs *n_sets* independent simulations and compares to *obs_delta_rv*.
 
-    Returns dict with keys: S_weighted, S_raw, p_value, median_cdf, lo_cdf, hi_cdf.
+    Returns dict with keys: logL, likelihood, median_cdf, lo_cdf, hi_cdf.
     """
     obs_delta_rv = np.asarray(obs_delta_rv, dtype=float)
     _be = bin_edges if bin_edges is not None else DEFAULT_DRV_BIN_EDGES
+    _lbe = likelihood_bin_edges if likelihood_bin_edges is not None else _be
 
     sim_local = SimulationConfig(
         n_stars=sim_cfg.n_stars,
@@ -2291,23 +1838,25 @@ def resimulate_at_point(
             f_bin=f_bin, pi=pi,
             sim_cfg=sim_local, bin_cfg=bin_local, rng=rng)
 
+    # Compute CDF band for visualization
+    def _binned_cdf(data, edges):
+        sorted_data = np.sort(data)
+        return np.searchsorted(sorted_data, edges, side='right') / len(sorted_data)
+
     all_cdfs = np.empty((n_sets, _be.size), dtype=float)
     for s in range(n_sets):
-        all_cdfs[s] = binned_cdf(all_drv[s], _be)
+        all_cdfs[s] = _binned_cdf(all_drv[s], _be)
 
     median_cdf = np.median(all_cdfs, axis=0)
     lo_cdf = np.percentile(all_cdfs, 16, axis=0)
     hi_cdf = np.percentile(all_cdfs, 84, axis=0)
-    cdf_var = np.var(all_cdfs, axis=0)
-    obs_cdf = binned_cdf(obs_delta_rv, _be)
 
-    S_weighted, p_value, S_raw = cvm_weighted_score(
-        median_cdf, obs_cdf, cdf_var, all_drv, _be)
+    # Likelihood
+    logL = multinomial_log_likelihood(obs_delta_rv, all_drv.ravel(), _lbe)
 
     return {
-        'S_weighted': S_weighted,
-        'S_raw': S_raw,
-        'p_value': p_value,
+        'logL': logL,
+        'likelihood': float(np.exp(logL)) if np.isfinite(logL) else 0.0,
         'median_cdf': median_cdf,
         'lo_cdf': lo_cdf,
         'hi_cdf': hi_cdf,
@@ -2320,7 +1869,7 @@ def plot_best_cdf(
     sim_cfg: SimulationConfig,
     bin_cfg: BinaryParameterConfig,
     period_model: str = "powerlaw",
-    by: str = "p",
+    by: str = "likelihood",
     seed: int = 1234,
     ax=None,
 ):
@@ -2358,7 +1907,6 @@ def plot_best_cdf(
         sim_cfg=sim_cfg,
         bin_cfg=bin_cfg,
         period_model=period_model,
-        by=by,
         seed=seed,
     )
 
@@ -2396,7 +1944,7 @@ def plot_best_detection_fraction_vs_threshold(
     sim_cfg: SimulationConfig,
     bin_cfg: BinaryParameterConfig,
     period_model: str = "powerlaw",
-    by: str = "p",
+    by: str = "likelihood",
     thresholds: Optional[np.ndarray] = None,
     seed: int = 1234,
     ax=None,
@@ -2443,7 +1991,6 @@ def plot_best_detection_fraction_vs_threshold(
         sim_cfg=sim_cfg,
         bin_cfg=bin_cfg,
         period_model=period_model,
-        by=by,
         seed=seed,
     )
 
@@ -2576,7 +2123,7 @@ def simulate_best_rv_distributions(
     sim_cfg: SimulationConfig,
     bin_cfg: BinaryParameterConfig,
     period_model: str = "powerlaw",
-    by: str = "p",
+    by: str = "likelihood",
     seed: int = 1234,
 ) -> Tuple[float, float, np.ndarray, np.ndarray]:
     """
@@ -2604,7 +2151,7 @@ def simulate_best_rv_distributions(
     rv_binary_all : ndarray
         All RV samples for binaries (km/s).
     """
-    _, _, best_fbin, best_pi = _find_best_grid_point(grid_result, by=by)
+    _, _, best_fbin, best_pi = _find_best_grid_point(grid_result)
 
     bin_cfg_local = BinaryParameterConfig(**vars(bin_cfg))
     bin_cfg_local.period_model = period_model
@@ -2626,7 +2173,7 @@ def plot_best_rv_distributions(
     sim_cfg: SimulationConfig,
     bin_cfg: BinaryParameterConfig,
     period_model: str = "powerlaw",
-    by: str = "p",
+    by: str = "likelihood",
     seed: int = 1234,
     bins: Optional[int] = 40,
     ax=None,
@@ -2671,7 +2218,6 @@ def plot_best_rv_distributions(
         sim_cfg=sim_cfg,
         bin_cfg=bin_cfg,
         period_model=period_model,
-        by=by,
         seed=seed,
     )
 
@@ -2743,181 +2289,3 @@ def plot_best_rv_distributions(
     return ax, best_fbin, best_pi
 
 
-# ---------------------------------------------------------------------------
-# 3D and animated visualisations of the (f_bin, π, σ_single) grid
-# ---------------------------------------------------------------------------
-
-def plot_3d_ks(
-    grid_result: Dict[str, np.ndarray],
-    use_pvalue: bool = True,
-    sigma_idx: Optional[int] = None,
-):
-    """
-    Interactive 3D surface of the KS statistic over (f_bin, π) for one
-    or all sigma_single slices.
-
-    If grid_result contains multiple sigma slices and sigma_idx is None,
-    the surface shown is the best p-value (or min D) projected over sigma —
-    i.e. for each (f_bin, π) cell we take the best value across all sigmas.
-    If sigma_idx is given, only that slice is shown.
-
-    Parameters
-    ----------
-    grid_result : dict
-        Output of run_bias_grid.
-    use_pvalue : bool
-        If True, plot KS p-value (higher = better).
-        If False, plot KS D statistic (lower = better).
-    sigma_idx : int or None
-        Index into sigma_grid to plot. If None and multiple sigmas exist,
-        collapses over sigma by taking max p (or min D).
-
-    Returns
-    -------
-    fig, ax : matplotlib Figure and Axes3D
-    """
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-
-    fbin_grid  = grid_result["fbin_grid"]
-    pi_grid    = grid_result["pi_grid"]
-    sigma_grid = grid_result["sigma_grid"]
-    Z3         = grid_result["ks_p"] if use_pvalue else grid_result["ks_D"]
-    # Z3 shape: (n_sigma, n_fbin, n_pi)
-
-    if sigma_idx is not None:
-        Z = Z3[sigma_idx]
-        title = (f"KS {'p-value' if use_pvalue else 'D'} — "
-                 f"σ_single = {sigma_grid[sigma_idx]:.1f} km/s")
-    else:
-        # collapse: best p (max) or best D (min) across sigma axis
-        Z = Z3.max(axis=0) if use_pvalue else Z3.min(axis=0)
-        title = (f"KS {'p-value' if use_pvalue else 'D'} — "
-                 f"best over σ_single ∈ [{sigma_grid.min():.1f}, {sigma_grid.max():.1f}] km/s")
-
-    Pi, Fb = np.meshgrid(pi_grid, fbin_grid)
-
-    fig = plt.figure(figsize=(9, 6))
-    ax  = fig.add_subplot(111, projection="3d")
-    surf = ax.plot_surface(Pi, Fb, Z, cmap="viridis", edgecolor="none", alpha=0.9)
-    fig.colorbar(surf, ax=ax, shrink=0.5, label="KS p-value" if use_pvalue else "KS D")
-
-    ax.set_xlabel("π (period index)")
-    ax.set_ylabel("f_bin")
-    ax.set_zlabel("KS p-value" if use_pvalue else "KS D")
-    ax.set_title(title)
-
-    plt.tight_layout()
-    return fig, ax
-
-
-def plot_ks_movie(
-    grid_result: Dict[str, np.ndarray],
-    use_pvalue: bool = True,
-):
-    """
-    Animated heatmap of the KS statistic over (f_bin, π) where each frame
-    is one sigma_single value.  Includes play/pause button and a frame slider.
-
-    A second panel shows the best p-value (or min D) as a function of
-    sigma_single, with a vertical line tracking the current frame.
-
-    Parameters
-    ----------
-    grid_result : dict
-        Output of run_bias_grid.
-    use_pvalue : bool
-        If True, animate KS p-value.  If False, animate KS D.
-
-    Returns
-    -------
-    fig : matplotlib Figure
-    anim : matplotlib FuncAnimation (keep a reference to prevent GC)
-    """
-    import matplotlib.animation as animation
-    from matplotlib.widgets import Slider, Button
-
-    fbin_grid  = grid_result["fbin_grid"]
-    pi_grid    = grid_result["pi_grid"]
-    sigma_grid = grid_result["sigma_grid"]
-    Z3         = grid_result["ks_p"] if use_pvalue else grid_result["ks_D"]
-    # Z3 shape: (n_sigma, n_fbin, n_pi)
-
-    stat_label = "KS p-value" if use_pvalue else "KS D"
-    n_sigma    = sigma_grid.size
-
-    # Best statistic per sigma slice
-    best_per_sigma = Z3.max(axis=(1, 2)) if use_pvalue else Z3.min(axis=(1, 2))
-
-    # Common colour scale across all frames
-    vmin = Z3.min()
-    vmax = Z3.max()
-
-    Pi, Fb = np.meshgrid(pi_grid, fbin_grid)
-
-    # ---- layout ----
-    fig = plt.figure(figsize=(13, 6))
-    # Leave room at the bottom for widgets
-    fig.subplots_adjust(bottom=0.22, wspace=0.35)
-
-    ax_heat  = fig.add_subplot(1, 2, 1)
-    ax_sigma = fig.add_subplot(1, 2, 2)
-
-    # --- heatmap (frame 0) ---
-    mesh = ax_heat.pcolormesh(Pi, Fb, Z3[0], shading="auto",
-                              vmin=vmin, vmax=vmax, cmap="viridis")
-    fig.colorbar(mesh, ax=ax_heat, label=stat_label)
-    ax_heat.set_xlabel("π (period index)")
-    ax_heat.set_ylabel("f_bin")
-    title_obj = ax_heat.set_title(f"σ_single = {sigma_grid[0]:.2f} km/s")
-
-    # --- best-per-sigma panel ---
-    ax_sigma.plot(sigma_grid, best_per_sigma, "o-", color="steelblue")
-    vline = ax_sigma.axvline(sigma_grid[0], color="tomato", lw=2, ls="--")
-    ax_sigma.set_xlabel("σ_single (km/s)")
-    ax_sigma.set_ylabel(f"Best {stat_label}")
-    ax_sigma.set_title(f"Best {stat_label} vs σ_single")
-
-    # --- slider ---
-    ax_slider = fig.add_axes([0.15, 0.10, 0.55, 0.03])
-    slider = Slider(ax_slider, "Frame", 0, n_sigma - 1,
-                    valinit=0, valstep=1, color="steelblue")
-
-    # --- play / pause button ---
-    ax_button = fig.add_axes([0.78, 0.08, 0.10, 0.05])
-    button = Button(ax_button, "▶ Play", color="lightgray", hovercolor="silver")
-
-    # ---- animation state ----
-    state = {"playing": False, "frame": 0}
-
-    def draw_frame(i):
-        i = int(i)
-        mesh.set_array(Z3[i].ravel())
-        title_obj.set_text(f"σ_single = {sigma_grid[i]:.2f} km/s")
-        vline.set_xdata([sigma_grid[i], sigma_grid[i]])
-        slider.set_val(i)
-        fig.canvas.draw_idle()
-
-    def update_slider(val):
-        state["frame"] = int(slider.val)
-        draw_frame(state["frame"])
-
-    slider.on_changed(update_slider)
-
-    def toggle_play(event):
-        state["playing"] = not state["playing"]
-        button.label.set_text("⏸ Pause" if state["playing"] else "▶ Play")
-        fig.canvas.draw_idle()
-
-    button.on_clicked(toggle_play)
-
-    def animate(frame_unused):
-        if state["playing"]:
-            state["frame"] = (state["frame"] + 1) % n_sigma
-            draw_frame(state["frame"])
-
-    anim = animation.FuncAnimation(
-        fig, animate, interval=600, cache_frame_data=False
-    )
-
-    plt.show()
-    return fig, anim

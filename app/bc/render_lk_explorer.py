@@ -15,6 +15,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+
+def _binned_cdf(data: np.ndarray, bin_edges: np.ndarray) -> np.ndarray:
+    """Empirical CDF at bin_edges."""
+    s = np.sort(data)
+    return np.searchsorted(s, bin_edges, side='right') / len(s)
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
 if _ROOT not in sys.path:
@@ -46,7 +52,7 @@ def _me_cdf_band(
     """Run *n_sets* simulations and return (median_cdf, lo_cdf, hi_cdf, pooled_drv)."""
     from wr_bias_simulation import (
         simulate_delta_rv_sample, SimulationConfig,
-        BinaryParameterConfig, binned_cdf,
+        BinaryParameterConfig,
     )
     _be = np.array(bin_edges_tuple)
     all_cdfs, all_drv = [], []
@@ -56,7 +62,7 @@ def _me_cdf_band(
         drv = simulate_delta_rv_sample(fb, x_val, cfg,
                                        BinaryParameterConfig(),
                                        np.random.default_rng(42 + si))
-        all_cdfs.append(binned_cdf(drv, _be))
+        all_cdfs.append(_binned_cdf(drv, _be))
         all_drv.append(drv)
     all_cdfs = np.array(all_cdfs)
     return (np.median(all_cdfs, axis=0),
@@ -80,7 +86,7 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
         return
     try:
         from wr_bias_simulation import (
-            binned_cdf, DEFAULT_DRV_BIN_EDGES,
+            DEFAULT_DRV_BIN_EDGES,
             multinomial_log_likelihood,
         )
         fb = float(interp.get('f_bin', 0.5))
@@ -102,7 +108,7 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=be, y=binned_cdf(obs, be), mode='lines',
+            x=be, y=_binned_cdf(obs, be), mode='lines',
             name='Observed',
             line=dict(color='#4A90D9', width=2.5, shape='hv')))
         _hi_y = np.concatenate([[0.0], hi_c])
@@ -148,7 +154,7 @@ def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
     """
     from wr_bias_simulation import (
         simulate_delta_rv_sample, BinaryParameterConfig,
-        binned_cdf, DEFAULT_DRV_BIN_EDGES,
+        DEFAULT_DRV_BIN_EDGES,
     )
 
     cadence_library = result.get('cadence_library')
@@ -156,7 +162,7 @@ def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
         return
 
     _bin_edges = DEFAULT_DRV_BIN_EDGES
-    obs_cdf_b = binned_cdf(obs_delta_rv, _bin_edges)
+    obs_cdf_b = _binned_cdf(obs_delta_rv, _bin_edges)
 
     st.markdown('### CDF Sanity Check')
     st.caption(
@@ -193,7 +199,7 @@ def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
                 period_model=period_model,
                 cadence_library=cadence_library,
             )
-            sim_cdf = binned_cdf(drv, _bin_edges)
+            sim_cdf = _binned_cdf(drv, _bin_edges)
             fig.add_trace(go.Scatter(
                 x=_bin_edges, y=sim_cdf,
                 mode='lines', name=f'Draw {i+1} (seed={seed})',
@@ -233,7 +239,7 @@ def _render_lk_model_explorer(
     try:
         from wr_bias_simulation import (
             simulate_delta_rv_sample, SimulationConfig,
-            BinaryParameterConfig, binned_cdf, DEFAULT_DRV_BIN_EDGES,
+            BinaryParameterConfig, DEFAULT_DRV_BIN_EDGES,
             multinomial_log_likelihood,
         )
     except ImportError:
@@ -309,66 +315,91 @@ def _render_lk_model_explorer(
         f'sigma_single={me_sig:.1f} km/s'
     )
 
-    # -- CDF with error shadow ------------------------------------
-    obs_cdf = binned_cdf(obs_drv, be)
+    # -- CDF with error shadow + optional best-fit overlay --------
+    obs_cdf = _binned_cdf(obs_drv, be)
     med_x = np.concatenate([[0.0], be])
     med_y = np.concatenate([[0.0], med_cdf])
     lo_y = np.concatenate([[0.0], lo_cdf])
     hi_y = np.concatenate([[0.0], hi_cdf])
+
+    # Best-fit overlay (algorithm's best vs explorer's current)
+    _show_bestfit = st.checkbox('Compare with algorithm best-fit',
+                                value=False, key=f'{prefix}_lk_me_cmp_best')
+    _bf_med = None
+    if _show_bestfit and info is not None:
+        _bf_bv = info.get('best_vals', {})
+        _bf_fb = float(_bf_bv.get('fbin', 0.5))
+        _bf_x = float(_bf_bv.get(x_name, 0.0))
+        _bf_sig = float(_bf_bv.get('sigma', me_sig))
+        _bf_med, _bf_lo, _bf_hi, _ = _me_cdf_band(
+            _bf_fb, _bf_x, _bf_sig, sigma_m,
+            tuple(be.tolist()), n_sets=50)
 
     fig_cdf = go.Figure()
     fig_cdf.add_trace(go.Scatter(
         x=be, y=obs_cdf, mode='lines', name='Observed',
         line=dict(color='#4A90D9', width=2.5, shape='hv'),
     ))
-    # Error band
+    # Explorer error band
     fig_cdf.add_trace(go.Scatter(
         x=np.concatenate([med_x, med_x[::-1]]),
         y=np.concatenate([hi_y, lo_y[::-1]]),
         fill='toself', fillcolor=_hex_to_rgba(_METHOD_COLOR, 0.2),
         line=dict(color='rgba(0,0,0,0)'),
-        legendgroup='sim', showlegend=False, hoverinfo='skip',
+        legendgroup='explorer', showlegend=False, hoverinfo='skip',
     ))
     fig_cdf.add_trace(go.Scatter(
-        x=med_x, y=med_y, mode='lines', name='Simulated (median)',
-        legendgroup='sim',
+        x=med_x, y=med_y, mode='lines', name='Explorer (current)',
+        legendgroup='explorer',
         line=dict(color=_METHOD_COLOR, width=2.5, dash='dash',
                   shape='hv'),
     ))
+    # Best-fit overlay
+    if _bf_med is not None:
+        _bf_x_arr = np.concatenate([[0.0], be])
+        _bf_y_arr = np.concatenate([[0.0], _bf_med])
+        fig_cdf.add_trace(go.Scatter(
+            x=_bf_x_arr, y=_bf_y_arr,
+            mode='lines', name='Best-fit (algorithm)',
+            line=dict(color='#E25A53', width=2, dash='dot', shape='hv'),
+        ))
     fig_cdf.update_layout(**{
         **PLOTLY_THEME,
         'title': dict(
             text=f'CDF -- ln L = {_score_val}',
             font=dict(size=14)),
-        'xaxis_title': 'DeltaRV (km/s)',
+        'xaxis_title': 'ΔRV (km/s)',
         'yaxis_title': 'Cumulative fraction',
         'height': 380,
         'legend': dict(x=0.6, y=0.15),
     })
-    # -- Bin overlay toggle ----------------------------------------
-    _show_bins_me = st.checkbox('Show bin edges on CDF', value=False,
+    # -- Bin overlay toggle (uses likelihood bins, not CDF bins) ----
+    _show_bins_me = st.checkbox('Show likelihood bin edges on CDF', value=False,
                                 key=f'{prefix}_lk_me_show_bins')
     if _show_bins_me:
         _alt = ['rgba(100,100,100,0.08)', 'rgba(100,100,100,0.15)']
-        for _bi in range(len(be) - 1):
+        _lk_be_finite = lk_be[np.isfinite(lk_be)]
+        for _bi in range(len(lk_be) - 1):
+            _x0 = float(lk_be[_bi]) if np.isfinite(lk_be[_bi]) else 0.0
+            _x1 = float(lk_be[_bi + 1]) if np.isfinite(lk_be[_bi + 1]) else float(np.nanmax(obs_drv) * 1.1)
             fig_cdf.add_vrect(
-                x0=float(be[_bi]), x1=float(be[_bi + 1]),
+                x0=_x0, x1=_x1,
                 fillcolor=_alt[_bi % 2], layer='below', line_width=0)
-        for _ei in range(len(be)):
+        for _ei in _lk_be_finite:
             fig_cdf.add_vline(
-                x=float(be[_ei]),
+                x=float(_ei),
                 line=dict(color='grey', width=1, dash='dot'))
     st.plotly_chart(fig_cdf, use_container_width=True,
                     key=f'{prefix}_lk_me_cdf')
     if _show_bins_me:
-        _no = np.histogram(obs_drv, bins=be)[0]
-        _ns = np.histogram(pooled_drv, bins=be)[0]
+        _no = np.histogram(obs_drv, bins=lk_be)[0]
+        _ns = np.histogram(pooled_drv, bins=lk_be)[0]
         _sf = _ns / max(_ns.sum(), 1)
-        _br = [{'Bin': f'{be[i]:.0f}-{be[i+1]:.0f}',
+        _br = [{'Bin': f'{lk_be[i]:.0f}–{lk_be[i+1]:.0f}' if np.isfinite(lk_be[i+1]) else f'{lk_be[i]:.0f}–∞',
                 'N_obs': int(_no[i]),
                 'N_sim': int(_ns[i]),
                 'Sim frac': f'{_sf[i]:.3f}'}
-               for i in range(len(be) - 1)]
+               for i in range(len(lk_be) - 1)]
         st.dataframe(pd.DataFrame(_br), use_container_width=True,
                      hide_index=True)
 

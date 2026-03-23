@@ -56,7 +56,7 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
         return
 
     result = st.session_state.get(f'{p}_result')
-    if result is None or result.get('ks_p') is None:
+    if result is None or result.get('likelihood') is None:
         st.warning('No results found.')
         return
 
@@ -66,39 +66,39 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
     sigma_grid = np.asarray(result['sigma_grid'])
     logPmax_grid = np.asarray(result.get('logPmax_grid', []))
     _has_logPmax_scan = len(logPmax_grid) > 1
-    ks_p_arr = np.asarray(result['ks_p'])
+    lk_arr = np.asarray(result['likelihood'])
 
     n_sig = len(sigma_grid)
     _is_langer_sigma = (not _is_dsilva) and n_sig > 1
 
     # ── Handle logPmax dimension: browse slider ───────────────────────────
     _cad_lp_idx = 0
-    if _has_logPmax_scan and ks_p_arr.ndim == 4:
+    if _has_logPmax_scan and lk_arr.ndim == 4:
         _has_sigma_scan = n_sig > 1
         if _has_sigma_scan:
-            _cad_outer = np.nanmax(ks_p_arr, axis=(2, 3))
+            _cad_outer = np.nanmax(lk_arr, axis=(2, 3))
             st.plotly_chart(
                 _make_heatmap_fig(
                     _cad_outer, logPmax_grid, sigma_grid,
-                    title='Max p-value  (logP_max \u00d7 \u03c3_single)',
+                    title='Max Likelihood  (logP_max \u00d7 \u03c3_single)',
                     height=_ch, width=_cw,
                     x_label='\u03c3_single (km/s)',
                     y_label='log\u2081\u2080(P_max / days)',
                     x_name='\u03c3',
                 ), use_container_width=_use_cw)
         else:
-            _lp_max_p = [float(np.nanmax(ks_p_arr[i_lp]))
-                         if np.any(np.isfinite(ks_p_arr[i_lp])) else 0.0
-                         for i_lp in range(len(logPmax_grid))]
+            _lp_max_lk = [float(np.nanmax(lk_arr[i_lp]))
+                          if np.any(np.isfinite(lk_arr[i_lp])) else 0.0
+                          for i_lp in range(len(logPmax_grid))]
             st.plotly_chart(
                 _make_max_pval_fig(
-                    logPmax_grid, _lp_max_p, height=280,
+                    logPmax_grid, _lp_max_lk, height=280,
                     x_label='logP_max'),
                 use_container_width=True)
-        if np.any(np.isfinite(ks_p_arr)):
-            _best_flat = int(np.nanargmax(ks_p_arr))
+        if np.any(np.isfinite(lk_arr)):
+            _best_flat = int(np.nanargmax(lk_arr))
             _best_lp = _best_flat // (
-                ks_p_arr.shape[1] * ks_p_arr.shape[2] * ks_p_arr.shape[3])
+                lk_arr.shape[1] * lk_arr.shape[2] * lk_arr.shape[3])
         else:
             _best_lp = 0
         _lp_opts = [round(float(v), 4) for v in logPmax_grid]
@@ -132,40 +132,40 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
         _cad_x_disp = 'sigma_single (km/s)'
 
     # ── Determine best-fit indices for outer slice selection ───────────────
-    # For ks_p_arr that might be 3D or 4D, find best sigma slice
-    _ks_for_slice = ks_p_arr
-    if _has_logPmax_scan and _ks_for_slice.ndim == 4:
-        _ks_for_slice = _ks_for_slice[_cad_lp_idx]
+    # For lk_arr that might be 3D or 4D, find best sigma slice
+    _lk_for_slice = lk_arr
+    if _has_logPmax_scan and _lk_for_slice.ndim == 4:
+        _lk_for_slice = _lk_for_slice[_cad_lp_idx]
 
     _cad_outer_list = []
     if _has_logPmax_scan:
         _cad_outer_list.append(_cad_lp_idx)
     if n_sig > 1:
         _cad_best_s = 0
-        if np.any(np.isfinite(_ks_for_slice)):
-            _pmax_list = [float(np.nanmax(_ks_for_slice[s]))
-                          for s in range(n_sig)]
-            _cad_best_s = int(np.argmax(_pmax_list))
+        if np.any(np.isfinite(_lk_for_slice)):
+            _lkmax_list = [float(np.nanmax(_lk_for_slice[s]))
+                           for s in range(n_sig)]
+            _cad_best_s = int(np.argmax(_lkmax_list))
         _cad_outer_list.append(_cad_best_s)
-    elif _ks_for_slice.ndim == 3 and not _has_logPmax_scan:
+    elif _lk_for_slice.ndim == 3 and not _has_logPmax_scan:
         _cad_outer_list.append(0)
     _cad_outer = tuple(_cad_outer_list) if _cad_outer_list else None
 
     # ── Find global best-fit for gap_sim ──────────────────────────────────
-    _full_ks = np.asarray(result['ks_p'])
-    if not np.any(np.isfinite(_full_ks)):
-        st.warning('No finite p-values in grid \u2014 cannot run analysis.')
+    _full_lk = np.asarray(result['likelihood'])
+    if not np.any(np.isfinite(_full_lk)):
+        st.warning('No finite likelihood values in grid \u2014 cannot run analysis.')
         return
 
-    _flat_best = int(np.nanargmax(_full_ks))
-    _shape = _full_ks.shape
-    if _full_ks.ndim == 4:
+    _flat_best = int(np.nanargmax(_full_lk))
+    _shape = _full_lk.shape
+    if _full_lk.ndim == 4:
         _best_lp_idx = _flat_best // (_shape[1] * _shape[2] * _shape[3])
         _rem = _flat_best % (_shape[1] * _shape[2] * _shape[3])
         _best_sig_idx = _rem // (_shape[2] * _shape[3])
         _best_fb_idx = (_rem // _shape[3]) % _shape[2]
         _best_pi_idx = _rem % _shape[3]
-    elif _full_ks.ndim == 3:
+    elif _full_lk.ndim == 3:
         _best_lp_idx = 0
         _best_sig_idx = _flat_best // (_shape[1] * _shape[2])
         _best_fb_idx = (_flat_best // _shape[2]) % _shape[1]
@@ -235,7 +235,7 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
             cadence_weights=cadence_weights_a,
         )
         _gap_fp = (best_fbin_v, best_pi_v, best_sigma_v,
-                   ana_logPmax, _full_ks.shape)
+                   ana_logPmax, _full_lk.shape)
         if (st.session_state.get(f'{p}_gap_fingerprint') != _gap_fp
                 or f'{p}_gap_sim' not in st.session_state):
             rng_diag = np.random.default_rng(42)
@@ -246,6 +246,15 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
             st.session_state[f'{p}_gap_fingerprint'] = _gap_fp
             st.session_state.pop(f'{p}_sim_drv', None)
         gap_sim = st.session_state[f'{p}_gap_sim']
+
+    # ── Inject missing keys into result (backward compat for old .npz) ───
+    if 'obs_delta_rv' not in result and obs_drv_analysis is not None:
+        result['obs_delta_rv'] = obs_drv_analysis
+    if 'sigma_meas' not in result:
+        result['sigma_meas'] = float(
+            st.session_state.get(f'{p}_sigma_meas', 1.622))
+    if 'cadence_library' not in result and cadence_list_a is not None:
+        result['cadence_library'] = cadence_list_a
 
     # ── Build model_ctx and delegate to subtabs ───────────────────────────
     _model_type = 'cadence_dsilva' if _is_dsilva else 'cadence_langer'
@@ -341,6 +350,18 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
                 if st.session_state.get(f'{p}_loaded_path') != _cad_sel_path:
                     _cad_loaded = dict(np.load(
                         _cad_sel_path, allow_pickle=True))
+                    # Backward compat: compute likelihood from logL_raw if missing
+                    if 'likelihood' not in _cad_loaded and 'logL_raw' in _cad_loaded:
+                        _logL = np.asarray(_cad_loaded['logL_raw'], dtype=float)
+                        _logL_max = np.nanmax(_logL)
+                        if np.isfinite(_logL_max):
+                            _cad_loaded['likelihood'] = np.exp(_logL - _logL_max)
+                        else:
+                            _cad_loaded['likelihood'] = np.zeros_like(_logL)
+                    # Default likelihood_bin_edges if missing
+                    if 'likelihood_bin_edges' not in _cad_loaded:
+                        from wr_bias_simulation import DSILVA_LIKELIHOOD_BINS
+                        _cad_loaded['likelihood_bin_edges'] = DSILVA_LIKELIHOOD_BINS
                     st.session_state[f'{p}_result'] = _cad_loaded
                     st.session_state[f'{p}_loaded_path'] = _cad_sel_path
                     st.toast(
@@ -517,17 +538,12 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
             try:
                 _cad_ptl = np.load(
                     _cad_resume_path, allow_pickle=True)
-                # Load ALL scoring arrays
-                params['prefilled_ks_p'] = np.asarray(
-                    _cad_ptl['ks_p'])
-                params['prefilled_ks_D'] = np.asarray(
-                    _cad_ptl['ks_D'])
-                for _arr_key in ('weighted_D', 'weighted_p',
-                                 'cvm_D', 'cvm_p',
-                                 'cvm_S_raw', 'logL_raw'):
-                    if _arr_key in _cad_ptl:
-                        params[f'prefilled_{_arr_key}'] = (
-                            np.asarray(_cad_ptl[_arr_key]))
+                # Load likelihood arrays from checkpoint
+                params['prefilled_logL_raw'] = np.asarray(
+                    _cad_ptl['logL_raw']) if 'logL_raw' in _cad_ptl else None
+                # Backward compat: old checkpoints may have ks_p but no logL_raw
+                if params['prefilled_logL_raw'] is None and 'ks_p' in _cad_ptl:
+                    params['prefilled_logL_raw'] = None  # skip old-format checkpoints
                 # Override grid params from checkpoint
                 params['fbin_vals'] = (
                     _cad_ptl['fbin_grid'].tolist())
@@ -550,9 +566,9 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
                     params['adaptive_bins'] = bool(
                         _cad_ptl['adaptive_bins'])
                 # Progress info
-                _n_pre = int(np.count_nonzero(
-                    ~np.isnan(params['prefilled_ks_p'])))
-                _n_tot = params['prefilled_ks_p'].size
+                _pf = params.get('prefilled_logL_raw')
+                _n_pre = int(np.count_nonzero(~np.isnan(_pf))) if _pf is not None else 0
+                _n_tot = _pf.size if _pf is not None else 1
                 params['resume_from_path'] = _cad_resume_path
                 st.info(
                     f'\u267b\ufe0f Resuming from checkpoint '

@@ -448,7 +448,10 @@ def _render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
             f'mode (red dashed). '
             f'Off-diagonal: 2D marginalized heatmap'
             f'{"s" if n_params > 2 else ""} '
-            f'with 68%/95% contours and best fit (gold star).'
+            f'with 68%/95% contours and best fit (gold star). '
+            f'Note: the gold star marks the joint maximum (argmax of the '
+            f'full N-D likelihood), which may differ from the marginal '
+            f'mode shown on each diagonal.'
         )
 
     return _info
@@ -489,10 +492,14 @@ def _render_likelihood_cdf(
     Returns the simulated delta-RV array (for reuse in stats table), or None on failure.
     """
     from wr_bias_simulation import (
-        binned_cdf, DEFAULT_DRV_BIN_EDGES,
+        DEFAULT_DRV_BIN_EDGES,
         simulate_delta_rv_sample, SimulationConfig, BinaryParameterConfig,
         multinomial_log_likelihood,
     )
+
+    def _bcdf(data, edges):
+        s = np.sort(data)
+        return np.searchsorted(s, edges, side='right') / len(s)
 
     obs_drv = np.abs(np.asarray(obs_delta_rv))
     lk_edges = np.asarray(bin_edges)
@@ -544,7 +551,7 @@ def _render_likelihood_cdf(
         sim_drv = simulate_delta_rv_sample(
             f_bin=fb, pi=pi_v,
             sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
-        all_cdfs.append(binned_cdf(sim_drv, fine_edges))
+        all_cdfs.append(_bcdf(sim_drv, fine_edges))
         all_sim_drv.append(sim_drv)
 
     all_cdfs_arr = np.array(all_cdfs)
@@ -552,7 +559,7 @@ def _render_likelihood_cdf(
     median_cdf = np.median(all_cdfs_arr, axis=0)
     lo_cdf = np.percentile(all_cdfs_arr, 16, axis=0)
     hi_cdf = np.percentile(all_cdfs_arr, 84, axis=0)
-    obs_cdf = binned_cdf(obs_drv, fine_edges)
+    obs_cdf = _bcdf(obs_drv, fine_edges)
     logL = multinomial_log_likelihood(obs_drv, pooled_sim, lk_edges)
 
     obs_x = np.concatenate([[0.0], fine_edges])

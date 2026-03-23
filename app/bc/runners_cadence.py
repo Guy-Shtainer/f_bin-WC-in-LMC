@@ -31,7 +31,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         from wr_bias_simulation import (
             SimulationConfig, BinaryParameterConfig,
             _single_grid_task_cadence_aware, _init_worker,
-            DEFAULT_DRV_BIN_EDGES, binned_cdf,
+            DEFAULT_DRV_BIN_EDGES,
             compute_hdi68 as _hdi68,
         )
 
@@ -112,31 +112,19 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
 
         # ── WORKING · cancel-save-resume ──
         # Support resuming from partial checkpoint (including logPmax scans)
-        _pre_p = params.get('prefilled_ks_p')
-        _pre_D = params.get('prefilled_ks_D')
-        if (_pre_p is not None and _pre_D is not None
-                and _pre_p.shape == _cad_shape):
-            ks_p = _pre_p.copy()
-            ks_D = _pre_D.copy()
+        _pre_logL = params.get('prefilled_logL_raw')
+        if (_pre_logL is not None and _pre_logL.shape == _cad_shape):
+            logL_raw = _pre_logL.copy()
         else:
-            ks_D = np.full(_cad_shape, np.nan)
-            ks_p = np.full(_cad_shape, np.nan)
-
-        def _prefill_or_nan(key):
-            _arr = params.get(f'prefilled_{key}')
-            if _arr is not None and _arr.shape == _cad_shape:
-                return _arr.copy()
-            return np.full(_cad_shape, np.nan)
-
-        logL_raw   = _prefill_or_nan('logL_raw')
+            logL_raw = np.full(_cad_shape, np.nan)
 
         # ── WORKING · cancel-save-resume ──
         # Track overall progress
         _total_original = n_logPmax * n_sig * n_fb * n_pi
-        _pre_done = (int(np.count_nonzero(~np.isnan(ks_p)))
-                     if _pre_p is not None else 0)
+        _pre_done = (int(np.count_nonzero(~np.isnan(logL_raw)))
+                     if _pre_logL is not None else 0)
 
-        best_p = -1.0
+        best_logL = -np.inf
         best_fb = 0.0
         best_median_cdf = None
         best_lo_cdf = None
@@ -167,9 +155,8 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             os.makedirs(_RESULT_DIR, exist_ok=True)
             np.savez(
                 _partial_path,
-                ks_p=ks_p, ks_D=ks_D,
                 logL_raw=logL_raw,
-                scoring_version=np.array(2),
+                scoring_version=np.array(3),
                 fbin_grid=fbin_grid, pi_grid=pi_grid,
                 sigma_grid=sigma_grid,
                 logPmax_grid=logPmax_scan_vals,
@@ -202,7 +189,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
 
             # ── WORKING · cancel-save-resume ──
             # Filter pre-completed tasks (3-D and 4-D)
-            if _pre_p is not None:
+            if _pre_logL is not None:
                 def _cell_is_nan(t, _ilp):
                     _is = int(np.searchsorted(sigma_grid, t[2]))
                     _if = int(np.searchsorted(fbin_grid, t[0]))
@@ -210,8 +197,8 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                     if _is >= n_sig or _if >= n_fb or _ip >= n_pi:
                         return True
                     if _scan_logPmax:
-                        return bool(np.isnan(ks_p[_ilp, _is, _if, _ip]))
-                    return bool(np.isnan(ks_p[_is, _if, _ip]))
+                        return bool(np.isnan(logL_raw[_ilp, _is, _if, _ip]))
+                    return bool(np.isnan(logL_raw[_is, _if, _ip]))
                 slice_tasks = [t for t in slice_tasks
                                if _cell_is_nan(t, i_lp)]
 
@@ -227,28 +214,19 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                         _save_partial_cadence()
                     job['status'] = 'cancelled'
                     return
-                (fb, pi_val, sigma,
-                 _ks_D, _ks_p,
-                 _w_D, _w_p,
-                 _cvm_D, _cvm_p, _cvm_S,
-                 _logL,
+                (fb, pi_val, sigma, _logL,
                  med_cdf, lo_cdf, hi_cdf) = res
-                # weighted/CvM values unpacked but not stored (kept for worker compat)
                 i_sig = int(np.searchsorted(sigma_grid, sigma))
                 i_fb  = int(np.searchsorted(fbin_grid, fb))
                 i_pi  = int(np.searchsorted(pi_grid, pi_val))
                 _current_sig_idx = min(i_sig, n_sig - 1)
                 if i_sig < n_sig and i_fb < n_fb and i_pi < n_pi:
                     if _scan_logPmax:
-                        ks_D[i_lp, i_sig, i_fb, i_pi] = _ks_D
-                        ks_p[i_lp, i_sig, i_fb, i_pi] = _ks_p
                         logL_raw[i_lp, i_sig, i_fb, i_pi] = _logL
                     else:
-                        ks_D[i_sig, i_fb, i_pi] = _ks_D
-                        ks_p[i_sig, i_fb, i_pi] = _ks_p
                         logL_raw[i_sig, i_fb, i_pi] = _logL
-                if _ks_p > best_p:
-                    best_p = _ks_p
+                if _logL > best_logL:
+                    best_logL = _logL
                     best_fb = fb
                     best_median_cdf = med_cdf
                     best_lo_cdf = lo_cdf
@@ -277,9 +255,8 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                 if _now - job.get('_last_hm', 0) > 1.0 or _is_final:
                     job['_last_hm'] = _now
 
-                    # Build per-method live heatmaps
+                    # Build per-method live heatmaps (likelihood only)
                     _method_arrays = [
-                        ('ks', ks_p, ks_D, 'K-S p'),
                         ('likelihood', logL_raw, logL_raw, 'Likelihood'),
                     ]
                     _method_live = {}
@@ -312,22 +289,17 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                                 'is_final': _is_final,
                             }
                         job['live_heatmaps'] = _method_live
-                        # Build per-method status summary
-                        _status_items = []
-                        for _smk in ('ks', 'weighted', 'cvm', 'likelihood'):
-                            if _smk in _method_live:
-                                _sp = _method_live[_smk]['p']
-                                _, _, _spv = _best_point(_sp, fbin_grid, sigma_grid)
-                                _status_items.append(f'{_smk}: **{_spv:.4f}**')
-                        _ks_disp = _method_live['ks']['p']
+                        # Build status summary
+                        _lk_disp = _method_live['likelihood']['p']
+                        _, _, _spv = _best_point(_lk_disp, fbin_grid, sigma_grid)
                         _bp_idx = np.unravel_index(
-                            np.argmax(_ks_disp), _ks_disp.shape)
+                            np.argmax(_lk_disp), _lk_disp.shape)
                         _bf = float(fbin_grid[_bp_idx[0]])
                         _bsig = float(sigma_grid[_bp_idx[1]])
                         job['live_status'] = (
                             f'best f_bin = **{_bf:.4f}**, '
                             f'σ_single = **{_bsig:.1f}** km/s  |  '
-                            + '  |  '.join(_status_items))
+                            f'Likelihood: **{_spv:.4f}**')
                     else:
                         # Dsilva (or single-sigma Langer): show CURRENT sigma slice
                         _display_sig_idx = _current_sig_idx if n_sig > 1 else 0
@@ -367,16 +339,10 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             }
                         job['live_heatmaps'] = _method_live
 
-                        # Live 1D σ graph (max KS p and max likelihood per sigma slice)
+                        # Live 1D σ graph (max likelihood per sigma slice)
                         if n_sig > 1:
-                            _live_sig_pvals = []
-                            _live_sig_scores = []
                             _live_sig_likelihood = []
-                            # For 4D (logPmax scan): marginalize over logPmax axis first
-                            _ks_p_sig = np.nanmax(ks_p, axis=0) if ks_p.ndim == 4 else ks_p
-                            _ks_D_sig = np.nanmin(ks_D, axis=0) if ks_D.ndim == 4 else ks_D
                             _logL_sig = np.nanmax(logL_raw, axis=0) if logL_raw.ndim == 4 else logL_raw
-                            # Compute global logL max across ALL sigma slices
                             _logL_global = job.get('_logL_global_max', -np.inf)
                             for _ls in range(n_sig):
                                 _lsL = _logL_sig[_ls]
@@ -387,18 +353,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                             if np.isfinite(_logL_global):
                                 job['_logL_global_max'] = _logL_global
                             for _ls in range(n_sig):
-                                _lsp = _ks_p_sig[_ls]
-                                _lsd = _ks_D_sig[_ls]
                                 _lsL = _logL_sig[_ls]
-                                if np.any(~np.isnan(_lsp)):
-                                    _live_sig_pvals.append(float(np.nanmax(_lsp)))
-                                else:
-                                    _live_sig_pvals.append(0.0)
-                                if np.any(~np.isnan(_lsd)):
-                                    _live_sig_scores.append(float(np.nanmin(_lsd)))
-                                else:
-                                    _live_sig_scores.append(float('inf'))
-                                # Max likelihood per sigma slice (globally normalized)
                                 if np.any(~np.isnan(_lsL)) and np.isfinite(_logL_global):
                                     _live_sig_likelihood.append(
                                         float(np.nanmax(np.exp(_lsL - _logL_global))))
@@ -406,62 +361,55 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                                     _live_sig_likelihood.append(0.0)
                             job['live_sigma_1d'] = {
                                 'sigma_vals': sigma_grid.tolist(),
-                                'max_pvals': _live_sig_pvals,
-                                'min_scores': _live_sig_scores,
                                 'max_likelihood': _live_sig_likelihood,
                             }
 
-                        # Build per-method status items
-                        _method_status_items = []
-                        for _smk in ('ks', 'weighted', 'cvm', 'likelihood'):
-                            if _smk in _method_live:
-                                _sp = _method_live[_smk]['p']
-                                _, _, _spv = _best_point(_sp, fbin_grid, pi_grid)
-                                _method_status_items.append(f'{_smk}: **{_spv:.4f}**')
-                        _ks_disp = _method_live['ks']['p']
+                        # Build status items (likelihood only)
+                        _lk_disp = _method_live['likelihood']['p']
+                        _, _, _spv = _best_point(_lk_disp, fbin_grid, pi_grid)
                         _bp_idx = np.unravel_index(
-                            np.argmax(_ks_disp), _ks_disp.shape)
+                            np.argmax(_lk_disp), _lk_disp.shape)
                         _bf = float(fbin_grid[_bp_idx[0]])
                         _bpi = float(pi_grid[_bp_idx[1]])
                         _status_parts = [
                             f'Showing {_sig_label} km/s  →  '
                             f'f_bin = **{_bf:.4f}**, '
                             f'π = **{_bpi:.3f}**  |  '
-                            + '  |  '.join(_method_status_items),
+                            f'Likelihood: **{_spv:.4f}**',
                         ]
                         if n_sig > 1:
-                            _overall_best_sig = 0
-                            _ks_p_sig2 = np.nanmax(ks_p, axis=0) if ks_p.ndim == 4 else ks_p
-                            _pmax_per_sig = [
-                                float(np.nanmax(_ks_p_sig2[s]))
-                                if np.any(~np.isnan(_ks_p_sig2[s]))
-                                else -1.0
+                            _logL_sig2 = np.nanmax(logL_raw, axis=0) if logL_raw.ndim == 4 else logL_raw
+                            _logL_gmax = np.nanmax(_logL_sig2)
+                            _lk_per_sig = [
+                                float(np.nanmax(np.exp(_logL_sig2[s] - _logL_gmax)))
+                                if np.any(~np.isnan(_logL_sig2[s])) and np.isfinite(_logL_gmax)
+                                else 0.0
                                 for s in range(n_sig)
                             ]
-                            if any(v > -1.0 for v in _pmax_per_sig):
-                                _overall_best_sig = int(np.argmax(_pmax_per_sig))
-                            _obs = sigma_grid[_overall_best_sig]
-                            _obp = _pmax_per_sig[_overall_best_sig] if _pmax_per_sig[_overall_best_sig] > -1 else 0
-                            _status_parts.append(
-                                f'Overall best: σ=**{_obs:.1f}** km/s, p=**{_obp:.4f}**')
+                            if any(v > 0 for v in _lk_per_sig):
+                                _overall_best_sig = int(np.argmax(_lk_per_sig))
+                                _obs = sigma_grid[_overall_best_sig]
+                                _status_parts.append(
+                                    f'Overall best: σ=**{_obs:.1f}** km/s')
                         job['live_status'] = '  |  '.join(_status_parts)
 
                         # Live 1D logPmax profile (cadence)
                         if _scan_logPmax and n_logPmax > 1:
-                            _live_lp_pvals_c = []
+                            _live_lp_lk_c = []
+                            _logL_gmax_lp = np.nanmax(logL_raw) if np.any(np.isfinite(logL_raw)) else -np.inf
                             for _lpi_c in range(n_logPmax):
                                 if _lpi_c <= i_lp:
-                                    _lp_sl = ks_p[_lpi_c]
-                                    if np.any(~np.isnan(_lp_sl)):
-                                        _live_lp_pvals_c.append(
-                                            float(np.nanmax(_lp_sl)))
+                                    _lp_sl = logL_raw[_lpi_c]
+                                    if np.any(~np.isnan(_lp_sl)) and np.isfinite(_logL_gmax_lp):
+                                        _live_lp_lk_c.append(
+                                            float(np.nanmax(np.exp(_lp_sl - _logL_gmax_lp))))
                                     else:
-                                        _live_lp_pvals_c.append(0.0)
+                                        _live_lp_lk_c.append(0.0)
                                 else:
-                                    _live_lp_pvals_c.append(0.0)
+                                    _live_lp_lk_c.append(0.0)
                             job['live_logPmax_1d'] = {
                                 'logPmax_vals': logPmax_scan_vals.tolist(),
-                                'max_pvals': _live_lp_pvals_c,
+                                'max_likelihood': _live_lp_lk_c,
                             }
 
         # Normalize logL → likelihood [0,1]
@@ -471,17 +419,15 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         else:
             likelihood = np.zeros_like(logL_raw)
 
-        # Build result with all 4 methods
+        # Build result (likelihood only)
         result = {
             'fbin_grid': fbin_grid,
             'pi_grid': pi_grid,
             'sigma_grid': sigma_grid,
             'logPmax_grid': logPmax_scan_vals,
-            'ks_D': ks_D,
-            'ks_p': ks_p,
             'likelihood': likelihood,
             'logL_raw': logL_raw,
-            'scoring_version': np.array(2),
+            'scoring_version': np.array(3),
             'obs_delta_rv': obs_delta_rv,
             'best_median_cdf': best_median_cdf,
             'best_lo_cdf': best_lo_cdf,
@@ -492,25 +438,25 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             'likelihood_bin_edges': params.get('likelihood_bin_edges'),
         }
 
-        # HDI68 (p-value based) — marginalize over logPmax if 4-D
-        _ks_for_hdi = ks_p
+        # HDI68 (likelihood-based) — marginalize over logPmax if 4-D
+        _lk_for_hdi = likelihood
         if _scan_logPmax:
-            _ks_for_hdi = np.nanmax(ks_p, axis=0)  # → (n_sig, n_fb, n_pi)
-        if _ks_for_hdi.ndim == 2:
+            _lk_for_hdi = np.nanmax(likelihood, axis=0)  # → (n_sig, n_fb, n_pi)
+        if _lk_for_hdi.ndim == 2:
             # 2D: (n_fb, n_pi) — single sigma
-            _post_fb = np.sum(_ks_for_hdi, axis=1)
-            _post_pi = np.sum(_ks_for_hdi, axis=0)
+            _post_fb = np.sum(_lk_for_hdi, axis=1)
+            _post_pi = np.sum(_lk_for_hdi, axis=0)
             if _post_fb.sum() > 0:
                 m_fb, lo_fb, hi_fb = _hdi68(fbin_grid, _post_fb)
                 result.update(mode_fbin=m_fb, lo_fbin=lo_fb, hi_fbin=hi_fb)
             if _post_pi.sum() > 0:
                 m_pi, lo_pi, hi_pi = _hdi68(pi_grid, _post_pi)
                 result.update(mode_pi=m_pi, lo_pi=lo_pi, hi_pi=hi_pi)
-        elif _ks_for_hdi.ndim == 3:
+        elif _lk_for_hdi.ndim == 3:
             # 3D: (n_sig, n_fb, n_pi)
-            _post_fb = np.sum(_ks_for_hdi, axis=(0, 2))
-            _post_pi = np.sum(_ks_for_hdi, axis=(0, 1))
-            _post_sig = np.sum(_ks_for_hdi, axis=(1, 2))
+            _post_fb = np.sum(_lk_for_hdi, axis=(0, 2))
+            _post_pi = np.sum(_lk_for_hdi, axis=(0, 1))
+            _post_sig = np.sum(_lk_for_hdi, axis=(1, 2))
             if _post_fb.sum() > 0:
                 m_fb, lo_fb, hi_fb = _hdi68(fbin_grid, _post_fb)
                 result.update(mode_fbin=m_fb, lo_fbin=lo_fb, hi_fbin=hi_fb)

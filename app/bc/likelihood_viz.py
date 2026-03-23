@@ -21,10 +21,14 @@ def render_likelihood_cdf(
     Returns the simulated ΔRV array (for reuse in stats table), or None on failure.
     """
     from wr_bias_simulation import (
-        binned_cdf, DEFAULT_DRV_BIN_EDGES,
+        DEFAULT_DRV_BIN_EDGES,
         simulate_delta_rv_sample, SimulationConfig, BinaryParameterConfig,
         multinomial_log_likelihood,
     )
+
+    def _bcdf(data, edges):
+        s = np.sort(data)
+        return np.searchsorted(s, edges, side='right') / len(s)
 
     obs_drv = np.abs(np.asarray(obs_delta_rv))
     lk_edges = np.asarray(bin_edges)
@@ -33,8 +37,6 @@ def render_likelihood_cdf(
     # --- Extract best-fit parameters from result ---
     # Try likelihood-specific best, fall back to global
     _lk_p = result.get('likelihood')
-    if _lk_p is None:
-        _lk_p = result.get('ks_p')
     if _lk_p is None:
         st.info('No likelihood data available for CDF.')
         return None
@@ -83,7 +85,7 @@ def render_likelihood_cdf(
         sim_drv = simulate_delta_rv_sample(
             f_bin=fb, pi=pi_v,
             sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
-        all_cdfs.append(binned_cdf(sim_drv, fine_edges))
+        all_cdfs.append(_bcdf(sim_drv, fine_edges))
         all_sim_drv.append(sim_drv)
 
     all_cdfs = np.array(all_cdfs)
@@ -92,7 +94,7 @@ def render_likelihood_cdf(
     lo_cdf = np.percentile(all_cdfs, 16, axis=0)
     hi_cdf = np.percentile(all_cdfs, 84, axis=0)
 
-    obs_cdf = binned_cdf(obs_drv, fine_edges)
+    obs_cdf = _bcdf(obs_drv, fine_edges)
 
     # Compute log-likelihood at best-fit
     logL = multinomial_log_likelihood(obs_drv, pooled_sim, lk_edges)

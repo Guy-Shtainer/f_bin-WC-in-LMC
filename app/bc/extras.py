@@ -723,8 +723,8 @@ def _render_compare_tab(p: str) -> None:
     def _get_arrays(res, label):
         """Extract heatmap arrays and axis values from a result dict."""
         info = {'label': label, 'settings': {}, 'heatmap': None, 'type': 'unknown'}
-        ks_p = res.get('ks_p', None)
-        if ks_p is None:
+        lk = res.get('likelihood', None)
+        if lk is None:
             return info
 
         fbin_vals = res.get('fbin_grid', np.array([]))
@@ -738,40 +738,40 @@ def _render_compare_tab(p: str) -> None:
             info['pi_vals'] = pi_vals
             info['sigma_vals'] = sigma_vals
             info['logPmax_vals'] = logPmax_vals
-            info['ks_p_full'] = ks_p
+            info['lk_full'] = lk
 
-            if not np.any(np.isfinite(ks_p)):
+            if not np.any(np.isfinite(lk)):
                 info['x_vals'] = pi_vals
                 info['x_label'] = 'π'
                 return info
 
-            if ks_p.ndim == 4:
-                flat_idx = int(np.nanargmax(ks_p))
-                idx = np.unravel_index(flat_idx, ks_p.shape)
+            if lk.ndim == 4:
+                flat_idx = int(np.nanargmax(lk))
+                idx = np.unravel_index(flat_idx, lk.shape)
                 info['best_logPmax_idx'] = idx[0]
                 info['best_sigma_idx'] = idx[1]
-                info['heatmap'] = ks_p[idx[0], idx[1]]
+                info['heatmap'] = lk[idx[0], idx[1]]
                 info['best_fbin'] = float(fbin_vals[idx[2]])
                 info['best_pi'] = float(pi_vals[idx[3]])
                 info['best_sigma'] = float(sigma_vals[idx[1]]) if sigma_vals.size > 0 else None
                 info['best_logPmax'] = float(logPmax_vals[idx[0]]) if logPmax_vals.size > 0 else None
-                info['best_pval'] = float(ks_p[idx])
-            elif ks_p.ndim == 3:
-                flat_idx = int(np.nanargmax(ks_p))
-                idx = np.unravel_index(flat_idx, ks_p.shape)
+                info['best_lk'] = float(lk[idx])
+            elif lk.ndim == 3:
+                flat_idx = int(np.nanargmax(lk))
+                idx = np.unravel_index(flat_idx, lk.shape)
                 info['best_sigma_idx'] = idx[0]
-                info['heatmap'] = ks_p[idx[0]]
+                info['heatmap'] = lk[idx[0]]
                 info['best_fbin'] = float(fbin_vals[idx[1]])
                 info['best_pi'] = float(pi_vals[idx[2]])
                 info['best_sigma'] = float(sigma_vals[idx[0]]) if sigma_vals.size > 0 else None
-                info['best_pval'] = float(ks_p[idx])
-            elif ks_p.ndim == 2:
-                info['heatmap'] = ks_p
-                flat_idx = int(np.nanargmax(ks_p))
-                idx = np.unravel_index(flat_idx, ks_p.shape)
+                info['best_lk'] = float(lk[idx])
+            elif lk.ndim == 2:
+                info['heatmap'] = lk
+                flat_idx = int(np.nanargmax(lk))
+                idx = np.unravel_index(flat_idx, lk.shape)
                 info['best_fbin'] = float(fbin_vals[idx[0]])
                 info['best_pi'] = float(pi_vals[idx[1]])
-                info['best_pval'] = float(ks_p[idx])
+                info['best_lk'] = float(lk[idx])
             info['x_vals'] = pi_vals
             info['x_label'] = 'π'
         else:
@@ -780,14 +780,14 @@ def _render_compare_tab(p: str) -> None:
             info['sigma_vals'] = sigma_vals
             info['x_vals'] = sigma_vals
             info['x_label'] = 'σ_single'
-            info['ks_p_full'] = ks_p
-            if ks_p.ndim == 2 and np.any(np.isfinite(ks_p)):
-                info['heatmap'] = ks_p
-                flat_idx = int(np.nanargmax(ks_p))
-                idx = np.unravel_index(flat_idx, ks_p.shape)
+            info['lk_full'] = lk
+            if lk.ndim == 2 and np.any(np.isfinite(lk)):
+                info['heatmap'] = lk
+                flat_idx = int(np.nanargmax(lk))
+                idx = np.unravel_index(flat_idx, lk.shape)
                 info['best_fbin'] = float(fbin_vals[idx[0]])
                 info['best_sigma'] = float(sigma_vals[idx[1]])
-                info['best_pval'] = float(ks_p[idx])
+                info['best_lk'] = float(lk[idx])
 
         for _hk in ('mode_fbin', 'lo_fbin', 'hi_fbin',
                      'mode_pi', 'lo_pi', 'hi_pi',
@@ -958,7 +958,7 @@ def _render_compare_tab(p: str) -> None:
             _row['logP_max'] = f'{_inf["best_logPmax"]:.2f}' if _inf.get('best_logPmax') is not None else '—'
 
         # p-value
-        _row['p-value'] = f'{_inf["best_pval"]:.5f}' if 'best_pval' in _inf else '—'
+        _row['Likelihood'] = f'{_inf["best_lk"]:.5f}' if 'best_lk' in _inf else '—'
 
         # Re-simulation metrics
         if _has_resim_s:

@@ -86,13 +86,13 @@ def _render_simulation_tab(p: str, ctx: dict) -> None:
         ndim_mode=ctx['ndim_mode'],
     )
 
-    # ── CDF comparison plot ───────────────────────────────────────────────
-    _render_all_methods_cdf(
-        result, method_results, fbin_g, x_g,
-        prefix=p,
-        x_name=ctx['x_name'],
-        x_label=ctx['x_label'],
-    )
+    # ── A2 CDF comparison — REMOVED (redundant with E5) ──────────────────
+    # _render_all_methods_cdf(
+    #     result, method_results, fbin_g, x_g,
+    #     prefix=p,
+    #     x_name=ctx['x_name'],
+    #     x_label=ctx['x_label'],
+    # )
 
     # ── Analysis plots (period dist, binary fraction, orbital histograms) ─
     gap_sim = ctx.get('gap_sim')
@@ -151,12 +151,12 @@ def _render_analysis_plots(
     missed_count = int(np.sum(bin_missed_mask))
     observed_fbin = detected_bin_count / max(len(gap_drv), 1)
 
-    # Period distribution
-    render_period_distribution(
-        p, gap_sim, bin_detected_mask, bin_missed_mask,
-        logP_min, logP_max, ana_x_val,
-        x_label=x_label, has_case_AB=has_case_AB,
-    )
+    # A4 Period distribution — REMOVED (already in A6 orbital histograms)
+    # render_period_distribution(
+    #     p, gap_sim, bin_detected_mask, bin_missed_mask,
+    #     logP_min, logP_max, ana_x_val,
+    #     x_label=x_label, has_case_AB=has_case_AB,
+    # )
 
     # Binary fraction vs threshold
     render_binary_fraction_vs_threshold(
@@ -283,20 +283,7 @@ def render_model_subtabs(p: str, model_ctx: dict) -> None:
     from bc.render_shared import render_shared_section
     method_results = render_shared_section(p, model_ctx)
 
-    # ── Scoring method radio selector ─────────────────────────────────────
+    # ── Likelihood scoring ────────────────────────────────────────────────
     st.markdown('---')
-    _RADIO_LABELS = ['K-S (standard)', 'Likelihood']
-
-    selected_label = st.radio(
-        'Scoring method',
-        _RADIO_LABELS,
-        key=f'{p}_scoring',
-        horizontal=True,
-    )
-
-    if selected_label == 'K-S (standard)':
-        from bc.render_ks import render_ks_tab
-        render_ks_tab(p, model_ctx, method_results)
-    else:
-        from bc.render_lk import render_lk_tab
-        render_lk_tab(p, model_ctx, method_results)
+    from bc.render_lk import render_lk_tab
+    render_lk_tab(p, model_ctx, method_results)

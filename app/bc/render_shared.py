@@ -19,6 +19,12 @@ if _ROOT not in sys.path:
 from shared import make_heatmap_fig, find_best_grid_point, PLOTLY_THEME, get_palette
 from bc.helpers import SCORING_METHODS, _METHOD_COLORS, _RESULT_DIR
 
+
+def _binned_cdf(data: np.ndarray, bin_edges: np.ndarray) -> np.ndarray:
+    """Empirical CDF at bin_edges."""
+    sorted_data = np.sort(data)
+    return np.searchsorted(sorted_data, bin_edges, side='right') / len(sorted_data)
+
 # Shared colors
 _CLR_DETECTED = '#E25A53'
 _CLR_MISSED   = '#F5A623'
@@ -221,11 +227,10 @@ def _render_method_summary_section(
                 in_all = False; break
         row['Agreement'] = 'Yes' if in_all else 'No'
 
-    st.markdown('#### Scoring Method Comparison')
+    st.markdown('#### Summary Table')
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     st.caption(
-        'Comparison of all scoring methods. "Agreement" = does this method\'s '
-        'best f_bin fall within every other method\'s 68% HDI for f_bin.')
+        'Best-fit parameters and 68% HDI from likelihood scoring.')
     return method_results
 
 def _render_all_methods_cdf(
@@ -239,7 +244,7 @@ def _render_all_methods_cdf(
         return
     try:
         from wr_bias_simulation import (
-            binned_cdf, DEFAULT_DRV_BIN_EDGES,
+            DEFAULT_DRV_BIN_EDGES,
             simulate_delta_rv_sample, SimulationConfig, BinaryParameterConfig,
         )
     except ImportError:
@@ -248,7 +253,7 @@ def _render_all_methods_cdf(
     _be = DEFAULT_DRV_BIN_EDGES if _be is None else np.asarray(_be)
     obs_drv = np.asarray(obs_drv)
     _n_obs = len(obs_drv)
-    obs_cdf = binned_cdf(obs_drv, _be)
+    obs_cdf = _binned_cdf(obs_drv, _be)
     _obs_x = np.concatenate([[0.0], _be])
     _obs_y = np.concatenate([[0.0], obs_cdf])
 
@@ -274,7 +279,7 @@ def _render_all_methods_cdf(
                 sim_drv = simulate_delta_rv_sample(
                     f_bin=float(fb), pi=float(pi_v),
                     sim_cfg=sim_cfg, bin_cfg=BinaryParameterConfig(), rng=rng)
-                _all_cdfs.append(binned_cdf(sim_drv, _be))
+                _all_cdfs.append(_binned_cdf(sim_drv, _be))
             _all_cdfs = np.array(_all_cdfs)
             _med = np.median(_all_cdfs, axis=0)
             _lo = np.percentile(_all_cdfs, 16, axis=0)
@@ -324,31 +329,95 @@ def _build_extra_grids(ctx: dict) -> list[tuple[str, np.ndarray]] | None:
     return extras if extras else None
 
 def _render_sigma_scan_chart(ctx: dict) -> None:
-    """Show max K-S p-value vs sigma_single line chart when sigma was scanned."""
+    """Show max likelihood vs σ/logPmax: 1D line or 2D heatmap depending on grids.
+
+    - σ only → 1D line (σ on x)
+    - logPmax only → 1D line (logPmax on x)
+    - Both σ AND logPmax → 2D heatmap (σ × logPmax, max over f_bin × π)
+    """
     result = ctx['result']
     sigma_g = np.asarray(result.get('sigma_grid', []))
-    if sigma_g.size <= 1:
+    logPmax_g = np.asarray(result.get('logPmax_grid', []))
+    lk = np.asarray(result.get('likelihood', []))
+    if lk.size == 0:
         return
-    ks_p = np.asarray(result.get('ks_p', []))
-    if ks_p.size == 0:
+
+    _has_sig = sigma_g.size > 1
+    _has_lp = logPmax_g.size > 1
+    _pfx = ctx.get('_prefix', 'sim')
+
+    if not _has_sig and not _has_lp:
         return
-    if ks_p.ndim == 4:
-        max_pvals = [float(np.nanmax(ks_p[:, i_s, :, :]))
-                     if np.any(np.isfinite(ks_p[:, i_s, :, :])) else 0.0
-                     for i_s in range(sigma_g.size)]
-    elif ks_p.ndim == 3:
-        max_pvals = [float(np.nanmax(ks_p[i_s]))
-                     if np.any(np.isfinite(ks_p[i_s])) else 0.0
-                     for i_s in range(sigma_g.size)]
-    elif ks_p.ndim == 2:
-        max_pvals = [float(np.nanmax(ks_p[:, i_s]))
-                     if np.any(np.isfinite(ks_p[:, i_s])) else 0.0
-                     for i_s in range(sigma_g.size)]
-    else:
-        return
-    fig = _make_max_pval_fig(sigma_g, max_pvals, height=300)
-    st.plotly_chart(fig, use_container_width=True,
-                    key=f'{ctx.get("_prefix", "sim")}_sig_scan')
+
+    def _max_per_axis(arr, axis_sizes, keep_axes):
+        """Compute max over all axes EXCEPT keep_axes."""
+        reduce_axes = tuple(i for i in range(arr.ndim) if i not in keep_axes)
+        if not reduce_axes:
+            return arr
+        return np.nanmax(arr, axis=reduce_axes)
+
+    if _has_sig and _has_lp:
+        # BOTH grids: 2D heatmap (σ × logPmax, max over f_bin × π)
+        # lk shape: [logPmax, sigma, fbin, pi] (4D) or similar
+        if lk.ndim == 4:
+            hm_2d = np.nanmax(lk, axis=(2, 3))  # → [logPmax, sigma]
+        elif lk.ndim == 3:
+            hm_2d = np.nanmax(lk, axis=2)  # → [logPmax or sigma, sigma or fbin]
+        else:
+            return
+        fig_hm = make_heatmap_fig(
+            hm_2d, logPmax_g, sigma_g,
+            title='Max Likelihood (σ_single × logP_max)',
+            show_d=False, height=350,
+            x_label='σ_single (km/s)',
+            y_label='log₁₀(P_max / days)',
+            x_name='σ',
+            scoring_label='Likelihood',
+            colorbar_title_override='Max Likelihood',
+        )
+        st.plotly_chart(fig_hm, use_container_width=True,
+                        key=f'{_pfx}_sig_lp_heatmap')
+        st.caption('Max likelihood across f_bin × π at each (σ_single, logP_max) point.')
+
+    elif _has_sig:
+        # σ only: 1D line chart
+        if lk.ndim == 4:
+            max_vals = [float(np.nanmax(lk[:, i_s, :, :]))
+                        if np.any(np.isfinite(lk[:, i_s, :, :])) else 0.0
+                        for i_s in range(sigma_g.size)]
+        elif lk.ndim == 3:
+            max_vals = [float(np.nanmax(lk[i_s]))
+                        if np.any(np.isfinite(lk[i_s])) else 0.0
+                        for i_s in range(sigma_g.size)]
+        elif lk.ndim == 2:
+            max_vals = [float(np.nanmax(lk[:, i_s]))
+                        if np.any(np.isfinite(lk[:, i_s])) else 0.0
+                        for i_s in range(sigma_g.size)]
+        else:
+            return
+        fig = _make_max_pval_fig(sigma_g, max_vals, height=300,
+                                 x_label='σ_single (km/s)',
+                                 stat_label='Likelihood')
+        st.plotly_chart(fig, use_container_width=True,
+                        key=f'{_pfx}_sig_scan')
+
+    elif _has_lp:
+        # logPmax only: 1D line chart
+        if lk.ndim == 4:
+            max_vals = [float(np.nanmax(lk[i_lp]))
+                        if np.any(np.isfinite(lk[i_lp])) else 0.0
+                        for i_lp in range(logPmax_g.size)]
+        elif lk.ndim == 3:
+            max_vals = [float(np.nanmax(lk[i_lp]))
+                        if np.any(np.isfinite(lk[i_lp])) else 0.0
+                        for i_lp in range(logPmax_g.size)]
+        else:
+            return
+        fig = _make_max_pval_fig(logPmax_g, max_vals, height=300,
+                                 x_label='log₁₀(P_max / days)',
+                                 stat_label='Likelihood')
+        st.plotly_chart(fig, use_container_width=True,
+                        key=f'{_pfx}_lp_scan')
 
 # ── From sim_plots.py ────────────────────────────────────────────────────────
 

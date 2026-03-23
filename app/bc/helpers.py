@@ -49,7 +49,6 @@ _CMP_DASHES = [
 # ── Scoring method registry ──────────────────────────────────────────────────
 # (key, display_name, p_key, D_key, color)
 SCORING_METHODS = [
-    ('ks',         'K-S (standard)',  'ks_p',       'ks_D',       '#4A90D9'),
     ('likelihood', 'Likelihood',      'likelihood', 'logL_raw',   '#DAA520'),
 ]
 
@@ -57,13 +56,11 @@ _METHOD_COLORS = {m[0]: m[4] for m in SCORING_METHODS}
 
 # Scoring label for make_heatmap_fig colorbar per method
 _METHOD_SCORING_LABELS = {
-    'ks': 'K-S',
     'likelihood': 'Likelihood',
 }
 
 # Colorbar title override for score display (not p-values)
 _METHOD_COLORBAR_OVERRIDE = {
-    'ks': 'K-S D-statistic',
     'likelihood': 'Normalized Likelihood',
 }
 
@@ -266,15 +263,19 @@ def _render_cdf_sanity_check(best_fbin, best_x, sigma_single,
     """
     from wr_bias_simulation import (
         simulate_delta_rv_sample, BinaryParameterConfig,
-        binned_cdf, DEFAULT_DRV_BIN_EDGES,
+        DEFAULT_DRV_BIN_EDGES,
     )
+
+    def _bcdf(data, edges):
+        s = np.sort(data)
+        return np.searchsorted(s, edges, side='right') / len(s)
 
     cadence_library = result.get('cadence_library')
     if cadence_library is None:
         return
 
     _bin_edges = DEFAULT_DRV_BIN_EDGES
-    obs_cdf_b = binned_cdf(obs_delta_rv, _bin_edges)
+    obs_cdf_b = _bcdf(obs_delta_rv, _bin_edges)
 
     st.markdown('### CDF Sanity Check')
     st.caption(
@@ -310,7 +311,7 @@ def _render_cdf_sanity_check(best_fbin, best_x, sigma_single,
                 period_model=period_model,
                 cadence_library=cadence_library,
             )
-            sim_cdf = binned_cdf(drv, _bin_edges)
+            sim_cdf = _bcdf(drv, _bin_edges)
             fig.add_trace(go.Scatter(
                 x=_bin_edges, y=sim_cdf,
                 mode='lines', name=f'Draw {i+1} (seed={seed})',

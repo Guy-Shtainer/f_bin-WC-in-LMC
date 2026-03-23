@@ -34,6 +34,12 @@ _best_point = find_best_grid_point
 _make_heatmap_fig = make_heatmap_fig
 
 
+def _binned_cdf(data: np.ndarray, bin_edges: np.ndarray) -> np.ndarray:
+    """Empirical CDF evaluated at bin_edges: fraction of data <= x."""
+    sorted_data = np.sort(data)
+    return np.searchsorted(sorted_data, bin_edges, side='right') / len(sorted_data)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Multi-method summary + per-method expanders
 # ─────────────────────────────────────────────────────────────────────────────
@@ -331,7 +337,7 @@ def _render_all_methods_cdf(
         return
     try:
         from wr_bias_simulation import (
-            binned_cdf, DEFAULT_DRV_BIN_EDGES,
+            DEFAULT_DRV_BIN_EDGES,
             simulate_delta_rv_sample, SimulationConfig, BinaryParameterConfig,
         )
     except ImportError:
@@ -344,7 +350,7 @@ def _render_all_methods_cdf(
         _be = np.asarray(_be)
     obs_drv = np.asarray(obs_drv)
     _n_obs_stars = len(obs_drv)
-    obs_cdf = binned_cdf(obs_drv, _be)
+    obs_cdf = _binned_cdf(obs_drv, _be)
     _obs_x = np.concatenate([[0.0], _be])
     _obs_y = np.concatenate([[0.0], obs_cdf])
 
@@ -376,7 +382,7 @@ def _render_all_methods_cdf(
                 sim_drv = simulate_delta_rv_sample(
                     f_bin=float(fb), pi=float(pi_v),
                     sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
-                _all_cdfs.append(binned_cdf(sim_drv, _be))
+                _all_cdfs.append(_binned_cdf(sim_drv, _be))
             _all_cdfs = np.array(_all_cdfs)
             _median_cdf = np.median(_all_cdfs, axis=0)
             _lo_cdf = np.percentile(_all_cdfs, 16, axis=0)
@@ -434,7 +440,7 @@ def _render_resim_interp(interp, result, mk, score_label, x_label, pfx, sm):
     if not c2.button('Re-simulate', key=f'{pfx}_{mk}_resim_btn', type='primary'):
         return
     try:
-        from wr_bias_simulation import binned_cdf, DEFAULT_DRV_BIN_EDGES
+        from wr_bias_simulation import DEFAULT_DRV_BIN_EDGES
         fb = float(interp.get('f_bin', 0.5))
         xv = float(interp.get('pi', interp.get('sigma', interp.get('y_val', 0.0))))
         sig = float(interp.get('sigma', result.get('sigma_meas', 5.0)))
@@ -446,7 +452,7 @@ def _render_resim_interp(interp, result, mk, score_label, x_label, pfx, sm):
         rx = np.concatenate([[0.0], be])
         mc = next((c for k, _, _, _, c in sm if k == mk), '#E25A53')
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=be, y=binned_cdf(obs, be), mode='lines',
+        fig.add_trace(go.Scatter(x=be, y=_binned_cdf(obs, be), mode='lines',
             name='Observed', line=dict(color='#4A90D9', width=2.5, shape='hv')))
         _hi_y = np.concatenate([[0.0], hi_c])
         _lo_y = np.concatenate([[0.0], lo_c])
@@ -972,7 +978,7 @@ def _me_cdf_band(
     """Run *n_sets* simulations and return (median_cdf, lo_cdf, hi_cdf, pooled_drv)."""
     from wr_bias_simulation import (
         simulate_delta_rv_sample, SimulationConfig,
-        BinaryParameterConfig, binned_cdf,
+        BinaryParameterConfig,
     )
     _be = np.array(bin_edges_tuple)
     all_cdfs, all_drv = [], []
@@ -980,7 +986,7 @@ def _me_cdf_band(
         cfg = SimulationConfig(n_stars=1000, sigma_single=sigma_s, sigma_measure=sigma_m)
         drv = simulate_delta_rv_sample(fb, x_val, cfg, BinaryParameterConfig(),
                                        np.random.default_rng(42 + si))
-        all_cdfs.append(binned_cdf(drv, _be))
+        all_cdfs.append(_binned_cdf(drv, _be))
         all_drv.append(drv)
     all_cdfs = np.array(all_cdfs)
     return (np.median(all_cdfs, axis=0),
@@ -999,8 +1005,8 @@ def _render_model_explorer(
     try:
         from wr_bias_simulation import (
             simulate_delta_rv_sample, SimulationConfig,
-            BinaryParameterConfig, binned_cdf, DEFAULT_DRV_BIN_EDGES,
-            ks_two_sample_binned, multinomial_log_likelihood,
+            BinaryParameterConfig, DEFAULT_DRV_BIN_EDGES,
+            multinomial_log_likelihood,
         )
     except ImportError:
         st.info('wr_bias_simulation not available for model explorer.')
@@ -1066,29 +1072,16 @@ def _render_model_explorer(
         me_fb, me_x, me_sig, sigma_m, tuple(be.tolist()), n_sets=50)
 
     # ── Score metric ────────────────────────────────────────────
-    if method_key in ('ks', 'weighted'):
-        _D, _pv = ks_two_sample_binned(pooled_drv, obs_drv, be)
-        _score_val = f'{_pv:.6f}'
-    elif method_key == 'cvm':
-        obs_cdf = binned_cdf(obs_drv, be)
-        _var = np.var(np.array([binned_cdf(pooled_drv[i*1000:(i+1)*1000], be)
-                                for i in range(min(50, len(pooled_drv)//1000))]), axis=0)
-        _var = np.where(_var < 1e-12, 1e-12, _var)
-        _S = float(np.sum((obs_cdf - med_cdf)**2 / _var))
-        _score_val = f'{_S:.4f}'
-    elif _is_likelihood:
-        _use_be = lk_be if lk_be is not None else be
-        _logL = multinomial_log_likelihood(obs_drv, pooled_drv, _use_be)
-        _score_val = f'{_logL:.2f}'
-    else:
-        _score_val = '—'
+    _use_be = lk_be if lk_be is not None else be
+    _logL = multinomial_log_likelihood(obs_drv, pooled_drv, _use_be)
+    _score_val = f'{_logL:.2f}'
 
     sc1, sc2 = st.columns([0.35, 0.65])
     sc1.metric(score_label, _score_val)
     sc2.caption(f'f_bin={me_fb:.3f}, {x_label}={me_x:.2f}, σ_single={me_sig:.1f} km/s')
 
     # ── CDF with error shadow ──────────────────────────────────
-    obs_cdf = binned_cdf(obs_drv, be)
+    obs_cdf = _binned_cdf(obs_drv, be)
     med_x = np.concatenate([[0.0], be])
     med_y = np.concatenate([[0.0], med_cdf])
     lo_y = np.concatenate([[0.0], lo_cdf])
