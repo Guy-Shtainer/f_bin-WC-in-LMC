@@ -76,6 +76,11 @@ Follow this structured approach. Do NOT guess-and-fix repeatedly.
 - If this is a new class of bug, add it to `COMMON_ERRORS.md` with ID, pattern, grep regex, fix, and explanation
 - Update the Quick-Scan Regex if the pattern is greppable
 
+### Step 7: Handoff — verify and commit
+- Run `/error-check` on modified files (MANDATORY — do not skip)
+- If clean, offer `/git` to commit the fix
+- Consult `.claude/references/learnings.md` to check if this bug type is already a known rule
+
 ## Streamlit-Specific Debug Patterns
 
 ### "Widget key already exists" error

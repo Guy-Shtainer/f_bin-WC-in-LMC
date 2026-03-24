@@ -43,7 +43,8 @@ from bc.polling import _poll_cadence_job
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
-                            settings: dict = None) -> None:
+                            settings: dict = None,
+                            obs_override: 'np.ndarray | None' = None) -> None:
     """Shared right-column results display for both cadence tabs."""
     _ch = int(st.session_state.get('bc_canvas_height', 520))
     _cw_raw = int(st.session_state.get('bc_canvas_width', 0))
@@ -187,13 +188,22 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
     cls = _settings.get('classification', {})
     thresh_dRV = float(cls.get('threshold_dRV', 45.5))
     sh_analysis = settings_hash(_settings) if _settings else ''
-    try:
-        obs_drv_analysis, obs_detail = cached_load_observed_delta_rvs(sh_analysis)
-        cadence_list_a, cadence_weights_a = cached_load_cadence(sh_analysis)
+    if obs_override is not None:
+        obs_drv_analysis = obs_override
+        obs_detail = None
+        try:
+            cadence_list_a, cadence_weights_a = cached_load_cadence(sh_analysis)
+        except Exception:
+            cadence_list_a = cadence_weights_a = None
         _has_obs = True
-    except Exception:
-        obs_drv_analysis = obs_detail = cadence_list_a = cadence_weights_a = None
-        _has_obs = False
+    else:
+        try:
+            obs_drv_analysis, obs_detail = cached_load_observed_delta_rvs(sh_analysis)
+            cadence_list_a, cadence_weights_a = cached_load_cadence(sh_analysis)
+            _has_obs = True
+        except Exception:
+            obs_drv_analysis = obs_detail = cadence_list_a = cadence_weights_a = None
+            _has_obs = False
 
     # ── Compute gap_sim at best-fit for analysis plots ────────────────────
     gap_sim = None
@@ -307,7 +317,8 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
                               n_sets, sigma_vals, _bin_cfg,
                               _sigma_meas, settings, sm,
                               err_info: dict = None,
-                              logPmax_scan_vals: np.ndarray = None) -> None:
+                              logPmax_scan_vals: np.ndarray = None,
+                              obs_override: 'np.ndarray | None' = None) -> None:
     """Shared action buttons + right column for cadence tabs."""
     _cad_tag = 'cadence_dsilva' if _is_dsilva else 'cadence_langer'
 
@@ -315,11 +326,14 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
     _use_adaptive = bool(st.session_state.get(f'{p}_adaptive_bins', True))
     if _use_adaptive:
         from wr_bias_simulation import adaptive_bin_edges as _abe, DEFAULT_DRV_BIN_EDGES
-        try:
-            _sh_bins = settings_hash(settings) if 'settings' in dir() else ''
-            _obs_drv_bins, _ = cached_load_observed_delta_rvs(_sh_bins)
-        except Exception:
-            _obs_drv_bins = None
+        if obs_override is not None:
+            _obs_drv_bins = obs_override
+        else:
+            try:
+                _sh_bins = settings_hash(settings) if 'settings' in dir() else ''
+                _obs_drv_bins, _ = cached_load_observed_delta_rvs(_sh_bins)
+            except Exception:
+                _obs_drv_bins = None
         if _obs_drv_bins is not None and len(_obs_drv_bins) > 0:
             _cad_bin_edges = _abe(_obs_drv_bins, min_gap=1.0)
         else:
@@ -449,7 +463,11 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
     # ── WORKING · cancel-save-resume ──
     if (_run_btn or _cad_auto_resume) and not _job_running:
         _sh = settings_hash(settings)
-        obs_drv, obs_det = cached_load_observed_delta_rvs(_sh)
+        if obs_override is not None:
+            obs_drv = obs_override
+            obs_det = None
+        else:
+            obs_drv, obs_det = cached_load_observed_delta_rvs(_sh)
         cad_list, cad_wts = cached_load_cadence(_sh)
 
         fbin_vals = np.linspace(fb_min, fb_max, fb_steps).tolist()
@@ -589,7 +607,8 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
 # Cadence Dsilva tab
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_cadence_dsilva_tab(p: str, settings: dict, sm) -> None:
+def _render_cadence_dsilva_tab(p: str, settings: dict, sm,
+                               obs_override: 'np.ndarray | None' = None) -> None:
     """Render Cadence-Aware simulation tab (Dsilva / power-law)."""
     _is_dsilva = True
     _period_model = 'powerlaw'
@@ -715,16 +734,19 @@ def _render_cadence_dsilva_tab(p: str, settings: dict, sm) -> None:
             pi_min, pi_max, pi_steps,
             n_sets, sigma_vals, _bin_cfg, _sigma_meas,
             settings, sm, err_info=_cad_err_info,
-            logPmax_scan_vals=_cd_logPmax_vals)
+            logPmax_scan_vals=_cd_logPmax_vals,
+            obs_override=obs_override)
 
-    _render_cadence_results(p, _is_dsilva, _bin_cfg, settings=settings)
+    _render_cadence_results(p, _is_dsilva, _bin_cfg, settings=settings,
+                            obs_override=obs_override)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cadence Langer tab
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_cadence_langer_tab(p: str, settings: dict, sm) -> None:
+def _render_cadence_langer_tab(p: str, settings: dict, sm,
+                               obs_override: 'np.ndarray | None' = None) -> None:
     """Render Cadence-Aware simulation tab (Langer 2020)."""
     _is_dsilva = False
     _period_model = 'langer2020'
@@ -865,6 +887,8 @@ def _render_cadence_langer_tab(p: str, settings: dict, sm) -> None:
             pi_min, pi_max, pi_steps,
             n_sets, sigma_vals, _bin_cfg, _sigma_meas,
             settings, sm, err_info=_cl_err_info,
-            logPmax_scan_vals=_cl_logPmax_vals)
+            logPmax_scan_vals=_cl_logPmax_vals,
+            obs_override=obs_override)
 
-    _render_cadence_results(p, _is_dsilva, _bin_cfg, settings=settings)
+    _render_cadence_results(p, _is_dsilva, _bin_cfg, settings=settings,
+                            obs_override=obs_override)

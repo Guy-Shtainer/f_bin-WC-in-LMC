@@ -5,6 +5,10 @@ Rules are NEVER deleted — only archived when the underlying code/pattern is ve
 
 ## Active Rules
 
+### Agent Architecture
+- **Pipeline constraints ≠ Claude intelligence**: When the agent fails, check if the pipeline is blocking it before blaming the model. Rigid verify→fix loops, scoped prompts, and false-positive gates make the agent "stupid" — not the model. The user wants "let Claude be Claude." (last_triggered: 2026-03-24)
+- **Pin-point fixes vs systemic issues**: When the user describes a systemic problem, don't propose a narrow fix. Listen for the broader pattern they're describing. E.g., "why is the agent dumb" → the issue is the pipeline architecture, not one Hebrew path bug. (last_triggered: 2026-03-24)
+
 ### Context & Memory
 - **Update GRAPHS_PER_METHOD.md + FEATURES.md BEFORE code changes**: These are the regression checklists. Update them first with user decisions (KEEP/REMOVE/MODIFY/WORKING), then implement. Always compare after changes. (last_triggered: 2026-03-23)
 - **Verify current app state, don't trust stale memory**: Before writing about app features (tabs, scoring methods, UI), check the actual code. Memory entries about app state decay fast. (last_triggered: 2026-03-23)
@@ -20,6 +24,7 @@ Rules are NEVER deleted — only archived when the underlying code/pattern is ve
 - **`# WORKING` flags**: Place `# WORKING — do not change this code` above verified working code. Never modify flagged code unless user explicitly asks. If you need to understand what flagged code does, check `.claude/references/working-code-map.md` instead of guessing. (last_triggered: 2026-03-22)
 
 ### Testing
+- **Run /error-check immediately after edits**: Don't summarize or mark tasks done until /error-check has run. It's part of the task, not a follow-up step. User had to remind twice on 2026-03-24. (last_triggered: 2026-03-24)
 - **Real tests, not just py_compile**: edit → delete .pyc → functional test → py_compile. (last_triggered: 2026-03-22)
 - **Test Streamlit renders**: Call render functions with mock `obs_data` in bare mode. Only Exceptions are failures. (last_triggered: 2026-03-18)
 - **Parameter verification**: New functions replicating existing computations must receive IDENTICAL params. (last_triggered: 2026-03-15)

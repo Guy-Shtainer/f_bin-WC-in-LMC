@@ -88,8 +88,14 @@ from <module> import <render_func>
 
 **NEVER skip render functions** — they always work in bare mode.
 
+## Handoff — After Checks Pass
+
+If all checks pass (zero matches, py_compile clean), offer to run `/git` to commit the changes.
+If checks fail, fix issues first, then re-run this skill before offering to commit.
+
 ## Important
 
 - The source of truth is `COMMON_ERRORS.md` — always read it fresh
+- Consult `.claude/references/learnings.md` for active rules related to testing
 - Non-greppable errors (E003, E004) require manual attention during code review
 - Greppable errors should be caught automatically every time

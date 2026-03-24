@@ -496,42 +496,43 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                     mL_sig, loL_sig, hiL_sig = _hdi68(sigma_grid, _Lpost_sig)
                     result.update(mode_sigma_L=mL_sig, lo_sigma_L=loL_sig, hi_sigma_L=hiL_sig)
 
-        # Save result
-        import datetime
-        result['timestamp'] = datetime.datetime.now().isoformat()
-        result['settings'] = json.dumps(stable_cfg, default=str)
-        result['n_sets'] = n_sets
+        # Save result (skip for validation runs)
+        if not params.get('skip_save', False):
+            import datetime
+            result['timestamp'] = datetime.datetime.now().isoformat()
+            result['settings'] = json.dumps(stable_cfg, default=str)
+            result['n_sets'] = n_sets
 
-        _cad_model = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
-        _desc = (f"{_cad_model}_fb{fbin_grid[0]:.1f}-{fbin_grid[-1]:.1f}x{n_fb}"
-                 f"_pi{pi_grid[0]:.1f}-{pi_grid[-1]:.1f}x{n_pi}"
-                 f"_N{n_sets}"
-                 f"_sig{sigma_grid[0]:.1f}")
-        if n_sig > 1:
-            _desc += f"-{sigma_grid[-1]:.1f}x{n_sig}"
-        if _scan_logPmax:
-            _desc += (f"_logP{logPmax_scan_vals[0]:.2f}"
-                      f"-{logPmax_scan_vals[-1]:.2f}x{n_logPmax}")
-        _ts = datetime.datetime.now().strftime('%y%m%d-%H%M')
-        _fname = f"{_desc}_{_ts}.npz"
-        _save_path = os.path.join(_RESULT_DIR, _fname)
-        os.makedirs(_RESULT_DIR, exist_ok=True)
+            _cad_model = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
+            _desc = (f"{_cad_model}_fb{fbin_grid[0]:.1f}-{fbin_grid[-1]:.1f}x{n_fb}"
+                     f"_pi{pi_grid[0]:.1f}-{pi_grid[-1]:.1f}x{n_pi}"
+                     f"_N{n_sets}"
+                     f"_sig{sigma_grid[0]:.1f}")
+            if n_sig > 1:
+                _desc += f"-{sigma_grid[-1]:.1f}x{n_sig}"
+            if _scan_logPmax:
+                _desc += (f"_logP{logPmax_scan_vals[0]:.2f}"
+                          f"-{logPmax_scan_vals[-1]:.2f}x{n_logPmax}")
+            _ts = datetime.datetime.now().strftime('%y%m%d-%H%M')
+            _fname = f"{_desc}_{_ts}.npz"
+            _save_path = os.path.join(_RESULT_DIR, _fname)
+            os.makedirs(_RESULT_DIR, exist_ok=True)
 
-        _save_dict = {}
-        for k, v in result.items():
-            if isinstance(v, np.ndarray):
-                _save_dict[k] = v
-            else:
-                _save_dict[k] = np.array(v, dtype=object)
-        np.savez_compressed(_save_path, **_save_dict)
-        result['save_path'] = _save_path
-        _scan_result_metadata.clear()
+            _save_dict = {}
+            for k, v in result.items():
+                if isinstance(v, np.ndarray):
+                    _save_dict[k] = v
+                else:
+                    _save_dict[k] = np.array(v, dtype=object)
+            np.savez_compressed(_save_path, **_save_dict)
+            result['save_path'] = _save_path
+            _scan_result_metadata.clear()
 
-        # Clean up partial checkpoint
-        _p_tag = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
-        _partial_cleanup = os.path.join(_RESULT_DIR, f'{_p_tag}_result.npz.partial')
-        if os.path.exists(_partial_cleanup):
-            os.remove(_partial_cleanup)
+            # Clean up partial checkpoint
+            _p_tag = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
+            _partial_cleanup = os.path.join(_RESULT_DIR, f'{_p_tag}_result.npz.partial')
+            if os.path.exists(_partial_cleanup):
+                os.remove(_partial_cleanup)
 
         job['result'] = result
         job['status'] = 'done'
@@ -539,4 +540,56 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
     except Exception as exc:
         import traceback
         job['error'] = traceback.format_exc()
+        job['status'] = 'error'
+
+
+def _run_validation_bg(job: dict, params: dict) -> None:
+    """Validation wrapper: generate mock data, then run cadence grid search.
+
+    Expects extra keys in *params* beyond what _run_cadence_bg needs:
+        true_fbin, true_pi, true_sigma, true_logPmax, mock_bin_cfg, seed
+    These are popped before forwarding to _run_cadence_bg.
+    """
+    try:
+        from bc.validation import generate_mock_observations
+
+        # Pop validation-only params before forwarding
+        true_fbin = params.pop('true_fbin')
+        true_pi = params.pop('true_pi')
+        true_sigma = params.pop('true_sigma')
+        true_logPmax = params.pop('true_logPmax')
+        mock_bin_cfg = params.pop('mock_bin_cfg')
+        seed = params.pop('seed', 42)
+
+        mock_drv = generate_mock_observations(
+            true_fbin=true_fbin,
+            true_pi=true_pi,
+            true_sigma=true_sigma,
+            true_logPmax=true_logPmax,
+            cadence_library=params['cadence_list'],
+            cadence_weights=params['cadence_weights'],
+            sigma_meas=params['sigma_meas'],
+            bin_cfg=mock_bin_cfg,
+            period_model=params['period_model'],
+            seed=seed,
+        )
+
+        params['obs_delta_rv'] = mock_drv
+        params['skip_save'] = True
+
+        _run_cadence_bg(job, params)
+
+        # Attach validation metadata to result
+        if job.get('result'):
+            job['result']['mock_delta_rv'] = mock_drv
+            job['result']['is_validation'] = True
+            job['result']['true_fbin'] = true_fbin
+            job['result']['true_pi'] = true_pi
+            job['result']['true_sigma'] = true_sigma
+            job['result']['true_logPmax'] = true_logPmax
+            job['result']['seed'] = seed
+
+    except Exception:
+        import traceback as _tb
+        job['error'] = _tb.format_exc()
         job['status'] = 'error'

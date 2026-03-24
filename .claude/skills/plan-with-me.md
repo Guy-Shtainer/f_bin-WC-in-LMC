@@ -47,6 +47,21 @@ Once the user confirms, proceed with implementation using:
 - Commit after each logical change (git-workflow skill)
 - Update TODO.md when tasks are completed (todo-manager skill)
 
+## Shared Context
+
+Before proposing tasks, consult:
+- `.claude/references/learnings.md` — active rules that may affect task risk/approach
+- `.claude/references/code-standards.md` — testing and verification requirements
+
+## Skill Handoffs
+
+After planning completes, the session typically follows this chain:
+1. **This skill** (plan) → user confirms
+2. **Implementation** → edit code
+3. **`/error-check`** → verify changes (MANDATORY after every edit)
+4. **`/git`** → commit if clean
+5. **`/EndConv`** → capture learnings at session end
+
 ## Key principles
 - **Always ask before diving in** — the user's priorities may have changed
 - **Keep sessions focused** — 2-4 tasks max per session

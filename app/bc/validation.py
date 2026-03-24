@@ -58,6 +58,7 @@ class ValidationPoint:
     x_grid: np.ndarray             # pi (Dsilva) or sigma (Langer) — for heatmap display
     mock_delta_rv: np.ndarray      # the mock observations used
     seed: int
+    logPmax_grid: np.ndarray = field(default_factory=lambda: np.array([]))
 
 
 @dataclass
@@ -258,12 +259,31 @@ def extract_best_fit(
     fbin_vals: np.ndarray,
     pi_vals: np.ndarray,
     sigma_vals: np.ndarray,
+    logPmax_vals: Optional[np.ndarray] = None,
 ) -> Dict[str, float]:
-    """Extract best-fit parameters from a likelihood grid."""
+    """Extract best-fit parameters from a likelihood grid (3-D or 4-D)."""
     if not np.any(np.isfinite(lk_arr)):
-        return {'fbin': np.nan, 'pi': np.nan, 'sigma': np.nan}
+        result = {'fbin': np.nan, 'pi': np.nan, 'sigma': np.nan}
+        if logPmax_vals is not None and len(logPmax_vals) > 1:
+            result['logPmax'] = np.nan
+        return result
 
     flat_idx = int(np.nanargmax(lk_arr))  # guarded by isfinite check above
+
+    if lk_arr.ndim == 4 and logPmax_vals is not None and len(logPmax_vals) > 1:
+        n_lp, n_sig, n_fb, n_pi = lk_arr.shape
+        i_lp = flat_idx // (n_sig * n_fb * n_pi)
+        rem = flat_idx % (n_sig * n_fb * n_pi)
+        i_s = rem // (n_fb * n_pi)
+        i_f = (rem // n_pi) % n_fb
+        i_p = rem % n_pi
+        return {
+            'fbin': float(fbin_vals[i_f]),
+            'pi': float(pi_vals[i_p]),
+            'sigma': float(sigma_vals[i_s]),
+            'logPmax': float(logPmax_vals[i_lp]),
+        }
+
     n_sig, n_fb, n_pi = lk_arr.shape
     i_s = flat_idx // (n_fb * n_pi)
     i_f = (flat_idx // n_pi) % n_fb

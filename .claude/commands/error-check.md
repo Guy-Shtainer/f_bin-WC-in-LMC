@@ -115,22 +115,7 @@ For each file in `TARGET_FILES`:
 
 2. For each modified function, read its signature (params, type hints, defaults) and generate a short test.
 
-3. Use these **domain-specific test data heuristics** to create realistic inputs:
-
-   | Parameter pattern | Test data |
-   |---|---|
-   | `wave`, `wavelength`, `lambda` | `np.linspace(400, 700, 100)` (nm) |
-   | `flux`, `spectrum` | `np.random.normal(1.0, 0.1, 100)` |
-   | `rv`, `velocity` | `np.array([15.2, -23.4, 8.7])` (km/s) |
-   | `mjd`, `time` | `np.array([59000.0, 59001.5, 59010.3])` |
-   | `star_name` | `'BAT99 49'` |
-   | `epoch` | `1` |
-   | `band` | `'COMBINED'` |
-   | `sigma` | `3.0` |
-   | `f_bin`, `fbin` | `0.5` |
-   | `n_stars`, `N` | `100` |
-   | `data` (generic array) | `np.array([1.0, 2.0, 3.0, 100.0, 4.0])` |
-   | `rng` | `np.random.default_rng(42)` |
+3. Use **domain-specific test data heuristics** from `.claude/references/error-check-details.md` to create realistic inputs.
 
 4. Run the test:
    ```bash
@@ -143,51 +128,7 @@ For each file in `TARGET_FILES`:
    "
    ```
 
-5. Also test **edge cases** where appropriate:
-   - Empty arrays: `np.array([])`
-   - Single element: `np.array([1.0])`
-   - Arrays with NaN: `np.array([1.0, np.nan, 3.0])`
-
-**What to skip (do NOT test):**
-- Functions that require file I/O (FITS loading, `Data/` directory access)
-- Class methods where the class needs complex initialization (ObservationManager, Star)
-- Functions that write to disk or modify state
-- Private helper functions called only internally (test the public API instead)
-
-**Streamlit render functions — DO test them** (they work outside the runtime):
-Streamlit page-level / tab render functions (e.g., `render_tab_*`, `render_page_*`) CAN and
-SHOULD be tested outside `streamlit run`. Streamlit widgets silently no-op in bare mode, so
-you can call any render function with a mock `obs_data` dict. Build a minimal dict with the
-keys the function reads (numpy arrays, palette dict, etc.) and call the function directly.
-Expect Streamlit WARNING log lines — those are harmless. Only a raised **Exception** is a
-failure. Example:
-
-```python
-import sys; sys.path.insert(0, 'app'); sys.path.insert(0, '.')
-import numpy as np
-from rv_modeling.tabs import render_tab_sample_fit
-
-obs_data = dict(
-    pal={'font_color': '#fff', 'muted_color': '#888', 'bg_color': '#000'},
-    t_full=np.arange(0, 301, dtype=float),
-    f_obs=np.zeros(301), raw_frac=np.zeros(301),
-    sig_err=np.ones(301)*0.01,
-    t_dots=np.array([0.0, 45.0]), f_dots=np.array([0.4, 0.1]),
-    e_dots=np.array([0.05, 0.05]),
-    change_mask=np.zeros(301, dtype=bool),
-    is_sig=np.array([True, False]), p2p=np.array([60.0, 20.0]),
-    p2p_err=np.array([5.0, 3.0]),
-    names=['s1','s2'], n_stars=2, star_centered_rvs={},
-)
-render_tab_sample_fit(obs_data)   # should not raise
-```
-
-**What to prioritize:**
-- Pure computation functions (math, statistics, array manipulation)
-- Simulation functions in `wr_bias_simulation.py`
-- Utility functions in `utils.py` (`robust_mean`, `robust_std`, etc.)
-- **Streamlit render / tab functions** — call with mock obs_data, assert no exception
-- Any function with a clear input→output contract
+5. Also test edge cases and Streamlit render functions. See `.claude/references/error-check-details.md` for edge cases, skip/prioritize rules, and the render test template.
 
 Report: `PASS`, `FAIL (error message)`, or `SKIP (reason)` for each function.
 
@@ -266,71 +207,8 @@ For each failure:
 ## Summary Report — Full Checklist
 
 After all phases, print a **complete checklist** of every individual check performed.
-The user wants to see exactly what was checked vs skipped so they can decide what to
-trust and what to verify themselves.
+See `.claude/references/error-check-details.md` for the report format template (status icons, rules).
 
-Use this format — one line per check, grouped by phase. Every check gets a status icon:
-
-- `✅` — checked and passed
-- `❌` — checked and FAILED (needs attention)
-- `⚠️` — checked with warnings (non-critical)
-- `⏭️` — skipped (with reason)
-
-```
-═══════════════════════════════════════════════════════════════
-  ERROR CHECK — FULL CHECKLIST
-  Files: wr_bias_simulation.py, app/pages/05_bias_correction.py
-═══════════════════════════════════════════════════════════════
-
-Phase 1: Static Pattern Scan
-  ✅ Quick-Scan Regex on wr_bias_simulation.py — 0 matches
-  ❌ Quick-Scan Regex on 05_bias_correction.py — 5 E034 matches
-     → Lines 2834, 9163, 9175, 9185, 9202: nanargmax without isfinite guard
-     → Fix: Add `if np.any(np.isfinite(arr)):` before each call
-  ✅ E003 (RV zero-filter) — N/A, no load_property calls
-  ✅ E018 (PLOTLY_THEME collision) — 37 usages checked, all safe
-  ✅ E024 (dataclass cache sync) — no new fields added
-  ✅ E025 (removed widget refs) — no widgets removed
-
-Phase 2: Cache Cleanup
-  ✅ Deleted __pycache__/wr_bias_simulation.cpython-314.pyc
-  ✅ Deleted app/pages/__pycache__/05_bias_correction.cpython-313.pyc
-  ✅ Deleted app/pages/__pycache__/05_bias_correction.cpython-314.pyc
-
-Phase 3: Functional Testing
-  ✅ py_compile wr_bias_simulation.py — OK
-  ✅ py_compile 05_bias_correction.py — OK
-  ✅ import wr_bias_simulation — OK
-  ⚠️ import pages.05_bias_correction — Streamlit warnings (expected)
-  ✅ adaptive_bin_edges([1,5,10,50,100,200]) — ndarray, 4 bins
-  ✅ sample_inclination(100, rng) — ndarray, len=100
-  ✅ compute_K1(P=5, e=0.1, M1=20, M2=10, i=1.2) — 102.4 km/s
-  ✅ solve_kepler([0.5, 1.0, 2.0], 0.3) — ndarray, len=3
-  ✅ ks_two_sample(d1, d2) — D=0.19, p=0.054
-  ⏭️ simulate_delta_rv_sample — needs SimulationConfig + observed data
-  ⏭️ run_bias_grid — needs full config + observed data
-  ✅ _render_dsilva_tab(mock_obs_data) — OK (Streamlit warnings, no exception)
-  ✅ _render_langer_tab(mock_obs_data) — OK (Streamlit warnings, no exception)
-
-Phase 4: Webapp Smoke Test
-  ✅ from shared import * — OK
-  ⚠️ import pages.05_bias_correction — Streamlit warnings (expected)
-  ✅ PLOTLY_THEME, make_heatmap_fig exports — verified
-
-Phase 5: Learning
-  ✅ All failures match existing E034 — no new patterns
-
-═══════════════════════════════════════════════════════════════
-  OVERALL: ❌ FAIL — 5 issues need attention (see Phase 1)
-  Checked: 18 items | Passed: 17 | Failed: 1 | Warned: 2 | Skipped: 2
-═══════════════════════════════════════════════════════════════
-```
-
-**Key rules for the checklist:**
-- List EVERY individual check — do not collapse or summarize. The user wants the full picture.
-- For `❌` items: include the line numbers, the problem, and the fix — all inline.
-- For `⏭️` items: always say WHY it was skipped (e.g., "needs Streamlit runtime", "requires file I/O").
-- The footer counts give the user a quick read: how many things were checked vs skipped.
-- **OVERALL** is `❌ FAIL` if ANY check failed. `✅ PASS` only when zero failures.
+**Key rules:** List EVERY check (no collapsing). `❌` items include line numbers + fix inline. `⏭️` items include skip reason. Footer: `Checked: N | Passed: N | Failed: N | Warned: N | Skipped: N`. OVERALL = `❌ FAIL` if ANY failed.
 
 If any check failed, end with: "Should I fix these issues now?"

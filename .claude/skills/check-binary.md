@@ -5,19 +5,10 @@ description: Classify WR stars as binary or single based on radial velocity vari
 
 # Check Binary
 
-## Sample Context — CRITICAL
+## Shared Context
 
-The 25 stars in `specs.star_names` are **not** the full LMC WC population.
-Bartzakos (2001) surveyed **28 WC stars** in the LMC and confirmed **3 as binaries**.
-Our 25-star sample consists of the remaining stars he classified as **apparently single**.
-
-**Binary fraction must therefore be reported as:**
-```
-(N_binary_detected_in_our_25 + 3_Bartzakos) / 28
-```
-Last measured: 10 detected + 3 = **13/28 ≈ 46%**
-
-Never report just N/25 — that undercounts the known binaries.
+See `.claude/references/project-identity.md` for sample context (Bartzakos 28 stars, binary fraction formula).
+**Key rule:** Binary fraction = (N_detected + 3 Bartzakos) / 28. Never report N/25.
 
 ## Classification Thresholds
 
@@ -82,8 +73,5 @@ all 25 stars. The webapp uses this in `app/pages/04_classification.py`.
 
 ## Key Pitfalls
 
-- **numpy.bool_**: Comparisons on numpy arrays return `numpy.bool_`, not Python `bool`.
-  `numpy.bool_(True) is True` → **False**. Always wrap with `bool()`.
-- **MJD source**: Observation times come from FITS header `fit.header['MJD-OBS']`,
-  NOT from the RV property dict. The RV dict only stores `full_RV` and `full_RV_err`.
-- **Zero-filtering**: Missing epochs are stored as 0.0 — always filter with `rv[rv != 0]`.
+See `.claude/references/learnings.md` for the full active rules list.
+Critical for this skill: numpy.bool_ cast (E002), zero-filter (E003), MJD source (FITS header only).
