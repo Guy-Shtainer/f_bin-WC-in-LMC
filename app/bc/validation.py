@@ -51,8 +51,11 @@ class ValidationPoint:
     recovery_score: float          # 0 = perfect, 1 = worst
     per_param: Dict[str, dict]     # {name: {true, recovered, distance, weight}}
     likelihood_grid: np.ndarray    # 2-D (fbin × x) likelihood slice at best outer
+    full_likelihood: np.ndarray    # full 3-D (sigma, fbin, pi) likelihood array
     fbin_grid: np.ndarray
-    x_grid: np.ndarray             # pi (Dsilva) or sigma (Langer)
+    pi_grid: np.ndarray            # pi grid (Dsilva) or [0.0] (Langer)
+    sigma_grid: np.ndarray         # sigma grid
+    x_grid: np.ndarray             # pi (Dsilva) or sigma (Langer) — for heatmap display
     mock_delta_rv: np.ndarray      # the mock observations used
     seed: int
 
@@ -366,7 +369,10 @@ def run_single_validation(
         recovery_score=score,
         per_param=per_param,
         likelihood_grid=lk_2d,
+        full_likelihood=lk_arr,
         fbin_grid=fbin_grid,
+        pi_grid=pi_grid,
+        sigma_grid=sigma_grid,
         x_grid=pi_grid if len(pi_grid) > 1 else sigma_grid,
         mock_delta_rv=mock_drv,
         seed=seed,

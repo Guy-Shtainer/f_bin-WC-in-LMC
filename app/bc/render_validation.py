@@ -1,6 +1,6 @@
-"""bc.render_validation — UI for the Validation tab.
+"""bc.render_validation — Validation tab UI (tasks #160/#161).
 
-Single-point parameter recovery (Task #160) and batch sweep (Task #161).
+Uses render_model_subtabs() to share all cadence-tab analysis plots.
 """
 from __future__ import annotations
 
@@ -23,9 +23,6 @@ from shared import (
     settings_hash, make_heatmap_fig,
     PLOTLY_THEME, get_palette,
 )
-from bc.helpers import _make_heatmap_fig
-from bc.params import _render_likelihood_bin_config
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public entry point
@@ -83,7 +80,7 @@ def _render_single_point(
     settings: dict,
     sm,
 ) -> None:
-    """Single-point recovery: set true params → generate mock → grid search → score."""
+    """Single-point recovery: set true params -> generate mock -> grid search -> score."""
     from wr_bias_simulation import BinaryParameterConfig
 
     st.markdown('#### True Parameters')
@@ -104,37 +101,60 @@ def _render_single_point(
     true_logPmax = c4.slider('True logP_max', 1.0, 6.0, 4.0, 0.1,
                              key=f'{p}_val_true_logPmax')
 
-    # ── Grid settings ─────────────────────────────────────────────────────
+    # ── Grid settings (user-configurable ranges) ──────────────────────────
     with st.expander('Grid settings', expanded=False):
-        gc1, gc2, gc3, gc4 = st.columns(4)
-        n_fbin = gc1.number_input('f_bin grid points', 5, 100, 25, 5,
+        st.caption('Configure the search grid ranges and resolution.')
+        # f_bin grid
+        fc1, fc2, fc3 = st.columns(3)
+        fb_min = fc1.number_input('f_bin min', 0.0, 1.0, 0.0, 0.01,
+                                  key=f'{p}_val_fb_min')
+        fb_max = fc2.number_input('f_bin max', 0.0, 1.0, 1.0, 0.01,
+                                  key=f'{p}_val_fb_max')
+        n_fbin = fc3.number_input('f_bin steps', 5, 200, 25, 5,
                                   key=f'{p}_val_nfbin')
+
+        # pi grid (Dsilva only)
         if is_dsilva:
-            n_pi = gc2.number_input('pi grid points', 5, 60, 15, 5,
+            pc1, pc2, pc3 = st.columns(3)
+            pi_min = pc1.number_input('pi min', -5.0, 5.0, -3.0, 0.1,
+                                      key=f'{p}_val_pi_min')
+            pi_max = pc2.number_input('pi max', -5.0, 5.0, 3.0, 0.1,
+                                      key=f'{p}_val_pi_max')
+            n_pi = pc3.number_input('pi steps', 5, 200, 15, 5,
                                     key=f'{p}_val_npi')
         else:
             n_pi = 1
-            gc2.info('pi grid = 1 for Langer')
-        n_sigma = gc3.number_input('sigma grid points', 1, 20, 1, 1,
-                                   key=f'{p}_val_nsigma')
-        n_sets = gc4.number_input('N_sets per point', 100, 5000, 500, 100,
+            pi_min = 0.0
+            pi_max = 0.0
+
+        # sigma grid
+        sgc1, sgc2, sgc3 = st.columns(3)
+        sig_min = sgc1.number_input('sigma min (km/s)', 0.1, 50.0, 1.0, 0.5,
+                                    key=f'{p}_val_sig_min')
+        sig_max = sgc2.number_input('sigma max (km/s)', 0.1, 50.0, 40.0, 0.5,
+                                    key=f'{p}_val_sig_max')
+        n_sigma = sgc3.number_input('sigma steps', 1, 50, 1, 1,
+                                    key=f'{p}_val_nsigma')
+
+        gc1, gc2 = st.columns(2)
+        n_sets = gc1.number_input('N_sets per point', 100, 50000, 500, 100,
                                   key=f'{p}_val_nsets')
+        seed = gc2.number_input('Random seed', 1, 99999, 42, 1,
+                                key=f'{p}_val_seed')
 
         sc1, sc2 = st.columns(2)
-        seed = sc1.number_input('Random seed', 1, 99999, 42, 1,
-                                key=f'{p}_val_seed')
-        sigma_meas = sc2.number_input('sigma_meas (km/s)', 0.1, 10.0, 1.622, 0.1,
+        sigma_meas = sc1.number_input('sigma_meas (km/s)', 0.1, 10.0, 1.622, 0.1,
                                       key=f'{p}_val_sigma_meas')
 
-    # Build grids
-    fbin_grid = np.linspace(0.05, 1.0, int(n_fbin))
+    # Build grids from user-specified ranges
+    fbin_grid = np.linspace(float(fb_min), float(fb_max), int(n_fbin))
     if is_dsilva:
-        pi_grid = np.linspace(-3.0, 3.0, int(n_pi))
+        pi_grid = np.linspace(float(pi_min), float(pi_max), int(n_pi))
     else:
         pi_grid = np.array([0.0])
 
     if int(n_sigma) > 1:
-        sigma_grid = np.linspace(1.0, 40.0, int(n_sigma))
+        sigma_grid = np.linspace(float(sig_min), float(sig_max), int(n_sigma))
     else:
         sigma_grid = np.array([true_sigma])
 
@@ -195,8 +215,6 @@ def _render_single_point(
     # ── Poll running job ──────────────────────────────────────────────────
     job = st.session_state.get(job_key)
     if job is not None and not job.get('done', False):
-        prog = job.get('progress', 0.0)
-        st.progress(prog, text=f'Grid search: {prog:.0%} complete')
         _poll_single_job(p)
         return
 
@@ -216,35 +234,40 @@ def _render_single_point(
         st.info('Set true parameters and click **Run** to test parameter recovery.')
         return
 
-    _display_single_result(p, vp, is_dsilva)
+    _display_single_result(p, vp, is_dsilva, period_model, cadence_list,
+                           cadence_weights, settings)
 
 
 @st.fragment(run_every=3)
 def _poll_single_job(p: str) -> None:
-    """Poll background validation job."""
+    """Poll background validation job — displays live progress bar."""
     job_key = f'{p}_val_single_job'
     job = st.session_state.get(job_key)
-    if job is not None and job.get('done', False):
+    if job is None:
+        return
+    if job.get('done', False):
         st.rerun(scope='app')
+    else:
+        prog = job.get('progress', 0.0)
+        st.progress(prog, text=f'Grid search: {prog:.0%} complete')
 
 
-def _display_single_result(p: str, vp, is_dsilva: bool) -> None:
-    """Display results of a single-point validation."""
+def _display_single_result(
+    p: str, vp, is_dsilva: bool, period_model: str,
+    cadence_list: list, cadence_weights, settings: dict,
+) -> None:
+    """Display results of a single-point validation with full cadence-tab plots."""
     pal = get_palette()
 
     # ── Recovery score metric ─────────────────────────────────────────────
     score = vp.recovery_score
     if score < 0.05:
-        score_color = 'green'
         score_label = 'Excellent'
     elif score < 0.15:
-        score_color = 'orange'
         score_label = 'Good'
     elif score < 0.30:
-        score_color = 'red'
         score_label = 'Fair'
     else:
-        score_color = 'red'
         score_label = 'Poor'
 
     m1, m2, m3 = st.columns(3)
@@ -271,7 +294,7 @@ def _display_single_result(p: str, vp, is_dsilva: bool) -> None:
 
     # ── Likelihood heatmap with true + recovered marked ───────────────────
     st.markdown('##### Likelihood Heatmap')
-    st.caption('Star (★) = true parameters, circle (●) = recovered best-fit.')
+    st.caption('Star = true parameters, circle = recovered best-fit.')
 
     lk_2d = vp.likelihood_grid
     fbin_g = vp.fbin_grid
@@ -325,30 +348,107 @@ def _display_single_result(p: str, vp, is_dsilva: bool) -> None:
 
     st.plotly_chart(fig, use_container_width=True, key=f'{p}_val_heatmap')
 
-    # ── CDF comparison: mock observations vs best-fit model ───────────────
-    st.markdown('##### CDF Comparison')
-    st.caption('Empirical CDF of mock observations vs the recovered best-fit model distribution.')
+    # ── Full cadence-tab analysis plots via render_model_subtabs ──────────
+    st.markdown('---')
+    st.markdown('##### Full Analysis (same tools as cadence tabs)')
+    _render_shared_analysis(p, vp, is_dsilva, period_model,
+                            cadence_list, cadence_weights, settings)
 
-    mock_sorted = np.sort(vp.mock_delta_rv)
-    n_obs = len(mock_sorted)
-    ecdf_y = np.arange(1, n_obs + 1) / n_obs
 
-    fig_cdf = go.Figure()
-    fig_cdf.add_trace(go.Scatter(
-        x=mock_sorted, y=ecdf_y,
-        mode='lines', name='Mock Observations',
-        line=dict(color=pal.get('primary', '#4A90D9'), width=2),
-    ))
+def _render_shared_analysis(
+    p: str, vp, is_dsilva: bool, period_model: str,
+    cadence_list: list, cadence_weights, settings: dict,
+) -> None:
+    """Build model_ctx from validation result and call render_model_subtabs."""
+    from wr_bias_simulation import SimulationConfig, BinaryParameterConfig, simulate_with_params
+    from bc.subtabs import render_model_subtabs
 
-    fig_cdf.update_layout(**{**PLOTLY_THEME,
-        'title': dict(text='CDF: Mock Observations'),
-        'xaxis': {**PLOTLY_THEME.get('xaxis', {}),
-                  'title': 'ΔRV (km/s)'},
-        'yaxis': {**PLOTLY_THEME.get('yaxis', {}),
-                  'title': 'Cumulative Fraction'},
-        'height': 400,
-    })
-    st.plotly_chart(fig_cdf, use_container_width=True, key=f'{p}_val_cdf')
+    lk_arr = vp.full_likelihood
+    fbin_grid, pi_grid, sigma_grid = vp.fbin_grid, vp.pi_grid, vp.sigma_grid
+    mock_drv = vp.mock_delta_rv
+
+    if not np.any(np.isfinite(lk_arr)):
+        st.warning('No finite likelihood values — cannot run analysis.')
+        return
+
+    flat_best = int(np.nanargmax(lk_arr))
+    n_sig, n_fb, n_pi = lk_arr.shape
+    best_sig_idx = flat_best // (n_fb * n_pi)
+    best_fb_idx = (flat_best // n_pi) % n_fb
+    best_pi_idx = flat_best % n_pi
+    best_fbin = float(fbin_grid[best_fb_idx])
+    best_pi = float(pi_grid[best_pi_idx]) if is_dsilva else 0.0
+    best_sigma = float(sigma_grid[best_sig_idx])
+
+    # ndim_mode and x-axis
+    _is_langer_sigma = (not is_dsilva) and len(sigma_grid) > 1
+    if _is_langer_sigma:
+        ndim_mode, x_g, x_name = 'cadence_langer', sigma_grid, 'sigma'
+        x_label, x_disp = 'sigma_single', 'sigma_single (km/s)'
+    elif is_dsilva:
+        ndim_mode, x_g, x_name = 'cadence_dsilva', pi_grid, 'pi'
+        x_label, x_disp = 'pi', 'pi (period power-law index)'
+    else:
+        ndim_mode, x_g, x_name = 'cadence_langer', sigma_grid, 'sigma'
+        x_label, x_disp = 'sigma_single', 'sigma_single (km/s)'
+
+    result = {
+        'likelihood': lk_arr, 'fbin_grid': fbin_grid,
+        'pi_grid': pi_grid, 'sigma_grid': sigma_grid,
+        'obs_delta_rv': mock_drv,
+        'sigma_meas': float(st.session_state.get(f'{p}_val_sigma_meas', 1.622)),
+        'cadence_library': cadence_list,
+    }
+
+    e_model = 'flat' if is_dsilva else 'zero'
+    bin_cfg = BinaryParameterConfig(
+        logP_min=0.15, logP_max=vp.true_logPmax,
+        period_model=period_model, e_model=e_model, e_max=0.9,
+    )
+
+    # gap_sim at best-fit
+    sigma_meas_val = float(st.session_state.get(f'{p}_val_sigma_meas', 1.622))
+    fp_key, gap_key = f'{p}_val_gap_fp', f'{p}_val_gap_sim'
+    gap_fp = (best_fbin, best_pi, best_sigma, vp.true_logPmax, lk_arr.shape)
+    if st.session_state.get(fp_key) != gap_fp or gap_key not in st.session_state:
+        sim_cfg = SimulationConfig(
+            n_stars=10000, sigma_single=best_sigma, sigma_measure=sigma_meas_val,
+            cadence_library=cadence_list, cadence_weights=cadence_weights,
+        )
+        st.session_state[gap_key] = simulate_with_params(
+            best_fbin, best_pi, sim_cfg, bin_cfg, np.random.default_rng(42))
+        st.session_state[fp_key] = gap_fp
+    gap_sim = st.session_state[gap_key]
+
+    # outer slices
+    outer_list = []
+    if len(sigma_grid) > 1:
+        outer_list.append(best_sig_idx)
+    elif lk_arr.ndim == 3 and not is_dsilva:
+        outer_list.append(0)
+    disp_outer = tuple(outer_list) if outer_list else None
+
+    cls = (settings or {}).get('classification', {})
+    val_prefix = f'{p}_vr'
+
+    model_ctx = {
+        'model_type': 'cadence_dsilva' if is_dsilva else 'cadence_langer',
+        'ndim_mode': ndim_mode, 'x_name': x_name,
+        'x_label': x_label, 'x_display_label': x_disp,
+        'period_model': period_model, 'has_case_AB': not is_dsilva,
+        'result': result, 'fbin_g': fbin_grid, 'x_g': np.asarray(x_g),
+        'sigma_g': np.asarray(sigma_grid),
+        'logPmax_g': np.array([vp.true_logPmax]),
+        'gap_sim': gap_sim, 'obs_delta_rv': mock_drv, 'obs_detail': None,
+        'cadence_list': cadence_list, 'cadence_weights': cadence_weights,
+        'n_stars_sim': 10000, 'sigma_meas': sigma_meas_val, 'bin_cfg': bin_cfg,
+        'logP_min': 0.15, 'logP_max': vp.true_logPmax,
+        'thresh_dRV': float(cls.get('threshold_dRV', 45.5)),
+        'canvas_height': 520, 'canvas_width': None, 'use_container_width': True,
+        'disp_outer_slices': disp_outer,
+        'settings': settings or {}, 'classification': cls,
+    }
+    render_model_subtabs(val_prefix, model_ctx)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -392,21 +492,32 @@ def _render_batch_sweep(
 
     n_total = len(true_fbin_vals) * len(true_pi_vals) * len(true_sigma_vals)
     st.info(f'Total test points: **{n_total}** '
-            f'({len(true_fbin_vals)} f_bin × {len(true_pi_vals)} pi × {len(true_sigma_vals)} sigma)')
+            f'({len(true_fbin_vals)} f_bin x {len(true_pi_vals)} pi x {len(true_sigma_vals)} sigma)')
 
-    # ── Recovery grid settings ────────────────────────────────────────────
+    # ── Recovery grid settings (user-configurable ranges) ─────────────────
     with st.expander('Recovery grid settings', expanded=False):
-        gc1, gc2, gc3 = st.columns(3)
-        rec_n_fbin = gc1.number_input('Recovery f_bin grid', 5, 50, 15, 5,
+        st.caption('Configure the recovery search grid ranges.')
+        fc1, fc2, fc3 = st.columns(3)
+        rec_fb_min = fc1.number_input('f_bin min', 0.0, 1.0, 0.0, 0.01,
+                                      key=f'{p}_val_batch_fb_min')
+        rec_fb_max = fc2.number_input('f_bin max', 0.0, 1.0, 1.0, 0.01,
+                                      key=f'{p}_val_batch_fb_max')
+        rec_n_fbin = fc3.number_input('f_bin steps', 5, 100, 15, 5,
                                       key=f'{p}_val_batch_rec_nfbin')
         if is_dsilva:
-            rec_n_pi = gc2.number_input('Recovery pi grid', 5, 30, 10, 5,
+            pc1, pc2, pc3 = st.columns(3)
+            rec_pi_min = pc1.number_input('pi min', -5.0, 5.0, -3.0, 0.1,
+                                          key=f'{p}_val_batch_pi_min')
+            rec_pi_max = pc2.number_input('pi max', -5.0, 5.0, 3.0, 0.1,
+                                          key=f'{p}_val_batch_pi_max')
+            rec_n_pi = pc3.number_input('pi steps', 5, 60, 10, 5,
                                         key=f'{p}_val_batch_rec_npi')
         else:
             rec_n_pi = 1
-            gc2.info('pi grid = 1')
-        rec_n_sets = gc3.number_input('N_sets per grid point', 100, 2000, 300, 100,
-                                      key=f'{p}_val_batch_nsets')
+            rec_pi_min = 0.0
+            rec_pi_max = 0.0
+        rec_n_sets = st.number_input('N_sets per grid point', 100, 50000, 300, 100,
+                                     key=f'{p}_val_batch_nsets')
 
     sc1, sc2 = st.columns(2)
     batch_logPmax = sc1.slider('True logP_max (fixed)', 1.0, 6.0, 4.0, 0.1,
@@ -414,10 +525,13 @@ def _render_batch_sweep(
     batch_sigma_meas = sc2.number_input('sigma_meas (km/s)', 0.1, 10.0, 1.622, 0.1,
                                         key=f'{p}_val_batch_sigma_meas')
 
-    # Build recovery grids
-    rec_fbin_grid = np.linspace(0.05, 1.0, int(rec_n_fbin))
-    rec_pi_grid = np.linspace(-3.0, 3.0, int(rec_n_pi)) if is_dsilva else np.array([0.0])
-    rec_sigma_grid = np.array([15.0])  # single sigma for speed
+    # Build recovery grids from user-specified ranges
+    rec_fbin_grid = np.linspace(float(rec_fb_min), float(rec_fb_max), int(rec_n_fbin))
+    if is_dsilva:
+        rec_pi_grid = np.linspace(float(rec_pi_min), float(rec_pi_max), int(rec_n_pi))
+    else:
+        rec_pi_grid = np.array([0.0])
+    rec_sigma_grid = np.array([15.0])  # single sigma for speed in batch
 
     e_model = 'flat' if is_dsilva else 'zero'
     bin_cfg = BinaryParameterConfig(
@@ -473,11 +587,6 @@ def _render_batch_sweep(
     # ── Poll running batch job ────────────────────────────────────────────
     job = st.session_state.get(batch_job_key)
     if job is not None and not job.get('done', False):
-        n_done = job.get('n_done', 0)
-        n_tot = job.get('n_total', 1)
-        cur = job.get('current_point', '')
-        st.progress(n_done / max(n_tot, 1),
-                    text=f'Batch sweep: {n_done}/{n_tot} — {cur}')
         _poll_batch_job(p)
         return
 
@@ -502,11 +611,19 @@ def _render_batch_sweep(
 
 @st.fragment(run_every=3)
 def _poll_batch_job(p: str) -> None:
-    """Poll background batch validation job."""
+    """Poll background batch validation job — displays live progress bar."""
     job_key = f'{p}_val_batch_job'
     job = st.session_state.get(job_key)
-    if job is not None and job.get('done', False):
+    if job is None:
+        return
+    if job.get('done', False):
         st.rerun(scope='app')
+    else:
+        n_done = job.get('n_done', 0)
+        n_tot = job.get('n_total', 1)
+        cur = job.get('current_point', '')
+        st.progress(n_done / max(n_tot, 1),
+                    text=f'Batch sweep: {n_done}/{n_tot} — {cur}')
 
 
 def _display_batch_result(p: str, batch, is_dsilva: bool) -> None:
