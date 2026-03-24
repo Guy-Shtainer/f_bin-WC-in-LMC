@@ -10,7 +10,7 @@ Rules are NEVER deleted — only archived when the underlying code/pattern is ve
 - **Pin-point fixes vs systemic issues**: When the user describes a systemic problem, don't propose a narrow fix. Listen for the broader pattern they're describing. E.g., "why is the agent dumb" → the issue is the pipeline architecture, not one Hebrew path bug. (last_triggered: 2026-03-24)
 
 ### Context & Memory
-- **Update GRAPHS_PER_METHOD.md + FEATURES.md BEFORE code changes**: These are the regression checklists. Update them first with user decisions (KEEP/REMOVE/MODIFY/WORKING), then implement. Always compare after changes. (last_triggered: 2026-03-23)
+- **Update GRAPHS_PER_METHOD.md + FEATURES.md BEFORE code changes**: These are the regression checklists. Update them first with user decisions (KEEP/REMOVE/MODIFY/WORKING), then implement. Always compare after changes. (last_triggered: 2026-03-24)
 - **Verify current app state, don't trust stale memory**: Before writing about app features (tabs, scoring methods, UI), check the actual code. Memory entries about app state decay fast. (last_triggered: 2026-03-23)
 - **Keep code comments minimal**: Don't bloat code files with descriptions. `# WORKING — do not change this code` is sufficient. Put context about what code does in reference files, not inline comments. (last_triggered: 2026-03-23)
 - **Don't trim upstream skills**: Skill files from Anthropic's GitHub (daymade-skill-creator, anthropic-skill-creator) are not ours to trim. At most update from upstream. (last_triggered: 2026-03-23)
@@ -30,6 +30,7 @@ Rules are NEVER deleted — only archived when the underlying code/pattern is ve
 - **Parameter verification**: New functions replicating existing computations must receive IDENTICAL params. (last_triggered: 2026-03-15)
 
 ### User Interaction
+- **Graph review: match rendering order**: When walking user through graphs/plots, present them in exact top-to-bottom rendering order. User corrected twice when order was wrong — they need positional context to give accurate feedback. (last_triggered: 2026-03-24)
 - **Questions ≠ requests**: When user asks "can I do X?" or "does X work?", ANSWER the question first. Don't start implementing. Only code when explicitly asked. (last_triggered: 2026-03-23)
 - **Align before non-trivial changes**: If confidence < 90%, ASK. User repeating = misunderstanding. (last_triggered: 2026-03-22)
 - **Ask before refactoring**: Don't touch "improvable" code near the bug. Mention it, let user decide. (last_triggered: 2026-03-22)
