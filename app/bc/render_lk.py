@@ -22,6 +22,7 @@ from shared import (
     find_best_grid_point, make_heatmap_fig,
     PLOTLY_THEME, get_palette,
 )
+from bc.render_shared import render_sigma_scan_chart
 
 # Keys hardcoded for Likelihood
 _METHOD_KEY = 'likelihood'
@@ -147,6 +148,9 @@ def render_lk_tab(p: str, ctx: dict, method_results: dict) -> None:
     p_nd = _ensure_nd(p_nd, ctx)
     D_nd = _ensure_nd(D_nd, ctx)
 
+    # A3: Max likelihood vs σ/logPmax (moved here from shared section)
+    render_sigma_scan_chart(ctx)
+
     _render_lk_expander(
         p_nd=p_nd,
         D_nd=D_nd,
@@ -210,34 +214,57 @@ def _render_lk_expander(
         and ndim_mode not in ('langer', 'cadence_langer')
     )
     _user_sig_idx = None
+    _default_sig = 0
+    _default_lp = 0
+    _logPmax_g_sl = np.asarray(result.get('logPmax_grid', []))
+    _has_lp_slider = (_logPmax_g_sl.size > 1 and p_nd.ndim >= 3)
+
+    # Compute best indices for both sliders
+    _tmp_best_global = np.unravel_index(int(np.nanargmax(p_nd)), p_nd.shape)
     if _has_sig_slider:
-        _tmp_best = np.unravel_index(int(np.nanargmax(p_nd)), p_nd.shape)
         if ndim_mode == 'dsilva':
-            _default_sig = int(_tmp_best[1])  # [logPmax, sigma, fbin, pi]
+            _default_sig = int(_tmp_best_global[1])
         else:
-            _default_sig = int(_tmp_best[0])  # [sigma, fbin, pi]
+            _default_sig = int(_tmp_best_global[0])
+    if _has_lp_slider:
+        _default_lp = int(_tmp_best_global[0])
+
+    # Reset button
+    _sig_key = f'{prefix}_{_METHOD_KEY}_sig_slider'
+    _lp_key = f'{prefix}_{_METHOD_KEY}_lp_slider'
+    if _has_sig_slider or _has_lp_slider:
+        _sl_cols = st.columns([0.7, 0.3])
+        with _sl_cols[1]:
+            if st.button('🟢 Reset to best', key=f'{prefix}_{_METHOD_KEY}_reset_sliders'):
+                if _sig_key in st.session_state:
+                    del st.session_state[_sig_key]
+                if _lp_key in st.session_state:
+                    del st.session_state[_lp_key]
+                st.rerun()
+
+    if _has_sig_slider:
+        _best_sig_val = _sigma_g_sl[_default_sig]
         _user_sig_idx = st.select_slider(
-            f'sigma_single slice ({_DISPLAY_NAME})',
+            f'σ_single slice ({_DISPLAY_NAME})',
             options=list(range(len(_sigma_g_sl))),
             format_func=lambda i: f'{_sigma_g_sl[i]:.1f} km/s',
             value=_default_sig,
-            key=f'{prefix}_{_METHOD_KEY}_sig_slider',
+            key=_sig_key,
         )
+        st.caption(f'Best: σ_single = **{_best_sig_val:.1f}** km/s')
 
     # -- logPmax slider (any mode with logPmax scan) ---------------
-    _logPmax_g_sl = np.asarray(result.get('logPmax_grid', []))
     _user_lp_idx = None
-    if (_logPmax_g_sl.size > 1
-            and p_nd.ndim >= 3):
-        _tmp_best_lp = np.unravel_index(int(np.nanargmax(p_nd)), p_nd.shape)
-        _default_lp = int(_tmp_best_lp[0])
+    if _has_lp_slider:
+        _best_lp_val = _logPmax_g_sl[_default_lp]
         _user_lp_idx = st.select_slider(
             f'logP_max slice ({_DISPLAY_NAME})',
             options=list(range(len(_logPmax_g_sl))),
             format_func=lambda i: f'{_logPmax_g_sl[i]:.2f}',
             value=_default_lp,
-            key=f'{prefix}_{_METHOD_KEY}_lp_slider',
+            key=_lp_key,
         )
+        st.caption(f'Best: logP_max = **{_best_lp_val:.2f}**')
 
     # -- Slice down to 2D: [fbin, x] ------------------------------
     if _user_lp_idx is not None:
@@ -360,7 +387,17 @@ def _render_lk_expander(
     _raw_D = _get_method_array(result, _D_KEY)
     _raw_p = _get_method_array(result, _P_KEY)
 
-    if _sigma_g_fit.size > 1 and _raw_D is not None:
+    if _sigma_g_fit.size > 1 and _logPmax_g_fit.size > 1 and _raw_D is not None:
+        # Both σ and logPmax scanned — pass full ND for D5a right panel
+        if _raw_D.ndim == 4:
+            _lp_idx = disp_outer_slices[0] if disp_outer_slices else 0
+            _full_D_3d = _raw_D[_lp_idx]
+            # Also pass the FULL array for D5a right panel σ×logP heatmap
+            _full_p_3d = _raw_p  # full 4D for right panel computation
+        elif _raw_D.ndim == 3:
+            _full_D_3d = _raw_D
+            _full_p_3d = _raw_p
+    elif _sigma_g_fit.size > 1 and _raw_D is not None:
         if ndim_mode == 'dsilva' and _raw_D.ndim == 4:
             _lp_idx = disp_outer_slices[0] if disp_outer_slices else 0
             _full_D_3d = _raw_D[_lp_idx]
@@ -406,9 +443,7 @@ def _render_lk_expander(
             y_label=x_label,
             sigma_grid=_sigma_g_fit if _sigma_g_fit.size > 1 else None,
             logPmax_grid=(
-                _logPmax_g_fit
-                if (_logPmax_g_fit.size > 1 and _sigma_g_fit.size <= 1)
-                else None
+                _logPmax_g_fit if _logPmax_g_fit.size > 1 else None
             ),
             lk_D_3d=_full_D_3d,
             lk_p_3d=_full_p_3d,
@@ -449,7 +484,7 @@ def _render_lk_expander(
             m, lo, hi = _hdi_s[name]
             return f'{m:{fmt}} +{hi - m:{fmt}} / -{m - lo:{fmt}}'
 
-        _interp_key = f'{prefix}_interp'
+        _interp_key = f'{prefix}_{_METHOD_KEY}_analysis_interp'
         _interp = st.session_state.get(_interp_key)
 
         _sum_rows = []
@@ -507,6 +542,13 @@ def _render_lk_expander(
 
         st.table(pd.DataFrame(_sum_rows))
 
+        # N_sets chooser for re-simulation at interpolated best-fit
+        _n_sets_resim = st.number_input(
+            'N_sets for re-simulation at interpolated best-fit',
+            min_value=100, max_value=50000, value=1000, step=100,
+            key=f'{prefix}_{_METHOD_KEY}_n_sets_resim',
+        )
+
         # -- D16: Re-simulate at interpolated best-fit ----------------
         if _interp is not None:
             try:
@@ -545,7 +587,7 @@ def _render_lk_expander(
                     _bv.get('fbin', 0.5),
                     _bv.get(x_name, 0.0),
                     _bv.get('sigma', float(result.get('sigma_meas', 5.0))),
-                    np.asarray(_osc), _pm, result, {},
+                    np.asarray(_osc), _pm, result,
                     f'{prefix}_{_METHOD_KEY}',
                 )
             except Exception:

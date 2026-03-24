@@ -412,6 +412,24 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                                 'max_likelihood': _live_lp_lk_c,
                             }
 
+                        # Live 2D σ×logP heatmap (when both scanned)
+                        if n_sig > 1 and _scan_logPmax and n_logPmax > 1:
+                            _logL_gmax_2d = np.nanmax(logL_raw) if np.any(np.isfinite(logL_raw)) else -np.inf
+                            if np.isfinite(_logL_gmax_2d) and logL_raw.ndim == 4:
+                                # logL_raw shape: [logPmax, sigma, fbin, pi]
+                                _max_2d = np.full((n_logPmax, n_sig), 0.0)
+                                for _ilp2 in range(n_logPmax):
+                                    for _is2 in range(n_sig):
+                                        _sl2 = logL_raw[_ilp2, _is2]
+                                        if np.any(~np.isnan(_sl2)):
+                                            _max_2d[_ilp2, _is2] = float(
+                                                np.nanmax(np.exp(_sl2 - _logL_gmax_2d)))
+                                job['live_sigma_logPmax_2d'] = {
+                                    'sigma_vals': sigma_grid.tolist(),
+                                    'logPmax_vals': logPmax_scan_vals.tolist(),
+                                    'max_likelihood_2d': _max_2d.tolist(),
+                                }
+
         # Normalize logL → likelihood [0,1]
         _logL_max = np.nanmax(logL_raw)
         if np.isfinite(_logL_max):

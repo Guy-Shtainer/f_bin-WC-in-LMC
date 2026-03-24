@@ -265,8 +265,25 @@ def _render_lk_model_explorer(
     def_x = float(bv.get(x_name, 0.0))
     def_sig = float(bv.get('sigma', result.get('sigma_meas', 5.0)))
 
-    # Sliders -- add logPmax column when grid has >1 value
+    # Reset button + best-fit labels
     _lp_g = np.asarray(result.get('logPmax_grid', []))
+    _best_score = me_info.get('best_score', 0)
+    _reset_col1, _reset_col2 = st.columns([0.7, 0.3])
+    with _reset_col1:
+        _best_parts = [f'f_bin={def_fb:.3f}', f'{x_label}={def_x:.2f}']
+        if sig_g.size > 1 if 'sig_g' not in dir() else False:
+            _best_parts.append(f'σ={def_sig:.1f}')
+        st.caption(f'Best-fit model: {", ".join(_best_parts)}  |  Score: {_best_score:.4f}')
+    with _reset_col2:
+        if st.button('🟢 Reset to best', key=f'{prefix}_lk_me_reset'):
+            for _k in [f'{prefix}_lk_me_fb', f'{prefix}_lk_me_x',
+                       f'{prefix}_lk_me_sig', f'{prefix}_lk_me_logPmax']:
+                if _k in st.session_state:
+                    del st.session_state[_k]
+            st.rerun()
+
+    # Sliders -- add logPmax column when grid has >1 value
+    sig_g = np.asarray(result.get('sigma_grid', []))
     _ncols = 4 if _lp_g.size > 1 else 3
     cols = st.columns(_ncols)
     me_fb = cols[0].slider('f_bin', 0.0, 1.0, def_fb, 0.01,
@@ -276,7 +293,6 @@ def _render_lk_model_explorer(
     me_x = cols[1].slider(x_label, x_lo, x_hi,
                           min(max(def_x, x_lo), x_hi), 0.01,
                           key=f'{prefix}_lk_me_x')
-    sig_g = np.asarray(result.get('sigma_grid', []))
     if sig_g.size > 1:
         me_sig = cols[2].slider(
             'sigma_single (km/s)', float(sig_g[0]), float(sig_g[-1]),
@@ -309,7 +325,8 @@ def _render_lk_model_explorer(
     _score_val = f'{_logL:.3f}'
 
     sc1, sc2 = st.columns([0.35, 0.65])
-    sc1.metric('ln L', _score_val)
+    _delta_str = f' (best: {_best_score:.4f})' if _best_score else ''
+    sc1.metric('ln L', _score_val, delta=f'vs best: {_logL - (_best_score if _best_score else _logL):.3f}')
     sc2.caption(
         f'f_bin={me_fb:.3f}, {x_label}={me_x:.2f}, '
         f'sigma_single={me_sig:.1f} km/s'

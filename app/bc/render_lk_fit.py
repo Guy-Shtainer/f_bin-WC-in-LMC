@@ -623,6 +623,7 @@ def _render_likelihood_cdf(
 # Per-bin likelihood breakdown table (E6)
 # ---------------------------------------------------------------------------
 
+# WORKING — do not change this code (E6: Per-Bin Breakdown Table)
 def _render_likelihood_stats_table(
     obs_delta_rv: np.ndarray,
     sim_delta_rv_pooled: np.ndarray,
@@ -712,7 +713,26 @@ def _render_likelihood_explanation(
             "- Find the **maximum** ln L across the entire grid\n"
             "- Subtract it from every grid point's ln L, then exponentiate\n"
             '- Result: best-fit gets **L_norm = 1.0**, all others < 1')
-        st.markdown('##### 3. Why Do Many Points Show L ~ 1?')
+        st.markdown('##### 3. Bad Example (uniform model)')
+        st.markdown(
+            'What if the model predicts **equal probability** for every bin? '
+            'This is the worst-case scenario — a model that has no structure:')
+        bad_p = np.ones(len(n_obs)) / len(n_obs)
+        bad_rows = []
+        bad_total = 0.0
+        for i in range(len(n_obs)):
+            ni = int(n_obs[i])
+            pi = bad_p[i]
+            contrib = ni * np.log(pi) if ni > 0 else 0.0
+            bad_total += contrib
+            bad_rows.append(f'| {bin_labels[i]} | {ni} | {pi:.2f} | {np.log(pi):.3f} | {contrib:.3f} |')
+        st.markdown('\n'.join([header, sep] + bad_rows))
+        st.markdown(f'**Total: ln L = {bad_total:.3f}**  (worse than the good example: {ex_total:.3f})')
+        st.caption(
+            'The uniform model penalizes bins where many stars are observed '
+            'because p_i is small. A good model concentrates probability in '
+            'bins that actually contain stars.')
+        st.markdown('##### 4. Why Do Many Points Show L ~ 1?')
         st.markdown(
             f'With only **{len(n_obs)} coarse bins**, many parameter '
             'combinations produce nearly identical bin probabilities. '

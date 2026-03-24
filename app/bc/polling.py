@@ -72,6 +72,9 @@ def _poll_cadence_job(p: str) -> str:
         if _job.get('live_logPmax_1d'):
             st.session_state[f'{p}_final_live_logPmax_1d'] = (
                 _job['live_logPmax_1d'])
+        if _job.get('live_sigma_logPmax_2d'):
+            st.session_state[f'{p}_final_live_sigma_logPmax_2d'] = (
+                _job['live_sigma_logPmax_2d'])
         del st.session_state[f'{p}_job']
         cached_load_grid_result.clear()
         _scan_result_metadata.clear()
@@ -131,29 +134,47 @@ def _render_running_fragment(p: str) -> None:
                     use_container_width=True)
         if _j.get('live_status'):
             st.markdown(_j['live_status'])
-        # Live 1D sigma graph (likelihood only)
-        _lsig = _j.get('live_sigma_1d')
-        if _lsig and len(_lsig.get('sigma_vals', [])) > 1:
-            _lsig_lk = _lsig.get('max_likelihood', [])
-            if _lsig_lk and any(v > 0 for v in _lsig_lk):
-                st.plotly_chart(
-                    _make_max_pval_fig(
-                        np.array(_lsig['sigma_vals']),
-                        _lsig_lk, height=250,
-                        x_label='σ_single (km/s)',
-                        stat_label='Likelihood',
-                    ), use_container_width=True)
-        # Live 1D logP_max graph (likelihood only)
-        _llp = _j.get('live_logPmax_1d')
-        if _llp and len(_llp.get('logPmax_vals', [])) > 1:
-            _llp_lk = _llp.get('max_likelihood', [])
-            if _llp_lk and any(v > 0 for v in _llp_lk):
-                st.plotly_chart(
-                    _make_max_pval_fig(
-                        np.array(_llp['logPmax_vals']),
-                        _llp_lk, height=250,
-                        x_label='logP_max', stat_label='Likelihood',
-                    ), use_container_width=True)
+        # Live σ×logP profile: 2D heatmap when both scanned, else 1D charts
+        _live_2d = _j.get('live_sigma_logPmax_2d')
+        if _live_2d and len(_live_2d.get('sigma_vals', [])) > 1 and len(_live_2d.get('logPmax_vals', [])) > 1:
+            _sig_v = np.array(_live_2d['sigma_vals'])
+            _lp_v = np.array(_live_2d['logPmax_vals'])
+            _hm_data = np.array(_live_2d['max_likelihood_2d'])
+            if np.any(_hm_data > 0):
+                from shared import make_heatmap_fig
+                _fig_2d = make_heatmap_fig(
+                    _hm_data, _lp_v, _sig_v,
+                    title='Max Likelihood (σ_single × logP_max)',
+                    show_d=False, height=350,
+                    x_label='σ_single (km/s)',
+                    y_label='log₁₀(P_max / days)',
+                    x_name='σ', scoring_label='Likelihood',
+                    colorbar_title_override='Max Likelihood',
+                )
+                st.plotly_chart(_fig_2d, use_container_width=True)
+        else:
+            # Fallback: separate 1D charts
+            _lsig = _j.get('live_sigma_1d')
+            if _lsig and len(_lsig.get('sigma_vals', [])) > 1:
+                _lsig_lk = _lsig.get('max_likelihood', [])
+                if _lsig_lk and any(v > 0 for v in _lsig_lk):
+                    st.plotly_chart(
+                        _make_max_pval_fig(
+                            np.array(_lsig['sigma_vals']),
+                            _lsig_lk, height=250,
+                            x_label='σ_single (km/s)',
+                            stat_label='Likelihood',
+                        ), use_container_width=True)
+            _llp = _j.get('live_logPmax_1d')
+            if _llp and len(_llp.get('logPmax_vals', [])) > 1:
+                _llp_lk = _llp.get('max_likelihood', [])
+                if _llp_lk and any(v > 0 for v in _llp_lk):
+                    st.plotly_chart(
+                        _make_max_pval_fig(
+                            np.array(_llp['logPmax_vals']),
+                            _llp_lk, height=250,
+                            x_label='logP_max', stat_label='Likelihood',
+                        ), use_container_width=True)
     _cadence_live_poll()
 
 
@@ -179,7 +200,29 @@ def _render_final_heatmaps(p: str) -> None:
 
 
 def _render_final_sigma_1d(p: str) -> None:
-    """Show persisted final sigma 1D graph after job cleanup."""
+    """Show persisted final σ/logP profile after job cleanup (2D or 1D)."""
+    # Prefer 2D heatmap if available
+    _final_2d = st.session_state.get(f'{p}_final_live_sigma_logPmax_2d')
+    if _final_2d and len(_final_2d.get('sigma_vals', [])) > 1 and len(_final_2d.get('logPmax_vals', [])) > 1:
+        _sig_v = np.array(_final_2d['sigma_vals'])
+        _lp_v = np.array(_final_2d['logPmax_vals'])
+        _hm_data = np.array(_final_2d['max_likelihood_2d'])
+        if np.any(_hm_data > 0):
+            from shared import make_heatmap_fig
+            _fig_2d = make_heatmap_fig(
+                _hm_data, _lp_v, _sig_v,
+                title='Max Likelihood (σ_single × logP_max)',
+                show_d=False, height=350,
+                x_label='σ_single (km/s)',
+                y_label='log₁₀(P_max / days)',
+                x_name='σ', scoring_label='Likelihood',
+                colorbar_title_override='Max Likelihood',
+            )
+            st.plotly_chart(_fig_2d, use_container_width=True,
+                            key=f'{p}_final_sigma_lp_2d')
+        return
+
+    # Fallback: 1D sigma chart
     _final_lsig = st.session_state.get(f'{p}_final_live_sigma_1d')
     if not _final_lsig or len(_final_lsig.get('sigma_vals', [])) <= 1:
         return
@@ -189,16 +232,7 @@ def _render_final_sigma_1d(p: str) -> None:
             _make_max_pval_fig(
                 np.array(_final_lsig['sigma_vals']),
                 _lsig_lk, height=250,
-                x_label='\u03c3_single (km/s)',
+                x_label='σ_single (km/s)',
                 stat_label='Likelihood',
             ), use_container_width=True,
             key=f'{p}_final_sigma_1d_lk')
-    else:
-        st.plotly_chart(
-            _make_max_pval_fig(
-                np.array(_final_lsig['sigma_vals']),
-                _final_lsig['max_pvals'], height=250,
-                x_label='\u03c3_single (km/s)',
-                stat_label='K-S',
-            ), use_container_width=True,
-            key=f'{p}_final_sigma_1d_ks')

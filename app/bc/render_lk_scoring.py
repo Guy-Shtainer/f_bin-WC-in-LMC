@@ -28,7 +28,7 @@ from shared import PLOTLY_THEME, make_heatmap_fig
 from bc.render_lk_fit import (
     _parabolic_min_1d, _parabolic_min_2d, _parabolic_min_3d,
     _eval_3d_quadratic, _render_cvm_1d_plot,
-    _render_likelihood_cdf, _render_likelihood_stats_table,
+    _render_likelihood_stats_table,
     _render_likelihood_explanation,
 )
 
@@ -39,6 +39,51 @@ _STAT_NAME = '-log L'
 _STAT_DISPLAY = 'Likelihood'
 _SCORE_NAME = 'Normalized Likelihood'
 _METHOD_COLOR = '#DAA520'
+
+
+# ---------------------------------------------------------------------------
+# Helper: compute pooled sim data for E6 stats table (E5 CDF removed)
+# ---------------------------------------------------------------------------
+
+def _compute_pooled_sim(obs_delta_rv: np.ndarray, result: dict) -> np.ndarray | None:
+    """Simulate at best-fit and return pooled ΔRV array for the stats table."""
+    from wr_bias_simulation import (
+        simulate_delta_rv_sample, SimulationConfig, BinaryParameterConfig,
+    )
+    _lk_p = result.get('likelihood')
+    if _lk_p is None:
+        return None
+    _lk_p = np.asarray(_lk_p, dtype=float)
+    if not np.any(np.isfinite(_lk_p)):
+        return None
+
+    flat_best = int(np.nanargmax(_lk_p))
+    best_idx = np.unravel_index(flat_best, _lk_p.shape)
+    fbin_g = np.asarray(result.get('fbin_grid', [0.5]))
+    x_g = np.asarray(result.get('pi_grid', result.get('sigma_grid', [0.0])))
+    sigma_g = np.asarray(result.get('sigma_grid', [5.0]))
+
+    if _lk_p.ndim == 4:
+        fb, pi_v, sig_v = float(fbin_g[best_idx[2]]), float(x_g[best_idx[3]]), float(sigma_g[best_idx[1]])
+    elif _lk_p.ndim == 3:
+        fb, pi_v, sig_v = float(fbin_g[best_idx[1]]), float(x_g[best_idx[2]]), float(sigma_g[best_idx[0]])
+    else:
+        fb, pi_v = float(fbin_g[best_idx[0]]), float(x_g[best_idx[1]])
+        sig_v = float(sigma_g[0]) if sigma_g.size else 5.0
+
+    obs_drv = np.abs(np.asarray(obs_delta_rv))
+    sim_cfg = SimulationConfig(
+        n_stars=len(obs_drv),
+        sigma_single=sig_v,
+        sigma_measure=float(result.get('sigma_meas', 3.0)),
+    )
+    bin_cfg = BinaryParameterConfig()
+    all_sim = []
+    for seed_i in range(100):
+        rng = np.random.default_rng(42 + seed_i)
+        all_sim.append(simulate_delta_rv_sample(
+            f_bin=fb, pi=pi_v, sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng))
+    return np.concatenate(all_sim)
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +243,7 @@ def render_lk_scoring_detail(
     with _d5_left:
         fig_raw = go.Figure(go.Heatmap(
             z=_to_display(_S_work), x=y_grid, y=x_grid,
-            colorscale='Viridis_r', colorbar=dict(title=_cbar_title),
+            colorscale='Viridis_r', colorbar=dict(title=_cbar_title, len=0.8),
             hovertemplate=(
                 f'{y_label}: %{{x:.3f}}<br>'
                 f'{x_label}: %{{y:.3f}}<br>'
@@ -216,7 +261,7 @@ def render_lk_scoring_detail(
         })
         _raw_slot = st.empty()
         _raw_slot.plotly_chart(fig_raw, use_container_width=True)
-        st.caption('Lower −log L = better fit. All models shown.')
+        st.caption('Higher likelihood = better fit. Gold star marks parabolic best fit.')
 
     if _has_right_panel:
         with _d5_right:
@@ -272,12 +317,10 @@ def render_lk_scoring_detail(
 
     # -- D5b, D5c: REMOVED (user review 2026-03-23) ----------------
 
-    # -- Likelihood CDF, per-bin stats, and explanation ------------
+    # -- E5 CDF: REMOVED (redundant with A2 CDF) ------------------
+    # Per-bin stats table (E6) and methodology explainer (E7) kept.
     if obs_delta_rv is not None and likelihood_bin_edges is not None and result is not None:
-        _pooled_sim = _render_likelihood_cdf(
-            obs_delta_rv, result, likelihood_bin_edges,
-            prefix=prefix, theme=_theme,
-        )
+        _pooled_sim = _compute_pooled_sim(obs_delta_rv, result)
         if _pooled_sim is not None:
             _render_likelihood_stats_table(
                 obs_delta_rv, _pooled_sim, likelihood_bin_edges,
@@ -292,6 +335,7 @@ def render_lk_scoring_detail(
     _fit_mode = _fc1.radio(
         'Fit selection',
         ['Height-based', 'Range-based', 'Neighborhood'],
+        index=1,  # Default to Range-based
         horizontal=True, key=f'{prefix}_fit_mode',
     )
     _mode = (
@@ -303,7 +347,7 @@ def render_lk_scoring_detail(
     # Defaults for unused params
     _h_factor = 2.0
     _h_factor_x = _h_factor_y = 2.0
-    _frac_x = _frac_y = 0.1
+    _frac_x = _frac_y = 0.2
     _nn_x = _nn_y = _nn_1d = 2
 
     if _mode == 'height':
@@ -334,10 +378,10 @@ def render_lk_scoring_detail(
     else:
         _frac_x = _fc2.number_input(
             f'{x_label} fraction', min_value=0.01, max_value=1.0,
-            value=0.10, step=0.01, key=f'{prefix}_frac_x')
+            value=0.20, step=0.01, key=f'{prefix}_frac_x')
         _frac_y = _fc3.number_input(
             f'{y_label} fraction', min_value=0.01, max_value=1.0,
-            value=0.10, step=0.01, key=f'{prefix}_frac_y')
+            value=0.20, step=0.01, key=f'{prefix}_frac_y')
 
     # -- Parabolic interpolation -----------------------------------
     if not np.any(np.isfinite(_S_work)):
@@ -381,7 +425,7 @@ def render_lk_scoring_detail(
     _raw_slot.plotly_chart(fig_raw, use_container_width=True)
 
     st.success(
-        f'**Parabolic minimum ({_STAT_DISPLAY}):** {x_label} = {best_x:.4f}, '
+        f'**Parabolic best fit (max likelihood):** {x_label} = {best_x:.4f}, '
         f'{y_label} = {best_y:.3f}, {_cbar_title} = {best_S:.2f}'
     )
 
@@ -475,229 +519,8 @@ def render_lk_scoring_detail(
         st.plotly_chart(fig_3d, use_container_width=True,
                         key=f'{prefix}_3d_fbpi')
 
-    # -- 3D quadratic fit + projected surfaces (3-axis grids) ------
-    _do_3d_sigma = (
-        sigma_grid is not None
-        and lk_D_3d is not None
-        and len(sigma_grid) > 1
-    )
-    _do_3d_logPmax = (
-        not _do_3d_sigma
-        and logPmax_grid is not None
-        and lk_D_3d is not None
-        and len(logPmax_grid) > 1
-    )
-    _do_3d_fit = _do_3d_sigma or _do_3d_logPmax
-    _3d_z_grid = sigma_grid if _do_3d_sigma else logPmax_grid
-    _3d_z_label = 'sigma_single' if _do_3d_sigma else 'logP_max'
-    _3d_z_key = 'sigma' if _do_3d_sigma else 'logPmax'
-    _3d_bx = _3d_by = _3d_bz = _3d_bS = None
-    _3d_coeffs = _3d_bounds = None
-
-    if _do_3d_fit:
-        _cam = _cam_presets.get(
-            _cam_choice if '_cam_choice' in dir() else 'Default',
-            dict(eye=dict(x=1.5, y=1.5, z=1.2)),
-        )
-
-        # Build working copy with exclusion applied
-        # Negate for likelihood (minimize -logL)
-        _S3d_work = (-lk_D_3d).copy().astype(float)
-        for _is3 in range(_S3d_work.shape[0]):
-            _S3d_work[_is3][_exc_mask_2d] = np.nan
-
-        # Single 3D quadratic fit over (x=fbin, y=pi/sigma, z=sigma/logPmax)
-        _S3d_for_fit = _S3d_work.transpose(1, 2, 0)
-        (_3d_bx, _3d_by, _3d_bz, _3d_bS,
-         _3d_coeffs, _3d_bounds) = _parabolic_min_3d(
-            x_grid, y_grid, _3d_z_grid, _S3d_for_fit,
-            height_factor=_h_factor,
-            n_neighbors=max(_nn_x, _nn_y),
-        )
-
-        st.markdown('---')
-        st.markdown(f'#### 3D Quadratic Fit -- {_STAT_DISPLAY}')
-        if _3d_bx is None or _3d_by is None or _3d_bz is None:
-            st.warning('3D quadratic fit did not converge.')
-            _do_3d_fit = False
-        else:
-            st.success(
-                f'**3D minimum ({_STAT_DISPLAY}):** {x_label} = {_3d_bx:.4f}, '
-                f'{y_label} = {_3d_by:.3f}, '
-                f'{_3d_z_label} = {_3d_bz:.2f}, '
-                f'{_cbar_title} = {_3d_bS:.2f}'
-            )
-
-        # 3D projected surfaces
-        if _do_3d_fit and _3d_coeffs is not None and _3d_bounds is not None:
-            xb0, xb1, yb0, yb1, zb0, zb1 = _3d_bounds
-            _ns3 = 50
-
-            _proj_configs = [
-                (x_grid, y_grid, x_label, y_label, _3d_z_label,
-                 _3d_bx, _3d_by, _3d_bz,
-                 lambda xx, yy: _eval_3d_quadratic(
-                     _3d_coeffs, xx, yy, _3d_bz),
-                 f'{x_label} x {y_label}  ({_3d_z_label}={_3d_bz:.2f})',
-                 xb0, xb1, yb0, yb1, _S3d_work[:, :, :]),
-                (x_grid, _3d_z_grid, x_label, _3d_z_label, y_label,
-                 _3d_bx, _3d_bz, _3d_by,
-                 lambda xx, zz: _eval_3d_quadratic(
-                     _3d_coeffs, xx, _3d_by, zz),
-                 f'{x_label} x {_3d_z_label}  ({y_label}={_3d_by:.3f})',
-                 xb0, xb1, zb0, zb1, None),
-                (y_grid, _3d_z_grid, y_label, _3d_z_label, x_label,
-                 _3d_by, _3d_bz, _3d_bx,
-                 lambda yy, zz: _eval_3d_quadratic(
-                     _3d_coeffs, _3d_bx, yy, zz),
-                 f'{y_label} x {_3d_z_label}  (f_bin={_3d_bx:.4f})',
-                 yb0, yb1, zb0, zb1, None),
-            ]
-
-            for _ip, (_gA, _gB, _lA, _lB, _lC, _bA, _bB, _bC,
-                       _eval_fn, _ttl,
-                       _ab0, _ab1, _bb0, _bb1, _) in enumerate(
-                           _proj_configs):
-                _xp = np.linspace(_ab0, _ab1, _ns3)
-                _yp = np.linspace(_bb0, _bb1, _ns3)
-                _Xp, _Yp = np.meshgrid(_xp, _yp, indexing='ij')
-                _Zp = _eval_fn(_Xp, _Yp)
-
-                # Grid data in fit region
-                if _ip == 0:
-                    _iz_best = int(
-                        np.argmin(np.abs(_3d_z_grid - _3d_bz)))
-                    _sl_data = _S3d_work[_iz_best]
-                elif _ip == 1:
-                    _iy_best = int(
-                        np.argmin(np.abs(y_grid - _3d_by)))
-                    _sl_data = _S3d_work[:, :, _iy_best].T
-                else:
-                    _ix_best = int(
-                        np.argmin(np.abs(x_grid - _3d_bx)))
-                    _sl_data = _S3d_work[:, _ix_best, :].T
-
-                _xg3, _yg3 = np.meshgrid(_gA, _gB, indexing='ij')
-                _xgf3 = _xg3.ravel()
-                _ygf3 = _yg3.ravel()
-                _zgf3 = _sl_data.ravel()
-                _ib3 = (
-                    np.isfinite(_zgf3)
-                    & (_xgf3 >= _ab0) & (_xgf3 <= _ab1)
-                    & (_ygf3 >= _bb0) & (_ygf3 <= _bb1)
-                )
-
-                _Zpd = _to_display(_Zp)
-                _zgf3d = _to_display(_zgf3)
-                _bSd = float(_to_display(np.array([_3d_bS]))[0])
-
-                _hov3 = (
-                    f'{_lB}: %{{x:.3f}}<br>'
-                    f'{_lA}: %{{y:.3f}}<br>'
-                    f'{_cbar_title}: %{{z:.2f}}'
-                )
-
-                fig_proj = go.Figure()
-                fig_proj.add_trace(go.Surface(
-                    x=_yp, y=_xp, z=_Zpd,
-                    colorscale='Viridis_r', opacity=0.7,
-                    colorbar=dict(
-                        title=f'{_cbar_title} (3D fit)', x=1.05),
-                    name='3D quadratic projection',
-                    hovertemplate=(
-                        _hov3 + '<extra>3D fit projection</extra>'),
-                ))
-                if _ib3.sum() > 0:
-                    fig_proj.add_trace(go.Scatter3d(
-                        x=_ygf3[_ib3], y=_xgf3[_ib3],
-                        z=_zgf3d[_ib3],
-                        mode='markers',
-                        marker=dict(size=3, color='#4A90D9'),
-                        name='Grid points',
-                        hovertemplate=(
-                            _hov3 + '<extra>Grid points</extra>'),
-                    ))
-                fig_proj.add_trace(go.Scatter3d(
-                    x=[_bB], y=[_bA], z=[_bSd],
-                    mode='markers',
-                    marker=dict(
-                        size=8, color=_METHOD_COLOR, symbol='diamond'),
-                    name='3D Minimum',
-                    hovertemplate=(
-                        _hov3 + '<extra>3D Minimum</extra>'),
-                ))
-                fig_proj.update_layout(**{
-                    **_theme,
-                    'title': dict(
-                        text=f'3D Fit Projection: {_ttl}'),
-                    'scene': dict(
-                        xaxis_title=_lB,
-                        yaxis_title=_lA,
-                        zaxis_title=_cbar_title,
-                        dragmode='orbit',
-                    ),
-                    'scene_camera': _cam,
-                    'legend': dict(
-                        x=0.01, y=0.99, xanchor='left',
-                        yanchor='top',
-                        bgcolor='rgba(0,0,0,0.5)',
-                        bordercolor='gray',
-                        borderwidth=1, font=dict(size=11),
-                    ),
-                    'height': 500,
-                })
-                st.plotly_chart(
-                    fig_proj, use_container_width=True,
-                    key=f'{prefix}_3d_proj_{_ip}',
-                )
-
-    # -- 4D quadratic fit (optional, when BOTH σ AND logPmax scanned) -
-    _has_both_outer = (
-        sigma_grid is not None and logPmax_grid is not None
-        and sigma_grid.size > 1 and logPmax_grid.size > 1
-        and lk_D_3d is not None
-    )
-    if _has_both_outer:
-        _do_4d = st.checkbox(
-            'Enable full 4D quadratic fit (f_bin × π × σ × logPmax)',
-            value=False, key=f'{prefix}_4d_fit_toggle')
-        if _do_4d:
-            from bc.fitting import _parabolic_min_4d
-            # lk_D_3d shape: [logPmax, sigma, fbin, pi] → negate for minimization
-            _S4d = (-lk_D_3d).copy().astype(float)
-            # Apply exclusion mask per outer slice
-            for _i0 in range(_S4d.shape[0]):
-                for _i1 in range(_S4d.shape[1]):
-                    _S4d[_i0, _i1][_exc_mask_2d] = np.nan
-            # Reorder to [fbin, pi, sigma, logPmax] for fit
-            _S4d_fit = _S4d.transpose(2, 3, 1, 0)
-            (_4d_bfb, _4d_bpi, _4d_bsig, _4d_blp, _4d_bS,
-             _4d_coeffs, _4d_bounds) = _parabolic_min_4d(
-                x_grid, y_grid, sigma_grid, logPmax_grid,
-                _S4d_fit,
-                height_factor=_h_factor,
-                n_neighbors=max(_nn_x, _nn_y),
-            )
-            st.markdown('---')
-            st.markdown(f'#### 4D Quadratic Fit -- {_STAT_DISPLAY}')
-            if _4d_bfb is not None:
-                st.success(
-                    f'**4D minimum:** f_bin = {_4d_bfb:.4f}, '
-                    f'{y_label} = {_4d_bpi:.3f}, '
-                    f'σ_single = {_4d_bsig:.2f} km/s, '
-                    f'logP_max = {_4d_blp:.2f}, '
-                    f'{_cbar_title} = {_4d_bS:.2f}'
-                )
-                # Store interpolated result in session_state
-                st.session_state[f'{prefix}_interp'] = {
-                    'f_bin': _4d_bfb,
-                    y_label: _4d_bpi,
-                    'sigma': _4d_bsig,
-                    'logPmax': _4d_blp,
-                    'S': _4d_bS,
-                }
-            else:
-                st.warning('4D quadratic fit did not converge.')
+    # -- D11, 4D: REMOVED (user review 2026-03-24, simplify to f_bin×π only) --
+    _3d_bz = _3d_bS = None
 
     # -- 1D slices -------------------------------------------------
     i_x_best = int(np.argmin(np.abs(x_grid - best_x)))
@@ -777,6 +600,16 @@ def render_lk_scoring_detail(
             f'Slice at {x_label}={x_grid[i_x_best]:.4f}', height=300,
             log_transform=_use_log,
         )
+
+    # Caption: which σ and logP produced this slice
+    _slice_parts = []
+    if sigma_grid is not None and sigma_grid.size > 1:
+        _sig_at = sigma_grid[int(np.argmin(np.abs(sigma_grid - (bsig if bsig is not None else sigma_grid[0]))))]
+        _slice_parts.append(f'σ_single = {_sig_at:.1f} km/s')
+    if logPmax_grid is not None and logPmax_grid.size > 1:
+        _slice_parts.append(f'logP_max = (from slider above)')
+    if _slice_parts:
+        st.caption(f'1D slices at: {", ".join(_slice_parts)}')
 
     # -- Store unified fit results ---------------------------------
     _interp_result = {'f_bin': best_x, 'y_val': best_y, 'S': best_S}

@@ -177,7 +177,7 @@ def _render_cvm_analysis(
                              'xaxis': dict(title=y_label), 'yaxis': dict(title=x_label),
                              'height': height, 'width': width})
     st.plotly_chart(fig_raw, use_container_width=(width is None))
-    _raw_caption = ('Lower −log L = better fit (higher Likelihood). All models shown.'
+    _raw_caption = ('Higher likelihood = better fit. Gold star marks parabolic best fit.'
                     if _is_likelihood else 'Lower S = better fit. All models shown.')
     st.caption(_raw_caption)
 
@@ -330,7 +330,7 @@ def _render_cvm_analysis(
     _masked_slot.plotly_chart(fig_masked, use_container_width=(width is None))
 
     st.success(
-        f'**Parabolic minimum ({_stat_display}):** {x_label} = {best_x:.4f}, '
+        f'**Parabolic best fit ({_stat_display}):** {x_label} = {best_x:.4f}, '
         f'{y_label} = {best_y:.3f}, {_cbar_title} = {best_S:.2f}')
 
     # Camera presets (shared by 2D and 3D surface plots)
@@ -451,7 +451,7 @@ def _render_cvm_analysis(
             _do_3d_fit = False  # skip projections
         else:
             st.success(
-                f'**3D minimum ({_stat_display}):** {x_label} = {_3d_bx:.4f}, '
+                f'**3D best fit ({_stat_display}):** {x_label} = {_3d_bx:.4f}, '
                 f'{y_label} = {_3d_by:.3f}, {_3d_z_label} = {_3d_bz:.2f}, '
                 f'{_cbar_title} = {_3d_bS:.2f}')
 

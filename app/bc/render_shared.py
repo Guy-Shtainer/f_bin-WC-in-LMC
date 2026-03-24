@@ -204,8 +204,19 @@ def _render_method_summary_section(
             'Score (best)': f"{info['best_score']:.6f}",
         }
         if _has_sigma_col:
-            row['Best \u03c3_single'] = f"{bv.get('sigma', 0):.2f}"
-            row['68% HDI \u03c3_single'] = _fmt_hdi_cell('sigma', '.2f')
+            row['Best σ_single'] = f"{bv.get('sigma', 0):.2f}"
+            row['68% HDI σ_single'] = _fmt_hdi_cell('sigma', '.2f')
+        _has_logPmax_col = ('logPmax' in grid_names)
+        if _has_logPmax_col:
+            row['Best logP_max'] = f"{bv.get('logPmax', 0):.2f}"
+            row['68% HDI logP_max'] = _fmt_hdi_cell('logPmax', '.2f')
+        # Interpolated results (from parabolic fit)
+        _interp = st.session_state.get(f'{prefix}_{mk}_analysis_interp')
+        if _interp is not None:
+            row['Interp f_bin'] = f"{_interp.get('f_bin', 0):.4f}"
+            if x_name in _interp or x_label in _interp:
+                _ix = _interp.get(x_name, _interp.get(x_label, 0))
+                row[f'Interp {x_label}'] = f"{_ix:.3f}"
         rows.append(row)
 
     if not rows:
@@ -260,7 +271,7 @@ def _render_all_methods_cdf(
     fig_cdf = go.Figure()
     fig_cdf.add_trace(go.Scatter(
         x=_obs_x, y=_obs_y, mode='lines', name='Observed',
-        line=dict(color='black', width=2.5)))
+        line=dict(color='white', width=2.5)))
 
     _n_cdf_sets = 100
     for mk, info in method_results.items():
@@ -304,15 +315,32 @@ def _render_all_methods_cdf(
         except Exception:
             pass
 
+    # Annotate best-fit model parameters
+    if method_results:
+        _best_mk = max(method_results, key=lambda k: method_results[k]['best_score'])
+        _best_info = method_results[_best_mk]
+        _bv_ann = _best_info['best_vals']
+        _ann_parts = [f"lnL = {_best_info['best_score']:.2f}"]
+        if 'sigma' in _bv_ann and _bv_ann['sigma'] != 0:
+            _ann_parts.append(f"σ = {_bv_ann['sigma']:.1f}")
+        if 'logPmax' in _bv_ann and _bv_ann['logPmax'] != 0:
+            _ann_parts.append(f"logP = {_bv_ann['logPmax']:.2f}")
+        fig_cdf.add_annotation(
+            x=0.98, y=0.15, xref='paper', yref='paper',
+            text='<br>'.join(_ann_parts), showarrow=False,
+            font=dict(size=11, color='#DAA520'),
+            bgcolor='rgba(0,0,0,0.6)', bordercolor='#DAA520',
+            borderwidth=1, borderpad=4, xanchor='right')
+
     fig_cdf.update_layout(**{
         **PLOTLY_THEME,
         'title': dict(text='CDF Comparison: Observed vs Best-Fit Models', font=dict(size=14)),
-        'xaxis_title': '\u0394RV (km/s)', 'yaxis_title': 'Cumulative Fraction',
+        'xaxis_title': 'ΔRV (km/s)', 'yaxis_title': 'Cumulative Fraction',
         'height': 400, 'legend': dict(x=0.55, y=0.05),
     })
     st.plotly_chart(fig_cdf, use_container_width=True, key=f'{prefix}_cdf_comparison')
     st.caption(
-        f'Observed \u0394RV CDF (solid black) vs simulated CDFs at each '
+        f'Observed ΔRV CDF (solid white) vs simulated CDFs at each '
         f'method\'s best-fit parameters (dashed, median of {_n_cdf_sets} draws). '
         f'Shaded bands show 16th-84th percentile range. N_stars={_n_obs}.')
 
@@ -328,17 +356,20 @@ def _build_extra_grids(ctx: dict) -> list[tuple[str, np.ndarray]] | None:
         extras.append(('logPmax', ctx['logPmax_g']))
     return extras if extras else None
 
-def _render_sigma_scan_chart(ctx: dict) -> None:
-    """Show max likelihood vs σ/logPmax: 1D line or 2D heatmap depending on grids.
+def render_sigma_scan_chart(ctx: dict) -> None:
+    """Show max -logL vs σ/logPmax: 1D line or 2D heatmap depending on grids.
 
     - σ only → 1D line (σ on x)
     - logPmax only → 1D line (logPmax on x)
     - Both σ AND logPmax → 2D heatmap (σ × logPmax, max over f_bin × π)
+
+    Uses unnormalized logL_raw (falling back to normalized likelihood).
     """
     result = ctx['result']
     sigma_g = np.asarray(result.get('sigma_grid', []))
     logPmax_g = np.asarray(result.get('logPmax_grid', []))
-    lk = np.asarray(result.get('likelihood', []))
+    # Prefer unnormalized logL_raw; fall back to normalized likelihood
+    lk = np.asarray(result.get('logL_raw', result.get('likelihood', [])))
     if lk.size == 0:
         return
 
@@ -367,8 +398,8 @@ def _render_sigma_scan_chart(ctx: dict) -> None:
             return
         fig_hm = make_heatmap_fig(
             hm_2d, logPmax_g, sigma_g,
-            title='Max Likelihood (σ_single × logP_max)',
-            show_d=False, height=350,
+            title='Max −logL (σ_single × logP_max)',
+            show_d=False, height=450,
             x_label='σ_single (km/s)',
             y_label='log₁₀(P_max / days)',
             x_name='σ',
@@ -395,7 +426,7 @@ def _render_sigma_scan_chart(ctx: dict) -> None:
                         for i_s in range(sigma_g.size)]
         else:
             return
-        fig = _make_max_pval_fig(sigma_g, max_vals, height=300,
+        fig = _make_max_pval_fig(sigma_g, max_vals, height=450,
                                  x_label='σ_single (km/s)',
                                  stat_label='Likelihood')
         st.plotly_chart(fig, use_container_width=True,
@@ -413,7 +444,7 @@ def _render_sigma_scan_chart(ctx: dict) -> None:
                         for i_lp in range(logPmax_g.size)]
         else:
             return
-        fig = _make_max_pval_fig(logPmax_g, max_vals, height=300,
+        fig = _make_max_pval_fig(logPmax_g, max_vals, height=450,
                                  x_label='log₁₀(P_max / days)',
                                  stat_label='Likelihood')
         st.plotly_chart(fig, use_container_width=True,
@@ -421,104 +452,7 @@ def _render_sigma_scan_chart(ctx: dict) -> None:
 
 # ── From sim_plots.py ────────────────────────────────────────────────────────
 
-def render_period_distribution(p, gap_sim, bin_detected_mask, bin_missed_mask,
-                               logP_min, logP_max, ana_x_val,
-                               x_label='pi', has_case_AB=False):
-    """Period distribution histogram with optional Case A/B decomposition."""
-    st.markdown('### Period Distribution  (log P)')
-    case_A_mask = gap_sim.get('case_A_mask')
-    _has_cases = has_case_AB and case_A_mask is not None and gap_sim['P_days'].size > 0
-    if _has_cases:
-        logP_view = st.radio(
-            'View', ['Detected / Missed', 'Case A / B', 'All (Det/Mis + A/B)'],
-            horizontal=True, key=f'{p}_logP_view', label_visibility='collapsed')
-    else:
-        logP_view = 'Detected / Missed'
-
-    logP_all = np.log10(gap_sim['P_days']) if gap_sim['P_days'].size > 0 else np.array([])
-    logP_det = logP_all[bin_detected_mask] if logP_all.size > 0 and np.any(bin_detected_mask) else np.array([])
-    logP_mis = logP_all[bin_missed_mask] if logP_all.size > 0 and np.any(bin_missed_mask) else np.array([])
-    show_det = logP_view in ('Detected / Missed', 'All (Det/Mis + A/B)')
-    show_ab  = logP_view in ('Case A / B', 'All (Det/Mis + A/B)')
-
-    def _add_vlines(fig):
-        for val, txt, pos in [(logP_min, 'logP_min', 'top left'),
-                              (logP_max, 'logP_max', 'top right')]:
-            fig.add_vline(x=float(val), line_dash='dash', line_color='#888',
-                          line_width=1.5, annotation_text=txt,
-                          annotation_position=pos, annotation_font_color='#888')
-
-    def _add_traces(fig, histnorm_val):
-        if show_det:
-            for arr, lbl, clr in [(logP_det, 'Detected', _CLR_DETECTED),
-                                  (logP_mis, 'Missed', _CLR_MISSED)]:
-                if arr.size > 0:
-                    fig.add_trace(go.Histogram(
-                        x=arr, nbinsx=35, histnorm=histnorm_val,
-                        name=f'{lbl} ({arr.size})', marker_color=clr, opacity=0.6))
-        if show_ab and _has_cases:
-            for mask, lbl, clr in [(case_A_mask, 'Case A', _CLR_CASE_A),
-                                   (~case_A_mask, 'Case B', _CLR_CASE_B)]:
-                sub = logP_all[mask]
-                if sub.size > 0:
-                    fig.add_trace(go.Histogram(
-                        x=sub, nbinsx=35, histnorm=histnorm_val,
-                        name=f'{lbl} ({sub.size})', marker_color=clr, opacity=0.5))
-
-    if _has_cases:
-        title_base = {'Detected / Missed': 'Detected vs Missed',
-                      'Case A / B': 'Case A vs Case B',
-                      'All (Det/Mis + A/B)': 'All Components'}.get(logP_view, '')
-        for norm, suffix, ylab, key_sfx, cap in [
-            ('probability density', 'density', 'Probability density',
-             '_logP_hist_density',
-             '**Probability density** normalization (area under curve = 1). '
-             'Best for comparing distribution *shapes* independent of sample size.'),
-            ('probability', 'fraction', 'Fraction of binaries',
-             '_logP_hist_frac',
-             '**Fraction per bin** normalization (bin heights sum to 1), '
-             'matching the convention used in Langer+2020 Fig. 6. '
-             'Directly comparable to the paper.'),
-        ]:
-            fig = go.Figure()
-            _add_traces(fig, norm)
-            _add_vlines(fig)
-            fig.update_layout(**{
-                **PLOTLY_THEME, 'barmode': 'overlay',
-                'title': dict(text=f'Period Distribution \u2014 {title_base} ({suffix})',
-                              font=dict(size=14)),
-                'xaxis_title': 'log\u2081\u2080(P / days)', 'yaxis_title': ylab,
-                'height': 400, 'margin': dict(l=60, r=20, t=50, b=50),
-                'legend': dict(x=0.60, y=0.95),
-            })
-            st.plotly_chart(fig, use_container_width=True, key=f'{p}{key_sfx}')
-            st.caption(cap)
-    else:
-        fig_logP = go.Figure()
-        if gap_sim['P_days'].size > 0:
-            for arr, lbl, clr in [(logP_det, 'Detected', _CLR_DETECTED),
-                                  (logP_mis, 'Missed', _CLR_MISSED)]:
-                if arr.size > 0:
-                    fig_logP.add_trace(go.Histogram(
-                        x=arr, nbinsx=35, histnorm='probability density',
-                        name=f'{lbl} ({arr.size})', marker_color=clr, opacity=0.6))
-        _add_vlines(fig_logP)
-        fig_logP.update_layout(**{
-            **PLOTLY_THEME, 'barmode': 'overlay',
-            'title': dict(text=f'Simulated Period Distribution  ({x_label} = {ana_x_val:.3f})',
-                          font=dict(size=14)),
-            'xaxis_title': 'log\u2081\u2080(P / days)', 'yaxis_title': 'Probability density',
-            'height': 400, 'margin': dict(l=60, r=20, t=50, b=50),
-            'legend': dict(x=0.65, y=0.95),
-        })
-        st.plotly_chart(fig_logP, use_container_width=True, key=f'{p}_logP_hist')
-        st.caption(
-            'Period distribution of simulated binaries at the best-fit model. '
-            'Red: detected binaries (\u0394RV above threshold). '
-            'Amber: missed binaries (below threshold). '
-            'Missed systems are concentrated at longer periods. '
-            'Dashed lines mark the logP bounds used in the simulation.')
-
+# WORKING — do not change this code (A5: Binary Fraction vs ΔRV Threshold)
 def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
                                         observed_fbin, thresh_dRV, missed_count,
                                         total_bin, detected_bin_count, pal,
@@ -597,10 +531,23 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
 
 def render_orbital_histograms(p, gap_sim, bin_detected_mask, bin_missed_mask,
                               ana_fbin, ana_x_val, x_label, thresh_dRV,
-                              detected_bin_count, missed_count, has_case_AB=False):
+                              detected_bin_count, missed_count, has_case_AB=False,
+                              sigma_single=None, logP_max_val=None):
     """9-panel orbital parameter histograms (detected vs missed)."""
     st.markdown('---')
     st.markdown('### Binary Orbital Properties')
+    # Subtitle with best-fit model parameters
+    _parts = []
+    if ana_fbin is not None:
+        _parts.append(f'f_bin = {ana_fbin:.3f}')
+    if ana_x_val is not None:
+        _parts.append(f'{x_label} = {ana_x_val:.2f}')
+    if sigma_single is not None:
+        _parts.append(f'σ_single = {sigma_single:.1f} km/s')
+    if logP_max_val is not None:
+        _parts.append(f'logP_max = {logP_max_val:.2f}')
+    if _parts:
+        st.caption(f'Best-fit model: {", ".join(_parts)}')
     mb_opts = ['Compare detected vs missed', 'Detected binaries only',
                'Missed binaries only', 'All binaries (combined)']
     if has_case_AB and gap_sim.get('case_A_mask') is not None:
@@ -714,6 +661,7 @@ def render_orbital_histograms(p, gap_sim, bin_detected_mask, bin_missed_mask,
         f'Use "All binaries" to view the full population as a sanity check '
         f'that input distributions match expectations.')
 
+# WORKING — do not change this code (A7: Methodology Equations)
 def render_methodology_equations(model_type):
     """Methodology expander with equations."""
     if model_type != 'dsilva':
@@ -780,13 +728,15 @@ def _render_analysis_plots(p: str, ctx: dict, gap_sim: dict, method_results: dic
     bin_detected_mask = bin_drv > thresh_dRV
     bin_missed_mask = ~bin_detected_mask
 
-    ana_fbin, ana_x_val = None, None
+    ana_fbin, ana_x_val, ana_sigma, ana_logPmax = None, None, None, None
     for mk, _, _, _, _ in SCORING_METHODS:
         mr = method_results.get(mk)
         if mr and 'best_vals' in mr:
             bv = mr['best_vals']
             ana_fbin = bv.get('fbin')
             ana_x_val = bv.get(ctx['x_name'])
+            ana_sigma = bv.get('sigma')
+            ana_logPmax = bv.get('logPmax')
             break
     intrinsic_fbin = float(gap_is_bin.mean()) if gap_is_bin.size > 0 else 0.5
     x_label = ctx['x_label']
@@ -796,9 +746,6 @@ def _render_analysis_plots(p: str, ctx: dict, gap_sim: dict, method_results: dic
     missed_count = int(np.sum(bin_missed_mask))
     observed_fbin = detected_bin_count / max(len(gap_drv), 1)
 
-    render_period_distribution(
-        p, gap_sim, bin_detected_mask, bin_missed_mask,
-        logP_min, logP_max, ana_x_val, x_label=x_label, has_case_AB=has_case_AB)
     render_binary_fraction_vs_threshold(
         p, gap_drv, gap_is_bin, intrinsic_fbin, observed_fbin, thresh_dRV,
         missed_count, total_bin, detected_bin_count, pal,
@@ -806,7 +753,8 @@ def _render_analysis_plots(p: str, ctx: dict, gap_sim: dict, method_results: dic
     render_orbital_histograms(
         p, gap_sim, bin_detected_mask, bin_missed_mask,
         ana_fbin, ana_x_val, x_label, thresh_dRV,
-        detected_bin_count, missed_count, has_case_AB=has_case_AB)
+        detected_bin_count, missed_count, has_case_AB=has_case_AB,
+        sigma_single=ana_sigma, logP_max_val=ana_logPmax)
 
 # ── Public entry point ───────────────────────────────────────────────────────
 
@@ -833,7 +781,7 @@ def render_shared_section(p: str, model_ctx: dict) -> dict:
         result, method_results, model_ctx['fbin_g'], model_ctx['x_g'],
         prefix=p, x_name=model_ctx['x_name'], x_label=model_ctx['x_label'])
 
-    _render_sigma_scan_chart(model_ctx)
+    # A3 sigma/logPmax chart: moved to Likelihood Analysis section (render_lk.py)
 
     gap_sim = model_ctx.get('gap_sim')
     if gap_sim is not None:
