@@ -28,6 +28,7 @@ from bc import (
     _render_cadence_langer_tab,
     _render_rv_errors_tab,
     _render_compare_tab,
+    _render_validation_tab,
 )
 
 st.set_page_config(
@@ -64,6 +65,7 @@ if 'bc_tabs' not in st.session_state:
         {'type': 'cadence_langer', 'name': 'Cadence (Langer)', 'prefix': 'cal'},
         {'type': 'rv_errors', 'name': 'RV Errors', 'prefix': 'rve'},
         {'type': 'compare', 'name': 'Compare', 'prefix': 'cmp'},
+        {'type': 'validation', 'name': 'Validation', 'prefix': 'val'},
     ]
 
 # "+" button to add new tabs
@@ -72,7 +74,7 @@ with _tab_mgmt_cols[1]:
     with st.popover('\u2795 Add tab'):
         _add_type = st.radio(
             'Tab type',
-            ['Cadence (Dsilva)', 'Cadence (Langer)', 'RV Errors', 'Compare'],
+            ['Cadence (Dsilva)', 'Cadence (Langer)', 'RV Errors', 'Compare', 'Validation'],
             key='_bc_add_tab_type',
         )
         _add_name = st.text_input('Tab name (optional)', key='_bc_add_tab_name')
@@ -82,7 +84,8 @@ with _tab_mgmt_cols[1]:
             _type_map = {'cadence (dsilva)': 'cadence_dsilva',
                          'cadence (langer)': 'cadence_langer',
                          'rv errors': 'rv_errors',
-                         'compare': 'compare'}
+                         'compare': 'compare',
+                         'validation': 'validation'}
             _type_lower = _type_map.get(_add_type.lower(), _add_type.lower())
             _pfx = f'{_type_lower[:3]}{_idx}'
             st.session_state['bc_tabs'].append({
@@ -111,6 +114,8 @@ for _tw, _ti in zip(_tab_widgets, st.session_state['bc_tabs']):
             _render_rv_errors_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'compare':
             _render_compare_tab(_ti['prefix'])
+        elif _ti['type'] == 'validation':
+            _render_validation_tab(_ti['prefix'], settings, sm)
 
 # NOTE: Live polling is handled by @st.fragment(run_every=3) inside each tab\'s
 # rendering function. No global auto-refresh needed (avoids full-page flicker).
