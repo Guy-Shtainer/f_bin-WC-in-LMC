@@ -272,6 +272,21 @@ def get_log_tail(n_lines: int = 50) -> str:
     return '\n'.join(lines[-n_lines:])
 
 
+def get_live_output(max_lines: int = 200) -> str:
+    """Read .agent_live_output.txt for real-time Claude thoughts."""
+    path = _SCRIPTS / '.agent_live_output.txt'
+    if not path.exists():
+        return ''
+    try:
+        content = path.read_text(encoding='utf-8')
+    except OSError:
+        return ''
+    if not content.strip():
+        return ''
+    lines = content.strip().split('\n')
+    return '\n'.join(lines[-max_lines:])
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Artifacts
 # ─────────────────────────────────────────────────────────────────────────────
@@ -544,6 +559,43 @@ def save_agent_settings(settings: dict) -> None:
 # Agent v2 — direct launch and status
 # ─────────────────────────────────────────────────────────────────────────────
 
+def list_agent_branches() -> list[dict]:
+    """List agent/* branches sorted by most recent commit, with date info."""
+    try:
+        result = subprocess.run(
+            ['git', 'branch', '--format=%(refname:short)\t%(committerdate:iso)\t%(committerdate:relative)',
+             '--sort=-committerdate'],
+            capture_output=True, text=True, cwd=str(_ROOT),
+        )
+        if result.returncode != 0:
+            return []
+    except OSError:
+        return []
+
+    branches = []
+    for line in result.stdout.strip().split('\n'):
+        if not line.strip():
+            continue
+        parts = line.split('\t')
+        if len(parts) < 3:
+            continue
+        name, date_iso, date_rel = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        if not name.startswith('agent/'):
+            continue
+        # Format date nicely: "Mar 24, 12:30 (2 hours ago)"
+        try:
+            dt = datetime.fromisoformat(date_iso.replace(' +', '+').replace(' -', '-'))
+            date_display = dt.strftime('%b %d, %H:%M')
+        except (ValueError, TypeError):
+            date_display = date_iso[:16]
+        branches.append({
+            'name': name,
+            'date': date_display,
+            'date_relative': date_rel,
+        })
+    return branches
+
+
 def launch_agent_v2(
     quadrant: str = 'eliminate',
     max_tasks: int = 5,
@@ -551,6 +603,7 @@ def launch_agent_v2(
     freeform_task: str | None = None,
     task_ids: list[int] | None = None,
     model: str = 'sonnet',
+    base_branch: str = 'main',
 ) -> tuple[bool, str]:
     """Launch agent_v2/runner.py as a background subprocess."""
     if is_running():
@@ -563,6 +616,9 @@ def launch_agent_v2(
         '--model', model,
         '--max-tasks', str(max_tasks),
     ]
+
+    if base_branch and base_branch != 'main':
+        cmd.extend(['--base-branch', base_branch])
 
     if freeform_task:
         cmd.extend(['--task', freeform_task])
@@ -614,6 +670,10 @@ def get_v2_phase_display(state: dict | None) -> tuple[str, str, list[str]]:
         'implement': '🔨',
         'verify': '🔍',
         'fix': '🔧',
+        'review': '🔎',
+        'completed': '✅',
+        'failed': '❌',
+        'all_done': '✅',
         'idle': '⏸️',
     }
     return phase, emoji_map.get(phase, '⚙️'), phases_done

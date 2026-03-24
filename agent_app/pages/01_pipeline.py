@@ -28,7 +28,7 @@ from shared import (
     PIPELINE_STAGES, SUBAGENT_COLORS,
 )
 from agent_comm import (
-    get_state, is_running, get_log_tail, get_artifacts,
+    get_state, is_running, get_log_tail, get_live_output, get_artifacts,
     get_v2_state, get_v2_phase_display, stop_agent,
 )
 
@@ -162,9 +162,25 @@ else:
     st.caption('No artifacts generated yet.')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Live log tail
+# Live Agent Output (scrollable)
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown('### Live Log')
+st.markdown('### Live Agent Output')
+live_output = get_live_output(200)
+if live_output:
+    import html as _html
+    st.markdown(
+        f'<div style="height:400px; overflow-y:auto; background:#1a1a2e; '
+        f'padding:12px; border-radius:8px; font-family:monospace; font-size:13px; '
+        f'white-space:pre-wrap; color:#e0e0e0;">{_html.escape(live_output)}</div>',
+        unsafe_allow_html=True,
+    )
+else:
+    st.caption('No live output yet. Agent may not have started streaming.')
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agent Log
+# ─────────────────────────────────────────────────────────────────────────────
+st.markdown('### Agent Log')
 log = get_log_tail(25)
 if log:
     st.code(log, language='markdown')

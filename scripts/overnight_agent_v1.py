@@ -1,0 +1,2154 @@
+#!/usr/bin/env python3
+"""
+overnight_agent.py — Multi-agent overnight supervisor for WR Binary project.
+
+Architecture: Pure-Python supervisor orchestrating a pipeline of specialized
+Claude agents per task. Each agent has a focused role (plan, review, implement,
+test, regression check, fix). Git is ONLY touched by the supervisor.
+
+Quick start:
+    conda run -n guyenv python scripts/overnight_agent.py
+
+Options:
+    --daemon              Run detached in background
+    --quadrant X          Which tasks: eliminate (default), delegate, schedule, do_first, all
+    --include-critical    Allow working on "Do First" (urgent+important) tasks
+    --dry-run             Show what it would do without doing it
+    --stop                Stop a running daemon + interactive branch review
+    --status              Show current agent status
+    --max-tasks N         Stop after completing N tasks
+    --task "prompt"       Free-form task (skip TODO.md)
+    --architecture X      Agent architecture: 'pipeline' (fixed 5-stage) or 'opus'
+                          (Opus manager + Sonnet workers). Default: from agent_settings.json
+    --wait-on-reject      Pause and wait for human input when reviewer rejects
+    --wait-on-fail        Pause and wait for human input when tester fails
+    --intervention-timeout N  Seconds to wait for human intervention (default: from settings)
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+_HERE = Path(__file__).resolve().parent
+_ROOT = _HERE.parent
+_TODO_PATH = _ROOT / 'TODO.md'
+_STATE_PATH = _HERE / '.agent_state.json'
+_LOG_PATH = _HERE / 'agent_log.md'
+_PID_PATH = _HERE / '.agent.pid'
+_WORK_DIR = _HERE / '.agent_work'
+_NOTES_DIR = _HERE / '.agent_notes'
+_SETTINGS_PATH = _HERE / 'agent_settings.json'
+_COMPLETED_PATH = _HERE / '.agent_completed.json'
+_WORKTREE_PATH = _ROOT.parent / 'agent-worktree'
+
+# Ensure scripts/ is on sys.path so subagent_definitions is importable
+# even after git checkout changes the working tree
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+
+# ── Agent settings (from agent_settings.json) ─────────────────────────────────
+_AGENT_SETTINGS_DEFAULTS = {
+    'rate_limit_sleep': 300,
+    'max_fix_attempts': 2,
+    'intervention': {
+        'wait_on_reject': False,
+        'wait_on_fail': False,
+        'timeout_seconds': 1800,
+        'auto_replan_max': 0,
+        'auto_skip_test_max': 0,
+    },
+    'auto_learn': False,
+}
+
+
+def load_agent_settings() -> dict:
+    """Load agent_settings.json, merged with defaults."""
+    defaults = dict(_AGENT_SETTINGS_DEFAULTS)
+    if _SETTINGS_PATH.exists():
+        try:
+            with open(_SETTINGS_PATH) as f:
+                loaded = json.load(f)
+            for k, v in loaded.items():
+                if isinstance(v, dict) and isinstance(defaults.get(k), dict):
+                    defaults[k] = {**defaults[k], **v}
+                else:
+                    defaults[k] = v
+        except (json.JSONDecodeError, OSError):
+            pass
+    return defaults
+
+
+# ── Constants (read from settings, with fallbacks) ────────────────────────────
+_settings_cache: dict | None = None
+
+
+def _get_settings() -> dict:
+    global _settings_cache
+    if _settings_cache is None:
+        _settings_cache = load_agent_settings()
+    return _settings_cache
+
+
+def _reload_settings() -> dict:
+    global _settings_cache
+    _settings_cache = None
+    return _get_settings()
+
+
+# Legacy constants — kept as fallbacks, but prefer _get_settings()
+RATE_LIMIT_SLEEP = 300
+MAX_FIX_ATTEMPTS = 2
+
+QUADRANT_FILTERS = {
+    'eliminate': lambda t: not t.get('urgent') and not t.get('important'),
+    'delegate': lambda t: t.get('urgent') and not t.get('important'),
+    'schedule': lambda t: not t.get('urgent') and t.get('important'),
+    'do_first': lambda t: t.get('urgent') and t.get('important'),
+}
+QUADRANT_ORDER = ['eliminate', 'delegate', 'schedule']
+
+
+# ── TODO.md parsing ──────────────────────────────────────────────────────────
+def _parse_bool(val: str) -> bool:
+    return val.strip().lower() in ('y', 'yes', 'true', '1')
+
+
+def _bool_str(val: bool) -> str:
+    return 'Y' if val else 'N'
+
+
+def _parse_table_rows(lines: list[str]) -> list[list[str]]:
+    rows = []
+    for line in lines:
+        line = line.strip()
+        if not line.startswith('|') or line.startswith('|--') or line.startswith('| --'):
+            continue
+        cells = [c.strip() for c in line.split('|')[1:-1]]
+        if cells and all(c == '' or set(c) <= {'-', ' '} for c in cells):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def load_todos() -> tuple[list[dict], list[dict]]:
+    if not _TODO_PATH.exists():
+        return [], []
+    content = _TODO_PATH.read_text(encoding='utf-8')
+    open_tasks, done_tasks = [], []
+
+    sections = re.split(r'^## ', content, flags=re.MULTILINE)
+    for section in sections:
+        if section.startswith('Open Tasks'):
+            rows = _parse_table_rows(section.split('\n'))
+            for cells in rows[1:] if len(rows) > 1 else []:
+                if len(cells) >= 9:
+                    open_tasks.append({
+                        'id': int(cells[0]) if cells[0].isdigit() else 0,
+                        'title': cells[1],
+                        'description': cells[2],
+                        'priority': cells[3].lower().strip(),
+                        'tags': cells[4],
+                        'status': cells[5].lower().strip(),
+                        'added_by': cells[6],
+                        'suggested_by': cells[7],
+                        'date_added': cells[8],
+                        'urgent': _parse_bool(cells[9]) if len(cells) > 9 else False,
+                        'important': _parse_bool(cells[10]) if len(cells) > 10 else False,
+                    })
+        elif section.startswith('Done'):
+            rows = _parse_table_rows(section.split('\n'))
+            for cells in rows[1:] if len(rows) > 1 else []:
+                if len(cells) >= 12:
+                    done_tasks.append({
+                        'id': int(cells[0]) if cells[0].isdigit() else 0,
+                        'title': cells[1],
+                        'description': cells[2],
+                        'priority': cells[3].lower().strip(),
+                        'tags': cells[4],
+                        'added_by': cells[6],
+                        'suggested_by': cells[7],
+                        'date_added': cells[8],
+                        'urgent': _parse_bool(cells[9]),
+                        'important': _parse_bool(cells[10]),
+                        'date_done': cells[11],
+                    })
+                elif len(cells) >= 3:
+                    done_tasks.append({
+                        'id': int(cells[0]) if cells[0].isdigit() else 0,
+                        'title': cells[1],
+                        'date_done': cells[2],
+                    })
+    return open_tasks, done_tasks
+
+
+def save_todos(open_tasks: list[dict], done_tasks: list[dict]) -> None:
+    priority_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+    open_tasks.sort(key=lambda t: priority_order.get(t.get('priority', 'low'), 3))
+
+    lines = ['# Project To-Do List\n', '\n## Open Tasks\n']
+    lines.append(
+        '| ID | Title | Description | Priority | Tags | Status '
+        '| Added by | Suggested by | Date added | Urgent | Important |'
+    )
+    lines.append(
+        '|----|-------|-------------|----------|------|--------'
+        '|----------|-------------|------------|--------|-----------|'
+    )
+    for t in open_tasks:
+        lines.append(
+            f"| {t['id']} | {t['title']} | {t.get('description', '')} "
+            f"| {t.get('priority', 'medium')} | {t.get('tags', '')} "
+            f"| {t.get('status', 'open')} | {t.get('added_by', '')} "
+            f"| {t.get('suggested_by', '')} | {t.get('date_added', '')} "
+            f"| {_bool_str(t.get('urgent', False))} "
+            f"| {_bool_str(t.get('important', False))} |"
+        )
+
+    lines.append('\n## Done\n')
+    lines.append(
+        '| ID | Title | Description | Priority | Tags | Status '
+        '| Added by | Suggested by | Date added | Urgent | Important | Date done |'
+    )
+    lines.append(
+        '|----|-------|-------------|----------|------|--------'
+        '|----------|-------------|------------|--------|-----------|-----------|'
+    )
+    for t in done_tasks:
+        lines.append(
+            f"| {t['id']} | {t['title']} | {t.get('description', '')} "
+            f"| {t.get('priority', 'medium')} | {t.get('tags', '')} "
+            f"| done | {t.get('added_by', '')} "
+            f"| {t.get('suggested_by', '')} | {t.get('date_added', '')} "
+            f"| {_bool_str(t.get('urgent', False))} "
+            f"| {_bool_str(t.get('important', False))} "
+            f"| {t.get('date_done', '')} |"
+        )
+    lines.append('')
+    _TODO_PATH.write_text('\n'.join(lines), encoding='utf-8')
+
+
+# ── Git helpers (ONLY the supervisor touches git) ────────────────────────────
+def git(*args: str, check: bool = True, cwd: Path | str | None = None) -> str:
+    """Run a git command. Defaults to project root, or specify cwd for worktree."""
+    result = subprocess.run(
+        ['git'] + list(args),
+        cwd=str(cwd or _ROOT), capture_output=True, text=True
+    )
+    if check and result.returncode != 0:
+        raise RuntimeError(f'git {" ".join(args)} failed: {result.stderr.strip()}')
+    return result.stdout.strip()
+
+
+def git_resolve_conflicts() -> None:
+    """Resolve any UU (unmerged) files by accepting current version."""
+    status = git('status', '--porcelain')
+    for line in status.split('\n'):
+        if line.startswith('UU '):
+            filepath = line[3:].strip()
+            log(f'Resolving conflict in {filepath} (accepting ours)')
+            git('checkout', '--ours', filepath)
+            git('add', filepath)
+    # Commit the resolution if we resolved anything
+    status_after = git('diff', '--cached', '--name-only')
+    if status_after.strip():
+        git('commit', '-m', '[AGENT] Auto-resolve merge conflicts')
+
+
+def git_safe_stash() -> bool:
+    """Stash changes safely, resolving UU files first."""
+    # First resolve any merge conflicts
+    git_resolve_conflicts()
+    # Now stash if there are changes
+    status = git('status', '--porcelain')
+    if status.strip():
+        git('stash', '--include-untracked')
+        return True
+    return False
+
+
+def git_safe_checkout(branch: str) -> None:
+    """Safely checkout a branch, handling dirty working tree."""
+    has_stash = git_safe_stash()
+    git('checkout', branch)
+    if has_stash:
+        result = subprocess.run(
+            ['git', 'stash', 'pop'],
+            cwd=str(_ROOT), capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            log(f'  Warning: stash pop failed on {branch}: '
+                f'{result.stderr.strip()[:100]}')
+            # Drop the unapplyable stash to prevent accumulation
+            git('stash', 'drop', check=False)
+
+
+def git_cleanup_stashes() -> None:
+    """Clear stale stashes if too many have accumulated."""
+    stash_list = git('stash', 'list', check=False)
+    if stash_list.strip():
+        stash_count = len([l for l in stash_list.split('\n') if l.strip()])
+        if stash_count > 5:
+            log(f'Clearing {stash_count} stale stashes from previous sessions.')
+            git('stash', 'clear', check=False)
+
+
+def git_checkpoint() -> str:
+    ts = datetime.now().strftime('%Y%m%d-%H%M')
+    tag = f'pre-agent-{ts}'
+    try:
+        git('tag', tag)
+    except RuntimeError:
+        pass
+    return tag
+
+
+def git_create_branch(task: dict) -> str:
+    """LEGACY: Create or switch to a task branch in the main tree.
+    Kept for backward compat. New code should use git_create_worktree().
+    """
+    slug = re.sub(r'[^a-z0-9]+', '-', task['title'].lower())[:40].strip('-')
+    branch = f'agent/{task["id"]}-{slug}'
+    git_commit_all(f'[AGENT] Auto-save before switching to task #{task["id"]}')
+    try:
+        git('checkout', '-b', branch)
+    except RuntimeError:
+        git_safe_checkout(branch)
+    return branch
+
+
+def git_create_worktree(task: dict) -> tuple[str, Path]:
+    """Create a git worktree for a task — fully isolated from the user's tree.
+
+    Returns (branch_name, worktree_path).
+    The worktree is at ../agent-worktree/ (sibling to project root).
+    """
+    slug = re.sub(r'[^a-z0-9]+', '-', task['title'].lower())[:40].strip('-')
+    branch = f'agent/{task["id"]}-{slug}'
+    wt = _WORKTREE_PATH
+
+    # Clean up stale worktree from previous interrupted run
+    if wt.exists():
+        log(f'  Removing stale worktree at {wt}')
+        git('worktree', 'remove', str(wt), '--force', check=False)
+        # Force-remove dir if git worktree remove didn't fully clean up
+        if wt.exists():
+            import shutil
+            shutil.rmtree(wt, ignore_errors=True)
+
+    # Delete branch if it already exists (stale from previous attempt)
+    try:
+        git('branch', '-D', branch, check=False)
+    except RuntimeError:
+        pass
+
+    # Create worktree with new branch from main HEAD
+    git('worktree', 'add', str(wt), '-b', branch, 'main')
+
+    # Create Data symlink in worktree (same relative path as main tree)
+    data_link = wt / 'Data'
+    if not data_link.exists():
+        data_target = Path('../Data')
+        os.symlink(str(data_target), str(data_link))
+        log(f'  Created Data symlink in worktree')
+
+    return branch, wt
+
+
+def git_worktree_commit(message: str, worktree: Path) -> bool:
+    """Stage all changes and commit in a worktree. Returns True if committed."""
+    git('add', '-A', cwd=worktree)
+    status = git('status', '--porcelain', cwd=worktree)
+    if not status.strip():
+        return False
+    try:
+        git('commit', '-m', message, cwd=worktree)
+        return True
+    except RuntimeError as e:
+        log(f'  Warning: worktree commit failed: {e}')
+        return False
+
+
+def git_remove_worktree(commit_msg: str | None = None) -> None:
+    """Remove the agent worktree. Branch is preserved for review.
+
+    Optionally commits pending changes before removal.
+    """
+    wt = _WORKTREE_PATH
+    if not wt.exists():
+        return
+    if commit_msg:
+        try:
+            git_worktree_commit(commit_msg, wt)
+        except Exception as e:
+            log(f'  Warning: final worktree commit failed: {e}')
+    try:
+        git('worktree', 'remove', str(wt), '--force')
+    except RuntimeError as e:
+        log(f'  Warning: worktree remove failed: {e}')
+        # Force-remove dir
+        import shutil
+        shutil.rmtree(wt, ignore_errors=True)
+    # Prune stale worktree entries
+    git('worktree', 'prune', check=False)
+
+
+def git_commit_all(message: str) -> bool:
+    """Stage all changes and commit. Returns True if a commit was made.
+
+    WARNING: This stages ALL files (git add -A) in the main working tree.
+    Only safe in legacy (non-worktree) mode. For worktree flows, use
+    git_worktree_commit() or git_commit_files() instead.
+    """
+    git('add', '-A')
+    status = git('status', '--porcelain')
+    if not status.strip():
+        return False
+    try:
+        git('commit', '-m', message)
+        return True
+    except RuntimeError as e:
+        log(f'  Warning: git commit failed: {e}')
+        return False
+
+
+def git_commit_files(files: list[str], message: str) -> bool:
+    """Stage specific files and commit. Returns True if a commit was made.
+
+    Safe alternative to git_commit_all() — only stages the listed files,
+    leaving the user's uncommitted work untouched.
+    """
+    for f in files:
+        try:
+            git('add', f)
+        except RuntimeError as e:
+            log(f'  Warning: git add {f} failed: {e}')
+    status = git('status', '--porcelain')
+    if not status.strip():
+        return False
+    try:
+        git('commit', '-m', message)
+        return True
+    except RuntimeError as e:
+        log(f'  Warning: git commit failed: {e}')
+        return False
+
+
+def git_back_to_main(target: str = 'main') -> None:
+    """Safely return to a branch (defaults to main for backward compat)."""
+    current = git('branch', '--show-current')
+    if current == target:
+        return
+    try:
+        git_commit_all('[AGENT] Auto-save before switching back')
+    except Exception as e:
+        log(f'  Warning: auto-save before branch switch failed: {e}')
+    git_safe_checkout(target)
+
+
+def git_list_agent_branches() -> list[str]:
+    """List all agent/* branches."""
+    output = git('branch', '--list', 'agent/*')
+    return [b.strip().lstrip('* ') for b in output.split('\n') if b.strip()]
+
+
+def git_branch_diff_stat(branch: str) -> str:
+    """Get diff stat for a branch vs main."""
+    try:
+        return git('diff', '--stat', f'main...{branch}')
+    except RuntimeError:
+        return '(unable to compute diff)'
+
+
+def git_branch_log(branch: str) -> str:
+    """Get commit log for a branch vs main."""
+    try:
+        return git('log', '--oneline', f'main..{branch}')
+    except RuntimeError:
+        return '(no commits)'
+
+
+# ── Rate-limit sleep (pure Python, immune to SDK cancel scopes — E016) ───────
+def _blocking_sleep(total_seconds: float, chunk: float = 60.0) -> None:
+    """Sleep using time.sleep in small chunks. Immune to asyncio cancel scopes.
+
+    The claude-agent-sdk uses anyio cancel scopes internally. When a query()
+    generator is partially consumed, its cleanup can cancel asyncio.sleep()
+    futures in other tasks. time.sleep() is not an asyncio future, so it
+    cannot be cancelled this way.
+    """
+    import time as _time
+    remaining = total_seconds
+    while remaining > 0:
+        _time.sleep(min(chunk, remaining))
+        remaining -= chunk
+        if remaining > 0:
+            log(f'  Rate limit wait: {remaining:.0f}s remaining...')
+
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+_daemon_mode = False  # Set True when stdout is redirected to _LOG_PATH
+_last_log_msg = ''
+_last_log_ts = ''
+
+
+def log(msg: str) -> None:
+    global _last_log_msg, _last_log_ts
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # Dedup: skip identical message at the same second (caffeinate double-exec)
+    if msg == _last_log_msg and ts == _last_log_ts:
+        return
+    _last_log_msg, _last_log_ts = msg, ts
+    line = f'[{ts}] {msg}'
+    if _daemon_mode:
+        # stdout IS the log file — only write once
+        print(line, flush=True)
+    else:
+        print(line, flush=True)
+        with open(_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(line + '\n')
+
+
+def log_session_start(checkpoint: str, quadrant: str) -> None:
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M')
+    header = (
+        f'\n## Agent Session — {ts}\n'
+        f'**Checkpoint:** `{checkpoint}`\n'
+        f'**Rollback:** `git reset --hard {checkpoint}`\n'
+        f'**Quadrant:** {quadrant}\n\n'
+    )
+    with open(_LOG_PATH, 'a', encoding='utf-8') as f:
+        f.write(header)
+
+
+def log_pipeline_stage(task: dict, stage: str, status: str, detail: str = '') -> None:
+    entry = (
+        f'  [{stage.upper()}] Task #{task["id"]}: {status}'
+        f'{" — " + detail if detail else ""}\n'
+    )
+    with open(_LOG_PATH, 'a', encoding='utf-8') as f:
+        f.write(entry)
+
+
+def log_task_result(task: dict, branch: str, status: str, summary: str) -> None:
+    entry = (
+        f'### Task #{task["id"]}: {task["title"]}\n'
+        f'- **Branch:** `{branch}`\n'
+    )
+    if task.get('description'):
+        entry += f'- **Prompt:** {task["description"][:300]}\n'
+    entry += (
+        f'- **Status:** {status}\n'
+        f'- **Summary:** {summary}\n'
+        f'- **UNSUPERVISED — needs human review and testing**\n\n'
+    )
+    with open(_LOG_PATH, 'a', encoding='utf-8') as f:
+        f.write(entry)
+
+
+# ── State persistence ─────────────────────────────────────────────────────────
+def save_state(state: dict) -> None:
+    _STATE_PATH.write_text(json.dumps(state, indent=2), encoding='utf-8')
+
+
+def load_state() -> dict | None:
+    if _STATE_PATH.exists():
+        return json.loads(_STATE_PATH.read_text(encoding='utf-8'))
+    return None
+
+
+def clear_state() -> None:
+    _STATE_PATH.unlink(missing_ok=True)
+
+
+# ── Completed task persistence (survives crashes) ────────────────────────────
+def _load_completed_ids() -> list[int]:
+    """Load completed task IDs from persistent file."""
+    if _COMPLETED_PATH.exists():
+        try:
+            data = json.loads(_COMPLETED_PATH.read_text(encoding='utf-8'))
+            return data.get('completed_ids', [])
+        except (json.JSONDecodeError, OSError):
+            pass
+    return []
+
+
+def _save_completed_id(task_id: int) -> None:
+    """Append a completed task ID to persistent file."""
+    ids = _load_completed_ids()
+    if task_id not in ids:
+        ids.append(task_id)
+    _COMPLETED_PATH.write_text(
+        json.dumps({'completed_ids': ids, 'updated': datetime.now().isoformat()},
+                   indent=2),
+        encoding='utf-8'
+    )
+
+
+def _clear_completed_ids() -> None:
+    """Clear completed IDs at start of a new session."""
+    _COMPLETED_PATH.unlink(missing_ok=True)
+
+
+# ── Task selection ────────────────────────────────────────────────────────────
+def select_tasks(quadrant: str, include_critical: bool = False,
+                  task_ids: list[int] | None = None) -> list[dict]:
+    open_tasks, _ = load_todos()
+
+    # Direct task ID selection — trust the user's explicit choice
+    if task_ids:
+        id_set = set(task_ids)
+        actionable_statuses = {'open', 'in-progress', 'to-test'}
+        selected = [t for t in open_tasks if t['id'] in id_set
+                    and t.get('status', 'open') in actionable_statuses]
+        if not selected:
+            # Diagnostic: show why tasks were filtered out
+            all_matching = [t for t in open_tasks if t['id'] in id_set]
+            if all_matching:
+                for t in all_matching:
+                    log(f'  Task #{t["id"]} skipped: status={t.get("status","?")}')
+            else:
+                log(f'  Warning: task_ids={list(task_ids)} not found in TODO.md')
+        # Preserve the order from task_ids
+        id_order = {tid: i for i, tid in enumerate(task_ids)}
+        selected.sort(key=lambda t: id_order.get(t['id'], 999))
+        return selected
+
+    open_only = [t for t in open_tasks if t.get('status', 'open') == 'open']
+
+    if quadrant == 'all':
+        order = list(QUADRANT_ORDER)
+        if include_critical:
+            order.append('do_first')
+        candidates = []
+        for q in order:
+            filt = QUADRANT_FILTERS[q]
+            group = [t for t in open_only if filt(t)]
+            priority_order = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
+            group.sort(key=lambda t: priority_order.get(t.get('priority', 'low'), 0))
+            candidates.extend(group)
+        return candidates
+
+    filt = QUADRANT_FILTERS.get(quadrant)
+    if not filt:
+        return []
+    if quadrant == 'do_first' and not include_critical:
+        log('WARNING: "do_first" quadrant requires --include-critical flag.')
+        return []
+    candidates = [t for t in open_only if filt(t)]
+    priority_order = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
+    candidates.sort(key=lambda t: priority_order.get(t.get('priority', 'low'), 0))
+    return candidates
+
+
+# ── Work directory management ─────────────────────────────────────────────────
+def create_work_dir(task: dict) -> Path:
+    """Create a per-task working directory for agent artifacts."""
+    task_dir = _WORK_DIR / str(task['id'])
+    task_dir.mkdir(parents=True, exist_ok=True)
+    return task_dir
+
+
+# ── Agent runner ──────────────────────────────────────────────────────────────
+def _load_notes_for_role(role: str) -> str:
+    """Load global + role-specific notes for injection into system prompt."""
+    notes_parts = []
+    global_path = _NOTES_DIR / 'global_notes.md'
+    if global_path.exists():
+        content = global_path.read_text(encoding='utf-8').strip()
+        if content:
+            notes_parts.append(f'### General Project Notes\n{content}')
+
+    role_path = _NOTES_DIR / f'{role}_notes.md'
+    if role_path.exists():
+        content = role_path.read_text(encoding='utf-8').strip()
+        if content:
+            notes_parts.append(f'### {role.replace("_", " ").title()} Specific Notes\n{content}')
+
+    if notes_parts:
+        return '## Learnings from Previous Runs\n\n' + '\n\n'.join(notes_parts) + '\n\n---\n\n'
+    return ''
+
+
+async def run_agent(role: str, user_prompt: str, timeout: int | None = None,
+                    work_cwd: Path | None = None) -> str:
+    """Run a single Claude agent with the given role and prompt.
+
+    Args:
+        work_cwd: Working directory for the agent. Defaults to _ROOT.
+                  Pass the worktree path for isolated agent work.
+
+    Returns the agent's text output, or raises on error.
+    """
+    # Allow nested Claude sessions
+    os.environ.pop('CLAUDECODE', None)
+    from agent_prompts import get_agent_config
+    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+
+    config = get_agent_config(role)
+    # Use timeout from agent_settings.json if available
+    settings = _get_settings()
+    timeouts = settings.get('timeouts', {})
+    effective_timeout = timeout or timeouts.get(role, config['timeout'])
+
+    # Inject notes into system prompt
+    notes_prefix = _load_notes_for_role(role)
+    system_prompt = notes_prefix + config['system_prompt']
+
+    agent_cwd = str(work_cwd) if work_cwd else str(_ROOT)
+    options = ClaudeAgentOptions(
+        permission_mode='bypassPermissions',
+        allowed_tools=config['allowed_tools'],
+        system_prompt=system_prompt,
+        cwd=agent_cwd,
+        max_turns=config['max_turns'],
+        setting_sources=['project'],  # Read CLAUDE.md for project conventions
+    )
+
+    result_text = ''
+    rate_limited = False
+
+    try:
+        gen = query(prompt=user_prompt, options=options)
+        try:
+            # Use asyncio.wait_for for timeout
+            async def consume():
+                nonlocal result_text, rate_limited
+                async for message in gen:
+                    if isinstance(message, ResultMessage) and message.result:
+                        result_text = message.result
+                    elif hasattr(message, 'error') and message.error == 'rate_limit':
+                        rate_limited = True
+                        return
+
+            await asyncio.wait_for(consume(), timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            log(f'  Agent [{role}] timed out after {effective_timeout}s')
+            return f'TIMEOUT after {effective_timeout}s'
+        finally:
+            # Close generator — shield to prevent cancel scope leak (E016)
+            try:
+                await asyncio.shield(gen.aclose())
+            except (RuntimeError, asyncio.CancelledError, GeneratorExit, Exception):
+                pass
+    except Exception as e:
+        err_str = str(e).lower()
+        if 'rate' in err_str or '429' in err_str or 'overloaded' in err_str or '529' in err_str:
+            rate_limited = True
+        else:
+            raise
+
+    if rate_limited:
+        raise RateLimitError()
+
+    return result_text or 'No output captured'
+
+
+class RateLimitError(Exception):
+    """Raised when the API returns a rate limit error."""
+    pass
+
+
+async def run_agent_with_retry(role: str, user_prompt: str,
+                                timeout: int | None = None,
+                                work_cwd: Path | None = None) -> str:
+    """Run an agent with rate-limit retry logic.
+
+    Uses time.sleep (NOT asyncio.sleep) to survive SDK cancel scope leaks (E016).
+
+    Retry strategy: sleep until the next hour boundary, then retry.
+    Repeats indefinitely — the session WILL renew eventually.
+    """
+    attempt = 0
+    while True:
+        try:
+            return await run_agent(role, user_prompt, timeout, work_cwd=work_cwd)
+        except RateLimitError:
+            attempt += 1
+            now = datetime.now()
+
+            # Sleep until the next hour boundary, then retry
+            next_hour = (now + timedelta(hours=1)).replace(
+                minute=0, second=0, microsecond=0)
+            sleep_time = (next_hour - now).total_seconds()
+            log(f'  Rate limited (attempt {attempt}). '
+                f'Sleeping {sleep_time:.0f}s until {next_hour.strftime("%H:%M")}...')
+
+            resume_at = (now + timedelta(seconds=sleep_time)).isoformat()
+
+            # Update state so webapp shows countdown
+            state = load_state() or {}
+            state['rate_limited'] = True
+            state['rate_limit_resume_at'] = resume_at
+            state['rate_limit_attempt'] = attempt
+            save_state(state)
+
+            # Pure Python sleep — immune to SDK cancel scopes (E016)
+            _blocking_sleep(sleep_time)
+
+            # Clear rate limit flag
+            state = load_state() or {}
+            state['rate_limited'] = False
+            state['rate_limit_resume_at'] = None
+            save_state(state)
+            log('  Resuming after rate limit wait...')
+
+
+# ── Opus Manager (architecture='opus') ────────────────────────────────────────
+
+async def run_opus_manager(task: dict, timeout: int = 7200,
+                           resume: bool = False,
+                           work_cwd: Path | None = None) -> str:
+    """Run a single Opus manager agent that orchestrates Sonnet subagents.
+
+    One query() call per task — Opus decides the workflow dynamically.
+    Python only handles: rate limits, state updates via hooks, git.
+
+    Args:
+        task: Task dict with id, title, description, tags.
+        timeout: Max seconds for the entire Opus session.
+        resume: If True, use OPUS_RESUME_PROMPT (continuing after interruption).
+        work_cwd: Working directory for the agent (worktree path).
+
+    Returns the manager's final text output, or raises RateLimitError.
+    """
+    os.environ.pop('CLAUDECODE', None)
+    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+    from subagent_definitions import (
+        build_subagents, format_opus_prompt, format_opus_resume_prompt,
+    )
+
+    work_dir = create_work_dir(task)
+    progress_file = work_dir / 'progress.md'
+    intervention_file = work_dir / '.intervention.json'
+
+    task_desc = (
+        f'Task #{task["id"]}: {task["title"]}\n'
+        f'Description: {task.get("description", "No description")}\n'
+        f'Tags: {task.get("tags", "")}\n'
+    )
+
+    # Choose prompt template based on whether we're resuming
+    if resume and progress_file.exists():
+        system_prompt = format_opus_resume_prompt(
+            progress_file=str(progress_file),
+            work_dir=str(work_dir),
+            task_description=task_desc,
+        )
+    else:
+        system_prompt = format_opus_prompt(
+            work_dir=str(work_dir),
+            progress_file=str(progress_file),
+            intervention_file=str(intervention_file),
+            task_description=task_desc,
+        )
+
+    # Inject learned notes into Opus manager prompt
+    notes_prefix = _load_notes_for_role('global')
+    if notes_prefix:
+        system_prompt = notes_prefix + system_prompt
+
+    # Inject role-specific notes into each subagent's prompt before building
+    from subagent_definitions import SUBAGENT_CONFIGS
+    for role_name in list(SUBAGENT_CONFIGS.keys()):
+        role_notes = _load_notes_for_role(role_name)
+        if role_notes:
+            original_prompt = SUBAGENT_CONFIGS[role_name]['prompt']
+            # Prepend notes only if not already prepended (idempotent)
+            if not original_prompt.startswith('## Learnings'):
+                SUBAGENT_CONFIGS[role_name]['prompt'] = role_notes + original_prompt
+
+    # Build subagent definitions (with injected notes)
+    subagents = build_subagents()
+
+    # Read settings for Opus-specific config
+    settings = _get_settings()
+    opus_max_turns = settings.get('opus_max_turns', 200)
+
+    agent_cwd = str(work_cwd) if work_cwd else str(_ROOT)
+    options = ClaudeAgentOptions(
+        permission_mode='bypassPermissions',
+        model='opus',
+        system_prompt=system_prompt,
+        cwd=agent_cwd,
+        max_turns=opus_max_turns,
+        setting_sources=['project'],
+        agents=subagents,
+    )
+
+    result_text = ''
+    rate_limited = False
+    inactivity_limit = settings.get('opus_inactivity_limit', 900)  # 15 min default
+    start_time = datetime.now()
+
+    try:
+        gen = query(prompt=task_desc, options=options)
+        try:
+            async def consume():
+                nonlocal result_text, rate_limited
+                async for message in gen:
+                    if isinstance(message, ResultMessage) and message.result:
+                        result_text = message.result
+                    elif hasattr(message, 'error') and message.error == 'rate_limit':
+                        rate_limited = True
+                        return
+                    # Update state on any message to show activity
+                    state = load_state() or {}
+                    state['updated_at'] = datetime.now().isoformat()
+                    state['architecture'] = 'opus-manager'
+                    # Flip from 'opus_starting' once we get first message
+                    if state.get('current_stage') == 'opus_starting':
+                        state['current_stage'] = 'opus_running'
+                    save_state(state)
+
+            # Watchdog: check for inactivity every 60s instead of waiting
+            # for the full timeout (which can be 2 hours).
+            consume_task = asyncio.ensure_future(consume())
+            while not consume_task.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(consume_task), timeout=60,
+                    )
+                except asyncio.TimeoutError:
+                    # Check inactivity via state['updated_at']
+                    state = load_state() or {}
+                    updated = state.get('updated_at', '')
+                    if updated:
+                        try:
+                            last = datetime.fromisoformat(updated)
+                            idle = (datetime.now() - last).total_seconds()
+                            if idle > inactivity_limit:
+                                log(f'  Opus manager idle for {int(idle)}s — '
+                                    f'treating as rate limit')
+                                rate_limited = True
+                                consume_task.cancel()
+                                try:
+                                    await consume_task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                                break
+                        except ValueError:
+                            pass
+                    # Check total timeout
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    if elapsed > timeout:
+                        log(f'  Opus manager timed out after {timeout}s')
+                        consume_task.cancel()
+                        try:
+                            await consume_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                        return f'TIMEOUT after {timeout}s'
+                except asyncio.CancelledError:
+                    break
+
+            # Check if consume_task raised an exception
+            if consume_task.done() and not consume_task.cancelled():
+                exc = consume_task.exception()
+                if exc is not None:
+                    raise exc
+
+        finally:
+            try:
+                await asyncio.shield(gen.aclose())
+            except (RuntimeError, asyncio.CancelledError, GeneratorExit, Exception):
+                pass
+    except Exception as e:
+        err_str = str(e).lower()
+        if 'rate' in err_str or '429' in err_str or 'overloaded' in err_str or '529' in err_str:
+            rate_limited = True
+        else:
+            raise
+
+    if rate_limited:
+        raise RateLimitError()
+
+    return result_text or 'No output captured'
+
+
+async def run_opus_with_retry(task: dict,
+                              work_cwd: Path | None = None) -> str:
+    """Run Opus manager with rate-limit retry and progress-based resume.
+
+    On rate limit: sleep until next hour boundary, then start a NEW Opus
+    session with resume=True (reads progress.md to continue where it left off).
+    """
+    settings = _get_settings()
+    opus_timeout = settings.get('opus_timeout', 7200)
+    attempt = 0
+    is_resume = False
+
+    while True:
+        try:
+            return await run_opus_manager(task, timeout=opus_timeout,
+                                          resume=is_resume,
+                                          work_cwd=work_cwd)
+        except RateLimitError:
+            attempt += 1
+            now = datetime.now()
+            next_hour = (now + timedelta(hours=1)).replace(
+                minute=0, second=0, microsecond=0)
+            sleep_time = max(60, int((next_hour - now).total_seconds()))
+            resume_at = (now + timedelta(seconds=sleep_time)).isoformat()
+
+            log(f'  Opus manager rate-limited (attempt {attempt}). '
+                f'Sleeping until {resume_at}...')
+
+            # Update state for webapp
+            state = load_state() or {}
+            state['rate_limited'] = True
+            state['rate_limit_resume_at'] = resume_at
+            state['rate_limit_attempt'] = attempt
+            state['architecture'] = 'opus-manager'
+            save_state(state)
+
+            _blocking_sleep(sleep_time)
+
+            # Clear rate limit flag
+            state = load_state() or {}
+            state['rate_limited'] = False
+            state['rate_limit_resume_at'] = None
+            save_state(state)
+            log('  Resuming Opus manager after rate limit wait...')
+
+            # Log progress state for diagnostics
+            work_dir = create_work_dir(task)
+            progress_file = work_dir / 'progress.md'
+            if progress_file.exists():
+                progress = progress_file.read_text(encoding='utf-8')
+                stages_done = [l for l in progress.lower().split('\n')
+                               if 'status: done' in l]
+                log(f'  Resume state: {len(stages_done)} stage(s) done in progress.md')
+
+            # Next iteration will use resume prompt
+            is_resume = True
+
+
+def _run_regression_check(task: dict, check_root: Path | None = None) -> bool:
+    """Python-level regression safety net: py_compile all core project files.
+
+    Args:
+        check_root: Directory to check files in. Defaults to _ROOT.
+                    Pass worktree path to check worktree files.
+
+    Returns True if all files pass, False if any fail.
+    This runs BEFORE committing, as a final safety gate.
+    """
+    import subprocess as sp
+    root = check_root or _ROOT
+    core_files = []
+
+    # Collect core .py files
+    for pattern in [
+        'app/app.py', 'app/shared.py',
+        'CCF.py', 'ccf_tasks.py', 'ObservationClass.py', 'StarClass.py',
+        'wr_bias_simulation.py',
+    ]:
+        path = root / pattern
+        if path.exists():
+            core_files.append(path)
+
+    for dir_pattern in ['app/pages', 'pipeline']:
+        dir_path = root / dir_pattern
+        if dir_path.exists():
+            core_files.extend(dir_path.glob('*.py'))
+
+    # Run py_compile on each
+    failures = []
+    for f in core_files:
+        try:
+            result = sp.run(
+                ['conda', 'run', '-n', 'guyenv', 'python', '-m', 'py_compile', str(f)],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode != 0:
+                failures.append((f.name, result.stderr.strip()))
+        except (sp.TimeoutExpired, OSError) as e:
+            failures.append((f.name, str(e)))
+
+    if failures:
+        log(f'  [REGRESSION] FAILED — {len(failures)} file(s) broken:')
+        for fname, err in failures:
+            log(f'    {fname}: {err[:100]}')
+
+        # Write failure report
+        work_dir = create_work_dir(task)
+        report_path = work_dir / 'failure_report.md'
+        lines = [
+            f'# Regression Failure Report — Task #{task["id"]}',
+            f'\nTimestamp: {datetime.now().isoformat()}',
+            f'\n## Failed Files\n',
+        ]
+        for fname, err in failures:
+            lines.append(f'- **{fname}**: `{err}`')
+        lines.append(
+            f'\n## Action\n'
+            f'Changes were NOT committed. The branch will be reverted.\n'
+            f'Manual investigation needed.\n'
+        )
+        report_path.write_text('\n'.join(lines), encoding='utf-8')
+        return False
+
+    log(f'  [REGRESSION] PASSED — {len(core_files)} core files OK')
+    return True
+
+
+async def run_task_opus(task: dict, worktree: Path | None = None) -> tuple[str, str]:
+    """Run a task using the Opus manager architecture.
+
+    Args:
+        worktree: Path to the git worktree for this task. If None, uses _ROOT (legacy).
+
+    Returns (status, summary) like run_pipeline().
+    """
+    # Initialize state for webapp (preserve branch from agent_loop's save_state)
+    existing = load_state() or {}
+    save_state({
+        'current_task_id': task['id'],
+        'current_task_title': task.get('title', ''),
+        'branch': existing.get('branch', '?'),
+        'architecture': 'opus-manager',
+        'current_stage': 'opus_starting',
+        'started_at': datetime.now().isoformat(),
+        'updated_at': datetime.now().isoformat(),
+        'subagents_completed': [],
+        'awaiting_intervention': False,
+        'rate_limited': False,
+        'rate_limit_resume_at': None,
+    })
+
+    log(f'  [OPUS] Starting manager agent...')
+
+    try:
+        result = await run_opus_with_retry(task, work_cwd=worktree)
+    except Exception as e:
+        return 'error', f'Opus manager failed: {e}'
+
+    if result.startswith('TIMEOUT'):
+        return 'error', 'Opus manager timed out'
+
+    # Python-level regression safety net (runs even if Opus did its own)
+    check_root = worktree or _ROOT
+    log(f'  [REGRESSION] Running Python-level regression check...')
+    if not _run_regression_check(task, check_root=check_root):
+        log(f'  [REGRESSION] FAILED — reverting branch changes')
+        try:
+            git('checkout', '--', '.', cwd=check_root)
+            git('clean', '-fd', cwd=check_root)
+        except RuntimeError as e:
+            log(f'  Warning: revert failed: {e}')
+        return 'regression_failed', 'Regression check failed — changes reverted. See failure_report.md'
+
+    # Commit the successful changes
+    if worktree:
+        git_worktree_commit(f'[AGENT] Opus completed #{task["id"]}: {task["title"]}', worktree)
+    else:
+        git_commit_all(f'[AGENT] Opus completed #{task["id"]}: {task["title"]}')
+
+    return 'completed', result[:500] if result else 'Implementation done'
+
+
+# ── CLI flags (set from main, read by pipeline) ──────────────────────────────
+_cli_flags: dict = {}
+
+
+# ── Pipeline (architecture='pipeline', the original fixed pipeline) ───────────
+async def run_pipeline(task: dict, worktree: Path | None = None) -> tuple[str, str]:
+    """Run the full multi-agent pipeline for a task.
+
+    Args:
+        worktree: Path to git worktree. If None, uses _ROOT (legacy).
+
+    Returns (status, summary) where status is one of:
+    'completed', 'rejected', 'error', 'test_failed'
+    """
+    # Helper to commit in the right place
+    def _commit(msg: str) -> bool:
+        if worktree:
+            return git_worktree_commit(msg, worktree)
+        return git_commit_all(msg)
+
+    work_dir = create_work_dir(task)
+    task_desc = (
+        f'Task #{task["id"]}: {task["title"]}\n'
+        f'Description: {task.get("description", "No description")}\n'
+        f'Tags: {task.get("tags", "")}\n'
+    )
+
+    # ── Stage 1: Plan ────────────────────────────────────────────────────
+    log(f'  [PLANNER] Starting...')
+    save_state_stage(task, 'planner')
+    plan_path = work_dir / 'plan.md'
+    planner_prompt = (
+        f'{task_desc}\n\n'
+        f'Write your implementation plan to: {plan_path}\n\n'
+        f'Start by reading CLAUDE.md and COMMON_ERRORS.md at the project root.\n'
+        f'Then explore the codebase to understand the relevant files.\n'
+    )
+
+    try:
+        planner_result = await run_agent_with_retry('planner', planner_prompt, work_cwd=worktree)
+    except (RateLimitError, Exception) as e:
+        return 'error', f'Planner failed: {e}'
+
+    if planner_result.startswith('TIMEOUT'):
+        return 'error', f'Planner timed out'
+
+    # If the planner didn't write the file, save its output as the plan
+    if not plan_path.exists():
+        plan_path.write_text(planner_result, encoding='utf-8')
+
+    stages_done = ['planner']
+    log_pipeline_stage(task, 'planner', 'done')
+    _commit(f'[AGENT] Plan for #{task["id"]}: {task["title"]}')
+
+    # ── Stage 2: Review ──────────────────────────────────────────────────
+    log(f'  [REVIEWER] Starting...')
+    save_state_stage(task, 'reviewer', stages_done)
+    review_path = work_dir / 'review.md'
+    reviewer_prompt = (
+        f'{task_desc}\n\n'
+        f'Read the implementation plan at: {plan_path}\n'
+        f'Write your review to: {review_path}\n\n'
+        f'Also read CLAUDE.md and COMMON_ERRORS.md to check the plan follows conventions.\n'
+        f'End your review with APPROVED, APPROVED WITH NOTES, or REJECTED.\n'
+    )
+
+    try:
+        reviewer_result = await run_agent_with_retry('reviewer', reviewer_prompt, work_cwd=worktree)
+    except (RateLimitError, Exception) as e:
+        return 'error', f'Reviewer failed: {e}'
+
+    if not review_path.exists():
+        review_path.write_text(reviewer_result, encoding='utf-8')
+
+    review_text = review_path.read_text(encoding='utf-8')
+    stages_done.append('reviewer')
+    log_pipeline_stage(task, 'reviewer', 'done')
+    _commit(f'[AGENT] Review for #{task["id"]}: {task["title"]}')
+
+    # Check if rejected — with intervention support
+    if 'REJECTED' in review_text.upper():
+        settings = _get_settings()
+        int_cfg = settings.get('intervention', {})
+        wait_on_reject = (
+            _cli_flags.get('wait_on_reject', False) or
+            int_cfg.get('wait_on_reject', False)
+        )
+
+        if wait_on_reject:
+            intervention = await wait_for_intervention(
+                task['id'], 'reviewer_rejected',
+                timeout=_cli_flags.get('intervention_timeout')
+            )
+            if intervention:
+                action = intervention.get('action', '')
+                if action == 'approve_override':
+                    log('  Intervention: Plan approved despite rejection.')
+                elif action == 'replan_with_guidance':
+                    guidance = intervention.get('guidance', '')
+                    max_retries = intervention.get('max_retries', 1)
+                    log(f'  Intervention: Replanning with guidance (max {max_retries})...')
+                    for retry in range(max_retries):
+                        replan_prompt = (
+                            f'{task_desc}\n\n'
+                            f'Your previous plan was REJECTED.\n'
+                            f'Reviewer feedback: {review_text[-500:]}\n'
+                            f'Human guidance: {guidance}\n\n'
+                            f'Write an improved plan to: {plan_path}\n'
+                        )
+                        try:
+                            await run_agent_with_retry('planner', replan_prompt, work_cwd=worktree)
+                        except Exception:
+                            break
+                        _commit(f'[AGENT] Replan attempt {retry+1} for #{task["id"]}')
+                        # Re-review
+                        reviewer_prompt_retry = (
+                            f'{task_desc}\n\n'
+                            f'Read the REVISED plan at: {plan_path}\n'
+                            f'Write your review to: {review_path}\n'
+                            f'End with APPROVED, APPROVED WITH NOTES, or REJECTED.\n'
+                        )
+                        try:
+                            await run_agent_with_retry('reviewer', reviewer_prompt_retry, work_cwd=worktree)
+                        except Exception:
+                            break
+                        review_text = review_path.read_text(encoding='utf-8')
+                        _commit(f'[AGENT] Re-review {retry+1} for #{task["id"]}')
+                        if 'REJECTED' not in review_text.upper():
+                            break
+                    else:
+                        if 'REJECTED' in review_text.upper():
+                            return 'rejected', 'Plan rejected after replan attempts'
+                elif action == 'edit_plan':
+                    plan_content = intervention.get('plan_content', '')
+                    if plan_content:
+                        plan_path.write_text(plan_content, encoding='utf-8')
+                        log('  Intervention: Plan edited by human.')
+                        _commit(f'[AGENT] Human-edited plan for #{task["id"]}')
+                elif action == 'abort':
+                    return 'aborted', 'Task aborted by human intervention'
+            else:
+                # Timeout — fall through to default rejection behavior
+                return 'rejected', f'Reviewer rejected the plan: {review_text[-200:]}'
+        else:
+            # Autonomous auto-replan loop (no human needed)
+            auto_replan_max = int_cfg.get('auto_replan_max', 0)
+            if auto_replan_max > 0:
+                log(f'  [AUTO-REPLAN] Plan rejected — starting auto-replan loop (max {auto_replan_max} rounds)...')
+                for replan_round in range(1, auto_replan_max + 1):
+                    # Save each review round for user inspection
+                    review_round_path = work_dir / f'review_round_{replan_round}.md'
+                    review_round_path.write_text(review_text, encoding='utf-8')
+
+                    # Send structured feedback to planner
+                    replan_prompt = (
+                        f'{task_desc}\n\n'
+                        f'This is REPLAN ROUND {replan_round} of {auto_replan_max}.\n'
+                        f'Your previous plan was REJECTED by the reviewer.\n\n'
+                        f'--- REVIEWER FEEDBACK ---\n'
+                        f'{review_text}\n'
+                        f'--- END FEEDBACK ---\n\n'
+                        f'Fix what the reviewer flagged in "What Needs Fixing" and '
+                        f'"Corrections Required". Do NOT change parts the reviewer '
+                        f'marked as correct in "What\'s Correct".\n\n'
+                        f'Write your improved plan to: {plan_path}\n'
+                    )
+                    try:
+                        await run_agent_with_retry('planner', replan_prompt, work_cwd=worktree)
+                    except Exception as e:
+                        log(f'  [AUTO-REPLAN] Planner failed on round {replan_round}: {e}')
+                        break
+                    _commit(f'[AGENT] Auto-replan round {replan_round} for #{task["id"]}')
+
+                    # Re-review the revised plan
+                    reviewer_prompt_retry = (
+                        f'{task_desc}\n\n'
+                        f'This is review round {replan_round + 1}.\n'
+                        f'Read the REVISED plan at: {plan_path}\n'
+                        f'The previous review is at: {review_round_path}\n\n'
+                        f'Check whether the previous issues were corrected and '
+                        f'the correct parts were preserved. Look for any new issues.\n\n'
+                        f'Write your review to: {review_path}\n'
+                        f'End with APPROVED, APPROVED WITH NOTES, or REJECTED.\n'
+                    )
+                    try:
+                        await run_agent_with_retry('reviewer', reviewer_prompt_retry, work_cwd=worktree)
+                    except Exception as e:
+                        log(f'  [AUTO-REPLAN] Reviewer failed on round {replan_round}: {e}')
+                        break
+                    review_text = review_path.read_text(encoding='utf-8')
+                    _commit(f'[AGENT] Auto-review round {replan_round + 1} for #{task["id"]}')
+
+                    if 'REJECTED' not in review_text.upper():
+                        log(f'  [AUTO-REPLAN] Plan approved on round {replan_round + 1}!')
+                        break
+                else:
+                    # Exhausted all replan rounds — auto-approve and proceed anyway
+                    log(f'  [AUTO-REPLAN] Exhausted {auto_replan_max} rounds. Auto-approving and proceeding.')
+                    # Save final review for user inspection
+                    final_review_path = work_dir / f'review_round_final.md'
+                    final_review_path.write_text(
+                        f'AUTO-APPROVED after {auto_replan_max} replan rounds.\n\n'
+                        f'Last review:\n{review_text}',
+                        encoding='utf-8'
+                    )
+            else:
+                return 'rejected', f'Reviewer rejected the plan: {review_text[-200:]}'
+
+    # ── Stage 3: Implement ───────────────────────────────────────────────
+    log(f'  [IMPLEMENTER] Starting...')
+    save_state_stage(task, 'implementer', stages_done)
+    implementer_prompt = (
+        f'{task_desc}\n\n'
+        f'Read the approved plan at: {plan_path}\n'
+        f'Read the reviewer notes at: {review_path}\n\n'
+        f'Implement the plan. Follow it exactly.\n'
+        f'Read CLAUDE.md first for project conventions.\n'
+        f'After editing any .py file, run: conda run -n guyenv python -m py_compile <file>\n'
+        f'Do NOT run any git commands.\n'
+    )
+
+    try:
+        impl_result = await run_agent_with_retry('implementer', implementer_prompt, work_cwd=worktree)
+    except (RateLimitError, Exception) as e:
+        return 'error', f'Implementer failed: {e}'
+
+    stages_done.append('implementer')
+    log_pipeline_stage(task, 'implementer', 'done', impl_result[:100])
+    _commit(f'[AGENT] Implement #{task["id"]}: {task["title"]}')
+
+    # ── Stage 4: Test (with fix cycle) ───────────────────────────────────
+    settings = _get_settings()
+    max_fix = settings.get('max_fix_attempts', MAX_FIX_ATTEMPTS)
+    test_passed = False
+    for attempt in range(1, max_fix + 2):  # +1 for initial test, +1 for range
+        log(f'  [TESTER] Starting (attempt {attempt})...')
+        save_state_stage(task, f'tester-{attempt}')
+        test_path = work_dir / f'test_report_{attempt}.md'
+
+        # Get list of changed files for the tester
+        try:
+            changed = git('diff', '--name-only', 'main', cwd=worktree or _ROOT)
+        except RuntimeError:
+            changed = ''
+
+        tester_prompt = (
+            f'{task_desc}\n\n'
+            f'Files changed (vs main):\n{changed}\n\n'
+            f'Read the plan at: {plan_path}\n'
+            f'Write your test report to: {test_path}\n\n'
+            f'Check all modified .py files with py_compile.\n'
+            f'Check COMMON_ERRORS.md patterns against modified files.\n'
+            f'End with: PASS or FAIL\n'
+        )
+
+        try:
+            tester_result = await run_agent_with_retry('tester', tester_prompt, work_cwd=worktree)
+        except (RateLimitError, Exception) as e:
+            log_pipeline_stage(task, 'tester', f'error: {e}')
+            break
+
+        if not test_path.exists():
+            test_path.write_text(tester_result, encoding='utf-8')
+
+        test_text = test_path.read_text(encoding='utf-8')
+        _commit(f'[AGENT] Test report {attempt} for #{task["id"]}')
+
+        # Check last 5 lines for PASS/FAIL verdict (substring, not list membership)
+        last_lines = test_text.upper().strip().split('\n')[-5:]
+        has_pass = any('PASS' in line and 'FAIL' not in line for line in last_lines)
+        has_fail = any('FAIL' in line for line in last_lines)
+
+        if has_pass and not has_fail:
+            test_passed = True
+            log_pipeline_stage(task, 'tester', 'PASS')
+            break
+
+        log_pipeline_stage(task, 'tester', f'FAIL (attempt {attempt})')
+
+        if attempt > max_fix:
+            break
+
+        # ── Fix cycle ────────────────────────────────────────────────────
+        log(f'  [FIX PLANNER] Starting (attempt {attempt})...')
+        save_state_stage(task, f'fix_planner-{attempt}')
+        fix_plan_path = work_dir / f'fix_plan_{attempt}.md'
+
+        fix_planner_prompt = (
+            f'{task_desc}\n\n'
+            f'The test report at {test_path} shows FAILURES.\n'
+            f'Read the original plan at: {plan_path}\n'
+            f'Write your fix plan to: {fix_plan_path}\n\n'
+            f'Diagnose the root cause and plan specific fixes.\n'
+        )
+
+        try:
+            await run_agent_with_retry('fix_planner', fix_planner_prompt, work_cwd=worktree)
+        except (RateLimitError, Exception) as e:
+            log_pipeline_stage(task, 'fix_planner', f'error: {e}')
+            break
+
+        _commit(f'[AGENT] Fix plan {attempt} for #{task["id"]}')
+
+        log(f'  [FIX IMPLEMENTER] Starting (attempt {attempt})...')
+        save_state_stage(task, f'fix_implementer-{attempt}')
+
+        fix_impl_prompt = (
+            f'{task_desc}\n\n'
+            f'Read the fix plan at: {fix_plan_path}\n'
+            f'Read the test report at: {test_path}\n\n'
+            f'Execute the fixes. Follow the fix plan exactly.\n'
+            f'After editing any .py file, run: conda run -n guyenv python -m py_compile <file>\n'
+            f'Do NOT run any git commands.\n'
+        )
+
+        try:
+            await run_agent_with_retry('fix_implementer', fix_impl_prompt, work_cwd=worktree)
+        except (RateLimitError, Exception) as e:
+            log_pipeline_stage(task, 'fix_implementer', f'error: {e}')
+            break
+
+        _commit(f'[AGENT] Fix attempt {attempt} for #{task["id"]}')
+
+    # ── Stage 5: Regression ──────────────────────────────────────────────
+    stages_done.append('tester')
+    log(f'  [REGRESSION] Starting...')
+    save_state_stage(task, 'regression', stages_done)
+    regression_path = work_dir / 'regression.md'
+
+    try:
+        changed = git('diff', '--name-only', 'main', cwd=worktree or _ROOT)
+    except RuntimeError:
+        changed = ''
+
+    regression_prompt = (
+        f'{task_desc}\n\n'
+        f'Files changed (vs main):\n{changed}\n\n'
+        f'Read the plan at: {plan_path}\n'
+        f'Write your regression report to: {regression_path}\n\n'
+        f'Check that existing project files still compile:\n'
+        f'- app/app.py, app/shared.py, all files in app/pages/\n'
+        f'- CCF.py, ccf_tasks.py, ObservationClass.py, StarClass.py\n'
+        f'- wr_bias_simulation.py, pipeline/*.py\n\n'
+        f'End with: PASS or FAIL\n'
+    )
+
+    try:
+        regression_result = await run_agent_with_retry('regression', regression_prompt, work_cwd=worktree)
+    except (RateLimitError, Exception) as e:
+        log_pipeline_stage(task, 'regression', f'error: {e}')
+        regression_result = f'Error: {e}'
+
+    if not regression_path.exists():
+        regression_path.write_text(regression_result, encoding='utf-8')
+
+    regression_text = regression_path.read_text(encoding='utf-8')
+    _commit(f'[AGENT] Regression report for #{task["id"]}')
+
+    reg_last = regression_text.upper().strip().split('\n')[-5:]
+    regression_passed = any('PASS' in l and 'FAIL' not in l for l in reg_last)
+    log_pipeline_stage(task, 'regression', 'PASS' if regression_passed else 'FAIL')
+
+    stages_done.append('regression')
+
+    # ── Final status ─────────────────────────────────────────────────────
+    if test_passed and regression_passed:
+        return 'completed', impl_result[:500] if impl_result else 'Implementation done'
+    elif not test_passed:
+        return 'test_failed', f'Tests failed after {max_fix} fix attempts'
+    else:
+        return 'regression_failed', f'Regression check failed: {regression_text[-200:]}'
+
+
+def save_state_stage(task: dict, stage: str,
+                     stages_done: list[str] | None = None) -> None:
+    """Update state with current pipeline stage (enhanced for webapp)."""
+    state = load_state() or {}
+    state.update({
+        'current_task_id': task['id'],
+        'current_task_title': task.get('title', ''),
+        'current_stage': stage,
+        'stage_started_at': datetime.now().isoformat(),
+        'updated_at': datetime.now().isoformat(),
+        'pipeline_stages_done': stages_done or state.get('pipeline_stages_done', []),
+        'pipeline_stages_total': ['planner', 'reviewer', 'implementer', 'tester', 'regression'],
+        'awaiting_intervention': False,
+        'intervention_type': None,
+        'rate_limited': False,
+        'rate_limit_resume_at': None,
+    })
+    save_state(state)
+
+
+# ── Intervention support ─────────────────────────────────────────────────────
+def check_intervention(task_id: int) -> dict | None:
+    """Check if there's a pending intervention file. Returns its content or None."""
+    intervention_path = _WORK_DIR / str(task_id) / '.intervention.json'
+    if not intervention_path.exists():
+        return None
+    try:
+        with open(intervention_path) as f:
+            intervention = json.load(f)
+        intervention_path.unlink()  # Consume the intervention
+        # Clear awaiting flag
+        state = load_state() or {}
+        state['awaiting_intervention'] = False
+        state['intervention_type'] = None
+        save_state(state)
+        return intervention
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+async def wait_for_intervention(task_id: int, intervention_type: str,
+                                timeout: int | None = None) -> dict | None:
+    """Wait for human intervention via the webapp.
+
+    Sets state to awaiting_intervention=True, polls for .intervention.json.
+    Returns the intervention dict, or None if timeout expires.
+    """
+    settings = _get_settings()
+    int_cfg = settings.get('intervention', {})
+    effective_timeout = timeout or int_cfg.get('timeout_seconds', 1800)
+
+    # Update state to signal webapp
+    state = load_state() or {}
+    state['awaiting_intervention'] = True
+    state['intervention_type'] = intervention_type
+    state['updated_at'] = datetime.now().isoformat()
+    save_state(state)
+
+    log(f'  Waiting for human intervention ({intervention_type}). '
+        f'Timeout: {effective_timeout}s')
+
+    poll_interval = 10  # seconds
+    elapsed = 0
+    loop = asyncio.get_event_loop()
+
+    while elapsed < effective_timeout:
+        intervention = check_intervention(task_id)
+        if intervention:
+            log(f'  Received intervention: {intervention.get("action", "unknown")}')
+            return intervention
+        await loop.run_in_executor(None, time.sleep, poll_interval)
+        elapsed += poll_interval
+
+    # Timeout — clear waiting state
+    log(f'  Intervention timeout ({effective_timeout}s). Proceeding with default behavior.')
+    state = load_state() or {}
+    state['awaiting_intervention'] = False
+    state['intervention_type'] = None
+    save_state(state)
+    return None
+
+
+async def auto_learn_reflection(task: dict, status: str, summary: str) -> None:
+    """Run a brief reflection agent after task completion to append learnings."""
+    settings = _get_settings()
+    if not settings.get('auto_learn', False):
+        return
+
+    log('  [AUTO-LEARN] Running reflection...')
+    prompt = (
+        f'You just completed task #{task["id"]}: {task["title"]}\n'
+        f'Status: {status}\n'
+        f'Summary: {summary[:500]}\n\n'
+        f'Based on this experience, write 3-5 concise bullet points about what '
+        f'you learned that would help future agents working on this project.\n'
+        f'Focus on: patterns that worked, pitfalls to avoid, project-specific '
+        f'conventions discovered.\n\n'
+        f'Write your learnings to EACH of these files (append, do not overwrite):\n'
+        f'- {_NOTES_DIR}/global_notes.md\n'
+        f'- {_NOTES_DIR}/planner_notes.md\n'
+        f'- {_NOTES_DIR}/implementer_notes.md\n'
+    )
+    try:
+        await run_agent('planner', prompt, timeout=300)
+        log('  [AUTO-LEARN] Reflection complete.')
+    except Exception as e:
+        log(f'  [AUTO-LEARN] Reflection failed: {e}')
+
+
+# ── Main agent loop ───────────────────────────────────────────────────────────
+async def run_freeform_task(task_prompt: str, dry_run: bool,
+                           architecture: str = 'pipeline') -> None:
+    """Run a single free-form task through the pipeline."""
+    commit_pending_log()
+    git_cleanup_stashes()
+    checkpoint = git_checkpoint()
+    log(f'Agent starting — free-form task (architecture={architecture})')
+    log(f'  Prompt: {task_prompt[:300]}')
+    log(f'Git checkpoint: {checkpoint}')
+    log_session_start(checkpoint, 'freeform')
+
+    if dry_run:
+        log(f'  [DRY RUN] Would run free-form task (architecture={architecture}):')
+        log(f'  Prompt: {task_prompt[:200]}...' if len(task_prompt) > 200 else f'  Prompt: {task_prompt}')
+        log('Agent session complete.')
+        return
+
+    # Pre-import subagent definitions before any git checkout may remove the file
+    if architecture == 'opus':
+        try:
+            import subagent_definitions  # noqa: F811 — cached in sys.modules
+        except ImportError as e:
+            log(f'Cannot import subagent_definitions: {e} — falling back to pipeline')
+            architecture = 'pipeline'
+
+    freeform_id = int(datetime.now().strftime('%y%m%d%H%M'))
+    short_title = task_prompt[:80].replace('\n', ' ').strip()
+    task = {'id': freeform_id, 'title': f'Free-form: {short_title}', 'description': task_prompt, 'tags': ''}
+
+    # Create isolated worktree (user's working directory is NEVER touched)
+    branch, worktree = git_create_worktree(task)
+    log(f'Working in worktree: {worktree} (branch: {branch})')
+
+    try:
+        if architecture == 'opus':
+            status, summary = await run_task_opus(task, worktree=worktree)
+        else:
+            status, summary = await run_pipeline(task, worktree=worktree)
+    except Exception as e:
+        status, summary = 'error', f'Pipeline crashed: {e}'
+        log(f'  Pipeline error: {e}')
+
+    log_task_result(task, branch, status, summary)
+    log(f'Free-form task finished: {status}')
+
+    # Remove worktree (branch preserved for user review via --stop)
+    git_remove_worktree()
+
+    # Mark as DONE
+    state = load_state() or {}
+    state['completed'] = True
+    state['current_stage'] = 'done'
+    state['updated_at'] = datetime.now().isoformat()
+    save_state(state)
+    log('Agent session complete.')
+
+
+async def agent_loop(quadrant: str, max_tasks: int | None, dry_run: bool,
+                     include_critical: bool = False,
+                     task_ids: list[int] | None = None,
+                     architecture: str = 'pipeline') -> None:
+    """Main loop: pick tasks, run pipeline, repeat."""
+    commit_pending_log()
+    git_cleanup_stashes()
+    checkpoint = git_checkpoint()
+    mode_desc = f'task_ids={task_ids}' if task_ids else f'quadrant={quadrant}'
+    log(f'Agent starting — {mode_desc}, max_tasks={max_tasks}, architecture={architecture}')
+    log(f'Git checkpoint: {checkpoint}')
+    log_session_start(checkpoint, quadrant)
+
+    # Pre-import subagent definitions before any git checkout may remove the file
+    if architecture == 'opus':
+        try:
+            import subagent_definitions  # noqa: F811 — cached in sys.modules
+        except ImportError as e:
+            log(f'Cannot import subagent_definitions: {e} — falling back to pipeline')
+            architecture = 'pipeline'
+
+    # Merge completed IDs from both state file and persistent file
+    state = load_state()
+    state_ids = state.get('completed_tasks', []) if state else []
+    persistent_ids = _load_completed_ids()
+    completed_ids: list[int] = list(set(state_ids + persistent_ids))
+    _clear_completed_ids()  # Fresh session — will re-persist as tasks complete
+    tasks_done = len(completed_ids)
+
+    while True:
+        candidates = select_tasks(quadrant, include_critical=include_critical,
+                                  task_ids=task_ids)
+        candidates = [t for t in candidates if t['id'] not in completed_ids]
+
+        if not candidates:
+            log(f'No more tasks in "{quadrant}" quadrant. Agent done.')
+            break
+
+        if max_tasks and tasks_done >= max_tasks:
+            log(f'Reached max_tasks={max_tasks}. Agent done.')
+            break
+
+        task = candidates[0]
+        log(f'--- Starting task #{task["id"]}: {task["title"]} ---')
+
+        if dry_run:
+            log(f'  [DRY RUN] Pipeline stages: planner -> reviewer -> implementer -> tester -> regression')
+            log(f'  Description: {task.get("description", "N/A")}')
+            completed_ids.append(task['id'])
+            tasks_done += 1
+            continue
+
+        # Create worktree and run pipeline — user's working directory is NEVER touched
+        branch = None
+        worktree = None
+        try:
+            branch, worktree = git_create_worktree(task)
+            log(f'Working in worktree: {worktree} (branch: {branch})')
+
+            save_state({
+                'current_task_id': task['id'],
+                'current_task_title': task.get('title', ''),
+                'completed_tasks': completed_ids,
+                'checkpoint_tag': checkpoint,
+                'quadrant': quadrant,
+                'branch': branch,
+                'worktree': str(worktree),
+                'current_stage': 'starting',
+                'started_at': datetime.now().isoformat(),
+                'pipeline_stages_done': [],
+                'pipeline_stages_total': ['planner', 'reviewer', 'implementer', 'tester', 'regression'],
+                'awaiting_intervention': False,
+                'intervention_type': None,
+                'rate_limited': False,
+                'rate_limit_resume_at': None,
+            })
+
+            # Run the full pipeline (or Opus manager)
+            if architecture == 'opus':
+                status, summary = await run_task_opus(task, worktree=worktree)
+            else:
+                status, summary = await run_pipeline(task, worktree=worktree)
+        except Exception as e:
+            status, summary = 'error', f'Pipeline crashed: {e}'
+            log(f'  Pipeline error: {e}')
+
+        log_task_result(task, branch or '?', status, summary)
+        log(f'Task #{task["id"]} finished: {status}')
+
+        # Auto-learn reflection
+        if status in ('completed', 'test_failed', 'regression_failed'):
+            await auto_learn_reflection(task, status, summary)
+
+        if status == 'completed':
+            # Update TODO.md (in main tree — these are supervisor artifacts)
+            open_tasks, done_tasks = load_todos()
+            for t in open_tasks:
+                if t['id'] == task['id']:
+                    t['status'] = 'to-test'
+                    t['description'] = (
+                        t.get('description', '') +
+                        ' [Done by overnight agent — needs review]'
+                    ).strip()
+                    break
+            save_todos(open_tasks, done_tasks)
+            git_commit_files(
+                [str(_TODO_PATH)],
+                f'[AGENT] Mark #{task["id"]} as to-test',
+            )
+
+        # Remove worktree (branch preserved for user review via --stop)
+        git_remove_worktree()
+
+        completed_ids.append(task['id'])
+        _save_completed_id(task['id'])  # Persist across crashes
+        tasks_done += 1
+
+        save_state({
+            'completed_tasks': completed_ids,
+            'checkpoint_tag': checkpoint,
+            'quadrant': quadrant,
+            'current_stage': 'idle',
+            'started_at': state.get('started_at', datetime.now().isoformat())
+            if state else datetime.now().isoformat(),
+        })
+
+    # Mark as DONE (not just cleared — webapp shows "DONE" status)
+    state = load_state() or {}
+    state['completed'] = True
+    state['current_stage'] = 'done'
+    state['updated_at'] = datetime.now().isoformat()
+    save_state(state)
+    log('Agent session complete.')
+
+
+def commit_pending_log() -> None:
+    """Commit any leftover agent_log.md from previous sessions."""
+    try:
+        log_status = git('status', '--porcelain', '--', 'scripts/agent_log.md')
+        if log_status.strip():
+            git('add', 'scripts/agent_log.md')
+            git('commit', '-m', '[AGENT] Save agent log from previous session')
+    except RuntimeError:
+        pass
+
+
+# ── --stop: Interactive branch review ─────────────────────────────────────────
+def stop_daemon() -> None:
+    """Stop the daemon and offer interactive branch review."""
+    if _PID_PATH.exists():
+        pid = int(_PID_PATH.read_text().strip())
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f'Stopped daemon (PID {pid}).')
+        except ProcessLookupError:
+            print(f'Daemon (PID {pid}) was not running.')
+        _PID_PATH.unlink(missing_ok=True)
+    else:
+        print('No daemon running.')
+
+    # Interactive review of agent branches
+    branches = git_list_agent_branches()
+    if not branches:
+        print('\nNo agent branches to review.')
+        return
+
+    print(f'\n{"=" * 60}')
+    print(f'  Agent Branch Review — {len(branches)} branch(es)')
+    print(f'{"=" * 60}\n')
+
+    for branch in branches:
+        print(f'\n--- Branch: {branch} ---')
+
+        # Show commit log
+        commit_log = git_branch_log(branch)
+        print(f'\nCommits:\n{commit_log}')
+
+        # Show diff stat
+        diff_stat = git_branch_diff_stat(branch)
+        print(f'\nChanges:\n{diff_stat}')
+
+        # Check for test/regression reports in work dir
+        task_id = branch.split('/')[1].split('-')[0] if '/' in branch else '0'
+        task_work = _WORK_DIR / task_id
+        if task_work.exists():
+            for report in sorted(task_work.glob('*.md')):
+                print(f'\n[{report.name}]')
+                content = report.read_text(encoding='utf-8')
+                # Show last 10 lines (usually contains verdict)
+                lines = content.strip().split('\n')
+                for line in lines[-10:]:
+                    print(f'  {line}')
+
+        # Ask user
+        print(f'\nOptions: [K]eep / [M]erge into main / [D]iscard / [T]est (create worktree to inspect)')
+        while True:
+            choice = input(f'Choice for {branch}: ').strip().lower()
+            if choice in ('t', 'test'):
+                test_wt = _ROOT.parent / f'test-{branch.replace("/", "-")}'
+                try:
+                    git('worktree', 'add', str(test_wt), branch)
+                    # Symlink Data
+                    data_link = test_wt / 'Data'
+                    if not data_link.exists():
+                        os.symlink(str(Path('../Data')), str(data_link))
+                    print(f'  Created test worktree at: {test_wt}')
+                    print(f'  cd {test_wt}  # inspect, run streamlit, etc.')
+                    print(f'  When done: git worktree remove {test_wt}')
+                except RuntimeError as e:
+                    print(f'  Failed to create test worktree: {e}')
+                # Re-prompt — user still needs to K/M/D after testing
+                print(f'\nAfter testing, choose: [K]eep / [M]erge into main / [D]iscard')
+                continue
+            elif choice in ('k', 'keep'):
+                print(f'  Keeping {branch}')
+                break
+            elif choice in ('m', 'merge'):
+                try:
+                    # Rebase onto main for clean history, then fast-forward
+                    git('checkout', branch)
+                    git('rebase', 'main')
+                    git_safe_checkout('main')
+                    git('merge', branch, '--ff-only')
+                    git('tag', '-f', 'verified-good', 'HEAD')
+                    print(f'  Rebased and merged {branch} into main. Updated verified-good tag.')
+                except RuntimeError:
+                    # Rebase failed — abort and try regular merge
+                    git('rebase', '--abort', check=False)
+                    git_safe_checkout('main')
+                    try:
+                        git('merge', branch, '--no-edit')
+                        git('tag', '-f', 'verified-good', 'HEAD')
+                        print(f'  Merged {branch} into main (merge commit). Updated verified-good tag.')
+                    except RuntimeError as e:
+                        git('merge', '--abort', check=False)
+                        print(f'  Merge failed: {e}')
+                        print(f'  Branch preserved for manual merge.')
+                break
+            elif choice in ('d', 'discard'):
+                try:
+                    git_safe_checkout('main')
+                    git('branch', '-D', branch)
+                    print(f'  Deleted {branch}.')
+                    # Clean up work dir
+                    task_work = _WORK_DIR / task_id
+                    if task_work.exists():
+                        import shutil
+                        shutil.rmtree(task_work)
+                except RuntimeError as e:
+                    print(f'  Delete failed: {e}')
+                break
+            else:
+                print('  Invalid choice. Enter K, M, or D.')
+
+    print(f'\n{"=" * 60}')
+    print('  Review complete.')
+    print(f'{"=" * 60}')
+
+
+# ── --status ──────────────────────────────────────────────────────────────────
+def show_status() -> None:
+    """Show current agent status."""
+    print(f'\n{"=" * 50}')
+    print(f'  Overnight Agent Status')
+    print(f'{"=" * 50}\n')
+
+    # Check if running
+    if _PID_PATH.exists():
+        pid = int(_PID_PATH.read_text().strip())
+        try:
+            os.kill(pid, 0)  # Check if process exists
+            print(f'Status:  RUNNING (PID {pid})')
+        except ProcessLookupError:
+            print(f'Status:  STOPPED (stale PID {pid})')
+    else:
+        print(f'Status:  STOPPED')
+
+    # Show state
+    state = load_state()
+    if state:
+        print(f'Task:    #{state.get("current_task_id", "?")}')
+        print(f'Stage:   {state.get("current_stage", "?")}')
+        print(f'Started: {state.get("started_at", "?")}')
+        completed = state.get('completed_tasks', [])
+        print(f'Done:    {len(completed)} task(s) ({completed})')
+    else:
+        print(f'State:   No active state')
+
+    # Show branches
+    branches = git_list_agent_branches()
+    print(f'\nAgent branches: {len(branches)}')
+    for b in branches:
+        log_oneline = git_branch_log(b)
+        commit_count = len([l for l in log_oneline.split('\n') if l.strip()])
+        print(f'  {b}  ({commit_count} commits)')
+
+    # Show recent log
+    if _LOG_PATH.exists():
+        lines = _LOG_PATH.read_text(encoding='utf-8').strip().split('\n')
+        print(f'\nRecent log (last 5 lines):')
+        for line in lines[-5:]:
+            print(f'  {line}')
+
+    print()
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description='Multi-agent overnight supervisor for WR Binary project'
+    )
+    p.add_argument('--quadrant', default='eliminate',
+                   choices=['eliminate', 'delegate', 'schedule', 'do_first', 'all'],
+                   help='Which Eisenhower quadrant to work on (default: eliminate)')
+    p.add_argument('--include-critical', action='store_true',
+                   help='Allow working on "Do First" (urgent+important) tasks')
+    p.add_argument('--max-tasks', type=int, default=None,
+                   help='Stop after completing N tasks')
+    p.add_argument('--dry-run', action='store_true',
+                   help='Show what would be done without executing')
+    p.add_argument('--daemon', action='store_true',
+                   help='Run in background (detach from terminal)')
+    p.add_argument('--stop', action='store_true',
+                   help='Stop daemon + interactive branch review')
+    p.add_argument('--status', action='store_true',
+                   help='Show current agent status')
+    p.add_argument('--task', type=str, default=None,
+                   help='Free-form task prompt (skip TODO.md)')
+    p.add_argument('--task-ids', type=str, default=None,
+                   help='Comma-separated TODO task IDs to run (e.g. "18,20,2")')
+    p.add_argument('--architecture', type=str, default=None,
+                   choices=['pipeline', 'opus'],
+                   help='Agent architecture: pipeline (fixed 5-stage) or opus (Opus manager + Sonnet workers). Default: from agent_settings.json')
+    p.add_argument('--wait-on-reject', action='store_true',
+                   help='Wait for human input when reviewer rejects a plan')
+    p.add_argument('--wait-on-fail', action='store_true',
+                   help='Wait for human input when tester fails')
+    p.add_argument('--intervention-timeout', type=int, default=None,
+                   help='Seconds to wait for human intervention (default: from settings)')
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.status:
+        show_status()
+        return
+
+    if args.stop:
+        stop_daemon()
+        return
+
+    if args.daemon:
+        pid = os.fork()
+        if pid > 0:
+            _PID_PATH.write_text(str(pid))
+            print(f'Agent daemon started (PID {pid}).')
+            print(f'Logs: {_LOG_PATH}')
+            print(f'Monitor: python {__file__} --status')
+            print(f'Stop: python {__file__} --stop')
+            return
+        os.setsid()
+        sys.stdout = open(_LOG_PATH, 'a')
+        sys.stderr = sys.stdout
+        global _daemon_mode
+        _daemon_mode = True
+
+    # Set CLI flags for intervention system
+    global _cli_flags
+    _cli_flags = {
+        'wait_on_reject': args.wait_on_reject,
+        'wait_on_fail': args.wait_on_fail,
+        'intervention_timeout': args.intervention_timeout,
+    }
+
+    # Wrap with caffeinate to prevent macOS sleep
+    if sys.platform == 'darwin' and not os.environ.get('_CAFFEINATE_ACTIVE'):
+        os.environ['_CAFFEINATE_ACTIVE'] = '1'
+        # PID-file guard: prevent duplicate instances (conda env isolation
+        # can lose the env var, causing the script to run twice)
+        _caffeinate_marker = _HERE / '.caffeinate_pid'
+        if _caffeinate_marker.exists():
+            try:
+                old_pid = int(_caffeinate_marker.read_text().strip())
+                os.kill(old_pid, 0)  # Check if still alive
+                # Another instance is running — exit silently
+                sys.exit(0)
+            except (ProcessLookupError, ValueError, OSError):
+                pass  # Old process is dead, proceed
+        _caffeinate_marker.write_text(str(os.getpid()))
+        os.execvp('caffeinate', ['caffeinate', '-i', sys.executable] + sys.argv)
+
+    # Clear stale rate-limit state from previous runs — don't block a fresh launch.
+    # The retry loop inside run_agent_with_retry() handles rate limits properly.
+    prev_state = load_state()
+    if prev_state and prev_state.get('rate_limited'):
+        print('Clearing stale rate-limit state from previous run.')
+        prev_state['rate_limited'] = False
+        prev_state['rate_limit_resume_at'] = None
+        save_state(prev_state)
+
+    # Parse --task-ids if provided
+    task_ids = None
+    if args.task_ids:
+        task_ids = [int(x.strip()) for x in args.task_ids.split(',') if x.strip().isdigit()]
+
+    # Determine architecture: CLI flag > agent_settings.json > default 'pipeline'
+    architecture = args.architecture
+    if architecture is None:
+        settings = _get_settings()
+        architecture = settings.get('architecture', 'pipeline')
+    log(f'Architecture: {architecture}')
+
+    # Stash any uncommitted user work so the agent never destroys it
+    _user_stash_created = False
+    try:
+        user_status = git('status', '--porcelain')
+        if user_status.strip():
+            log('Stashing uncommitted user work before agent run...')
+            git('stash', 'push', '--include-untracked', '-m',
+                '[AGENT] Auto-stash user work before agent run')
+            _user_stash_created = True
+            log('  User work stashed successfully.')
+    except RuntimeError as e:
+        log(f'  Warning: could not stash user work: {e}')
+
+    try:
+        if args.task:
+            asyncio.run(run_freeform_task(args.task, args.dry_run,
+                                          architecture=architecture))
+        else:
+            asyncio.run(agent_loop(args.quadrant, args.max_tasks, args.dry_run,
+                                   include_critical=args.include_critical,
+                                   task_ids=task_ids,
+                                   architecture=architecture))
+    except KeyboardInterrupt:
+        log('Agent stopped by user (Ctrl+C).')
+    finally:
+        _PID_PATH.unlink(missing_ok=True)
+        (_HERE / '.caffeinate_pid').unlink(missing_ok=True)
+        # Restore user's stashed work
+        if _user_stash_created:
+            try:
+                log('Restoring stashed user work...')
+                git('stash', 'pop')
+                log('  User work restored successfully.')
+            except RuntimeError as e:
+                log(f'  Warning: could not restore user stash: {e}')
+                log('  Run "git stash pop" manually to recover your work.')
+
+
+if __name__ == '__main__':
+    main()

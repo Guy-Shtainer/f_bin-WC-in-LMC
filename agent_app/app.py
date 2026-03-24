@@ -36,9 +36,10 @@ from shared import (
 from agent_comm import (
     load_todos, get_quadrant,
     QUADRANT_LABELS, QUADRANT_COLORS,
-    get_log_tail,
+    get_log_tail, get_live_output,
     launch_agent_v2, is_running, stop_agent,
     get_v2_state, get_v2_phase_display,
+    list_agent_branches,
 )
 
 inject_theme()
@@ -94,10 +95,18 @@ if agent_running:
     is_active = True
     status_val = 'RUNNING'
     status_color = COLOR_RUNNING
-elif status and status.get('phase') in ('all_done', None):
+elif status and status.get('phase') == 'all_done':
     is_active = False
-    status_val = 'DONE' if status.get('phase') == 'all_done' else 'IDLE'
-    status_color = COLOR_DONE if status_val == 'DONE' else COLOR_FAILED
+    status_val = 'DONE'
+    status_color = COLOR_DONE
+elif status and status.get('phase') == 'failed':
+    is_active = False
+    status_val = 'FAILED'
+    status_color = COLOR_FAILED
+elif status and status.get('phase') == 'completed':
+    is_active = False
+    status_val = 'DONE'
+    status_color = COLOR_DONE
 else:
     is_active = False
     status_val = 'IDLE'
@@ -148,20 +157,32 @@ if status and status.get('rate_limited'):
 
 # Phase progress bar (v2)
 if is_active and phases_done:
-    phase_labels = ['implement', 'verify', 'fix', 're-verify']
+    phase_labels = ['implement', 'review']
     progress_text = ' → '.join(
         f'**{p}**' if p == phase_name else f'~~{p}~~' if any(p in pd for pd in phases_done) else p
         for p in phase_labels
     )
     st.markdown(f'Progress: {progress_text}', unsafe_allow_html=True)
 
-# Live log
+# Live output + log
 if is_active:
+    live_output = get_live_output(50)
+    if live_output:
+        import html as _html
+        st.markdown('#### Live Agent Output')
+        st.markdown(
+            f'<div style="height:200px; overflow-y:auto; background:#1a1a2e; '
+            f'padding:10px; border-radius:6px; font-family:monospace; font-size:12px; '
+            f'white-space:pre-wrap; color:#e0e0e0;">{_html.escape(live_output)}</div>',
+            unsafe_allow_html=True,
+        )
     log_tail = get_log_tail(10)
     if log_tail:
         st.code(log_tail, language='text')
     if status and status.get('error'):
         st.error(f"Error: {status['error']}")
+elif status and status.get('result_summary'):
+    st.info(f"Last result: {status.get('result', '?')} — {status.get('result_summary', '')}")
 
 st.markdown('---')
 
@@ -362,7 +383,14 @@ st.markdown('---')
 lc1, lc2, lc3 = st.columns(3)
 max_tasks = lc1.number_input('Max tasks', min_value=1, max_value=20, value=5, key='max_tasks_v2')
 model_choice = lc2.selectbox('Model', ['sonnet', 'opus', 'haiku'], key='model_v2')
-lc3.markdown('')  # spacer
+
+# Base branch picker — iterate on previous agent work
+agent_branches = list_agent_branches()
+branch_options = ['main  (fresh start)'] + [
+    f"{b['name']}  ({b['date']}, {b['date_relative']})" for b in agent_branches
+]
+base_branch_choice = lc3.selectbox('Base branch', branch_options, key='base_branch_v2')
+base_branch = 'main' if base_branch_choice.startswith('main') else base_branch_choice.split('  (')[0]
 
 bc1, bc2, bc3 = st.columns(3)
 
@@ -375,7 +403,7 @@ with bc1:
             else:
                 ok, msg = launch_agent_v2(
                     freeform_task=text, max_tasks=int(max_tasks),
-                    model=model_choice,
+                    model=model_choice, base_branch=base_branch,
                 )
                 if ok:
                     st.success(msg)
@@ -386,6 +414,7 @@ with bc1:
             ok, msg = launch_agent_v2(
                 quadrant=st.session_state.get('batch_quadrant', 'eliminate'),
                 max_tasks=int(max_tasks), model=model_choice,
+                base_branch=base_branch,
             )
             if ok:
                 st.success(msg)
@@ -399,7 +428,7 @@ with bc1:
             else:
                 ok, msg = launch_agent_v2(
                     task_ids=ids, max_tasks=int(max_tasks),
-                    model=model_choice,
+                    model=model_choice, base_branch=base_branch,
                 )
                 if ok:
                     st.success(msg)

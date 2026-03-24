@@ -67,15 +67,16 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 ## Shell & Environment
 
-### E005 — Hebrew/Unicode paths fail in shell `cd`
+### E005 — Hebrew/Unicode paths fail in shell commands
 
 | | |
 |---|---|
-| **Bad** | `cd "/path/with/תואר שני!/..."` in zsh |
-| **Fix** | Use relative paths, or let the shell inherit cwd (don't `cd` at all) |
+| **Bad** | `cd "/path/with/תואר שני!/..."` or `sys.path.insert(0, '/path/with/תואר שני!/...')` built via string interpolation in subprocess/shell |
+| **Fix** | (1) Never `cd` into Hebrew paths — use absolute paths or inherit cwd. (2) In Python subprocesses, pass `cwd=` kwarg to `subprocess.run()` instead of shell `cd`. (3) For `sys.path.insert`, use `Path(__file__).resolve().parent` instead of string literals. (4) When building shell commands as strings, use `shlex.quote()` and test with the actual Hebrew path. |
 | **Grep** | *(not greppable — requires manual attention)* |
-| **Why** | zsh and bash mishandle multi-byte Hebrew characters in paths, especially when escaped. The `cd` command silently corrupts the path encoding. |
-| **Found in** | Bash tool calls during agent debugging |
+| **Why** | zsh/bash mishandle multi-byte Hebrew characters (`תואר שני!`) in paths — truncation, encoding corruption, or silent failure. This is especially bad when paths are interpolated into shell command strings (e.g., `f"cd '{path}' && python -c ..."`) where the Hebrew gets truncated mid-character. The overnight agent's verify step hits this: it builds a `sys.path.insert(0, '...')` command string that gets cut off at the Hebrew portion, causing false "IMPORT ERROR" failures even when the code is correct. |
+| **Found in** | Bash tool calls, agent v2 verify harness (`scripts/agent_v2/`), `overnight_agent_v1.py` test commands |
+| **Impact** | Agent tasks #160 and #161 both failed verification due to this false positive — the code was fine but the test harness couldn't handle the path. |
 
 ### E006 — CLAUDECODE env var blocks nested Claude sessions
 
