@@ -6,6 +6,23 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-24 — Graph review overhaul + agent work + validation
+
+| Hash | Summary |
+|------|---------|
+| `7bbe4a2` | Cherry-pick validation tab from overnight agent |
+| `958f50b` | Overnight agent self-upgrades: v2 architecture + agent_app improvements |
+| `3211e6d` | Fix NameError: remove fig_masked/fig_pval leftover references |
+| `7609139` | [AGENT] Task #0: validation tab improvements |
+| `2bc538a` | Agent work: validation improvements, docs, skills, daily log |
+| `52f720e` | **Graph review overhaul**: removals (A4/E5/D11), 15 fixes, max-LK framing (-98 lines net) |
+| `c7de572` | Add WORKING flags to all 15 verified graph functions |
+| `9395333` | End-of-conversation log: graph review session |
+| `818d892` | End-of-day docs: TODO, DOCUMENTATION.md, learnings |
+| **Tag** | `v260324-working` — working version after full graph review |
+
+---
+
 ## 2026-03-23 — Likelihood-only: KS removal, graph review, Sessions 1-3 fixes
 
 | Hash | Summary |
