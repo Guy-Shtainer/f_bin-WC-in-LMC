@@ -301,6 +301,7 @@ def _add_2d_heatmap(fig, row, col, x_grid, y_grid, z_2d,
     ), row=row, col=col)
 
 
+# WORKING — do not change this code (D14: Corner Plot)
 def _render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
                            ndim_mode, result, prefix, pal, use_cw=True):
     """Render N-parameter corner plot for Likelihood scoring."""
@@ -666,6 +667,7 @@ def _render_likelihood_stats_table(
 # Likelihood explanation (E7)
 # ---------------------------------------------------------------------------
 
+# WORKING — do not change this code (E7: LaTeX Methodology Explainer)
 def _render_likelihood_explanation(
     obs_delta_rv: np.ndarray,
     bin_edges: np.ndarray,

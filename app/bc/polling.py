@@ -109,6 +109,7 @@ def _render_heatmap_row(pairs, lhm):
                     use_container_width=True)
 
 
+# WORKING — do not change this code (B1: Live Heatmap, B2: Live σ/logPmax Profile)
 def _render_running_fragment(p: str) -> None:
     """Streamlit fragment that polls a running cadence job every 3s."""
     @st.fragment(run_every=3)

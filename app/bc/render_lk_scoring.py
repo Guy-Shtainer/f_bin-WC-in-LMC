@@ -90,6 +90,7 @@ def _compute_pooled_sim(obs_delta_rv: np.ndarray, result: dict) -> np.ndarray | 
 # Public entry point
 # ---------------------------------------------------------------------------
 
+# WORKING — do not change this code (D5a: Raw logL Heatmap, D9: 1D Slices, D10: 3D Surface)
 def render_lk_scoring_detail(
     lk_D_2d: np.ndarray,
     lk_p_2d: np.ndarray,

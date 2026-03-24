@@ -174,6 +174,7 @@ def render_lk_tab(p: str, ctx: dict, method_results: dict) -> None:
 # Likelihood expander -- primary heatmap + extra heatmaps + metrics + profiles
 # ---------------------------------------------------------------------------
 
+# WORKING — do not change this code (D1: Primary Heatmap, D4: Metric Cards)
 def _render_lk_expander(
     p_nd: np.ndarray,
     D_nd: np.ndarray | None,
@@ -470,6 +471,7 @@ def _render_lk_expander(
     except ImportError:
         _info = None
 
+    # WORKING — do not change this code (D15: Summary Table with Interpolation)
     # -- Per-method best-fit summary table -------------------------
     if _info is not None:
         import pandas as pd

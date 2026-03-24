@@ -144,6 +144,7 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
 # CDF Sanity Check (cadence tabs only)
 # ---------------------------------------------------------------------------
 
+# WORKING — do not change this code (D18: CDF Sanity Check)
 def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
                                 obs_delta_rv, period_model, result,
                                 p_prefix: str) -> None:
@@ -229,6 +230,7 @@ def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
 # Model Explorer -- interactive grid browser
 # ---------------------------------------------------------------------------
 
+# WORKING — do not change this code (D17: Model Explorer)
 def _render_lk_model_explorer(
     result: dict, display_name: str,
     fbin_g: np.ndarray, x_g: np.ndarray, x_name: str, x_label: str,

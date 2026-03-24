@@ -118,6 +118,7 @@ def _method_best_and_hdi(
     return {'best_idx': best_idx, 'best_vals': best_vals,
             'best_score': best_score, 'hdi': hdi}
 
+# WORKING — do not change this code (A1: Summary Table)
 def _render_method_summary_section(
     result: dict, fbin_g: np.ndarray, x_g: np.ndarray,
     extra_grids: list[tuple[str, np.ndarray]] | None = None,
@@ -244,6 +245,7 @@ def _render_method_summary_section(
         'Best-fit parameters and 68% HDI from likelihood scoring.')
     return method_results
 
+# WORKING — do not change this code (A2: CDF Comparison)
 def _render_all_methods_cdf(
     result: dict, method_results: dict,
     fbin_g: np.ndarray, x_g: np.ndarray, prefix: str,
@@ -356,6 +358,7 @@ def _build_extra_grids(ctx: dict) -> list[tuple[str, np.ndarray]] | None:
         extras.append(('logPmax', ctx['logPmax_g']))
     return extras if extras else None
 
+# WORKING — do not change this code (A3: Max Likelihood vs σ/logPmax)
 def render_sigma_scan_chart(ctx: dict) -> None:
     """Show max -logL vs σ/logPmax: 1D line or 2D heatmap depending on grids.
 
@@ -529,6 +532,7 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
         f'Amber shading shows missed binaries; blue shading shows '
         f'singles scattered above each threshold.')
 
+# WORKING — do not change this code (A6: Orbital Histograms)
 def render_orbital_histograms(p, gap_sim, bin_detected_mask, bin_missed_mask,
                               ana_fbin, ana_x_val, x_label, thresh_dRV,
                               detected_bin_count, missed_count, has_case_AB=False,
