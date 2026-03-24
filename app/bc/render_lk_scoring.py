@@ -214,7 +214,8 @@ def render_lk_scoring_detail(
             'height': height,
             'width': width,
         })
-        st.plotly_chart(fig_raw, use_container_width=True)
+        _raw_slot = st.empty()
+        _raw_slot.plotly_chart(fig_raw, use_container_width=True)
         st.caption('Lower −log L = better fit. All models shown.')
 
     if _has_right_panel:
@@ -365,8 +366,8 @@ def render_lk_scoring_detail(
         n_neighbors_x=_nn_x, n_neighbors_y=_nn_y,
     )
 
-    # Add gold star to masked heatmap (axes swapped: x=y_grid, y=x_grid)
-    fig_masked.add_trace(go.Scatter(
+    # Add gold star to raw heatmap (axes swapped: x=y_grid, y=x_grid)
+    fig_raw.add_trace(go.Scatter(
         x=[best_y], y=[best_x], mode='markers',
         marker=dict(symbol='star', size=16, color=_METHOD_COLOR,
                     line=dict(width=1, color='black')),
@@ -377,7 +378,7 @@ def render_lk_scoring_detail(
             f'{_STAT_NAME}={best_S:.2f}<extra></extra>'
         ),
     ))
-    _masked_slot.plotly_chart(fig_masked, use_container_width=(width is None))
+    _raw_slot.plotly_chart(fig_raw, use_container_width=True)
 
     st.success(
         f'**Parabolic minimum ({_STAT_DISPLAY}):** {x_label} = {best_x:.4f}, '
@@ -805,12 +806,8 @@ def render_lk_scoring_detail(
                 f'<extra>Interpolated best</extra>'
             ),
         )
-        fig_masked.add_trace(_star_trace)
-        _masked_slot.plotly_chart(
-            fig_masked, use_container_width=(width is None))
-        _fig_pval.add_trace(_star_trace)
-        _pval_slot.plotly_chart(
-            _fig_pval, use_container_width=(width is None))
+        fig_raw.add_trace(_star_trace)
+        _raw_slot.plotly_chart(fig_raw, use_container_width=True)
 
     # Store exclusion masks in session_state for downstream sections
     st.session_state[f'{prefix}_exc_mask_2d'] = _exc_mask_2d
