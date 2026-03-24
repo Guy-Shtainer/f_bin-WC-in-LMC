@@ -1167,4 +1167,105 @@ checkpoint resume code.
 
 ---
 
-*Last updated: 2026-03-22*
+### 2026-03-24 — Graph review overhaul: maximum likelihood framing, 15 fixes, 4 removals
+
+*Systematic graph review.* All 21 graphs in the bias correction page were reviewed one-by-one
+with the user in rendering order (top to bottom). Each graph was assessed for correctness,
+clarity, and completeness. Seven graphs passed without changes, eleven required modifications,
+and four were removed as redundant or superseded.
+
+*Maximum likelihood convention.* The entire bias correction analysis page was switched from
+a "minimum −log L" convention (where lower scores indicate better fits) to standard maximum
+likelihood framing (where higher likelihood indicates better fits). This affects all user-facing
+labels, success messages, and captions. The internal mathematical implementation (negation for
+parabolic fitting) was preserved unchanged, as it is standard practice for gradient-based
+optimisation. Function names (`_parabolic_min_*`) were retained to avoid call-site churn.
+
+*Removed graphs.* Four graphs were eliminated: A4 (period distribution histogram, redundant
+with the log₁₀P panel in the A6 9-panel orbital histograms), E5 (CDF with bin overlay,
+redundant with the A2 CDF comparison at the top), D11 (3D/4D quadratic projections, removed
+to simplify the analysis to f_bin×π interpolation only), and D16 (re-simulation at interpolated
+best-fit, folded into D15 where it runs automatically after interpolation). This removed
+approximately 320 lines of rendering code.
+
+*Summary table enhancements (A1).* The summary table now includes a logP_max column (conditional
+on the parameter being scanned) alongside the existing σ_single column, plus interpolated
+best-fit values from the parabolic fitting when available. This gives a complete parameter
+overview in one table.
+
+*CDF comparison fix (A2).* The observed ΔRV CDF line was changed from black to white for
+dark-mode visibility. A gold annotation box was added showing the best-fit model's ln L score,
+σ_single, and logP_max values, giving immediate context for the plotted CDF.
+
+*Max likelihood heatmap relocation (A3).* The σ_single × logP_max maximum likelihood chart
+was moved from the shared section (visible before scoring selection) to the Likelihood Analysis
+section where it logically belongs. The chart now uses unnormalized logL_raw values instead of
+normalised likelihood, and the height was increased to 450 pixels for better readability.
+
+*Live 2D heatmap (B2).* When both σ_single and logP_max are scanned simultaneously, the live
+polling profile now displays a true 2D heatmap (σ × logP, max likelihood per grid point) instead
+of two separate 1D line charts. The 2D data is computed in the cadence runner
+(`live_sigma_logPmax_2d`) and persisted for the final post-completion display.
+
+*Slider UX improvements (D1, D17).* The σ_single and logP_max sliders above the primary
+heatmap now display captions with the best-fit values and include a green "Reset to best"
+button. The Model Explorer sliders received the same treatment, plus a score delta comparison
+(current ln L vs best ln L) shown as a Streamlit metric delta.
+
+*Right panel fix (D5a).* The σ × logP_max maximum likelihood right panel was not rendering
+because `logPmax_grid` was only passed to the scoring detail when `sigma_grid.size <= 1`.
+The fix ensures logPmax_grid is always passed when it has >1 values.
+
+*1D slice defaults (D9).* The default fit selection mode was changed from Height-based (factor
+2.0) to Range-based (fraction 0.20), providing more stable parabolic fits across typical grid
+resolutions.
+
+*Interpolation key mismatch fix (D15).* The best-fit summary table was not showing interpolated
+results because it checked `session_state[f'{prefix}_interp']` while the scoring code stored
+at `session_state[f'{prefix}_likelihood_analysis_interp']`. The key was corrected.
+
+*CDF sanity check fix (D18).* The cadence CDF sanity check (5 random draws at best-fit) was
+not rendering because an extra empty dictionary `{}` was erroneously passed as an argument,
+causing the `result` parameter to receive `{}` instead of the actual result dict. The fix
+removed the spurious argument.
+
+*Methodology explainer (E7).* A "bad example" section was added showing the multinomial
+log-likelihood score for a uniform model (equal probability across all bins), contrasted with
+the existing good example. This helps the user understand what distinguishes a well-fitting
+model from a poor one.
+
+*Code protection.* Fifteen `# WORKING — do not change this code` flags were added across 6
+files, marking every verified graph function. These flags prevent accidental modification during
+future bug fixes, per the project's five mandatory pre-fix blocks.
+
+**Key results:**
+- 21 graphs reviewed, 7 passed, 11 fixed, 4 removed
+- Net code reduction: −98 lines (370 added, 468 removed) across 9 files
+- 15 WORKING flags protecting verified graph functions
+- 3 bugs fixed: D5a right panel, D15 interp key, D18 extra argument
+
+**Methodology notes for paper:**
+- The multinomial likelihood scoring is now presented in maximum likelihood framing throughout,
+  consistent with standard statistical practice. The paper should describe maximising the
+  log-likelihood rather than minimising its negation.
+- The period distribution (A4) was deemed redundant with the log₁₀P panel in the orbital
+  histograms, supporting a streamlined presentation in the paper.
+
+**Decisions:**
+- Removed D11 3D/4D projections — simplified to 2D f_bin×π interpolation at best σ/logP
+- Maximum likelihood framing globally (labels only, math unchanged)
+- True 2D live heatmap in polling (not side-by-side 1D charts)
+
+**Bugs found and fixed:**
+- D5a right panel not rendering (logPmax_grid conditionally excluded — logic bug)
+- D15 interpolation key mismatch (prefix naming inconsistency)
+- D18 extra `{}` argument (call-site typo)
+- None added to COMMON_ERRORS.md (all one-off, not greppable patterns)
+
+**Open questions:**
+- Full visual app test deferred to 2026-03-25 (all changes compile, not yet run in browser)
+- K-S scoring graphs not reviewed yet (only Likelihood reviewed this session)
+
+---
+
+*Last updated: 2026-03-24*
