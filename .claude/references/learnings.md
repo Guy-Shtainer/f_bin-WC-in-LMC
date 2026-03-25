@@ -10,7 +10,10 @@ Rules are NEVER deleted — only archived when the underlying code/pattern is ve
 - **Pin-point fixes vs systemic issues**: When the user describes a systemic problem, don't propose a narrow fix. Listen for the broader pattern they're describing. E.g., "why is the agent dumb" → the issue is the pipeline architecture, not one Hebrew path bug. (last_triggered: 2026-03-24)
 
 ### Context & Memory
-- **Update GRAPHS_PER_METHOD.md + FEATURES.md BEFORE code changes**: These are the regression checklists. Update them first with user decisions (KEEP/REMOVE/MODIFY/WORKING), then implement. Always compare after changes. (last_triggered: 2026-03-24)
+- **Never claim code is fixed without reading it**: User caught me claiming A7 was updated 4 times when it wasn't — `model_type='cadence_dsilva'` didn't match `'dsilva'` so the old code path ran. Always verify the ACTUAL call path, not just the edited function. (last_triggered: 2026-03-25)
+- **Reverse-audit: read code → compare to MD, not MD → trust memory**: When verifying, read the actual code fresh and describe what it does NOW, then compare. Don't just re-read the MD comments and claim they match. (last_triggered: 2026-03-25)
+- **Never ignore user commands**: When user says "search online for X" or "do Y", do it. Don't skip or substitute your own approach. (last_triggered: 2026-03-25)
+- **Update GRAPHS_PER_METHOD.md + FEATURES.md with EVERY code change**: These are the regression checklists. Comments can only be removed after user review approves the graph. (last_triggered: 2026-03-25)
 - **Verify current app state, don't trust stale memory**: Before writing about app features (tabs, scoring methods, UI), check the actual code. Memory entries about app state decay fast. (last_triggered: 2026-03-23)
 - **Keep code comments minimal**: Don't bloat code files with descriptions. `# WORKING — do not change this code` is sufficient. Put context about what code does in reference files, not inline comments. (last_triggered: 2026-03-23)
 - **Don't trim upstream skills**: Skill files from Anthropic's GitHub (daymade-skill-creator, anthropic-skill-creator) are not ours to trim. At most update from upstream. (last_triggered: 2026-03-23)
@@ -24,7 +27,8 @@ Rules are NEVER deleted — only archived when the underlying code/pattern is ve
 - **`# WORKING` flags**: Place `# WORKING — do not change this code` above verified working code. Never modify flagged code unless user explicitly asks. If you need to understand what flagged code does, check `.claude/references/working-code-map.md` instead of guessing. (last_triggered: 2026-03-22)
 
 ### Testing
-- **Run /error-check immediately after edits**: Don't summarize or mark tasks done until /error-check has run. It's part of the task, not a follow-up step. User had to remind twice on 2026-03-24. (last_triggered: 2026-03-24)
+- **Run /error-check immediately after edits**: Don't summarize or mark tasks done until /error-check has run. It's part of the task, not a follow-up step. User had to remind multiple times. (last_triggered: 2026-03-25)
+- **py_compile is NOT sufficient**: Must run pyflakes (catches NameError/undefined vars) + `scripts/test_render.py` (loads real .npz, mocks Streamlit, calls render functions). User caught 3 runtime errors that py_compile missed. (last_triggered: 2026-03-25)
 - **Real tests, not just py_compile**: edit → delete .pyc → functional test → py_compile. (last_triggered: 2026-03-22)
 - **Test Streamlit renders**: Call render functions with mock `obs_data` in bare mode. Only Exceptions are failures. (last_triggered: 2026-03-18)
 - **Parameter verification**: New functions replicating existing computations must receive IDENTICAL params. (last_triggered: 2026-03-15)

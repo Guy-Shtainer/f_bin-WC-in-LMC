@@ -1266,6 +1266,26 @@ future bug fixes, per the project's five mandatory pre-fix blocks.
 - Full visual app test deferred to 2026-03-25 (all changes compile, not yet run in browser)
 - K-S scoring graphs not reviewed yet (only Likelihood reviewed this session)
 
+### 2026-03-25: Graph review round 2 — page layout overhaul + 9 graphs approved
+
+**What was done:** Systematic visual review of all bias correction graphs with the user, reviewing each graph in exact rendering order. Applied 16+ fixes across 8 files. Major page reorganisation: all 4 likelihood heatmaps (normalized and unnormalized, f_bin×π and σ×logP_max) moved to the top of the results section as the primary visualisation. These render live during simulation runs (2-column layout for the normalised pair) and persist after completion showing the best-fit result.
+
+**Key changes:**
+- Summary table (A1): fixed σ_single and logP_max columns showing NaN (grid dimension ordering bug in `_build_extra_grids`), moved score to rightmost column as raw ln L instead of normalised likelihood (which was always 1.0), removed the single-method Agreement column.
+- CDF comparison (A2): observed line changed from white to lightblue for visibility, gold annotation box removed (parameters moved into legend label including σ and logP_max), likelihood bin toggle added with light grey vertical lines, right-side truncation fixed with margin.
+- Binary fraction vs threshold (A5): added green dashed "real threshold" vertical line at the crossing point where intrinsic f_bin meets the observed fraction curve.
+- Methodology equations (A7): discovered that `model_type='cadence_dsilva'` was falling through to the old K-S methodology text from helpers.py instead of the updated likelihood version — fixed the condition to include cadence_dsilva.
+- Model explorer (D17): replaced single metric with dual D4-style boxes (current vs global best), removed CDF error band, added 4 interactive heatmaps responding to explorer sliders.
+- CDF sanity check (D18): fixed `simulate_delta_rv_sample` call signature (was using non-existent keyword arguments, silently caught by bare `except`).
+
+**Error-check improvements:** Installed pyflakes for static undefined-variable detection. Created `scripts/test_render.py` runtime render test that loads a real .npz result, mocks Streamlit widgets with smart defaults, and calls all rendering functions end-to-end. This caught a shape-mismatch bug (4D→2D squeeze) that py_compile could not detect. Added both tools to CLAUDE.md Rule #1 as mandatory.
+
+**LaTeX labels:** Applied HTML subscript notation (`f<sub>bin</sub>`) and Unicode symbols (π, σ, log₁₀) across all Plotly chart titles and axis labels. Streamlit table headers remain plain text as `st.table` does not render HTML.
+
+**9 graphs approved and locked as WORKING:** H1 (norm f_bin×π), H2 (norm σ×logP), H3 (unnorm f_bin×π), H4 (unnorm σ×logP), A1 (summary table), A2+E6 (CDF + per-bin table), A5 (binary fraction), A6 (orbital histograms), A7 (methodology).
+
+**Open questions:** Review continues from D4 onwards. The unnormalized heatmaps are not available as live data during runs (runner does not store logL_raw progressively) — deferred.
+
 ---
 
-*Last updated: 2026-03-24*
+*Last updated: 2026-03-25*
