@@ -6,6 +6,18 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-25 — Graph review round 2 + page layout overhaul
+
+| Hash | Summary |
+|------|---------|
+| `afe0732` | Graph review round 2: 9 graphs approved, page layout overhaul (16+ fixes, 4 top heatmaps, LaTeX labels) |
+| `481c6f7` | Add runtime render test + pyflakes to error-check pipeline |
+| `89f4b5f` | End-of-day docs: TODO #162/#163, DOCUMENTATION.md, daily log, learnings |
+
+**Tag:** `v260325-working` — 9/17 graphs approved, page layout overhaul, error-check upgrade
+
+---
+
 ## 2026-03-24 — Graph review overhaul + agent work + validation
 
 | Hash | Summary |
