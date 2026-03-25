@@ -1,5 +1,8 @@
 # CLAUDE.md
 
+**RULE #1: After ANY code edit, run `/error-check` immediately. No exceptions.
+This includes: pyflakes static scan + `conda run -n guyenv python scripts/test_render.py` runtime test with real data. py_compile alone is NOT sufficient.**
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 For detailed architecture, plot styles, and learnings, see `.claude/references/`.
 
