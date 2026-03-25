@@ -203,7 +203,7 @@ def _render_cvm_1d_plot(col, t_grid, S_grid, label, best_t, best_S,
             line=dict(color='#E25A53', width=2), name='Parabolic fit'))
     fig.add_trace(go.Scatter(
         x=[best_t], y=[float(_disp(np.array([best_S]))[0])], mode='markers',
-        marker=dict(symbol='star', size=14, color='#DAA520',
+        marker=dict(symbol='star', size=14, color='#00CC66',
                     line=dict(width=1, color='black')),
         name='Minimum'))
     fig.update_layout(**{**_theme, 'title': dict(text=f'{_y_title} vs {label}'),

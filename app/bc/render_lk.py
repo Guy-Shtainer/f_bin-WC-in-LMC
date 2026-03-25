@@ -22,8 +22,6 @@ from shared import (
     find_best_grid_point, make_heatmap_fig,
     PLOTLY_THEME, get_palette,
 )
-from bc.render_shared import render_sigma_scan_chart
-
 # Keys hardcoded for Likelihood
 _METHOD_KEY = 'likelihood'
 _DISPLAY_NAME = 'Likelihood'
@@ -148,8 +146,8 @@ def render_lk_tab(p: str, ctx: dict, method_results: dict) -> None:
     p_nd = _ensure_nd(p_nd, ctx)
     D_nd = _ensure_nd(D_nd, ctx)
 
-    # A3: Max likelihood vs σ/logPmax (moved here from shared section)
-    render_sigma_scan_chart(ctx)
+    # A3: Max likelihood vs σ/logPmax — now rendered inside D5a right panel
+    # (render_lk_scoring.py handles it)
 
     _render_lk_expander(
         p_nd=p_nd,
@@ -185,9 +183,9 @@ def _render_lk_expander(
     height: int = 520,
     width: int | None = None,
     use_cw: bool = True,
-    x_label: str = 'pi',
+    x_label: str = 'π',
     x_name: str = 'pi',
-    x_display_label: str = 'pi (period power-law index)',
+    x_display_label: str = 'π (period power-law index)',
     ndim_mode: str = 'dsilva',
     disp_outer_slices: tuple[int, ...] | None = None,
     method_results: dict | None = None,
@@ -230,47 +228,39 @@ def _render_lk_expander(
     if _has_lp_slider:
         _default_lp = int(_tmp_best_global[0])
 
-    # Reset button
-    _sig_key = f'{prefix}_{_METHOD_KEY}_sig_slider'
-    _lp_key = f'{prefix}_{_METHOD_KEY}_lp_slider'
+    # -- Top sliders REMOVED — D1 always shows best-fit slice ------
+    # Sliders moved to Model Explorer (render_lk_explorer.py)
+    _user_sig_idx = _default_sig if _has_sig_slider else None
+    _user_lp_idx = _default_lp if _has_lp_slider else None
+
+    # Show best-fit caption
     if _has_sig_slider or _has_lp_slider:
-        _sl_cols = st.columns([0.7, 0.3])
-        with _sl_cols[1]:
-            if st.button('🟢 Reset to best', key=f'{prefix}_{_METHOD_KEY}_reset_sliders'):
-                if _sig_key in st.session_state:
-                    del st.session_state[_sig_key]
-                if _lp_key in st.session_state:
-                    del st.session_state[_lp_key]
-                st.rerun()
+        _best_parts = []
+        if _has_sig_slider:
+            _best_parts.append(f'σ_single = {_sigma_g_sl[_default_sig]:.1f} km/s')
+        if _has_lp_slider:
+            _best_parts.append(f'logP_max = {_logPmax_g_sl[_default_lp]:.2f}')
+        st.caption(f'Showing best-fit slice: {", ".join(_best_parts)}')
 
-    if _has_sig_slider:
-        _best_sig_val = _sigma_g_sl[_default_sig]
-        _user_sig_idx = st.select_slider(
-            f'σ_single slice ({_DISPLAY_NAME})',
-            options=list(range(len(_sigma_g_sl))),
-            format_func=lambda i: f'{_sigma_g_sl[i]:.1f} km/s',
-            value=_default_sig,
-            key=_sig_key,
-        )
-        st.caption(f'Best: σ_single = **{_best_sig_val:.1f}** km/s')
-
-    # -- logPmax slider (any mode with logPmax scan) ---------------
-    _user_lp_idx = None
-    if _has_lp_slider:
-        _best_lp_val = _logPmax_g_sl[_default_lp]
-        _user_lp_idx = st.select_slider(
-            f'logP_max slice ({_DISPLAY_NAME})',
-            options=list(range(len(_logPmax_g_sl))),
-            format_func=lambda i: f'{_logPmax_g_sl[i]:.2f}',
-            value=_default_lp,
-            key=_lp_key,
-        )
-        st.caption(f'Best: logP_max = **{_best_lp_val:.2f}**')
-
-    # -- Slice down to 2D: [fbin, x] ------------------------------
+    # -- Slice down to 2D: [fbin, x] at best-fit ------------------
     if _user_lp_idx is not None:
         p_2d = p_nd[_user_lp_idx]
         D_2d = D_nd[_user_lp_idx] if D_nd is not None else None
+        if _user_sig_idx is not None and p_2d.ndim > 2:
+            p_2d = p_2d[_user_sig_idx]
+            D_2d = D_2d[_user_sig_idx] if D_2d is not None else None
+        # Squeeze remaining size-1 dimensions (e.g. sigma=1)
+        while p_2d.ndim > 2:
+            for ax in range(p_2d.ndim):
+                if p_2d.shape[ax] == 1:
+                    p_2d = np.squeeze(p_2d, axis=ax)
+                    if D_2d is not None:
+                        D_2d = np.squeeze(D_2d, axis=ax)
+                    break
+            else:
+                p_2d = p_2d[0]
+                if D_2d is not None:
+                    D_2d = D_2d[0]
     elif _user_sig_idx is not None:
         if ndim_mode == 'dsilva' and p_nd.ndim == 4:
             _lp_s = disp_outer_slices[0] if disp_outer_slices else 0
@@ -340,21 +330,7 @@ def _render_lk_expander(
         g_fb = float(fbin_g[global_best_idx[0]])
         g_x = float(x_g[global_best_idx[1]])
 
-    # -- D1: Primary heatmap --------------------------------------
-    fig_hm = make_heatmap_fig(
-        p_2d, fbin_g, x_g,
-        title=f'{_DISPLAY_NAME} -- {_SCORE_LABEL}',
-        show_d=False,
-        height=height, width=width,
-        x_label=x_display_label,
-        x_name=x_name,
-        scoring_label=_DISPLAY_NAME,
-        colorbar_title_override='Normalized Likelihood',
-    )
-    st.plotly_chart(fig_hm, use_container_width=use_cw,
-                    key=f'{prefix}_{_METHOD_KEY}_hm')
-
-    # -- D2-D3: REMOVED (covered by A3 σ×logPmax heatmap upgrade) --
+    # -- D1 heatmaps MOVED to top (_render_top_heatmaps in cadence.py) --
 
     # -- D4: Best-fit metrics -------------------------------------
     _is_2d_mode = ndim_mode in ('langer', 'cadence_langer') or p_nd.ndim <= 2
@@ -440,7 +416,7 @@ def _render_lk_expander(
             lk_p_2d=p_2d,
             x_grid=fbin_g,
             y_grid=x_g,
-            x_label='f_bin',
+            x_label='f<sub>bin</sub>',
             y_label=x_label,
             sigma_grid=_sigma_g_fit if _sigma_g_fit.size > 1 else None,
             logPmax_grid=(
@@ -471,8 +447,7 @@ def _render_lk_expander(
     except ImportError:
         _info = None
 
-    # WORKING — do not change this code (D15: Summary Table with Interpolation)
-    # -- Per-method best-fit summary table -------------------------
+    # -- D15: Per-method best-fit summary table with auto re-sim -----
     if _info is not None:
         import pandas as pd
         st.divider()
@@ -489,11 +464,45 @@ def _render_lk_expander(
         _interp_key = f'{prefix}_{_METHOD_KEY}_analysis_interp'
         _interp = st.session_state.get(_interp_key)
 
+        # N_sets for re-sim (changing + Enter auto-triggers re-sim)
+        _n_sets_resim = st.number_input(
+            'N_sets for re-simulation at interpolated best-fit',
+            min_value=100, max_value=50000, value=1000, step=100,
+            key=f'{prefix}_{_METHOD_KEY}_n_sets_resim',
+        )
+
+        # Auto re-sim at interpolated point if available
+        _resim_score = None
+        if _interp is not None:
+            try:
+                from wr_bias_simulation import (
+                    DEFAULT_DRV_BIN_EDGES, multinomial_log_likelihood,
+                )
+                from bc.render_lk_explorer import _me_cdf_band
+                _rs_fb = float(_interp.get('f_bin', 0.5))
+                _rs_xv = float(_interp.get('pi', _interp.get('sigma',
+                               _interp.get('y_val', 0.0))))
+                _rs_sig = float(_bv_s.get('sigma',
+                                result.get('sigma_meas', 5.0)))
+                _rs_be = (np.asarray(result['bin_edges'])
+                          if 'bin_edges' in result else DEFAULT_DRV_BIN_EDGES)
+                _rs_lk_be = (np.asarray(result['likelihood_bin_edges'])
+                             if 'likelihood_bin_edges' in result else _rs_be)
+                _, _, _, _rs_pooled = _me_cdf_band(
+                    _rs_fb, _rs_xv, _rs_sig,
+                    float(result.get('sigma_meas', 3.0)),
+                    tuple(_rs_be.tolist()), n_sets=int(_n_sets_resim))
+                _rs_obs = np.asarray(result.get('obs_delta_rv', []))
+                _resim_score = float(multinomial_log_likelihood(
+                    _rs_obs, _rs_pooled, _rs_lk_be))
+            except Exception:
+                _resim_score = None
+
         _sum_rows = []
         _row_fb = {
-            'Parameter': 'f_bin',
+            'Parameter': 'f<sub>bin</sub>',
             'Best (grid)': f"{_bv_s.get('fbin', 0):.4f}",
-            'Mode +/- HDI68': _fmt_hdi_s('fbin', '.4f'),
+            'Mode ± HDI68': _fmt_hdi_s('fbin', '.4f'),
         }
         if _interp and 'f_bin' in _interp:
             _row_fb['Interpolated'] = f"{_interp['f_bin']:.4f}"
@@ -501,9 +510,9 @@ def _render_lk_expander(
 
         if x_name in _bv_s:
             _row_x = {
-                'Parameter': x_label,
+                'Parameter': 'π' if x_name == 'pi' else x_label,
                 'Best (grid)': f"{_bv_s[x_name]:.3f}",
-                'Mode +/- HDI68': _fmt_hdi_s(x_name, '.3f'),
+                'Mode ± HDI68': _fmt_hdi_s(x_name, '.3f'),
             }
             if _interp:
                 _iv = _interp.get('pi', _interp.get('sigma',
@@ -515,52 +524,34 @@ def _render_lk_expander(
 
         if 'sigma' in _bv_s and x_name != 'sigma':
             _row_sig = {
-                'Parameter': 'sigma_single (km/s)',
+                'Parameter': 'σ_single (km/s)',
                 'Best (grid)': f"{_bv_s['sigma']:.2f}",
-                'Mode +/- HDI68': _fmt_hdi_s('sigma', '.2f'),
+                'Mode ± HDI68': _fmt_hdi_s('sigma', '.2f'),
             }
-            if _interp and 'sigma' in _interp:
-                _row_sig['Interpolated'] = f"{_interp['sigma']:.2f}"
+            # σ is NOT interpolated — comes from grid best
             _sum_rows.append(_row_sig)
 
         if 'logPmax' in _bv_s:
             _row_lp = {
-                'Parameter': 'logP_max',
+                'Parameter': 'log₁₀(P_max)',
                 'Best (grid)': f"{_bv_s['logPmax']:.2f}",
-                'Mode +/- HDI68': _fmt_hdi_s('logPmax', '.2f'),
+                'Mode ± HDI68': _fmt_hdi_s('logPmax', '.2f'),
             }
-            if _interp and 'logPmax' in _interp:
-                _row_lp['Interpolated'] = f"{_interp['logPmax']:.2f}"
+            # logPmax is NOT interpolated — comes from grid best
             _sum_rows.append(_row_lp)
 
         _row_score = {
             'Parameter': _SCORE_LABEL,
             'Best (grid)': f"{_info['best_score']:.6f}",
-            'Mode +/- HDI68': '--',
+            'Mode ± HDI68': '--',
         }
         if _interp and 'S' in _interp:
             _row_score['Interpolated'] = f"{_interp['S']:.6f}"
+        if _resim_score is not None:
+            _row_score['Re-sim'] = f"{_resim_score:.6f}"
         _sum_rows.append(_row_score)
 
         st.table(pd.DataFrame(_sum_rows))
-
-        # N_sets chooser for re-simulation at interpolated best-fit
-        _n_sets_resim = st.number_input(
-            'N_sets for re-simulation at interpolated best-fit',
-            min_value=100, max_value=50000, value=1000, step=100,
-            key=f'{prefix}_{_METHOD_KEY}_n_sets_resim',
-        )
-
-        # -- D16: Re-simulate at interpolated best-fit ----------------
-        if _interp is not None:
-            try:
-                from bc.render_lk_explorer import _render_lk_resim_interp
-                _render_lk_resim_interp(
-                    _interp, result, x_label,
-                    pfx=f'{prefix}_{_METHOD_KEY}',
-                )
-            except ImportError:
-                pass
 
     # -- Model Explorer --------------------------------------------
     _obs_drv_me = result.get('obs_delta_rv')

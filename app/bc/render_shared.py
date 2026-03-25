@@ -123,7 +123,7 @@ def _render_method_summary_section(
     result: dict, fbin_g: np.ndarray, x_g: np.ndarray,
     extra_grids: list[tuple[str, np.ndarray]] | None = None,
     prefix: str = 'ds', x_name: str = 'pi',
-    x_label: str = 'pi', ndim_mode: str = 'dsilva',
+    x_label: str = 'π', ndim_mode: str = 'dsilva',
 ) -> dict:
     """Render a comparison table of all scoring methods.
     Returns method_results dict mapping method_key -> {best_vals, hdi, ...}.
@@ -202,7 +202,6 @@ def _render_method_summary_section(
             '68% HDI f_bin': _fmt_hdi_cell('fbin', '.4f'),
             f'Best {x_label}': f"{bv.get(x_name, 0):.3f}",
             f'68% HDI {x_label}': _fmt_hdi_cell(x_name, '.3f'),
-            'Score (best)': f"{info['best_score']:.6f}",
         }
         if _has_sigma_col:
             row['Best σ_single'] = f"{bv.get('sigma', 0):.2f}"
@@ -218,26 +217,20 @@ def _render_method_summary_section(
             if x_name in _interp or x_label in _interp:
                 _ix = _interp.get(x_name, _interp.get(x_label, 0))
                 row[f'Interp {x_label}'] = f"{_ix:.3f}"
+        # Raw logL score (rightmost column) — NOT normalized
+        _raw_logL = result.get('logL_raw')
+        if _raw_logL is not None:
+            _raw_arr = np.asarray(_raw_logL, dtype=float)
+            if np.any(np.isfinite(_raw_arr)):
+                row['ln L (raw)'] = f"{float(np.nanmax(_raw_arr)):.2f}"
+            else:
+                row['ln L (raw)'] = '--'
+        else:
+            row['ln L (raw)'] = f"{info['best_score']:.6f}"
         rows.append(row)
 
     if not rows:
         return method_results
-
-    # Agreement column
-    for i, row in enumerate(rows):
-        mk_i = SCORING_METHODS[i][0]
-        if mk_i not in method_results:
-            row['Agreement'] = '--'; continue
-        best_fb_i = method_results[mk_i]['best_vals'].get('fbin', np.nan)
-        in_all = True
-        for mk_j, info_j in method_results.items():
-            if mk_j == mk_i:
-                continue
-            lo_j = info_j['hdi'].get('fbin', (0, 0, 0))[1]
-            hi_j = info_j['hdi'].get('fbin', (0, 0, 0))[2]
-            if not (lo_j <= best_fb_i <= hi_j):
-                in_all = False; break
-        row['Agreement'] = 'Yes' if in_all else 'No'
 
     st.markdown('#### Summary Table')
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -249,7 +242,7 @@ def _render_method_summary_section(
 def _render_all_methods_cdf(
     result: dict, method_results: dict,
     fbin_g: np.ndarray, x_g: np.ndarray, prefix: str,
-    x_name: str = 'pi', x_label: str = 'pi',
+    x_name: str = 'pi', x_label: str = 'π',
 ) -> None:
     """CDF comparison: observed vs best-fit model from each scoring method."""
     obs_drv = result.get('obs_delta_rv')
@@ -273,7 +266,7 @@ def _render_all_methods_cdf(
     fig_cdf = go.Figure()
     fig_cdf.add_trace(go.Scatter(
         x=_obs_x, y=_obs_y, mode='lines', name='Observed',
-        line=dict(color='white', width=2.5)))
+        line=dict(color='lightblue', width=2.5)))
 
     _n_cdf_sets = 100
     for mk, info in method_results.items():
@@ -301,9 +294,13 @@ def _render_all_methods_cdf(
             _my = np.concatenate([[0.0], _med])
             _loy = np.concatenate([[0.0], _lo])
             _hiy = np.concatenate([[0.0], _hi])
-            _lbl = f'{_mname} (f_bin={fb:.3f}'
+            _lbl = f'{_mname} (f<sub>bin</sub>={fb:.3f}'
             if x_name in bv:
-                _lbl += f', {x_label}={bv[x_name]:.2f}'
+                _lbl += f', π={bv[x_name]:.2f}' if x_name == 'pi' else f', {x_label}={bv[x_name]:.2f}'
+            if 'sigma' in bv and bv['sigma'] != 0:
+                _lbl += f', σ={bv["sigma"]:.1f}'
+            if 'logPmax' in bv and bv['logPmax'] != 0:
+                _lbl += f', logP<sub>max</sub>={bv["logPmax"]:.2f}'
             _lbl += ')'
             fig_cdf.add_trace(go.Scatter(
                 x=np.concatenate([_mx, _mx[::-1]]),
@@ -317,28 +314,30 @@ def _render_all_methods_cdf(
         except Exception:
             pass
 
-    # Annotate best-fit model parameters
-    if method_results:
-        _best_mk = max(method_results, key=lambda k: method_results[k]['best_score'])
-        _best_info = method_results[_best_mk]
-        _bv_ann = _best_info['best_vals']
-        _ann_parts = [f"lnL = {_best_info['best_score']:.2f}"]
-        if 'sigma' in _bv_ann and _bv_ann['sigma'] != 0:
-            _ann_parts.append(f"σ = {_bv_ann['sigma']:.1f}")
-        if 'logPmax' in _bv_ann and _bv_ann['logPmax'] != 0:
-            _ann_parts.append(f"logP = {_bv_ann['logPmax']:.2f}")
-        fig_cdf.add_annotation(
-            x=0.98, y=0.15, xref='paper', yref='paper',
-            text='<br>'.join(_ann_parts), showarrow=False,
-            font=dict(size=11, color='#DAA520'),
-            bgcolor='rgba(0,0,0,0.6)', bordercolor='#DAA520',
-            borderwidth=1, borderpad=4, xanchor='right')
+    # Show likelihood bins toggle
+    _show_bins = st.checkbox('Show likelihood bins', value=False,
+                             key=f'{prefix}_cdf_show_bins')
+    if _show_bins:
+        _lk_be = result.get('likelihood_bin_edges')
+        if _lk_be is None:
+            try:
+                from wr_bias_simulation import DSILVA_LIKELIHOOD_BINS
+                _lk_be = DSILVA_LIKELIHOOD_BINS
+            except ImportError:
+                _lk_be = np.array([0.0, 45.5, 250.0, 650.0])
+        _lk_be = np.asarray(_lk_be)
+        for _edge in _lk_be:
+            if np.isfinite(_edge) and _edge > 0:
+                fig_cdf.add_vline(
+                    x=_edge, line_dash='dash', line_color='rgba(200,200,200,0.8)',
+                    line_width=1.5)
 
     fig_cdf.update_layout(**{
         **PLOTLY_THEME,
         'title': dict(text='CDF Comparison: Observed vs Best-Fit Models', font=dict(size=14)),
         'xaxis_title': 'ΔRV (km/s)', 'yaxis_title': 'Cumulative Fraction',
         'height': 400, 'legend': dict(x=0.55, y=0.05),
+        'margin': dict(r=40),
     })
     st.plotly_chart(fig_cdf, use_container_width=True, key=f'{prefix}_cdf_comparison')
     st.caption(
@@ -349,13 +348,19 @@ def _render_all_methods_cdf(
 # ── From subtabs.py ──────────────────────────────────────────────────────────
 
 def _build_extra_grids(ctx: dict) -> list[tuple[str, np.ndarray]] | None:
-    """Build the extra_grids list for multi-dim models."""
+    """Build the extra_grids list for multi-dim models.
+
+    Order must match array dimension order: (logPmax, sigma, fbin, pi).
+    logPmax first (axis 0), then sigma (axis 1).
+    """
     ndim = ctx['ndim_mode']
     extras: list[tuple[str, np.ndarray]] = []
+    # logPmax FIRST (axis 0 in 4D array)
+    if ctx.get('logPmax_g') is not None and ndim in ('dsilva', 'cadence_dsilva'):
+        extras.append(('logPmax', ctx['logPmax_g']))
+    # sigma SECOND (axis 1 in 4D array)
     if ctx.get('sigma_g') is not None and ndim in ('dsilva', 'cadence_dsilva'):
         extras.append(('sigma', ctx['sigma_g']))
-    if ctx.get('logPmax_g') is not None and ndim == 'dsilva':
-        extras.append(('logPmax', ctx['logPmax_g']))
     return extras if extras else None
 
 # WORKING — do not change this code (A3: Max Likelihood vs σ/logPmax)
@@ -489,6 +494,17 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
                   line_width=2, annotation_text=f'Intrinsic f_bin = {intrinsic_fbin:.1%}',
                   annotation_position='top left',
                   annotation_font=dict(size=11, color=_CLR_DETECTED))
+    # "Real threshold" — where intrinsic f_bin crosses observed fraction curve
+    _crossings = np.where(np.diff(np.sign(fbin_curve - intrinsic_fbin)))[0]
+    if len(_crossings) > 0:
+        _ci = _crossings[0]
+        _real_thresh = np.interp(intrinsic_fbin,
+                                 [fbin_curve[_ci + 1], fbin_curve[_ci]],
+                                 [thresh_arr[_ci + 1], thresh_arr[_ci]])
+        fig.add_vline(x=_real_thresh, line_dash='dot', line_color='#00CC66',
+                      line_width=2, annotation_text=f'Real threshold ≈ {_real_thresh:.0f} km/s',
+                      annotation_position='bottom right',
+                      annotation_font=dict(size=10, color='#00CC66'))
     fig.add_vline(x=thresh_dRV, line_dash='dash', line_color=_CLR_MISSED,
                   line_width=2, annotation_text=f'Threshold = {thresh_dRV} km/s',
                   annotation_position='top right',
@@ -587,14 +603,11 @@ def render_orbital_histograms(p, gap_sim, bin_detected_mask, bin_missed_mask,
     T0_all = gap_sim['T0'] if has_omega else np.array([])
     M2_all = q_all * M1_all if q_all.size > 0 else np.array([])
 
-    titles = ['log\u2081\u2080(P / days)', 'Eccentricity', 'Mass ratio q',
-              'K\u2081 (km/s)', 'M\u2081 (M\u2299)', 'M\u2082 (M\u2299)',
-              'Inclination (\u00b0)', '\u03c9 (\u00b0)', 'T\u2080 (rad)']
     xlabs = ['log\u2081\u2080(P / days)', 'e', 'q = M\u2082/M\u2081',
              'K\u2081 (km/s)', 'M\u2081 (M\u2299)', 'M\u2082 (M\u2299)',
              'i (degrees)', '\u03c9 (degrees)', 'T\u2080 (rad)']
     NC, NR, NBINS = 3, 3, 30
-    fig_mb = make_subplots(rows=NR, cols=NC, subplot_titles=titles,
+    fig_mb = make_subplots(rows=NR, cols=NC,
                            horizontal_spacing=0.08, vertical_spacing=0.10)
     def _pos(idx):
         return (idx // NC + 1, idx % NC + 1)
@@ -668,7 +681,7 @@ def render_orbital_histograms(p, gap_sim, bin_detected_mask, bin_missed_mask,
 # WORKING — do not change this code (A7: Methodology Equations)
 def render_methodology_equations(model_type):
     """Methodology expander with equations."""
-    if model_type != 'dsilva':
+    if model_type not in ('dsilva', 'cadence_dsilva'):
         from bc.helpers import _render_methodology_expander
         _render_methodology_expander(model_type)
         return
@@ -679,8 +692,9 @@ def render_methodology_equations(model_type):
             '(f_bin, \u03c0, \u03c3_single):\n\n'
             '1. **Draw N systems** (default 3,000). Each system is binary '
             'with probability f_bin, or single with probability 1 \u2212 f_bin.\n\n'
-            '2. **Assign observation cadences.** Each simulated system is randomly '
-            'paired with a real star\'s observation times (MJD from FITS headers).\n\n'
+            '2. **Assign observation cadences.** Each simulated system is '
+            'assigned the observation cadence (MJD sequence) of one of the '
+            '25 sample stars.\n\n'
             '3. **Single stars:** draw RV at each epoch from '
             'N(v_sys, \u03c3_total) where \u03c3_total = '
             '\u221a(\u03c3_single\u00b2 + \u03c3_measure\u00b2). '
@@ -703,16 +717,21 @@ def render_methodology_equations(model_type):
         st.latex(r'v(t) = v_{\rm sys} + K_1 \left[\cos(\omega + \nu) + e\cos\omega\right]')
         st.markdown(
             'Then \u0394RV = max(v) \u2212 min(v) over observed epochs.\n\n'
-            '9. **Compare** simulated vs observed \u0394RV distribution '
-            'using the two-sample K-S test:')
-        st.latex(r'D = \max_x \left| F_{\rm obs}(x) - F_{\rm sim}(x) \right|')
+            '9. **Score** via multinomial log-likelihood. The observed and '
+            'simulated \u0394RV distributions are binned, and the likelihood is:')
+        st.latex(r'\ln L = \sum_{i} n_i \ln(p_i)')
         st.markdown(
-            'Higher p-value \u2192 better match.\n\n'
+            'where n_i is the observed count in bin i and p_i is the simulated '
+            'fraction. Higher likelihood = better match.\n\n'
             '10. **Binary detection criteria** (both required):')
         st.latex(r'\Delta\mathrm{RV} > 45.5 \; \mathrm{km/s}'
                  r'\quad \text{and} \quad'
                  r'\Delta\mathrm{RV} - 4\sigma > 0')
-        st.markdown('where \u03c3 is the combined measurement error of the epoch pair.')
+        st.markdown(
+            'where \u03c3 is the combined measurement error of the epoch pair.\n\n'
+            '**Uncertainties** on model parameters (f_bin, \u03c0, \u03c3_single, '
+            'logP_max) are derived from the 16th and 84th percentile of the '
+            'marginalized likelihood in the corner plots.')
 
 # ── Analysis plots helper ────────────────────────────────────────────────────
 
@@ -784,6 +803,27 @@ def render_shared_section(p: str, model_ctx: dict) -> dict:
     _render_all_methods_cdf(
         result, method_results, model_ctx['fbin_g'], model_ctx['x_g'],
         prefix=p, x_name=model_ctx['x_name'], x_label=model_ctx['x_label'])
+
+    # E6: Per-bin breakdown table (directly under CDF)
+    _obs_drv_e6 = result.get('obs_delta_rv')
+    if _obs_drv_e6 is not None:
+        _lk_be_e6 = result.get('likelihood_bin_edges')
+        if _lk_be_e6 is None:
+            try:
+                from wr_bias_simulation import DSILVA_LIKELIHOOD_BINS
+                _lk_be_e6 = DSILVA_LIKELIHOOD_BINS
+            except ImportError:
+                _lk_be_e6 = None
+        if _lk_be_e6 is not None:
+            try:
+                from bc.render_lk_scoring import _compute_pooled_sim
+                from bc.render_lk_fit import _render_likelihood_stats_table
+                _pooled_e6 = _compute_pooled_sim(np.asarray(_obs_drv_e6), result)
+                if _pooled_e6 is not None:
+                    _render_likelihood_stats_table(
+                        np.asarray(_obs_drv_e6), _pooled_e6, np.asarray(_lk_be_e6))
+            except ImportError:
+                pass
 
     # A3 sigma/logPmax chart: moved to Likelihood Analysis section (render_lk.py)
 

@@ -28,7 +28,6 @@ from shared import PLOTLY_THEME, make_heatmap_fig
 from bc.render_lk_fit import (
     _parabolic_min_1d, _parabolic_min_2d, _parabolic_min_3d,
     _eval_3d_quadratic, _render_cvm_1d_plot,
-    _render_likelihood_stats_table,
     _render_likelihood_explanation,
 )
 
@@ -97,7 +96,7 @@ def render_lk_scoring_detail(
     x_grid: np.ndarray,
     y_grid: np.ndarray,
     x_label: str = 'f_bin',
-    y_label: str = 'pi',
+    y_label: str = 'π',
     sigma_grid: np.ndarray | None = None,
     logPmax_grid: np.ndarray | None = None,
     lk_D_3d: np.ndarray | None = None,
@@ -225,22 +224,10 @@ def render_lk_scoring_detail(
     _p_work = lk_p_2d.copy().astype(float)
     _p_work[_exc_mask_2d] = np.nan
 
-    # -- D5a: Raw -logL heatmap (LEFT) + σ×logPmax max-L (RIGHT) ---
+    # -- D5a: Raw -logL heatmap (σ×logP right panel MOVED to top) ---
     st.markdown('#### Likelihood Analysis')
 
-    _has_right_panel = (sigma_grid is not None and logPmax_grid is not None
-                        and sigma_grid.size > 1 and logPmax_grid.size > 1
-                        and lk_p_3d is not None)
-    _has_1d_right = (not _has_right_panel
-                     and ((sigma_grid is not None and sigma_grid.size > 1)
-                          or (logPmax_grid is not None and logPmax_grid.size > 1))
-                     and lk_p_3d is not None)
-
-    if _has_right_panel or _has_1d_right:
-        _d5_left, _d5_right = st.columns(2)
-    else:
-        _d5_left = st.container()
-
+    _d5_left = st.container()
     with _d5_left:
         fig_raw = go.Figure(go.Heatmap(
             z=_to_display(_S_work), x=y_grid, y=x_grid,
@@ -251,7 +238,7 @@ def render_lk_scoring_detail(
                 f'{_z_hover}: %{{z:.2f}}<extra></extra>'
             ),
         ))
-        _raw_title = f'{_STAT_DISPLAY} -- {_cbar_title} (f_bin × {y_label})'
+        _raw_title = f'{_STAT_DISPLAY} -- {_cbar_title} (f<sub>bin</sub> × {y_label})'
         fig_raw.update_layout(**{
             **_theme,
             'title': dict(text=_raw_title),
@@ -264,74 +251,21 @@ def render_lk_scoring_detail(
         _raw_slot.plotly_chart(fig_raw, use_container_width=True)
         st.caption('Higher likelihood = better fit. Gold star marks parabolic best fit.')
 
-    if _has_right_panel:
-        with _d5_right:
-            # 2D heatmap: max likelihood per (σ, logPmax)
-            _lk_full = lk_p_3d
-            if _lk_full.ndim == 4:
-                _sig_lp_max = np.nanmax(_lk_full, axis=(2, 3))  # → [logPmax, sigma]
-            elif _lk_full.ndim == 3:
-                _sig_lp_max = np.nanmax(_lk_full, axis=2)
-            else:
-                _sig_lp_max = _lk_full
-            _fig_right = _make_heatmap_fig(
-                _sig_lp_max, logPmax_grid, sigma_grid,
-                title='Max Likelihood (σ × logP_max)',
-                show_d=False, height=height,
-                x_label='σ_single (km/s)',
-                y_label='log₁₀(P_max / days)',
-                x_name='σ',
-                scoring_label='Likelihood',
-                colorbar_title_override='Max Likelihood',
-            )
-            st.plotly_chart(_fig_right, use_container_width=True,
-                            key=f'{prefix}_d5a_sig_lp')
-            st.caption('Max likelihood across f_bin × π at each (σ, logP_max).')
-    elif _has_1d_right:
-        with _d5_right:
-            # 1D profile for whichever extra axis exists
-            _lk_full = lk_p_3d
-            if sigma_grid is not None and sigma_grid.size > 1:
-                _ax_g = sigma_grid
-                _ax_label = 'σ_single (km/s)'
-                if _lk_full.ndim == 3:
-                    _max_1d = [float(np.nanmax(_lk_full[i]))
-                               if np.any(np.isfinite(_lk_full[i])) else 0.0
-                               for i in range(_ax_g.size)]
-                else:
-                    _max_1d = [0.0] * _ax_g.size
-            else:
-                _ax_g = logPmax_grid
-                _ax_label = 'logP_max'
-                if _lk_full.ndim >= 3:
-                    _max_1d = [float(np.nanmax(_lk_full[i]))
-                               if np.any(np.isfinite(_lk_full[i])) else 0.0
-                               for i in range(_ax_g.size)]
-                else:
-                    _max_1d = [0.0] * _ax_g.size
-            from bc.helpers import _make_max_pval_fig as _mpf
-            st.plotly_chart(
-                _mpf(_ax_g, _max_1d, height=height,
-                     x_label=_ax_label, stat_label='Likelihood'),
-                use_container_width=True,
-                key=f'{prefix}_d5a_1d_right')
+    # D5a right panel (σ×logP) MOVED to top heatmaps in cadence.py
 
     # -- D5b, D5c: REMOVED (user review 2026-03-23) ----------------
 
-    # -- E5 CDF: REMOVED (redundant with A2 CDF) ------------------
-    # Per-bin stats table (E6) and methodology explainer (E7) kept.
+    # -- E5 CDF: REMOVED. E6 stats table: MOVED to render_shared.py (under CDF).
+    # E7 methodology explainer kept here.
     if obs_delta_rv is not None and likelihood_bin_edges is not None and result is not None:
-        _pooled_sim = _compute_pooled_sim(obs_delta_rv, result)
-        if _pooled_sim is not None:
-            _render_likelihood_stats_table(
-                obs_delta_rv, _pooled_sim, likelihood_bin_edges,
-            )
         _render_likelihood_explanation(obs_delta_rv, likelihood_bin_edges)
 
     # -- NO S_raw heatmap (K-S only) -------------------------------
     # Skipped intentionally for Likelihood.
 
-    # -- Fit selection controls (per-axis) -------------------------
+    # -- 3D Parabolic Surface + Fit Controls -------------------------
+    st.markdown('---')
+    st.markdown('#### 3D Parabolic Surface & Interpolation')
     _fc1, _fc2, _fc3 = st.columns([0.2, 0.4, 0.4])
     _fit_mode = _fc1.radio(
         'Fit selection',
@@ -440,9 +374,6 @@ def render_lk_scoring_detail(
 
     # -- 3D surface plot of the parabolic fit ----------------------
     if _fit_coeffs is not None and _fit_bounds is not None:
-        st.markdown('---')
-        st.markdown('#### 3D Parabolic Surface')
-
         _cam_choice = st.radio(
             'Camera', list(_cam_presets.keys()),
             horizontal=True, key=f'{prefix}_cam_3d',
@@ -520,9 +451,6 @@ def render_lk_scoring_detail(
         st.plotly_chart(fig_3d, use_container_width=True,
                         key=f'{prefix}_3d_fbpi')
 
-    # -- D11, 4D: REMOVED (user review 2026-03-24, simplify to f_bin×π only) --
-    _3d_bz = _3d_bS = None
-
     # -- 1D slices -------------------------------------------------
     i_x_best = int(np.argmin(np.abs(x_grid - best_x)))
     i_y_best = int(np.argmin(np.abs(y_grid - best_y)))
@@ -543,64 +471,30 @@ def render_lk_scoring_detail(
     by = best_y
     bS_y = best_S if best_S is not None else float(np.nanmin(S_y_slice))
 
-    # Check if we have a 3D grid (sigma scan)
-    do_3d = (
-        sigma_grid is not None
-        and lk_D_3d is not None
-        and len(sigma_grid) > 1
-    )
-    if do_3d:
-        # Negate for likelihood
+    # Compute sigma best-fit if 3D (for interp result), but don't render σ slice
+    bsig = None
+    if (sigma_grid is not None and lk_D_3d is not None
+            and len(sigma_grid) > 1):
         _lk_D_3d_neg = (-lk_D_3d).astype(float)
         S_sig_slice = _lk_D_3d_neg[:, i_x_best, i_y_best]
-        _, _, csig, frsig = _parabolic_min_1d(
-            sigma_grid, S_sig_slice, mode=_mode, fraction=_frac_x,
+        bsig, _, _, _ = _parabolic_min_1d(
+            sigma_grid, S_sig_slice, mode=_mode,
+            fraction=_frac_x,
             height_factor=_h_factor_x, n_neighbors=_nn_1d,
         )
-        if _3d_bz is not None:
-            bsig = _3d_bz
-            bS_sig = (
-                _3d_bS if _3d_bS is not None
-                else float(np.nanmin(S_sig_slice))
-            )
-        else:
-            bsig, bS_sig, _, _ = _parabolic_min_1d(
-                sigma_grid, S_sig_slice, mode=_mode,
-                fraction=_frac_x,
-                height_factor=_h_factor_x, n_neighbors=_nn_1d,
-            )
-        sc1, sc2, sc3 = st.columns(3)
-        _render_cvm_1d_plot(
-            sc1, x_grid, S_x_slice, x_label, bx, bS_x, cx, frx,
-            f'Slice at {y_label}={y_grid[i_y_best]:.3f}', height=300,
-            log_transform=_use_log,
-        )
-        _render_cvm_1d_plot(
-            sc2, y_grid, S_y_slice, y_label, by, bS_y, cy, fry,
-            f'Slice at {x_label}={x_grid[i_x_best]:.4f}', height=300,
-            log_transform=_use_log,
-        )
-        _render_cvm_1d_plot(
-            sc3, sigma_grid, S_sig_slice, 'sigma_single',
-            bsig, bS_sig, csig, frsig,
-            (f'Slice at {x_label}={x_grid[i_x_best]:.4f}, '
-             f'{y_label}={y_grid[i_y_best]:.3f}'),
-            height=300, log_transform=_use_log,
-        )
-        st.info(f'**sigma_single (parabolic):** {bsig:.2f} km/s')
-    else:
-        bsig = None
-        sc1, sc2 = st.columns(2)
-        _render_cvm_1d_plot(
-            sc1, x_grid, S_x_slice, x_label, bx, bS_x, cx, frx,
-            f'Slice at {y_label}={y_grid[i_y_best]:.3f}', height=300,
-            log_transform=_use_log,
-        )
-        _render_cvm_1d_plot(
-            sc2, y_grid, S_y_slice, y_label, by, bS_y, cy, fry,
-            f'Slice at {x_label}={x_grid[i_x_best]:.4f}', height=300,
-            log_transform=_use_log,
-        )
+
+    # Only f_bin and π slices (2-column layout)
+    sc1, sc2 = st.columns(2)
+    _render_cvm_1d_plot(
+        sc1, x_grid, S_x_slice, x_label, bx, bS_x, cx, frx,
+        f'Slice at {y_label}={y_grid[i_y_best]:.3f}', height=300,
+        log_transform=_use_log,
+    )
+    _render_cvm_1d_plot(
+        sc2, y_grid, S_y_slice, y_label, by, bS_y, cy, fry,
+        f'Slice at {x_label}={x_grid[i_x_best]:.4f}', height=300,
+        log_transform=_use_log,
+    )
 
     # Caption: which σ and logP produced this slice
     _slice_parts = []
@@ -614,12 +508,7 @@ def render_lk_scoring_detail(
 
     # -- Store unified fit results ---------------------------------
     _interp_result = {'f_bin': best_x, 'y_val': best_y, 'S': best_S}
-    if do_3d and _3d_bx is not None:
-        _interp_result = {
-            'f_bin': _3d_bx, 'pi': _3d_by,
-            _3d_z_key: _3d_bz, 'S': _3d_bS,
-        }
-    elif bsig is not None:
+    if bsig is not None:
         _interp_result['sigma'] = bsig
     st.session_state[f'{prefix}_interp'] = _interp_result
 

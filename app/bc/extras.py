@@ -1035,7 +1035,7 @@ def _render_compare_tab(p: str) -> None:
                 **PLOTLY_THEME,
                 'title': dict(text='Score overlay'),
                 'xaxis_title': _ra['info']['x_label'],
-                'yaxis_title': 'f_bin',
+                'yaxis_title': 'f<sub>bin</sub>',
                 'height': 500,
             })
             st.plotly_chart(fig, use_container_width=True, key=f'{p}_hm_overlay')
@@ -1100,8 +1100,8 @@ def _render_compare_tab(p: str) -> None:
             _add_mode_line(fig_fb, _m, _r['color'])
         fig_fb.update_layout(**{
             **PLOTLY_THEME,
-            'title': dict(text='f_bin posterior comparison'),
-            'xaxis_title': 'f_bin',
+            'title': dict(text='f<sub>bin</sub> posterior comparison'),
+            'xaxis_title': 'f<sub>bin</sub>',
             'yaxis_title': 'Posterior density',
             'height': 400,
         })
@@ -1186,8 +1186,8 @@ def _render_compare_tab(p: str) -> None:
             _add_mode_line(fig_Lfb, _mLfb, _r['color'])
         fig_Lfb.update_layout(**{
             **PLOTLY_THEME,
-            'title': dict(text='f_bin posterior (Likelihood)'),
-            'xaxis_title': 'f_bin',
+            'title': dict(text='f<sub>bin</sub> posterior (Likelihood)'),
+            'xaxis_title': 'f<sub>bin</sub>',
             'yaxis_title': 'Posterior density',
             'height': 400,
         })

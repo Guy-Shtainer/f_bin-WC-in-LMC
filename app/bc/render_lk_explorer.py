@@ -154,7 +154,7 @@ def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
     parameters, overlaid on the observed CDF.
     """
     from wr_bias_simulation import (
-        simulate_delta_rv_sample, BinaryParameterConfig,
+        simulate_delta_rv_sample, SimulationConfig, BinaryParameterConfig,
         DEFAULT_DRV_BIN_EDGES,
     )
 
@@ -172,10 +172,15 @@ def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
         'but identical cadence assignments.'
     )
 
-    # Build BinaryParameterConfig from result metadata
+    # Build configs from result metadata
     _bcfg_dict = result.get('bin_cfg', {})
     bcfg = (BinaryParameterConfig(**_bcfg_dict)
             if _bcfg_dict else BinaryParameterConfig())
+    sim_cfg = SimulationConfig(
+        n_stars=25,
+        sigma_single=float(sigma_single),
+        sigma_measure=float(result.get('sigma_meas', 1.622)),
+    )
 
     fig = go.Figure()
 
@@ -183,22 +188,20 @@ def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
     fig.add_trace(go.Scatter(
         x=_bin_edges, y=obs_cdf_b,
         mode='lines', name='Observed',
-        line=dict(color='#4A90D9', width=3, shape='hv'),
+        line=dict(color='white', width=3, shape='hv'),
     ))
 
     # 5 random draws
     _draw_colors = ['#E25A53', '#50C878', '#9B59B6', '#F39C12', '#1ABC9C']
     for i, seed in enumerate([42, 43, 44, 45, 46]):
+        rng = np.random.default_rng(seed)
         try:
             drv = simulate_delta_rv_sample(
-                n_stars=25,
                 f_bin=best_fbin,
-                sigma_single=sigma_single,
-                sigma_measure=float(result.get('sigma_meas', 1.622)),
-                binary_config=bcfg,
-                rng_seed=seed,
-                period_model=period_model,
-                cadence_library=cadence_library,
+                pi=best_x,
+                sim_cfg=sim_cfg,
+                bin_cfg=bcfg,
+                rng=rng,
             )
             sim_cdf = _binned_cdf(drv, _bin_edges)
             fig.add_trace(go.Scatter(
@@ -208,8 +211,8 @@ def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
                           dash='dash', shape='hv'),
                 opacity=0.7,
             ))
-        except Exception:
-            pass
+        except Exception as e:
+            st.warning(f'Draw {i+1} failed: {e}')
 
     fig.update_layout(**{
         **PLOTLY_THEME,
@@ -273,7 +276,8 @@ def _render_lk_model_explorer(
     _reset_col1, _reset_col2 = st.columns([0.7, 0.3])
     with _reset_col1:
         _best_parts = [f'f_bin={def_fb:.3f}', f'{x_label}={def_x:.2f}']
-        if sig_g.size > 1 if 'sig_g' not in dir() else False:
+        _sig_g_pre = np.asarray(result.get('sigma_grid', []))
+        if _sig_g_pre.size > 1:
             _best_parts.append(f'σ={def_sig:.1f}')
         st.caption(f'Best-fit model: {", ".join(_best_parts)}  |  Score: {_best_score:.4f}')
     with _reset_col2:
@@ -322,24 +326,28 @@ def _render_lk_model_explorer(
     med_cdf, lo_cdf, hi_cdf, pooled_drv = _me_cdf_band(
         me_fb, me_x, me_sig, sigma_m, tuple(be.tolist()), n_sets=50)
 
-    # -- Score metric (Likelihood) ---------------------------------
+    # -- Score metric (D4-style dual boxes) -------------------------
     _logL = multinomial_log_likelihood(obs_drv, pooled_drv, lk_be)
     _score_val = f'{_logL:.3f}'
 
-    sc1, sc2 = st.columns([0.35, 0.65])
-    _delta_str = f' (best: {_best_score:.4f})' if _best_score else ''
-    sc1.metric('ln L', _score_val, delta=f'vs best: {_logL - (_best_score if _best_score else _logL):.3f}')
-    sc2.caption(
-        f'f_bin={me_fb:.3f}, {x_label}={me_x:.2f}, '
-        f'sigma_single={me_sig:.1f} km/s'
+    mc1, mc2 = st.columns(2)
+    mc1.metric(
+        label='Current (Explorer)',
+        value=f'f_bin={me_fb:.3f}, {x_label}={me_x:.2f}',
+        delta=f'ln L = {_logL:.4f}',
+        delta_color='off',
+    )
+    mc2.metric(
+        label='Global best',
+        value=f'f_bin={def_fb:.3f}, {x_label}={def_x:.2f}',
+        delta=f'ln L = {_best_score:.4f}' if _best_score else '--',
+        delta_color='off',
     )
 
     # -- CDF with error shadow + optional best-fit overlay --------
     obs_cdf = _binned_cdf(obs_drv, be)
     med_x = np.concatenate([[0.0], be])
     med_y = np.concatenate([[0.0], med_cdf])
-    lo_y = np.concatenate([[0.0], lo_cdf])
-    hi_y = np.concatenate([[0.0], hi_cdf])
 
     # Best-fit overlay (algorithm's best vs explorer's current)
     _show_bestfit = st.checkbox('Compare with algorithm best-fit',
@@ -357,20 +365,12 @@ def _render_lk_model_explorer(
     fig_cdf = go.Figure()
     fig_cdf.add_trace(go.Scatter(
         x=be, y=obs_cdf, mode='lines', name='Observed',
-        line=dict(color='#4A90D9', width=2.5, shape='hv'),
+        line=dict(color='white', width=2.5, shape='hv'),
     ))
-    # Explorer error band
-    fig_cdf.add_trace(go.Scatter(
-        x=np.concatenate([med_x, med_x[::-1]]),
-        y=np.concatenate([hi_y, lo_y[::-1]]),
-        fill='toself', fillcolor=_hex_to_rgba(_METHOD_COLOR, 0.2),
-        line=dict(color='rgba(0,0,0,0)'),
-        legendgroup='explorer', showlegend=False, hoverinfo='skip',
-    ))
+    # Explorer median CDF (no error band)
     fig_cdf.add_trace(go.Scatter(
         x=med_x, y=med_y, mode='lines', name='Explorer (current)',
-        legendgroup='explorer',
-        line=dict(color=_METHOD_COLOR, width=2.5, dash='dash',
+        line=dict(color=_METHOD_COLOR, width=2, dash='dash',
                   shape='hv'),
     ))
     # Best-fit overlay
@@ -421,6 +421,98 @@ def _render_lk_model_explorer(
                for i in range(len(lk_be) - 1)]
         st.dataframe(pd.DataFrame(_br), use_container_width=True,
                      hide_index=True)
+
+    # -- 4 heatmaps (2×2) with green dot at current position --------
+    _sig_g_hm = np.asarray(result.get('sigma_grid', []))
+    _lp_g_hm = np.asarray(result.get('logPmax_grid', []))
+    _has_4hm = (_sig_g_hm.size > 1 and _lp_g_hm.size > 1 and p_nd.ndim >= 3)
+    if _has_4hm:
+        from bc.helpers import _make_heatmap_fig as _mkhm
+
+        # Find current slider indices
+        _me_sig_idx = int(np.argmin(np.abs(_sig_g_hm - me_sig)))
+        _me_lp_idx = int(np.argmin(np.abs(_lp_g_hm - me_logPmax))) if me_logPmax is not None else 0
+
+        # Slice normalized likelihood at current σ/logP
+        if p_nd.ndim == 4:
+            _norm_fbpi = p_nd[_me_lp_idx, _me_sig_idx]
+            _norm_siglp = np.nanmax(p_nd, axis=(2, 3))
+        elif p_nd.ndim == 3:
+            _norm_fbpi = p_nd[_me_sig_idx]
+            _norm_siglp = np.nanmax(p_nd, axis=2) if p_nd.ndim == 3 else p_nd
+        else:
+            _norm_fbpi = p_nd
+            _norm_siglp = None
+
+        # Unnormalized -logL
+        _logL_raw = result.get('logL_raw')
+        _unnorm_fbpi = _unnorm_siglp = None
+        if _logL_raw is not None:
+            _lr = np.asarray(_logL_raw, dtype=float)
+            if _lr.ndim == 4:
+                _unnorm_fbpi = _lr[_me_lp_idx, _me_sig_idx]
+                _unnorm_siglp = np.nanmax(_lr, axis=(2, 3))
+            elif _lr.ndim == 3:
+                _unnorm_fbpi = _lr[_me_sig_idx]
+                _unnorm_siglp = np.nanmax(_lr, axis=2)
+
+        def _green_dot(fig, x_val, y_val):
+            fig.add_trace(go.Scatter(
+                x=[x_val], y=[y_val], mode='markers',
+                marker=dict(symbol='circle', size=12, color='#00CC66',
+                            line=dict(width=2, color='black')),
+                name='Current', showlegend=False,
+            ))
+
+        st.markdown('#### Heatmaps at Current Explorer Position')
+        _hm_r1c1, _hm_r1c2 = st.columns(2)
+        with _hm_r1c1:
+            _fig1 = _mkhm(_norm_fbpi, fbin_g, x_g,
+                           title='Normalized Likelihood (f<sub>bin</sub> × π)',
+                           show_d=False, height=350,
+                           x_label=x_label, x_name=x_name,
+                           scoring_label='Likelihood',
+                           colorbar_title_override='Norm. L')
+            _green_dot(_fig1, me_x, me_fb)
+            st.plotly_chart(_fig1, use_container_width=True,
+                            key=f'{prefix}_lk_me_hm_norm_fbpi')
+        with _hm_r1c2:
+            if _norm_siglp is not None:
+                _fig2 = _mkhm(_norm_siglp, _lp_g_hm, _sig_g_hm,
+                               title='Max Norm. Likelihood (σ × logP)',
+                               show_d=False, height=350,
+                               x_label='σ_single (km/s)',
+                               y_label='log₁₀(P_max)',
+                               x_name='σ', scoring_label='Likelihood',
+                               colorbar_title_override='Max Norm. L')
+                _green_dot(_fig2, me_sig, me_logPmax if me_logPmax else _lp_g_hm[0])
+                st.plotly_chart(_fig2, use_container_width=True,
+                                key=f'{prefix}_lk_me_hm_norm_siglp')
+
+        _hm_r2c1, _hm_r2c2 = st.columns(2)
+        with _hm_r2c1:
+            if _unnorm_fbpi is not None:
+                _fig3 = _mkhm(_unnorm_fbpi, fbin_g, x_g,
+                               title='−log L (f<sub>bin</sub> × π)',
+                               show_d=False, height=350,
+                               x_label=x_label, x_name=x_name,
+                               scoring_label='−log L',
+                               colorbar_title_override='−log L')
+                _green_dot(_fig3, me_x, me_fb)
+                st.plotly_chart(_fig3, use_container_width=True,
+                                key=f'{prefix}_lk_me_hm_unnorm_fbpi')
+        with _hm_r2c2:
+            if _unnorm_siglp is not None:
+                _fig4 = _mkhm(_unnorm_siglp, _lp_g_hm, _sig_g_hm,
+                               title='Max −log L (σ × logP)',
+                               show_d=False, height=350,
+                               x_label='σ_single (km/s)',
+                               y_label='log₁₀(P_max)',
+                               x_name='σ', scoring_label='−log L',
+                               colorbar_title_override='Max −log L')
+                _green_dot(_fig4, me_sig, me_logPmax if me_logPmax else _lp_g_hm[0])
+                st.plotly_chart(_fig4, use_container_width=True,
+                                key=f'{prefix}_lk_me_hm_unnorm_siglp')
 
     # -- Histogram overlay ----------------------------------------
     sim_drv_single = pooled_drv[:1000]

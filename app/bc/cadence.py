@@ -39,6 +39,129 @@ from bc.polling import _poll_cadence_job
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Top 4 heatmaps (above analysis, live during runs, persistent after)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_top_heatmaps(p, result, fbin_g, pi_g, sigma_g, logPmax_g,
+                         lk_arr, best_lp_idx, is_dsilva, height, use_cw):
+    """Render 2×2 grid of heatmaps at top of results.
+
+    Row 1: Normalized likelihood (f_bin×π | σ×logP)
+    Row 2: Unnormalized -logL    (f_bin×π | σ×logP)
+    """
+    import plotly.graph_objects as go
+
+    _has_sig = sigma_g.size > 1
+    _has_lp = logPmax_g.size > 1
+    _has_multi = _has_sig or _has_lp
+
+    # Find best-fit indices
+    if not np.any(np.isfinite(lk_arr)):
+        return
+    _bf = np.unravel_index(int(np.nanargmax(lk_arr)), lk_arr.shape)
+
+    # Best-fit 2D slice (normalized)
+    if lk_arr.ndim == 4:
+        _norm_fbpi = lk_arr[_bf[0], _bf[1]]  # [fbin, pi]
+    elif lk_arr.ndim == 3:
+        _norm_fbpi = lk_arr[_bf[0]]
+    else:
+        _norm_fbpi = lk_arr
+
+    # Max normalized over f_bin×π → σ×logP
+    _norm_siglp = None
+    if _has_sig and _has_lp and lk_arr.ndim == 4:
+        _norm_siglp = np.nanmax(lk_arr, axis=(2, 3))  # [logP, sigma]
+
+    # Unnormalized -logL
+    _logL_raw = result.get('logL_raw')
+    _unnorm_fbpi = _unnorm_siglp = None
+    if _logL_raw is not None:
+        _lr = np.asarray(_logL_raw, dtype=float)
+        if _lr.ndim == 4:
+            _unnorm_fbpi = _lr[_bf[0], _bf[1]]
+            if _has_sig and _has_lp:
+                _unnorm_siglp = np.nanmax(_lr, axis=(2, 3))
+        elif _lr.ndim == 3:
+            _unnorm_fbpi = _lr[_bf[0]]
+
+    x_g = pi_g if is_dsilva else sigma_g
+    x_label = 'π' if is_dsilva else 'σ_single (km/s)'
+
+    # Best-fit values for caption
+    _bf_fb = float(fbin_g[_bf[-2]] if lk_arr.ndim >= 2 else fbin_g[0])
+    _bf_x = float(x_g[_bf[-1]] if lk_arr.ndim >= 2 else x_g[0])
+    _bf_parts = [f'f_bin={_bf_fb:.3f}', f'{x_label}={_bf_x:.2f}']
+    if _has_sig:
+        _si = _bf[1] if lk_arr.ndim == 4 else (_bf[0] if lk_arr.ndim == 3 else 0)
+        _bf_parts.append(f'σ={float(sigma_g[_si]):.1f}')
+    if _has_lp:
+        _bf_parts.append(f'logP_max={float(logPmax_g[_bf[0]]):.2f}')
+    st.caption(f'Best-fit: {", ".join(_bf_parts)}')
+
+    # Row 1: Normalized
+    _r1c1, _r1c2 = st.columns(2)
+    with _r1c1:
+        # WORKING — do not change this code (H1: Normalized Likelihood f_bin×π)
+        _fig1 = _make_heatmap_fig(
+            _norm_fbpi, fbin_g, x_g,
+            title='Normalized Likelihood (f<sub>bin</sub> × π)',
+            show_d=False, height=height,
+            x_label=x_label, x_name='pi' if is_dsilva else 'sigma',
+            scoring_label='Likelihood',
+            colorbar_title_override='Norm. Likelihood',
+        )
+        st.plotly_chart(_fig1, use_container_width=use_cw,
+                        key=f'{p}_top_norm_fbpi')
+    with _r1c2:
+        # WORKING — do not change this code (H2: Max Norm. Likelihood σ×logP)
+        if _norm_siglp is not None:
+            _fig2 = _make_heatmap_fig(
+                _norm_siglp, logPmax_g, sigma_g,
+                title='Max Norm. Likelihood (σ × logP_max)',
+                show_d=False, height=height,
+                x_label='σ_single (km/s)',
+                y_label='log₁₀(P_max)',
+                x_name='σ', scoring_label='Likelihood',
+                colorbar_title_override='Max Norm. L',
+            )
+            st.plotly_chart(_fig2, use_container_width=use_cw,
+                            key=f'{p}_top_norm_siglp')
+        else:
+            st.info('σ×logP heatmap requires both sigma and logPmax scans.')
+
+    # Row 2: Unnormalized -logL
+    if _unnorm_fbpi is not None:
+        _r2c1, _r2c2 = st.columns(2)
+        with _r2c1:
+            # WORKING — do not change this code (H3: −log L f_bin×π)
+            _fig3 = _make_heatmap_fig(
+                _unnorm_fbpi, fbin_g, x_g,
+                title='−log L (f<sub>bin</sub> × π)',
+                show_d=False, height=height,
+                x_label=x_label, x_name='pi' if is_dsilva else 'sigma',
+                scoring_label='−log L',
+                colorbar_title_override='−log L',
+            )
+            st.plotly_chart(_fig3, use_container_width=use_cw,
+                            key=f'{p}_top_unnorm_fbpi')
+        with _r2c2:
+            # WORKING — do not change this code (H4: Max −log L σ×logP)
+            if _unnorm_siglp is not None:
+                _fig4 = _make_heatmap_fig(
+                    _unnorm_siglp, logPmax_g, sigma_g,
+                    title='Max −log L (σ × logP_max)',
+                    show_d=False, height=height,
+                    x_label='σ_single (km/s)',
+                    y_label='log₁₀(P_max)',
+                    x_name='σ', scoring_label='−log L',
+                    colorbar_title_override='Max −log L',
+                )
+                st.plotly_chart(_fig4, use_container_width=use_cw,
+                                key=f'{p}_top_unnorm_siglp')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Result display: build model_ctx + delegate to subtabs
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -72,45 +195,15 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
     n_sig = len(sigma_grid)
     _is_langer_sigma = (not _is_dsilva) and n_sig > 1
 
-    # ── Handle logPmax dimension: browse slider ───────────────────────────
+    # ── logPmax: use best-fit index (slider removed) ────────────────────
     _cad_lp_idx = 0
     if _has_logPmax_scan and lk_arr.ndim == 4:
-        _has_sigma_scan = n_sig > 1
-        if _has_sigma_scan:
-            _cad_outer = np.nanmax(lk_arr, axis=(2, 3))
-            st.plotly_chart(
-                _make_heatmap_fig(
-                    _cad_outer, logPmax_grid, sigma_grid,
-                    title='Max Likelihood  (logP_max \u00d7 \u03c3_single)',
-                    height=_ch, width=_cw,
-                    x_label='\u03c3_single (km/s)',
-                    y_label='log\u2081\u2080(P_max / days)',
-                    x_name='\u03c3',
-                ), use_container_width=_use_cw)
-        else:
-            _lp_max_lk = [float(np.nanmax(lk_arr[i_lp]))
-                          if np.any(np.isfinite(lk_arr[i_lp])) else 0.0
-                          for i_lp in range(len(logPmax_grid))]
-            st.plotly_chart(
-                _make_max_pval_fig(
-                    logPmax_grid, _lp_max_lk, height=280,
-                    x_label='logP_max'),
-                use_container_width=True)
         if np.any(np.isfinite(lk_arr)):
             _best_flat = int(np.nanargmax(lk_arr))
-            _best_lp = _best_flat // (
+            _cad_lp_idx = _best_flat // (
                 lk_arr.shape[1] * lk_arr.shape[2] * lk_arr.shape[3])
         else:
-            _best_lp = 0
-        _lp_opts = [round(float(v), 4) for v in logPmax_grid]
-        _sel_lp = st.select_slider(
-            'Browse logP_max',
-            options=_lp_opts,
-            value=_lp_opts[min(_best_lp, len(_lp_opts) - 1)],
-            format_func=lambda v: f'{v:.2f}',
-            key=f'{p}_logPmax_browse',
-        )
-        _cad_lp_idx = int(np.argmin(np.abs(logPmax_grid - _sel_lp)))
+            _cad_lp_idx = 0
 
     # ── Determine x-axis and ndim_mode ────────────────────────────────────
     if _is_langer_sigma:
@@ -123,8 +216,8 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
         _cad_ndim_mode = 'cadence_dsilva'
         _cad_x_g = np.asarray(pi_grid)
         _cad_x_name = 'pi'
-        _cad_x_label = 'pi'
-        _cad_x_disp = 'pi (period power-law index)'
+        _cad_x_label = 'π'
+        _cad_x_disp = 'π (period power-law index)'
     else:
         _cad_ndim_mode = 'cadence_langer'
         _cad_x_g = np.asarray(sigma_grid)
@@ -303,6 +396,11 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
         'settings': _settings,
         'classification': cls,
     }
+
+    # ── 4 heatmaps at top (live during run, persist after) ──────────────
+    _render_top_heatmaps(p, result, fbin_grid, pi_grid, sigma_grid,
+                         logPmax_grid, lk_arr, _cad_lp_idx, _is_dsilva,
+                         _ch, _use_cw)
 
     render_model_subtabs(p, model_ctx)
 

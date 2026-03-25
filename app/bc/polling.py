@@ -120,62 +120,72 @@ def _render_running_fragment(p: str) -> None:
             return
         st.progress(_j.get('progress_pct', 0),
                     text=_j.get('progress_text', 'Running...'))
-        if _j.get('live_heatmaps'):
-            _lhm = _j['live_heatmaps']
-            # Single likelihood tile (full width)
-            if 'likelihood' in _lhm:
-                _hd = _lhm['likelihood']
+        # Live 2×2 heatmaps (same layout as final top heatmaps)
+        _lhm = _j.get('live_heatmaps', {})
+        _live_2d = _j.get('live_sigma_logPmax_2d')
+        _has_live_fbpi = 'likelihood' in _lhm
+        _has_live_siglp = (
+            _live_2d
+            and len(_live_2d.get('sigma_vals', [])) > 1
+            and len(_live_2d.get('logPmax_vals', [])) > 1
+        )
+
+        if _has_live_fbpi:
+            _hd = _lhm['likelihood']
+            if _has_live_siglp:
+                # 2-column: normalized f_bin×π | normalized σ×logP
+                _lc1, _lc2 = st.columns(2)
+                with _lc1:
+                    st.plotly_chart(
+                        _make_heatmap_fig(
+                            _hd['p'], _hd['fbin'], _hd['x'],
+                            title='Normalized Likelihood (f<sub>bin</sub> × π)',
+                            height=350,
+                            live=not _hd.get('is_final', True),
+                            scoring_label='Likelihood',
+                            colorbar_title_override='Norm. Likelihood'),
+                        use_container_width=True)
+                with _lc2:
+                    _sig_v = np.array(_live_2d['sigma_vals'])
+                    _lp_v = np.array(_live_2d['logPmax_vals'])
+                    _hm_data = np.array(_live_2d['max_likelihood_2d'])
+                    if np.any(_hm_data > 0):
+                        from shared import make_heatmap_fig as _mkhm_live
+                        st.plotly_chart(
+                            _mkhm_live(
+                                _hm_data, _lp_v, _sig_v,
+                                title='Max Norm. Likelihood (σ × logP_max)',
+                                show_d=False, height=350,
+                                x_label='σ_single (km/s)',
+                                y_label='log₁₀(P_max)',
+                                x_name='σ', scoring_label='Likelihood',
+                                colorbar_title_override='Max Norm. L'),
+                            use_container_width=True)
+            else:
+                # Full width: just f_bin×π
                 st.plotly_chart(
                     _make_heatmap_fig(
                         _hd['p'], _hd['fbin'], _hd['x'],
-                        title=_hd['title'], height=400,
+                        title='Normalized Likelihood (f<sub>bin</sub> × π)',
+                        height=400,
                         live=not _hd.get('is_final', True),
                         scoring_label='Likelihood',
-                        colorbar_title_override='Normalized Likelihood'),
+                        colorbar_title_override='Norm. Likelihood'),
                     use_container_width=True)
+                # 1D fallback profiles
+                _lsig = _j.get('live_sigma_1d')
+                if _lsig and len(_lsig.get('sigma_vals', [])) > 1:
+                    _lsig_lk = _lsig.get('max_likelihood', [])
+                    if _lsig_lk and any(v > 0 for v in _lsig_lk):
+                        st.plotly_chart(
+                            _make_max_pval_fig(
+                                np.array(_lsig['sigma_vals']),
+                                _lsig_lk, height=250,
+                                x_label='σ_single (km/s)',
+                                stat_label='Likelihood',
+                            ), use_container_width=True)
         if _j.get('live_status'):
             st.markdown(_j['live_status'])
-        # Live σ×logP profile: 2D heatmap when both scanned, else 1D charts
-        _live_2d = _j.get('live_sigma_logPmax_2d')
-        if _live_2d and len(_live_2d.get('sigma_vals', [])) > 1 and len(_live_2d.get('logPmax_vals', [])) > 1:
-            _sig_v = np.array(_live_2d['sigma_vals'])
-            _lp_v = np.array(_live_2d['logPmax_vals'])
-            _hm_data = np.array(_live_2d['max_likelihood_2d'])
-            if np.any(_hm_data > 0):
-                from shared import make_heatmap_fig
-                _fig_2d = make_heatmap_fig(
-                    _hm_data, _lp_v, _sig_v,
-                    title='Max Likelihood (σ_single × logP_max)',
-                    show_d=False, height=350,
-                    x_label='σ_single (km/s)',
-                    y_label='log₁₀(P_max / days)',
-                    x_name='σ', scoring_label='Likelihood',
-                    colorbar_title_override='Max Likelihood',
-                )
-                st.plotly_chart(_fig_2d, use_container_width=True)
-        else:
-            # Fallback: separate 1D charts
-            _lsig = _j.get('live_sigma_1d')
-            if _lsig and len(_lsig.get('sigma_vals', [])) > 1:
-                _lsig_lk = _lsig.get('max_likelihood', [])
-                if _lsig_lk and any(v > 0 for v in _lsig_lk):
-                    st.plotly_chart(
-                        _make_max_pval_fig(
-                            np.array(_lsig['sigma_vals']),
-                            _lsig_lk, height=250,
-                            x_label='σ_single (km/s)',
-                            stat_label='Likelihood',
-                        ), use_container_width=True)
-            _llp = _j.get('live_logPmax_1d')
-            if _llp and len(_llp.get('logPmax_vals', [])) > 1:
-                _llp_lk = _llp.get('max_likelihood', [])
-                if _llp_lk and any(v > 0 for v in _llp_lk):
-                    st.plotly_chart(
-                        _make_max_pval_fig(
-                            np.array(_llp['logPmax_vals']),
-                            _llp_lk, height=250,
-                            x_label='logP_max', stat_label='Likelihood',
-                        ), use_container_width=True)
     _cadence_live_poll()
 
 
