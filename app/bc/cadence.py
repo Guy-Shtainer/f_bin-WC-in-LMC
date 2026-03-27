@@ -68,22 +68,70 @@ def _render_top_heatmaps(p, result, fbin_g, pi_g, sigma_g, logPmax_g,
     else:
         _norm_fbpi = lk_arr
 
-    # Max normalized over f_bin×π → σ×logP
-    _norm_siglp = None
+    # Max normalized over f_bin×π → σ×logP (2D heatmap or 1D profile)
+    _norm_siglp = None      # 2D: both σ and logP scanned
+    _norm_1d_vals = None     # 1D fallback: only σ or only logP scanned
+    _norm_1d_grid = None
+    _norm_1d_label = None
     if _has_sig and _has_lp and lk_arr.ndim == 4:
         _norm_siglp = np.nanmax(lk_arr, axis=(2, 3))  # [logP, sigma]
+    elif _has_sig:
+        # σ only → 1D line
+        _norm_1d_grid = sigma_g
+        _norm_1d_label = 'σ_single (km/s)'
+        if lk_arr.ndim == 4:
+            _norm_1d_vals = [float(np.nanmax(lk_arr[:, i_s, :, :]))
+                            if np.any(np.isfinite(lk_arr[:, i_s, :, :])) else 0.0
+                            for i_s in range(sigma_g.size)]
+        elif lk_arr.ndim == 3:
+            _norm_1d_vals = [float(np.nanmax(lk_arr[i_s]))
+                            if np.any(np.isfinite(lk_arr[i_s])) else 0.0
+                            for i_s in range(sigma_g.size)]
+    elif _has_lp:
+        # logP only → 1D line
+        _norm_1d_grid = logPmax_g
+        _norm_1d_label = 'log₁₀(P_max)'
+        if lk_arr.ndim == 4:
+            _norm_1d_vals = [float(np.nanmax(lk_arr[i_lp]))
+                            if np.any(np.isfinite(lk_arr[i_lp])) else 0.0
+                            for i_lp in range(logPmax_g.size)]
+        elif lk_arr.ndim == 3:
+            _norm_1d_vals = [float(np.nanmax(lk_arr[i_lp]))
+                            if np.any(np.isfinite(lk_arr[i_lp])) else 0.0
+                            for i_lp in range(logPmax_g.size)]
 
-    # Unnormalized -logL
+    # Unnormalized logL (raw, negative values)
     _logL_raw = result.get('logL_raw')
     _unnorm_fbpi = _unnorm_siglp = None
+    _unnorm_1d_vals = None
+    _unnorm_1d_grid = None
+    _unnorm_1d_label = None
     if _logL_raw is not None:
         _lr = np.asarray(_logL_raw, dtype=float)
         if _lr.ndim == 4:
             _unnorm_fbpi = _lr[_bf[0], _bf[1]]
             if _has_sig and _has_lp:
                 _unnorm_siglp = np.nanmax(_lr, axis=(2, 3))
+            elif _has_sig:
+                _unnorm_1d_grid = sigma_g
+                _unnorm_1d_label = 'σ_single (km/s)'
+                _unnorm_1d_vals = [float(np.nanmax(_lr[:, i_s, :, :]))
+                                   if np.any(np.isfinite(_lr[:, i_s, :, :])) else 0.0
+                                   for i_s in range(sigma_g.size)]
+            elif _has_lp:
+                _unnorm_1d_grid = logPmax_g
+                _unnorm_1d_label = 'log₁₀(P_max)'
+                _unnorm_1d_vals = [float(np.nanmax(_lr[i_lp]))
+                                   if np.any(np.isfinite(_lr[i_lp])) else 0.0
+                                   for i_lp in range(logPmax_g.size)]
         elif _lr.ndim == 3:
             _unnorm_fbpi = _lr[_bf[0]]
+            if _has_sig:
+                _unnorm_1d_grid = sigma_g
+                _unnorm_1d_label = 'σ_single (km/s)'
+                _unnorm_1d_vals = [float(np.nanmax(_lr[i_s]))
+                                   if np.any(np.isfinite(_lr[i_s])) else 0.0
+                                   for i_s in range(sigma_g.size)]
 
     x_g = pi_g if is_dsilva else sigma_g
     x_label = 'π' if is_dsilva else 'σ_single (km/s)'
@@ -114,7 +162,7 @@ def _render_top_heatmaps(p, result, fbin_g, pi_g, sigma_g, logPmax_g,
         st.plotly_chart(_fig1, use_container_width=use_cw,
                         key=f'{p}_top_norm_fbpi')
     with _r1c2:
-        # WORKING — do not change this code (H2: Max Norm. Likelihood σ×logP)
+        # WORKING — do not change this code (H2: Max Norm. Likelihood σ×logP / 1D fallback)
         if _norm_siglp is not None:
             _fig2 = _make_heatmap_fig(
                 _norm_siglp, logPmax_g, sigma_g,
@@ -127,38 +175,50 @@ def _render_top_heatmaps(p, result, fbin_g, pi_g, sigma_g, logPmax_g,
             )
             st.plotly_chart(_fig2, use_container_width=use_cw,
                             key=f'{p}_top_norm_siglp')
-        else:
-            st.info('σ×logP heatmap requires both sigma and logPmax scans.')
+        elif _norm_1d_vals is not None:
+            _fig2 = _make_max_pval_fig(
+                _norm_1d_grid, _norm_1d_vals, height=height,
+                x_label=_norm_1d_label, stat_label='Norm. Likelihood',
+            )
+            st.plotly_chart(_fig2, use_container_width=use_cw,
+                            key=f'{p}_top_norm_1d')
 
-    # Row 2: Unnormalized -logL
+    # Row 2: Unnormalized logL (raw, negative values — higher = better)
     if _unnorm_fbpi is not None:
         _r2c1, _r2c2 = st.columns(2)
         with _r2c1:
-            # WORKING — do not change this code (H3: −log L f_bin×π)
+            # WORKING — do not change this code (H3: log L f_bin×π)
             _fig3 = _make_heatmap_fig(
                 _unnorm_fbpi, fbin_g, x_g,
-                title='−log L (f<sub>bin</sub> × π)',
+                title='log L (f<sub>bin</sub> × π)',
                 show_d=False, height=height,
                 x_label=x_label, x_name='pi' if is_dsilva else 'sigma',
-                scoring_label='−log L',
-                colorbar_title_override='−log L',
+                scoring_label='log L',
+                colorbar_title_override='log L',
             )
             st.plotly_chart(_fig3, use_container_width=use_cw,
                             key=f'{p}_top_unnorm_fbpi')
         with _r2c2:
-            # WORKING — do not change this code (H4: Max −log L σ×logP)
+            # WORKING — do not change this code (H4: Max log L σ×logP / 1D fallback)
             if _unnorm_siglp is not None:
                 _fig4 = _make_heatmap_fig(
                     _unnorm_siglp, logPmax_g, sigma_g,
-                    title='Max −log L (σ × logP_max)',
+                    title='Max log L (σ × logP_max)',
                     show_d=False, height=height,
                     x_label='σ_single (km/s)',
                     y_label='log₁₀(P_max)',
-                    x_name='σ', scoring_label='−log L',
-                    colorbar_title_override='Max −log L',
+                    x_name='σ', scoring_label='log L',
+                    colorbar_title_override='Max log L',
                 )
                 st.plotly_chart(_fig4, use_container_width=use_cw,
                                 key=f'{p}_top_unnorm_siglp')
+            elif _unnorm_1d_vals is not None:
+                _fig4 = _make_max_pval_fig(
+                    _unnorm_1d_grid, _unnorm_1d_vals, height=height,
+                    x_label=_unnorm_1d_label, stat_label='log L',
+                )
+                st.plotly_chart(_fig4, use_container_width=use_cw,
+                                key=f'{p}_top_unnorm_1d')
 
 
 # ─────────────────────────────────────────────────────────────────────────────

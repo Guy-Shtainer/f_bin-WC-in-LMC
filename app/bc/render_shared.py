@@ -406,7 +406,7 @@ def render_sigma_scan_chart(ctx: dict) -> None:
             return
         fig_hm = make_heatmap_fig(
             hm_2d, logPmax_g, sigma_g,
-            title='Max −logL (σ_single × logP_max)',
+            title='Max Norm. Likelihood (σ_single × logP_max)',
             show_d=False, height=450,
             x_label='σ_single (km/s)',
             y_label='log₁₀(P_max / days)',

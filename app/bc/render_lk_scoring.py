@@ -1,9 +1,11 @@
 """bc.render_lk_scoring -- Likelihood scoring detail heatmaps.
 
-Renders the Likelihood-specific scoring analysis: log toggle, grid exclusion,
-scoring heatmaps (raw -logL, masked, normalized likelihood), likelihood CDF,
+Renders the Likelihood-specific scoring analysis: grid exclusion,
+scoring heatmaps (raw logL, normalized likelihood), likelihood CDF,
 per-bin stats table, explanation, fit mode selector, parabolic fitting,
 3D surface, 1D slices, and interpolated best-fit.
+
+Convention: logL is always negative (higher = better). We find the maximum.
 
 Self-contained: all needed code is copied here (no imports from
 render_ks_scoring.py, analysis.py, or scoring_detail.py).
@@ -34,7 +36,7 @@ from bc.render_lk_fit import (
 _make_heatmap_fig = make_heatmap_fig
 
 # Likelihood-specific constants
-_STAT_NAME = '-log L'
+_STAT_NAME = 'log L'
 _STAT_DISPLAY = 'Likelihood'
 _SCORE_NAME = 'Normalized Likelihood'
 _METHOD_COLOR = '#DAA520'
@@ -115,18 +117,12 @@ def render_lk_scoring_detail(
     """
     _theme = PLOTLY_THEME
 
-    # -- D6: Log scale toggle --------------------------------------
-    _log_label = f'Log10({_STAT_NAME}) scale'
-    _use_log = st.checkbox(_log_label, value=False, key=f'{prefix}_log_s')
+    # -- D6: Log scale toggle REMOVED (heatmaps moved to top) ------
+    _cbar_title = _STAT_NAME
 
     def _to_display(S_arr):
-        """Transform S values for display (log or linear)."""
-        if _use_log:
-            return np.log10(np.where(S_arr > 0, S_arr, np.nan))
+        """Pass-through (linear scale)."""
         return S_arr
-
-    _cbar_title = f'log10({_STAT_NAME})' if _use_log else _STAT_NAME
-    _z_hover = _cbar_title
 
     # -- D7: Grid range exclusion (above heatmaps) ----------------
     with st.expander('Grid Range Exclusion', expanded=False):
@@ -217,39 +213,14 @@ def render_lk_scoring_detail(
         )
 
     # Apply exclusion -- working copies for fitting AND display
-    # For likelihood: logL_raw is negative (higher = better), negate
-    # to get -logL (positive, lower = better) -- consistent with minimization.
-    _S_work = -lk_D_2d.copy().astype(float)
+    # logL_raw is negative (higher = better) — display as-is, find maximum.
+    _S_work = lk_D_2d.copy().astype(float)
     _S_work[_exc_mask_2d] = np.nan
     _p_work = lk_p_2d.copy().astype(float)
     _p_work[_exc_mask_2d] = np.nan
 
-    # -- D5a: Raw -logL heatmap (σ×logP right panel MOVED to top) ---
+    # -- D5a: REMOVED — heatmap moved to top (H3 in cadence.py) -----
     st.markdown('#### Likelihood Analysis')
-
-    _d5_left = st.container()
-    with _d5_left:
-        fig_raw = go.Figure(go.Heatmap(
-            z=_to_display(_S_work), x=y_grid, y=x_grid,
-            colorscale='Viridis_r', colorbar=dict(title=_cbar_title, len=0.8),
-            hovertemplate=(
-                f'{y_label}: %{{x:.3f}}<br>'
-                f'{x_label}: %{{y:.3f}}<br>'
-                f'{_z_hover}: %{{z:.2f}}<extra></extra>'
-            ),
-        ))
-        _raw_title = f'{_STAT_DISPLAY} -- {_cbar_title} (f<sub>bin</sub> × {y_label})'
-        fig_raw.update_layout(**{
-            **_theme,
-            'title': dict(text=_raw_title),
-            'xaxis': dict(title=y_label),
-            'yaxis': dict(title=x_label),
-            'height': height,
-            'width': width,
-        })
-        _raw_slot = st.empty()
-        _raw_slot.plotly_chart(fig_raw, use_container_width=True)
-        st.caption('Higher likelihood = better fit. Gold star marks parabolic best fit.')
 
     # D5a right panel (σ×logP) MOVED to top heatmaps in cadence.py
 
@@ -287,7 +258,7 @@ def render_lk_scoring_detail(
 
     if _mode == 'height':
         _h_factor = _fc2.number_input(
-            '2D fit: S < S_min x', min_value=1.01, max_value=1000.0,
+            '2D fit: S > S_max x', min_value=1.01, max_value=1000.0,
             value=2.0, step=0.5, key=f'{prefix}_h_factor')
         _h1, _h2 = st.columns(2)
         _h_factor_x = _h1.number_input(
@@ -343,21 +314,10 @@ def render_lk_scoring_detail(
         mode=_mode, fraction_x=_frac_x, fraction_y=_frac_y,
         height_factor=_h_factor,
         n_neighbors_x=_nn_x, n_neighbors_y=_nn_y,
+        find_max=True,
     )
 
-    # Add gold star to raw heatmap (axes swapped: x=y_grid, y=x_grid)
-    fig_raw.add_trace(go.Scatter(
-        x=[best_y], y=[best_x], mode='markers',
-        marker=dict(symbol='star', size=16, color=_METHOD_COLOR,
-                    line=dict(width=1, color='black')),
-        name='Best fit (parabolic)',
-        hovertemplate=(
-            f'{x_label}={best_x:.4f}<br>'
-            f'{y_label}={best_y:.3f}<br>'
-            f'{_STAT_NAME}={best_S:.2f}<extra></extra>'
-        ),
-    ))
-    _raw_slot.plotly_chart(fig_raw, use_container_width=True)
+    # D5a heatmap removed — gold star no longer needed on it
 
     st.success(
         f'**Parabolic best fit (max likelihood):** {x_label} = {best_x:.4f}, '
@@ -428,8 +388,8 @@ def render_lk_scoring_detail(
             x=[best_y], y=[best_x], z=[_bestS_disp],
             mode='markers',
             marker=dict(size=8, color=_METHOD_COLOR, symbol='diamond'),
-            name='Minimum',
-            hovertemplate=_3d_hover + '<extra>Minimum</extra>',
+            name='Maximum',
+            hovertemplate=_3d_hover + '<extra>Maximum</extra>',
         ))
         fig_3d.update_layout(**{
             **_theme,
@@ -461,26 +421,28 @@ def render_lk_scoring_detail(
     _, _, cx, frx = _parabolic_min_1d(
         x_grid, S_x_slice, mode=_mode, fraction=_frac_x,
         height_factor=_h_factor_x, n_neighbors=_nn_x,
+        find_max=True,
     )
     _, _, cy, fry = _parabolic_min_1d(
         y_grid, S_y_slice, mode=_mode, fraction=_frac_y,
         height_factor=_h_factor_y, n_neighbors=_nn_y,
+        find_max=True,
     )
     bx = best_x
-    bS_x = best_S if best_S is not None else float(np.nanmin(S_x_slice))
+    bS_x = best_S if best_S is not None else float(np.nanmax(S_x_slice))
     by = best_y
-    bS_y = best_S if best_S is not None else float(np.nanmin(S_y_slice))
+    bS_y = best_S if best_S is not None else float(np.nanmax(S_y_slice))
 
     # Compute sigma best-fit if 3D (for interp result), but don't render σ slice
     bsig = None
     if (sigma_grid is not None and lk_D_3d is not None
             and len(sigma_grid) > 1):
-        _lk_D_3d_neg = (-lk_D_3d).astype(float)
-        S_sig_slice = _lk_D_3d_neg[:, i_x_best, i_y_best]
+        S_sig_slice = lk_D_3d[:, i_x_best, i_y_best].astype(float)
         bsig, _, _, _ = _parabolic_min_1d(
             sigma_grid, S_sig_slice, mode=_mode,
             fraction=_frac_x,
             height_factor=_h_factor_x, n_neighbors=_nn_1d,
+            find_max=True,
         )
 
     # Only f_bin and π slices (2-column layout)
@@ -488,12 +450,12 @@ def render_lk_scoring_detail(
     _render_cvm_1d_plot(
         sc1, x_grid, S_x_slice, x_label, bx, bS_x, cx, frx,
         f'Slice at {y_label}={y_grid[i_y_best]:.3f}', height=300,
-        log_transform=_use_log,
+        log_transform=False,
     )
     _render_cvm_1d_plot(
         sc2, y_grid, S_y_slice, y_label, by, bS_y, cy, fry,
         f'Slice at {x_label}={x_grid[i_x_best]:.4f}', height=300,
-        log_transform=_use_log,
+        log_transform=False,
     )
 
     # Caption: which σ and logP produced this slice
@@ -502,7 +464,7 @@ def render_lk_scoring_detail(
         _sig_at = sigma_grid[int(np.argmin(np.abs(sigma_grid - (bsig if bsig is not None else sigma_grid[0]))))]
         _slice_parts.append(f'σ_single = {_sig_at:.1f} km/s')
     if logPmax_grid is not None and logPmax_grid.size > 1:
-        _slice_parts.append(f'logP_max = (from slider above)')
+        _slice_parts.append('logP_max = (from slider above)')
     if _slice_parts:
         st.caption(f'1D slices at: {", ".join(_slice_parts)}')
 
@@ -512,25 +474,7 @@ def render_lk_scoring_detail(
         _interp_result['sigma'] = bsig
     st.session_state[f'{prefix}_interp'] = _interp_result
 
-    # Add green star for interpolated point on masked heatmap
-    _interp_fb_val = _interp_result.get('f_bin', best_x)
-    _interp_y_val = _interp_result.get(
-        'pi', _interp_result.get(
-            'sigma', _interp_result.get('y_val', best_y)))
-    if _interp_fb_val is not None and _interp_y_val is not None:
-        _star_trace = go.Scatter(
-            x=[_interp_y_val], y=[_interp_fb_val], mode='markers',
-            marker=dict(symbol='star', size=14, color='#00CC66',
-                        line=dict(width=1, color='black')),
-            name='Interpolated',
-            hovertemplate=(
-                f'{x_label}={_interp_fb_val:.4f}<br>'
-                f'{y_label}={_interp_y_val:.3f}'
-                f'<extra>Interpolated best</extra>'
-            ),
-        )
-        fig_raw.add_trace(_star_trace)
-        _raw_slot.plotly_chart(fig_raw, use_container_width=True)
+    # D5a heatmap removed — interpolated star no longer rendered on it
 
     # Store exclusion masks in session_state for downstream sections
     st.session_state[f'{prefix}_exc_mask_2d'] = _exc_mask_2d

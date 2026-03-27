@@ -33,8 +33,8 @@
 |---|-----|-------|--------|------|---------|
 | 0a | H1 | Normalized Likelihood (f_bin × π) at best σ/logP | **WORKING ✓** | `cadence.py` | |
 | 0b | H2 | Max Normalized Likelihood (σ × logP_max) | **WORKING ✓** | `cadence.py` | |
-| 0c | H3 | −log L (f_bin × π) at best σ/logP | **WORKING ✓** | `cadence.py` | |
-| 0d | H4 | Max −log L (σ × logP_max) | **WORKING ✓** | `cadence.py` | |
+| 0c | H3 | log L (f_bin × π) at best σ/logP | **WORKING ✓** | `cadence.py` | |
+| 0d | H4 | Max log L (σ × logP_max) | **WORKING ✓** | `cadence.py` | |
 
 ### Shared Section (`render_shared.py` → `render_shared_section()`)
 
@@ -59,16 +59,16 @@
 
 | # | ID | Graph | Status | File | Comment |
 |---|-----|-------|--------|------|---------|
-| 6 | A3 | Max −logL vs σ/logPmax (unnormalized) | **MODIFY** | `render_shared.py` (called from `render_lk.py`) | MOVE: place as RIGHT panel of D5a (unnormalized row). Replace current D5a right panel (σ×logPmax max-L) with this. See D1/D5a for full layout reorganization |
+| 6 | A3 | Max logL vs σ/logPmax (unnormalized) | **MODIFY** | `render_shared.py` (called from `render_lk.py`) | MOVE: place as RIGHT panel of D5a (unnormalized row). Replace current D5a right panel (σ×logPmax max-L) with this. See D1/D5a for full layout reorganization |
 | 7 | D1 | ~~Primary Heatmap~~ | **MOVED** | `cadence.py` | Moved to top heatmaps (H1-H4). Sliders removed. |
 | - | ~~D2-D3~~ | ~~Extra Heatmaps~~ | **REMOVED** | | Covered by A3 upgrade |
-| 8 | D4 | Best-Fit Metric Cards | **WORKING ✓** | `render_lk.py` | |
-| 9 | D5a | Raw logL Heatmap (single panel) | **MODIFY** | `render_lk_scoring.py` | RIGHT panel moved to top (H4). LEFT panel kept for parabolic fit overlay |
+| - | ~~D4~~ | ~~Best-Fit Metric Cards~~ | **REMOVED** | `render_lk.py` | Redundant with top heatmaps |
+| - | ~~D5a~~ | ~~Raw logL Heatmap~~ | **REMOVED** | `render_lk_scoring.py` | Duplicate of H3 in top heatmaps |
 | - | ~~D5b~~ | ~~Score-Masked Heatmap~~ | **REMOVED** | | |
 | - | ~~D5c~~ | ~~Normalized Likelihood Heatmap~~ | **REMOVED** | | |
 | - | ~~E6~~ | ~~Per-Bin Breakdown Table~~ | **MOVED** | | Moved to Shared Section (#2b), directly under A2 CDF |
 | 11 | E7 | LaTeX Methodology Explainer (good + bad example) | **WORKING ✓** | `render_lk_fit.py` | Approved 2026-03-25 |
-| 12 | D10 | 3D Parabolic Surface | **MODIFY** | `render_lk_scoring.py` | Move fit selection controls (Height/Range/Neighborhood radio + params) to be under the "3D Parabolic Surface" title, not above it |
+| 12 | D10 | 3D Parabolic Surface | **WORKING ✓** | `render_lk_scoring.py` | Approved 2026-03-26 |
 | 13 | D9 | 1D Slices (parabolic fit + HDI) | **MODIFY** | `render_lk_scoring.py` | (1) Only show f_bin and π slices — remove σ and logP_max 1D slices. (2) LaTeX axis labels. (3) Change star marker from yellow to green |
 | - | ~~D11~~ | ~~3D Projections (N-D fit)~~ | **REMOVED** | | Simplified to f_bin×π only |
 | - | ~~D12~~ | ~~Score vs σ Profile~~ | **REMOVED** | | Covered by A3 |
@@ -84,12 +84,18 @@
 
 ## Removed Graphs (backed up in Backups/)
 
-D2-D3, D5b, D5c, D8, D11, D12, D13, A2 (old), A4, E5, D16 (folded into D15),
+D2-D3, D4, D5a, D5b, D5c, D8, D11, D12, D13, A2 (old), A4, E5, D16 (folded into D15),
 E8, E9, all K-S/CvM/weighted graphs
 
 ---
 
 ## Change Log
+
+### 2026-03-26: LogL Consistency + Cleanup
+- **Removed:** D4 (metric cards, redundant with top heatmaps), D5a (logL heatmap, duplicate of H3)
+- **Removed:** Log10 scale toggle (redundant after top heatmaps)
+- **Global:** Unified sign convention — all "−log L" labels → "log L". Parabolic fit now finds maximum (not minimum). Values shown as negative (higher = better)
+- **Files:** cadence.py, render_lk_scoring.py, render_lk_fit.py, render_lk_explorer.py, render_shared.py
 
 ### 2026-03-25: Rendering Order Audit
 - Reordered entire catalog to match actual code rendering sequence

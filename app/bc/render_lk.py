@@ -233,14 +233,7 @@ def _render_lk_expander(
     _user_sig_idx = _default_sig if _has_sig_slider else None
     _user_lp_idx = _default_lp if _has_lp_slider else None
 
-    # Show best-fit caption
-    if _has_sig_slider or _has_lp_slider:
-        _best_parts = []
-        if _has_sig_slider:
-            _best_parts.append(f'σ_single = {_sigma_g_sl[_default_sig]:.1f} km/s')
-        if _has_lp_slider:
-            _best_parts.append(f'logP_max = {_logPmax_g_sl[_default_lp]:.2f}')
-        st.caption(f'Showing best-fit slice: {", ".join(_best_parts)}')
+    # D1 caption/cards REMOVED — heatmaps moved to top (_render_top_heatmaps)
 
     # -- Slice down to 2D: [fbin, x] at best-fit ------------------
     if _user_lp_idx is not None:
@@ -291,70 +284,11 @@ def _render_lk_expander(
         if D_2d is not None:
             D_2d = D_2d.T
 
-    # -- Global best across all dimensions -------------------------
+    # -- D4 metric cards + D1 heatmaps REMOVED — moved to top heatmaps --
     valid = np.isfinite(p_nd)
     if not np.any(valid):
         st.warning(f'No valid data for {_DISPLAY_NAME}.')
         return
-
-    flat_best = int(np.nanargmax(p_nd))
-    global_best_idx = np.unravel_index(flat_best, p_nd.shape)
-    global_best_score = float(p_nd[global_best_idx])
-
-    # Slice best
-    slice_valid = np.isfinite(p_2d)
-    if np.any(slice_valid):
-        flat_slice_best = int(np.nanargmax(p_2d))
-        slice_best_idx = np.unravel_index(flat_slice_best, p_2d.shape)
-        slice_best_fb = float(fbin_g[slice_best_idx[0]])
-        slice_best_x = float(x_g[slice_best_idx[1]])
-        slice_best_score = float(p_2d[slice_best_idx])
-    else:
-        slice_best_fb = slice_best_x = slice_best_score = float('nan')
-
-    # Determine global best fbin and x values
-    if ndim_mode == 'dsilva':
-        g_fb = float(fbin_g[global_best_idx[2]])
-        g_x = float(x_g[global_best_idx[3]])
-    elif ndim_mode == 'cadence_dsilva':
-        g_fb = float(fbin_g[global_best_idx[-2]])
-        g_x = float(x_g[global_best_idx[-1]])
-    elif ndim_mode == 'cadence_langer':
-        if p_nd.ndim == 3:
-            g_fb = float(fbin_g[global_best_idx[2]])
-            g_x = float(x_g[global_best_idx[1]])
-        else:
-            g_fb = float(fbin_g[global_best_idx[0]])
-            g_x = float(x_g[global_best_idx[1]])
-    else:
-        g_fb = float(fbin_g[global_best_idx[0]])
-        g_x = float(x_g[global_best_idx[1]])
-
-    # -- D1 heatmaps MOVED to top (_render_top_heatmaps in cadence.py) --
-
-    # -- D4: Best-fit metrics -------------------------------------
-    _is_2d_mode = ndim_mode in ('langer', 'cadence_langer') or p_nd.ndim <= 2
-    if _is_2d_mode:
-        st.metric(
-            label=f'Best fit ({_DISPLAY_NAME})',
-            value=f'f_bin={g_fb:.4f}, {x_label}={g_x:.3f}',
-            delta=f'{_SCORE_LABEL} = {global_best_score:.6f}',
-            delta_color='off',
-        )
-    else:
-        mc1, mc2 = st.columns(2)
-        mc1.metric(
-            label=f'Current slice best ({_DISPLAY_NAME})',
-            value=f'f_bin={slice_best_fb:.4f}, {x_label}={slice_best_x:.3f}',
-            delta=f'{_SCORE_LABEL} = {slice_best_score:.6f}',
-            delta_color='off',
-        )
-        mc2.metric(
-            label=f'Global best ({_DISPLAY_NAME})',
-            value=f'f_bin={g_fb:.4f}, {x_label}={g_x:.3f}',
-            delta=f'{_SCORE_LABEL} = {global_best_score:.6f}',
-            delta_color='off',
-        )
 
     # -- Likelihood scoring detail ---------------------------------
     _sigma_g_fit = np.asarray(result.get('sigma_grid', []))

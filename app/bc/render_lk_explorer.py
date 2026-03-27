@@ -493,23 +493,23 @@ def _render_lk_model_explorer(
         with _hm_r2c1:
             if _unnorm_fbpi is not None:
                 _fig3 = _mkhm(_unnorm_fbpi, fbin_g, x_g,
-                               title='−log L (f<sub>bin</sub> × π)',
+                               title='log L (f<sub>bin</sub> × π)',
                                show_d=False, height=350,
                                x_label=x_label, x_name=x_name,
-                               scoring_label='−log L',
-                               colorbar_title_override='−log L')
+                               scoring_label='log L',
+                               colorbar_title_override='log L')
                 _green_dot(_fig3, me_x, me_fb)
                 st.plotly_chart(_fig3, use_container_width=True,
                                 key=f'{prefix}_lk_me_hm_unnorm_fbpi')
         with _hm_r2c2:
             if _unnorm_siglp is not None:
                 _fig4 = _mkhm(_unnorm_siglp, _lp_g_hm, _sig_g_hm,
-                               title='Max −log L (σ × logP)',
+                               title='Max log L (σ × logP)',
                                show_d=False, height=350,
                                x_label='σ_single (km/s)',
                                y_label='log₁₀(P_max)',
-                               x_name='σ', scoring_label='−log L',
-                               colorbar_title_override='Max −log L')
+                               x_name='σ', scoring_label='log L',
+                               colorbar_title_override='Max log L')
                 _green_dot(_fig4, me_sig, me_logPmax if me_logPmax else _lp_g_hm[0])
                 st.plotly_chart(_fig4, use_container_width=True,
                                 key=f'{prefix}_lk_me_hm_unnorm_siglp')

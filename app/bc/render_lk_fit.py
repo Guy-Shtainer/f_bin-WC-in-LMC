@@ -31,35 +31,48 @@ _DISPLAY_NAME = 'Likelihood'
 # ---------------------------------------------------------------------------
 
 def _parabolic_min_1d(t_grid, S_vals, mode='height', fraction=0.1,
-                      height_factor=2.0, n_neighbors=2):
-    """Find sub-grid minimum via 1D parabolic fit around grid minimum."""
+                      height_factor=2.0, n_neighbors=2, find_max=False):
+    """Find sub-grid extremum via 1D parabolic fit.
+
+    When find_max=True, finds the maximum (for logL); otherwise the minimum.
+    """
     finite = np.isfinite(S_vals)
     if finite.sum() == 0:
         return None, None, None, None
+    _argopt = np.nanargmax if find_max else np.nanargmin
     if finite.sum() < 3:
-        i_min = int(np.nanargmin(S_vals))
-        return float(t_grid[i_min]), float(S_vals[i_min]), None, None
-    i_min = int(np.nanargmin(S_vals))
-    S_min = float(S_vals[i_min])
-    t_min = float(t_grid[i_min])
+        i_opt = int(_argopt(S_vals))
+        return float(t_grid[i_opt]), float(S_vals[i_opt]), None, None
+    i_opt = int(_argopt(S_vals))
+    S_opt = float(S_vals[i_opt])
+    t_opt = float(t_grid[i_opt])
     if mode == 'height':
-        sel = finite & (S_vals <= S_min * max(height_factor, 1.01))
+        if find_max:
+            # logL is negative; select points within a factor of the best
+            sel = finite & (S_vals >= S_opt * max(height_factor, 1.01))
+        else:
+            sel = finite & (S_vals <= S_opt * max(height_factor, 1.01))
     elif mode == 'neighborhood':
-        lo = max(0, i_min - n_neighbors)
-        hi = min(len(t_grid), i_min + n_neighbors + 1)
+        lo = max(0, i_opt - n_neighbors)
+        hi = min(len(t_grid), i_opt + n_neighbors + 1)
         sel = np.zeros_like(finite)
         sel[lo:hi] = finite[lo:hi]
     else:
         t_range = (t_grid[-1] - t_grid[0]) * fraction / 2
-        sel = finite & (np.abs(t_grid - t_min) <= t_range)
+        sel = finite & (np.abs(t_grid - t_opt) <= t_range)
     if sel.sum() < 3:
-        return t_min, S_min, None, None
+        return t_opt, S_opt, None, None
     t_sel = t_grid[sel]
     S_sel = S_vals[sel]
     coeffs = np.polyfit(t_sel, S_sel, 2)
     a, b, c = coeffs
-    if a <= 0:
-        return t_min, S_min, coeffs, (t_sel.min(), t_sel.max())
+    # For max: need downward parabola (a < 0); for min: upward (a > 0)
+    if find_max:
+        if a >= 0:
+            return t_opt, S_opt, coeffs, (t_sel.min(), t_sel.max())
+    else:
+        if a <= 0:
+            return t_opt, S_opt, coeffs, (t_sel.min(), t_sel.max())
     best_t = float(-b / (2 * a))
     best_S = float(a * best_t**2 + b * best_t + c)
     return best_t, best_S, coeffs, (float(t_sel.min()), float(t_sel.max()))
@@ -68,35 +81,43 @@ def _parabolic_min_1d(t_grid, S_vals, mode='height', fraction=0.1,
 def _parabolic_min_2d(x_grid, y_grid, S_2d, mode='height',
                       fraction_x=0.1, fraction_y=0.1,
                       height_factor=2.0,
-                      n_neighbors_x=2, n_neighbors_y=2):
-    """Find sub-grid minimum via 2D parabolic (quadratic) fit."""
+                      n_neighbors_x=2, n_neighbors_y=2,
+                      find_max=False):
+    """Find sub-grid extremum via 2D parabolic (quadratic) fit.
+
+    When find_max=True, finds the maximum (for logL); otherwise the minimum.
+    """
     _empty = (None, None, None, None, None)
     finite = np.isfinite(S_2d)
     if finite.sum() == 0:
         return _empty
+    _argopt = np.nanargmax if find_max else np.nanargmin
     if finite.sum() < 6:
-        idx = np.unravel_index(np.nanargmin(S_2d), S_2d.shape)
+        idx = np.unravel_index(_argopt(S_2d), S_2d.shape)
         return float(x_grid[idx[0]]), float(y_grid[idx[1]]), float(S_2d[idx]), None, None
-    idx = np.unravel_index(np.nanargmin(S_2d), S_2d.shape)
-    S_min = float(S_2d[idx])
-    x_min, y_min = float(x_grid[idx[0]]), float(y_grid[idx[1]])
+    idx = np.unravel_index(_argopt(S_2d), S_2d.shape)
+    S_opt = float(S_2d[idx])
+    x_opt, y_opt = float(x_grid[idx[0]]), float(y_grid[idx[1]])
     xs, ys = np.meshgrid(x_grid, y_grid, indexing='ij')
     xf, yf, zf = xs.ravel(), ys.ravel(), S_2d.ravel()
     fin = np.isfinite(zf)
     if mode == 'height':
-        sel = fin & (zf <= S_min * max(height_factor, 1.01))
+        if find_max:
+            sel = fin & (zf >= S_opt * max(height_factor, 1.01))
+        else:
+            sel = fin & (zf <= S_opt * max(height_factor, 1.01))
     elif mode == 'neighborhood':
-        ix_min, iy_min = idx
+        ix_opt, iy_opt = idx
         mask_2d = np.zeros_like(S_2d, dtype=bool)
-        mask_2d[max(0, ix_min - n_neighbors_x):min(len(x_grid), ix_min + n_neighbors_x + 1),
-                max(0, iy_min - n_neighbors_y):min(len(y_grid), iy_min + n_neighbors_y + 1)] = True
+        mask_2d[max(0, ix_opt - n_neighbors_x):min(len(x_grid), ix_opt + n_neighbors_x + 1),
+                max(0, iy_opt - n_neighbors_y):min(len(y_grid), iy_opt + n_neighbors_y + 1)] = True
         sel = fin & mask_2d.ravel()
     else:
         x_range = (x_grid[-1] - x_grid[0]) * fraction_x / 2
         y_range = (y_grid[-1] - y_grid[0]) * fraction_y / 2
-        sel = fin & (np.abs(xf - x_min) <= x_range) & (np.abs(yf - y_min) <= y_range)
+        sel = fin & (np.abs(xf - x_opt) <= x_range) & (np.abs(yf - y_opt) <= y_range)
     if sel.sum() < 6:
-        return x_min, y_min, S_min, None, None
+        return x_opt, y_opt, S_opt, None, None
     xf, yf, zf = xf[sel], yf[sel], zf[sel]
     fit_bounds = (float(xf.min()), float(xf.max()), float(yf.min()), float(yf.max()))
     A = np.column_stack([xf**2, yf**2, xf*yf, xf, yf, np.ones_like(xf)])
@@ -104,39 +125,56 @@ def _parabolic_min_2d(x_grid, y_grid, S_2d, mode='height',
     a, b, c_xy, d, e, f = coeffs
     M = np.array([[2*a, c_xy], [c_xy, 2*b]])
     eigvals = np.linalg.eigvalsh(M)
-    if not np.all(eigvals > 0):
-        return x_min, y_min, S_min, tuple(coeffs), fit_bounds
+    # For max: need negative-definite Hessian; for min: positive-definite
+    if find_max:
+        if not np.all(eigvals < 0):
+            return x_opt, y_opt, S_opt, tuple(coeffs), fit_bounds
+    else:
+        if not np.all(eigvals > 0):
+            return x_opt, y_opt, S_opt, tuple(coeffs), fit_bounds
     rhs = np.array([-d, -e])
     try:
         sol = np.linalg.solve(M, rhs)
         best_x, best_y = float(sol[0]), float(sol[1])
         best_S = float(a*best_x**2 + b*best_y**2 + c_xy*best_x*best_y
                        + d*best_x + e*best_y + f)
-        if best_S < 0 or best_S > S_min * 10:
-            best_x, best_y, best_S = x_min, y_min, S_min
+        # Sanity: for max, result should be near S_opt (negative logL)
+        if find_max:
+            if best_S > 0 or best_S < S_opt * 10:
+                best_x, best_y, best_S = x_opt, y_opt, S_opt
+        else:
+            if best_S < 0 or best_S > S_opt * 10:
+                best_x, best_y, best_S = x_opt, y_opt, S_opt
     except np.linalg.LinAlgError:
-        best_x, best_y, best_S = x_min, y_min, S_min
+        best_x, best_y, best_S = x_opt, y_opt, S_opt
     return best_x, best_y, best_S, tuple(coeffs), fit_bounds
 
 
 def _parabolic_min_3d(x_grid, y_grid, z_grid, S_3d,
-                      height_factor=2.0, n_neighbors=2):
-    """Find sub-grid minimum via 3D quadratic fit over (x, y, z)."""
+                      height_factor=2.0, n_neighbors=2, find_max=False):
+    """Find sub-grid extremum via 3D quadratic fit over (x, y, z).
+
+    When find_max=True, finds the maximum (for logL); otherwise the minimum.
+    """
     _empty_3d = (None, None, None, None, None, None)
     finite = np.isfinite(S_3d)
     if finite.sum() == 0:
         return _empty_3d
+    _argopt = np.nanargmax if find_max else np.nanargmin
     if finite.sum() < 10:
-        idx = np.unravel_index(np.nanargmin(S_3d), S_3d.shape)
+        idx = np.unravel_index(_argopt(S_3d), S_3d.shape)
         return (float(x_grid[idx[0]]), float(y_grid[idx[1]]), float(z_grid[idx[2]]),
                 float(S_3d[idx]), None, None)
-    idx = np.unravel_index(np.nanargmin(S_3d), S_3d.shape)
-    S_min = float(S_3d[idx])
-    x_min, y_min, z_min = float(x_grid[idx[0]]), float(y_grid[idx[1]]), float(z_grid[idx[2]])
+    idx = np.unravel_index(_argopt(S_3d), S_3d.shape)
+    S_opt = float(S_3d[idx])
+    x_opt, y_opt, z_opt = float(x_grid[idx[0]]), float(y_grid[idx[1]]), float(z_grid[idx[2]])
     xs, ys, zs = np.meshgrid(x_grid, y_grid, z_grid, indexing='ij')
     xf, yf, zf, sf = xs.ravel(), ys.ravel(), zs.ravel(), S_3d.ravel()
     fin = np.isfinite(sf)
-    sel = fin & (sf <= S_min * max(height_factor, 1.01))
+    if find_max:
+        sel = fin & (sf >= S_opt * max(height_factor, 1.01))
+    else:
+        sel = fin & (sf <= S_opt * max(height_factor, 1.01))
     if sel.sum() < 10:
         ix, iy, iz = idx
         n = n_neighbors
@@ -146,7 +184,7 @@ def _parabolic_min_3d(x_grid, y_grid, z_grid, S_3d,
                 max(0, iz-n):min(len(z_grid), iz+n+1)] = True
         sel = fin & mask_3d.ravel()
     if sel.sum() < 10:
-        return x_min, y_min, z_min, S_min, None, None
+        return x_opt, y_opt, z_opt, S_opt, None, None
     xf, yf, zf, sf = xf[sel], yf[sel], zf[sel], sf[sel]
     fit_bounds = (float(xf.min()), float(xf.max()),
                   float(yf.min()), float(yf.max()),
@@ -157,18 +195,26 @@ def _parabolic_min_3d(x_grid, y_grid, z_grid, S_3d,
     a, b, c, d_xy, e_xz, f_yz, g, h, i_c, j = coeffs
     M = np.array([[2*a, d_xy, e_xz], [d_xy, 2*b, f_yz], [e_xz, f_yz, 2*c]])
     eigvals = np.linalg.eigvalsh(M)
-    if not np.all(eigvals > 0):
-        return x_min, y_min, z_min, S_min, tuple(coeffs), fit_bounds
+    if find_max:
+        if not np.all(eigvals < 0):
+            return x_opt, y_opt, z_opt, S_opt, tuple(coeffs), fit_bounds
+    else:
+        if not np.all(eigvals > 0):
+            return x_opt, y_opt, z_opt, S_opt, tuple(coeffs), fit_bounds
     rhs = np.array([-g, -h, -i_c])
     try:
         sol = np.linalg.solve(M, rhs)
         bx, by, bz = float(sol[0]), float(sol[1]), float(sol[2])
         bS = float(a*bx**2 + b*by**2 + c*bz**2 + d_xy*bx*by + e_xz*bx*bz
                     + f_yz*by*bz + g*bx + h*by + i_c*bz + j)
-        if bS < 0 or bS > S_min * 10:
-            bx, by, bz, bS = x_min, y_min, z_min, S_min
+        if find_max:
+            if bS > 0 or bS < S_opt * 10:
+                bx, by, bz, bS = x_opt, y_opt, z_opt, S_opt
+        else:
+            if bS < 0 or bS > S_opt * 10:
+                bx, by, bz, bS = x_opt, y_opt, z_opt, S_opt
     except np.linalg.LinAlgError:
-        bx, by, bz, bS = x_min, y_min, z_min, S_min
+        bx, by, bz, bS = x_opt, y_opt, z_opt, S_opt
     return bx, by, bz, bS, tuple(coeffs), fit_bounds
 
 
