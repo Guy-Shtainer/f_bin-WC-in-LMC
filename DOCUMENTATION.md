@@ -1288,4 +1288,27 @@ future bug fixes, per the project's five mandatory pre-fix blocks.
 
 ---
 
-*Last updated: 2026-03-25*
+### 2026-03-26: LogL sign convention unification + graph review round 3
+
+**What was done:** Resolved a pervasive inconsistency in the log-likelihood display convention. The multinomial log-likelihood (Dsilva+2023) returns ln L = Σ nᵢ ln(pᵢ) ≤ 0 (always negative; higher = better fit). Several UI components labelled the raw values as "−log L" despite displaying the actual (negative) logL values, while the interpolation section actively negated values and searched for the minimum. All displays and fitting routines were unified to show logL directly (negative values, higher = better, search for maximum).
+
+**Key changes:**
+- Parabolic fitting functions (`_parabolic_min_1d/2d/3d`) extended with a `find_max` parameter. When True, the functions use `nanargmax` for seed finding, require negative-definite Hessian (downward parabola), and apply appropriate sanity bounds for negative logL values.
+- Removed the sign negation in `render_lk_scoring.py` (`_S_work = -lk_D_2d` → `_S_work = lk_D_2d`), ensuring the interpolation section operates on raw logL values.
+- All user-facing labels changed from "−log L" to "log L" across 5 files (cadence.py, render_lk_scoring.py, render_lk_explorer.py, render_shared.py, GRAPHS_PER_METHOD.md).
+- Removed redundant UI elements left over from the round 2 heatmap reorganisation: D4 metric cards (Current slice best / Global best), D5a raw logL heatmap (duplicate of H3), Log10(-log L) scale checkbox.
+- Added 1D fallback for top heatmaps: when only σ_single or only logP_max is scanned (not both), the right column now shows a 1D line profile (max likelihood vs the scanned parameter) instead of being empty.
+- Flagged D10 (3D Parabolic Surface) as WORKING.
+
+**Methodology notes for paper:** The likelihood scoring now consistently presents ln L values (always ≤ 0) with the convention that higher values indicate better fits. The parabolic interpolation searches for the maximum of the log-likelihood surface. This is the standard statistical convention and avoids the confusion of double-negation (−(−ln L)) that arose from the earlier CvM minimisation framework.
+
+**Bugs found and fixed:** No new COMMON_ERRORS patterns.
+
+**Open questions:**
+- Live run heatmaps (polling.py) still need the 1D fallback treatment (fix was applied to final results only).
+- Cancel & Save button reported as non-functional; investigation shows partial .npz files are being created correctly but UI feedback may be unclear.
+- Remaining MODIFY-status graphs: D9 (1D slices), D15 (auto re-sim), D17 (Model Explorer), D18 (CDF sanity), A3.
+
+---
+
+*Last updated: 2026-03-26*

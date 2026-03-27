@@ -19,12 +19,13 @@ Rules are NEVER deleted — only archived when the underlying code/pattern is ve
 - **Don't trim upstream skills**: Skill files from Anthropic's GitHub (daymade-skill-creator, anthropic-skill-creator) are not ours to trim. At most update from upstream. (last_triggered: 2026-03-23)
 
 ### Data & Debugging
+- **Live vs final: distinguish rendering contexts**: When user says "live heatmap" they mean polling.py (during runs), not cadence.py (final results). Always confirm WHICH rendering context before applying fixes. User had to correct after fix went to wrong file. (last_triggered: 2026-03-26)
 - **DATA BEFORE DISPLAY**: Read raw data/state before fixing any display bug. Don't assume format. (last_triggered: 2026-03-22)
 - **Root cause first**: State "bug is at file:line because X" before editing. No edits until identified. (last_triggered: 2026-03-22)
 - **One file only**: If bug is in one file, edit only that file. Second file needs user justification. (last_triggered: 2026-03-22)
 - **After 2 failed attempts → different approach**: Stop varying the same knob. Step back or ask user. (last_triggered: 2026-03-18)
 - **Grep all downstream consumers**: After any fix, trace all consumers of changed function/variable. Especially when removing a function from a shared module (e.g., `binned_cdf` removal broke 5+ files). (last_triggered: 2026-03-23)
-- **`# WORKING` flags**: Place `# WORKING — do not change this code` above verified working code. Never modify flagged code unless user explicitly asks. If you need to understand what flagged code does, check `.claude/references/working-code-map.md` instead of guessing. (last_triggered: 2026-03-22)
+- **`# WORKING` flags**: Place `# WORKING — do not change this code` above verified working code. Never modify flagged code unless user explicitly asks. Even label-only changes to WORKING-flagged code require user approval. If you need to understand what flagged code does, check `.claude/references/working-code-map.md` instead of guessing. (last_triggered: 2026-03-26)
 
 ### Testing
 - **Run /error-check immediately after edits**: Don't summarize or mark tasks done until /error-check has run. It's part of the task, not a follow-up step. User had to remind multiple times. (last_triggered: 2026-03-25)
