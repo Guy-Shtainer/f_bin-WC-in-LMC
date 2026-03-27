@@ -6,6 +6,17 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-26 — LogL sign convention unification + graph review round 3
+
+| Hash | Summary |
+|------|---------|
+| `9b6a823` | Unify logL sign convention (−logL→logL everywhere), remove D4/D5a/Log10 toggle, add find_max to parabolic fit, 1D heatmap fallback, D10 approved |
+| `1a4d5df` | End-of-day docs: logL convention, TODO #162/#163, daily log, learnings |
+
+**Tag:** `v260326-working`
+
+---
+
 ## 2026-03-25 — Graph review round 2 + page layout overhaul
 
 | Hash | Summary |
