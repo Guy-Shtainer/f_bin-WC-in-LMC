@@ -6,6 +6,18 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-29 — Graph review round 4: all graphs resolved + cadence-aware re-sim
+
+| Hash | Summary |
+|------|---------|
+| `52ec03e` | Graph review round 4: approve all remaining graphs, cadence-aware re-sim (D15, D17, D18, B2, G1, H2/H4, "Observed"→"Simulated") |
+| `599bd8f` | Update GRAPHS_PER_METHOD.md: all graphs resolved, Langer heatmap note |
+| `4195cf4` | End-of-day docs: TODO #162/#163 completed, DOCUMENTATION.md, daily log |
+
+**Tag:** `v260329-working` — all 17/17 graphs approved/removed/folded
+
+---
+
 ## 2026-03-26 — LogL sign convention unification + graph review round 3
 
 | Hash | Summary |
