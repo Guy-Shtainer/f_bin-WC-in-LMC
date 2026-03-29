@@ -120,8 +120,8 @@ def _render_running_fragment(p: str) -> None:
             return
         st.progress(_j.get('progress_pct', 0),
                     text=_j.get('progress_text', 'Running...'))
-        # Live 2×2 heatmaps (same layout as final top heatmaps)
-        _lhm = _j.get('live_heatmaps', {})
+        # ── WORKING — do not change this code · live heatmaps + NoneType guard ──
+        _lhm = _j.get('live_heatmaps') or {}
         _live_2d = _j.get('live_sigma_logPmax_2d')
         _has_live_fbpi = 'likelihood' in _lhm
         _has_live_siglp = (
@@ -172,7 +172,7 @@ def _render_running_fragment(p: str) -> None:
                         scoring_label='Likelihood',
                         colorbar_title_override='Norm. Likelihood'),
                     use_container_width=True)
-                # 1D fallback profiles
+                # ── WORKING — do not change this code · live 1D fallback profiles ──
                 _lsig = _j.get('live_sigma_1d')
                 if _lsig and len(_lsig.get('sigma_vals', [])) > 1:
                     _lsig_lk = _lsig.get('max_likelihood', [])
@@ -182,6 +182,17 @@ def _render_running_fragment(p: str) -> None:
                                 np.array(_lsig['sigma_vals']),
                                 _lsig_lk, height=250,
                                 x_label='σ_single (km/s)',
+                                stat_label='Likelihood',
+                            ), use_container_width=True)
+                _llp = _j.get('live_logPmax_1d')
+                if _llp and len(_llp.get('logPmax_vals', [])) > 1:
+                    _llp_lk = _llp.get('max_likelihood', [])
+                    if _llp_lk and any(v > 0 for v in _llp_lk):
+                        st.plotly_chart(
+                            _make_max_pval_fig(
+                                np.array(_llp['logPmax_vals']),
+                                _llp_lk, height=250,
+                                x_label='log₁₀(P_max)',
                                 stat_label='Likelihood',
                             ), use_container_width=True)
         if _j.get('live_status'):
@@ -233,17 +244,30 @@ def _render_final_sigma_1d(p: str) -> None:
                             key=f'{p}_final_sigma_lp_2d')
         return
 
-    # Fallback: 1D sigma chart
+    # ── WORKING — do not change this code · final 1D fallback profiles ──
     _final_lsig = st.session_state.get(f'{p}_final_live_sigma_1d')
-    if not _final_lsig or len(_final_lsig.get('sigma_vals', [])) <= 1:
-        return
-    _lsig_lk = _final_lsig.get('max_likelihood')
-    if _lsig_lk and any(v > 0 for v in _lsig_lk):
-        st.plotly_chart(
-            _make_max_pval_fig(
-                np.array(_final_lsig['sigma_vals']),
-                _lsig_lk, height=250,
-                x_label='σ_single (km/s)',
-                stat_label='Likelihood',
-            ), use_container_width=True,
-            key=f'{p}_final_sigma_1d_lk')
+    if _final_lsig and len(_final_lsig.get('sigma_vals', [])) > 1:
+        _lsig_lk = _final_lsig.get('max_likelihood')
+        if _lsig_lk and any(v > 0 for v in _lsig_lk):
+            st.plotly_chart(
+                _make_max_pval_fig(
+                    np.array(_final_lsig['sigma_vals']),
+                    _lsig_lk, height=250,
+                    x_label='σ_single (km/s)',
+                    stat_label='Likelihood',
+                ), use_container_width=True,
+                key=f'{p}_final_sigma_1d_lk')
+
+    # Fallback: 1D logPmax chart
+    _final_llp = st.session_state.get(f'{p}_final_live_logPmax_1d')
+    if _final_llp and len(_final_llp.get('logPmax_vals', [])) > 1:
+        _llp_lk = _final_llp.get('max_likelihood')
+        if _llp_lk and any(v > 0 for v in _llp_lk):
+            st.plotly_chart(
+                _make_max_pval_fig(
+                    np.array(_final_llp['logPmax_vals']),
+                    _llp_lk, height=250,
+                    x_label='log₁₀(P_max)',
+                    stat_label='Likelihood',
+                ), use_container_width=True,
+                key=f'{p}_final_logPmax_1d_lk')

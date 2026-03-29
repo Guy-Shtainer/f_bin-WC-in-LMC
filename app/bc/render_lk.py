@@ -381,7 +381,7 @@ def _render_lk_expander(
     except ImportError:
         _info = None
 
-    # -- D15: Per-method best-fit summary table with auto re-sim -----
+    # ── WORKING — do not change this code · D15: Summary table + cadence-aware re-sim ──
     if _info is not None:
         import pandas as pd
         st.divider()
@@ -405,27 +405,42 @@ def _render_lk_expander(
             key=f'{prefix}_{_METHOD_KEY}_n_sets_resim',
         )
 
-        # Auto re-sim at interpolated point if available
+        # Auto re-sim at interpolated point using cadence-aware simulation
         _resim_score = None
         if _interp is not None:
             try:
                 from wr_bias_simulation import (
-                    DEFAULT_DRV_BIN_EDGES, multinomial_log_likelihood,
+                    simulate_delta_rv_cadence_aware, SimulationConfig,
+                    BinaryParameterConfig, multinomial_log_likelihood,
+                    DEFAULT_DRV_BIN_EDGES,
                 )
-                from bc.render_lk_explorer import _me_cdf_band
                 _rs_fb = float(_interp.get('f_bin', 0.5))
-                _rs_xv = float(_interp.get('pi', _interp.get('sigma',
-                               _interp.get('y_val', 0.0))))
+                _rs_xv = float(_interp.get('y_val', 0.0))
                 _rs_sig = float(_bv_s.get('sigma',
                                 result.get('sigma_meas', 5.0)))
+                _rs_sigma_meas = float(result.get('sigma_meas', 3.0))
+                _cadence_lib = result.get('cadence_library')
                 _rs_be = (np.asarray(result['bin_edges'])
                           if 'bin_edges' in result else DEFAULT_DRV_BIN_EDGES)
                 _rs_lk_be = (np.asarray(result['likelihood_bin_edges'])
                              if 'likelihood_bin_edges' in result else _rs_be)
-                _, _, _, _rs_pooled = _me_cdf_band(
-                    _rs_fb, _rs_xv, _rs_sig,
-                    float(result.get('sigma_meas', 3.0)),
-                    tuple(_rs_be.tolist()), n_sets=int(_n_sets_resim))
+                _rs_sim_cfg = SimulationConfig(
+                    n_stars=len(_cadence_lib),
+                    sigma_single=_rs_sig,
+                    sigma_measure=_rs_sigma_meas,
+                    cadence_library=_cadence_lib,
+                    cadence_weights=result.get('cadence_weights'),
+                )
+                _rs_period = result.get('period_model', 'powerlaw')
+                _rs_bin_cfg = BinaryParameterConfig(
+                    period_model=_rs_period)
+                _rs_result = simulate_delta_rv_cadence_aware(
+                    _rs_fb, _rs_xv, _rs_sim_cfg, _rs_bin_cfg,
+                    np.random.default_rng(42),
+                    n_sets=int(_n_sets_resim),
+                    bin_edges=_rs_be,
+                )
+                _rs_pooled = _rs_result['all_delta_rv'].ravel()
                 _rs_obs = np.asarray(result.get('obs_delta_rv', []))
                 _resim_score = float(multinomial_log_likelihood(
                     _rs_obs, _rs_pooled, _rs_lk_be))
@@ -434,12 +449,13 @@ def _render_lk_expander(
 
         _sum_rows = []
         _row_fb = {
-            'Parameter': 'f<sub>bin</sub>',
+            'Parameter': 'f_bin',
             'Best (grid)': f"{_bv_s.get('fbin', 0):.4f}",
             'Mode ± HDI68': _fmt_hdi_s('fbin', '.4f'),
         }
         if _interp and 'f_bin' in _interp:
             _row_fb['Interpolated'] = f"{_interp['f_bin']:.4f}"
+            _row_fb['Re-sim'] = f"{_interp['f_bin']:.4f}"
         _sum_rows.append(_row_fb)
 
         if x_name in _bv_s:
@@ -449,11 +465,11 @@ def _render_lk_expander(
                 'Mode ± HDI68': _fmt_hdi_s(x_name, '.3f'),
             }
             if _interp:
-                _iv = _interp.get('pi', _interp.get('sigma',
-                      _interp.get('y_val')))
+                _iv = _interp.get('y_val')
                 _row_x['Interpolated'] = (
                     f'{_iv:.3f}' if _iv is not None else '--'
                 )
+                _row_x['Re-sim'] = _row_x['Interpolated']
             _sum_rows.append(_row_x)
 
         if 'sigma' in _bv_s and x_name != 'sigma':
@@ -462,7 +478,7 @@ def _render_lk_expander(
                 'Best (grid)': f"{_bv_s['sigma']:.2f}",
                 'Mode ± HDI68': _fmt_hdi_s('sigma', '.2f'),
             }
-            # σ is NOT interpolated — comes from grid best
+            _row_sig['Re-sim'] = f"{_bv_s['sigma']:.2f} (grid)"
             _sum_rows.append(_row_sig)
 
         if 'logPmax' in _bv_s:
@@ -471,21 +487,44 @@ def _render_lk_expander(
                 'Best (grid)': f"{_bv_s['logPmax']:.2f}",
                 'Mode ± HDI68': _fmt_hdi_s('logPmax', '.2f'),
             }
-            # logPmax is NOT interpolated — comes from grid best
+            _row_lp['Re-sim'] = f"{_bv_s['logPmax']:.2f} (grid)"
             _sum_rows.append(_row_lp)
 
+        # Normalized likelihood row
+        _logL_raw_arr = result.get('logL_raw')
         _row_score = {
             'Parameter': _SCORE_LABEL,
             'Best (grid)': f"{_info['best_score']:.6f}",
             'Mode ± HDI68': '--',
         }
-        if _interp and 'S' in _interp:
-            _row_score['Interpolated'] = f"{_interp['S']:.6f}"
-        if _resim_score is not None:
-            _row_score['Re-sim'] = f"{_resim_score:.6f}"
+        if _interp and 'S' in _interp and _logL_raw_arr is not None:
+            _lr_max = float(np.nanmax(np.asarray(_logL_raw_arr, dtype=float)))
+            _norm_interp = float(np.exp(_interp['S'] - _lr_max))
+            _row_score['Interpolated'] = f"{_norm_interp:.6f} *"
         _sum_rows.append(_row_score)
 
-        st.table(pd.DataFrame(_sum_rows))
+        # Raw logL row (grid best + interpolated + re-sim)
+        _row_logL = {
+            'Parameter': 'Likelihood (logL)',
+            'Best (grid)': '--',
+            'Mode ± HDI68': '--',
+        }
+        if _logL_raw_arr is not None:
+            _lr = np.asarray(_logL_raw_arr, dtype=float)
+            _bf_idx = np.unravel_index(
+                int(np.nanargmax(_lr)), _lr.shape)
+            _row_logL['Best (grid)'] = f"{float(_lr[_bf_idx]):.4f}"
+        if _interp and 'S' in _interp:
+            _row_logL['Interpolated'] = f"{_interp['S']:.4f}"
+        if _resim_score is not None:
+            _row_logL['Re-sim'] = f"{_resim_score:.4f}"
+        _sum_rows.append(_row_logL)
+
+        _df = pd.DataFrame(_sum_rows)
+        _df.index = range(1, len(_df) + 1)
+        st.table(_df)
+        if _interp and 'S' in _interp:
+            st.caption('\\* Normalized from interpolated logL using grid normalization: exp(logL_interp − logL_max)')
 
     # -- Model Explorer --------------------------------------------
     _obs_drv_me = result.get('obs_delta_rv')

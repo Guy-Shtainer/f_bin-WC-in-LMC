@@ -466,7 +466,7 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
                                         total_bin, detected_bin_count, pal,
                                         model_label=''):
     """Binary fraction vs deltaRV threshold with gap annotation."""
-    st.markdown('### Observed Binary Fraction vs Threshold')
+    st.markdown('### Simulated Binary Fraction vs Threshold')
     n_sim = len(gap_drv)
     thresh_arr = np.linspace(0, float(np.max(gap_drv) * 1.05), 200)
     fbin_curve = np.array([float(np.sum(gap_drv > t)) / n_sim for t in thresh_arr])

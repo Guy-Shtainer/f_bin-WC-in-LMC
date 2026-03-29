@@ -110,7 +110,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         else:
             _cad_shape = (n_sig, n_fb, n_pi)
 
-        # ── WORKING · cancel-save-resume ──
+        # ── WORKING — do not change this code · cancel-save-resume ──
         # Support resuming from partial checkpoint (including logPmax scans)
         _pre_logL = params.get('prefilled_logL_raw')
         if (_pre_logL is not None and _pre_logL.shape == _cad_shape):
@@ -118,7 +118,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         else:
             logL_raw = np.full(_cad_shape, np.nan)
 
-        # ── WORKING · cancel-save-resume ──
+        # ── WORKING — do not change this code · cancel-save-resume ──
         # Track overall progress
         _total_original = n_logPmax * n_sig * n_fb * n_pi
         _pre_done = (int(np.count_nonzero(~np.isnan(logL_raw)))
@@ -134,7 +134,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         import time as _time
         t_start = _time.time()
 
-        # ── WORKING · cancel-save-resume ──
+        # ── WORKING — do not change this code · cancel-save-resume ──
         def _save_partial_cadence():
             _partial_path = resume_from_path
             if not _partial_path:
@@ -177,17 +177,17 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                      initializer=_init_worker,
                      initargs=_initargs) as pool:
 
-         # ── WORKING · cancel-save-resume ──
+         # ── WORKING — do not change this code · cancel-save-resume ──
          for i_lp, logPmax_v in enumerate(logPmax_scan_vals):
             if job.get('cancel'):
-                if job.get('cancel_mode') == 'save' and (_pre_done + completed) > 0:
+                if job.get('cancel_mode') == 'save':
                     _save_partial_cadence()
                 job['status'] = 'cancelled'
                 return
 
             slice_tasks = _build_tasks_for_slice(i_lp)
 
-            # ── WORKING · cancel-save-resume ──
+            # ── WORKING — do not change this code · cancel-save-resume ──
             # Filter pre-completed tasks (3-D and 4-D)
             if _pre_logL is not None:
                 def _cell_is_nan(t, _ilp):
@@ -204,13 +204,12 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
 
             n_tasks = len(slice_tasks)
 
-            # ── WORKING · cancel-save-resume ──
+            # ── WORKING — do not change this code · cancel-save-resume ──
             for res in pool.imap_unordered(
                     _single_grid_task_cadence_aware, slice_tasks):
                 if job.get('cancel'):
                     pool.terminate()
-                    if (job.get('cancel_mode') == 'save'
-                            and (_pre_done + completed) > 0):
+                    if job.get('cancel_mode') == 'save':
                         _save_partial_cadence()
                     job['status'] = 'cancelled'
                     return

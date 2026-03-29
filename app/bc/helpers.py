@@ -96,6 +96,106 @@ def _stable_cfg_hash(cfg: dict) -> str:
     ).hexdigest()[:16]
 
 
+def render_grid_exclusion(
+    prefix: str,
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    x_label: str = 'f<sub>bin</sub>',
+    y_label: str = 'π',
+    sigma_grid: np.ndarray | None = None,
+) -> np.ndarray:
+    """Render Grid Range Exclusion expander and return 2D boolean mask.
+
+    Stores mask in st.session_state[f'{prefix}_exc_mask_2d'].
+    Returns mask (True = EXCLUDED).
+    """
+    _x_vals = [float(v) for v in x_grid]
+    _y_vals = [float(v) for v in y_grid]
+
+    with st.expander('Grid Range Exclusion', expanded=False):
+        _exc_c1, _exc_c2 = st.columns(2)
+
+        # Range sliders (single slider with 2 thumbs for min/max)
+        if len(x_grid) >= 5:
+            _x_range = _exc_c1.slider(
+                f'{x_label} range',
+                min_value=_x_vals[0], max_value=_x_vals[-1],
+                value=(_x_vals[0], _x_vals[-1]),
+                key=f'{prefix}_exc_xrange')
+            _x_min_exc, _x_max_exc = _x_range
+        else:
+            _x_sel = _exc_c1.multiselect(
+                f'{x_label} values to include', options=_x_vals,
+                default=_x_vals, key=f'{prefix}_exc_xsel')
+            _x_min_exc = min(_x_sel) if _x_sel else _x_vals[0]
+            _x_max_exc = max(_x_sel) if _x_sel else _x_vals[-1]
+
+        if len(y_grid) >= 5:
+            _y_range = _exc_c2.slider(
+                f'{y_label} range',
+                min_value=_y_vals[0], max_value=_y_vals[-1],
+                value=(_y_vals[0], _y_vals[-1]),
+                key=f'{prefix}_exc_yrange')
+            _y_min_exc, _y_max_exc = _y_range
+        else:
+            _y_sel = _exc_c2.multiselect(
+                f'{y_label} values to include', options=_y_vals,
+                default=_y_vals, key=f'{prefix}_exc_ysel')
+            _y_min_exc = min(_y_sel) if _y_sel else _y_vals[0]
+            _y_max_exc = max(_y_sel) if _y_sel else _y_vals[-1]
+
+        st.markdown('**Exclude specific values per axis:**')
+        _has_sigma = (sigma_grid is not None and len(sigma_grid) > 1)
+        _n_exc_cols = 3 if _has_sigma else 2
+        _exc_ax_cols = st.columns(_n_exc_cols)
+        _exc_x_vals = _exc_ax_cols[0].multiselect(
+            f'Exclude {x_label} values', options=_x_vals,
+            default=[], key=f'{prefix}_exc_x_vals')
+        _exc_y_vals = _exc_ax_cols[1].multiselect(
+            f'Exclude {y_label} values', options=_y_vals,
+            default=[], key=f'{prefix}_exc_y_vals')
+        if _has_sigma:
+            _sig_vals_list = [float(v) for v in sigma_grid]
+            _exc_ax_cols[2].multiselect(
+                'Exclude σ_single values', options=_sig_vals_list,
+                default=[], key=f'{prefix}_exc_sig_vals')
+
+    # Build exclusion mask (True = EXCLUDED)
+    if len(x_grid) >= 5:
+        _x_exc = (x_grid < _x_min_exc) | (x_grid > _x_max_exc)
+    else:
+        _x_inc_set = set(
+            [float(v) for v in (_x_sel if '_x_sel' in dir() else _x_vals)])
+        _x_exc = np.array([float(v) not in _x_inc_set for v in x_grid])
+    if len(y_grid) >= 5:
+        _y_exc = (y_grid < _y_min_exc) | (y_grid > _y_max_exc)
+    else:
+        _y_inc_set = set(
+            [float(v) for v in (_y_sel if '_y_sel' in dir() else _y_vals)])
+        _y_exc = np.array([float(v) not in _y_inc_set for v in y_grid])
+
+    _exc_x_set = set(_exc_x_vals)
+    _exc_y_set = set(_exc_y_vals)
+    for ix, xv in enumerate(x_grid):
+        if float(xv) in _exc_x_set:
+            _x_exc[ix] = True
+    for iy, yv in enumerate(y_grid):
+        if float(yv) in _exc_y_set:
+            _y_exc[iy] = True
+
+    _exc_mask_2d = _x_exc[:, None] | _y_exc[None, :]
+
+    # Show exclusion count outside expander (always visible)
+    _n_excluded = int(_exc_mask_2d.sum())
+    if _n_excluded > 0:
+        st.caption(
+            f'Grid exclusion active: **{_n_excluded}** / {_exc_mask_2d.size} '
+            f'points excluded from fitting')
+
+    st.session_state[f'{prefix}_exc_mask_2d'] = _exc_mask_2d
+    return _exc_mask_2d
+
+
 def _make_max_pval_fig(
     sigma_vals: np.ndarray,
     max_pvals: list[float],

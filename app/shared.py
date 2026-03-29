@@ -470,7 +470,8 @@ def make_heatmap_fig(
     x_label: str = 'π  (period power-law index)',
     y_label: str = 'f_bin  (intrinsic binary fraction)',
     x_name: str = 'π',
-    best_label_fmt: str = '  f={fbin:.3f}, {x_name}={x:.2f}, p={p:.3f}',
+    y_name: str = 'f_bin',
+    best_label_fmt: str = '  {y_name}={fbin:.3f}, {x_name}={x:.2f}, p={p:.3f}',
     live: bool = False,
     scoring_label: str = 'K-S',
     colorbar_title_override: str | None = None,
@@ -488,6 +489,7 @@ def make_heatmap_fig(
 
     best_fbin, best_x, best_pval = find_best_grid_point(ks_p_2d, fbin_vals, x_vals)
 
+    # ── WORKING — do not change this code · heatmap hover + star label ──
     traces: list = [
         go.Heatmap(
             z=z, x=x_vals, y=fbin_vals,
@@ -495,7 +497,7 @@ def make_heatmap_fig(
             zmin=z_min, zmax=z_max,
             zsmooth='best',
             colorbar=dict(title=colorbar_title, thickness=14, len=0.9),
-            hovertemplate=f'{x_name}=%{{x:.3f}}<br>f_bin=%{{y:.4f}}<br>' + colorbar_title +
+            hovertemplate=f'{x_name}=%{{x:.3f}}<br>{y_name}=%{{y:.4f}}<br>' + colorbar_title +
                           '=%{z:.4f}<extra></extra>',
         ),
     ]
@@ -520,7 +522,7 @@ def make_heatmap_fig(
             marker=dict(symbol='star', size=18, color='gold',
                         line=dict(color=pal['plot_bg'], width=1)),
             text=[best_label_fmt.format(fbin=best_fbin, x_name=x_name,
-                                        x=best_x, p=best_pval)],
+                                        y_name=y_name, x=best_x, p=best_pval)],
             textposition='middle right',
             textfont=dict(color='#DAA520', size=11),
             name='Best fit',

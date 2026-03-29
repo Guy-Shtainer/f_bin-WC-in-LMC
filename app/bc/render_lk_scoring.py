@@ -124,93 +124,16 @@ def render_lk_scoring_detail(
         """Pass-through (linear scale)."""
         return S_arr
 
-    # -- D7: Grid range exclusion (above heatmaps) ----------------
-    with st.expander('Grid Range Exclusion', expanded=False):
-        _x_vals = [float(v) for v in x_grid]
-        _y_vals = [float(v) for v in y_grid]
+    # -- D7: Grid range exclusion (UI moved to cadence.py, read mask from session_state) --
+    _exc_mask_2d = st.session_state.get(f'{prefix}_exc_mask_2d')
+    if _exc_mask_2d is None:
+        _exc_mask_2d = np.zeros((len(x_grid), len(y_grid)), dtype=bool)
 
-        # Range sliders
-        _exc_c1, _exc_c2 = st.columns(2)
-        if len(x_grid) >= 5:
-            _x_min_exc = _exc_c1.slider(
-                f'{x_label} min', min_value=_x_vals[0], max_value=_x_vals[-1],
-                value=_x_vals[0], key=f'{prefix}_exc_xmin')
-            _x_max_exc = _exc_c1.slider(
-                f'{x_label} max', min_value=_x_vals[0], max_value=_x_vals[-1],
-                value=_x_vals[-1], key=f'{prefix}_exc_xmax')
-        else:
-            _x_sel = _exc_c1.multiselect(
-                f'{x_label} values to include', options=_x_vals,
-                default=_x_vals, key=f'{prefix}_exc_xsel')
-            _x_min_exc = min(_x_sel) if _x_sel else _x_vals[0]
-            _x_max_exc = max(_x_sel) if _x_sel else _x_vals[-1]
-
-        if len(y_grid) >= 5:
-            _y_min_exc = _exc_c2.slider(
-                f'{y_label} min', min_value=_y_vals[0], max_value=_y_vals[-1],
-                value=_y_vals[0], key=f'{prefix}_exc_ymin')
-            _y_max_exc = _exc_c2.slider(
-                f'{y_label} max', min_value=_y_vals[0], max_value=_y_vals[-1],
-                value=_y_vals[-1], key=f'{prefix}_exc_ymax')
-        else:
-            _y_sel = _exc_c2.multiselect(
-                f'{y_label} values to include', options=_y_vals,
-                default=_y_vals, key=f'{prefix}_exc_ysel')
-            _y_min_exc = min(_y_sel) if _y_sel else _y_vals[0]
-            _y_max_exc = max(_y_sel) if _y_sel else _y_vals[-1]
-
-        # Per-axis value exclusion
-        st.markdown('**Exclude specific values per axis:**')
-        _has_sigma = (sigma_grid is not None and len(sigma_grid) > 1)
-        _n_exc_cols = 3 if _has_sigma else 2
-        _exc_ax_cols = st.columns(_n_exc_cols)
-        _exc_x_vals = _exc_ax_cols[0].multiselect(
-            f'Exclude {x_label} values', options=_x_vals,
-            default=[], key=f'{prefix}_exc_x_vals')
-        _exc_y_vals = _exc_ax_cols[1].multiselect(
-            f'Exclude {y_label} values', options=_y_vals,
-            default=[], key=f'{prefix}_exc_y_vals')
-        _exc_sig_vals: list = []
-        if _has_sigma:
-            _sig_vals_list = [float(v) for v in sigma_grid]
-            _exc_sig_vals = _exc_ax_cols[2].multiselect(
-                'Exclude sigma_single values', options=_sig_vals_list,
-                default=[], key=f'{prefix}_exc_sig_vals')
-
-    # Build exclusion mask (True = EXCLUDED)
-    if len(x_grid) >= 5:
-        _x_exc = (x_grid < _x_min_exc) | (x_grid > _x_max_exc)
-    else:
-        _x_inc_set = set(
-            [float(v) for v in (_x_sel if '_x_sel' in dir() else _x_vals)]
-        )
-        _x_exc = np.array([float(v) not in _x_inc_set for v in x_grid])
-    if len(y_grid) >= 5:
-        _y_exc = (y_grid < _y_min_exc) | (y_grid > _y_max_exc)
-    else:
-        _y_inc_set = set(
-            [float(v) for v in (_y_sel if '_y_sel' in dir() else _y_vals)]
-        )
-        _y_exc = np.array([float(v) not in _y_inc_set for v in y_grid])
-
-    # Per-axis value exclusion
-    _exc_x_set = set(_exc_x_vals)
-    _exc_y_set = set(_exc_y_vals)
-    for ix, xv in enumerate(x_grid):
-        if float(xv) in _exc_x_set:
-            _x_exc[ix] = True
-    for iy, yv in enumerate(y_grid):
-        if float(yv) in _exc_y_set:
-            _y_exc[iy] = True
-
-    _exc_mask_2d = _x_exc[:, None] | _y_exc[None, :]
-
-    _n_excluded = int(_exc_mask_2d.sum())
-    if _n_excluded > 0:
-        st.info(
-            f'Excluding **{_n_excluded}** / {_exc_mask_2d.size} '
-            f'grid points from fitting'
-        )
+    # Derive 1D masks from 2D for downstream session_state storage
+    _x_exc = _exc_mask_2d[:, 0] if _exc_mask_2d.shape[1] > 0 else np.zeros(len(x_grid), dtype=bool)
+    _y_exc = _exc_mask_2d[0, :] if _exc_mask_2d.shape[0] > 0 else np.zeros(len(y_grid), dtype=bool)
+    _has_sigma = (sigma_grid is not None and len(sigma_grid) > 1)
+    _exc_sig_vals: list = []
 
     # Apply exclusion -- working copies for fitting AND display
     # logL_raw is negative (higher = better) — display as-is, find maximum.
@@ -387,7 +310,7 @@ def render_lk_scoring_detail(
         fig_3d.add_trace(go.Scatter3d(
             x=[best_y], y=[best_x], z=[_bestS_disp],
             mode='markers',
-            marker=dict(size=8, color=_METHOD_COLOR, symbol='diamond'),
+            marker=dict(size=8, color='#00CC66', symbol='diamond'),
             name='Maximum',
             hovertemplate=_3d_hover + '<extra>Maximum</extra>',
         ))
@@ -411,7 +334,7 @@ def render_lk_scoring_detail(
         st.plotly_chart(fig_3d, use_container_width=True,
                         key=f'{prefix}_3d_fbpi')
 
-    # -- 1D slices -------------------------------------------------
+    # ── WORKING — do not change this code · D9: 1D parabolic slices (f_bin + π) ──
     i_x_best = int(np.argmin(np.abs(x_grid - best_x)))
     i_y_best = int(np.argmin(np.abs(y_grid - best_y)))
 

@@ -270,6 +270,10 @@ def _render_lk_model_explorer(
     def_x = float(bv.get(x_name, 0.0))
     def_sig = float(bv.get('sigma', result.get('sigma_meas', 5.0)))
 
+    # Reset counter — slider keys include counter so reset forces new widgets
+    _reset_key = f'{prefix}_lk_me_reset_count'
+    _rc = st.session_state.get(_reset_key, 0)
+
     # Reset button + best-fit labels
     _lp_g = np.asarray(result.get('logPmax_grid', []))
     _best_score = me_info.get('best_score', 0)
@@ -282,38 +286,70 @@ def _render_lk_model_explorer(
         st.caption(f'Best-fit model: {", ".join(_best_parts)}  |  Score: {_best_score:.4f}')
     with _reset_col2:
         if st.button('🟢 Reset to best', key=f'{prefix}_lk_me_reset'):
-            for _k in [f'{prefix}_lk_me_fb', f'{prefix}_lk_me_x',
-                       f'{prefix}_lk_me_sig', f'{prefix}_lk_me_logPmax']:
-                if _k in st.session_state:
-                    del st.session_state[_k]
+            st.session_state[_reset_key] = _rc + 1
             st.rerun()
 
-    # Sliders -- add logPmax column when grid has >1 value
+    # Sliders + synced number inputs for precise control
     sig_g = np.asarray(result.get('sigma_grid', []))
     _ncols = 4 if _lp_g.size > 1 else 3
+
+    def _synced_slider_input(col, label, mn, mx, default, step, fmt, key_base):
+        """Slider + number_input with bidirectional sync."""
+        _k_sl = f'{key_base}_{_rc}_sl'
+        _k_ni = f'{key_base}_{_rc}_ni'
+        if _k_sl not in st.session_state:
+            st.session_state[_k_sl] = default
+        if _k_ni not in st.session_state:
+            st.session_state[_k_ni] = default
+
+        def _sync_from_slider():
+            v = min(max(float(st.session_state[_k_sl]), mn), mx)
+            st.session_state[_k_sl] = v
+            st.session_state[_k_ni] = v
+
+        def _sync_from_input():
+            v = min(max(float(st.session_state[_k_ni]), mn), mx)
+            st.session_state[_k_sl] = v
+            st.session_state[_k_ni] = v
+
+        col.slider(label, mn, mx, key=_k_sl, on_change=_sync_from_slider)
+        col.number_input('exact', min_value=mn, max_value=mx,
+                         step=step, format=fmt, key=_k_ni,
+                         label_visibility='collapsed',
+                         on_change=_sync_from_input)
+        return float(st.session_state[_k_sl])
+
     cols = st.columns(_ncols)
-    me_fb = cols[0].slider('f_bin', 0.0, 1.0, def_fb, 0.01,
-                           key=f'{prefix}_lk_me_fb')
+
+    me_fb = _synced_slider_input(
+        cols[0], f'f_bin  (best: {def_fb:.3f})',
+        0.0, 1.0, def_fb, 0.001, '%.4f', f'{prefix}_lk_me_fb')
+
     x_lo, x_hi = (float(x_g[0]) if len(x_g) else -3.0,
                    float(x_g[-1]) if len(x_g) else 3.0)
-    me_x = cols[1].slider(x_label, x_lo, x_hi,
-                          min(max(def_x, x_lo), x_hi), 0.01,
-                          key=f'{prefix}_lk_me_x')
+    me_x = _synced_slider_input(
+        cols[1], f'{x_label}  (best: {def_x:.3f})',
+        x_lo, x_hi, min(max(def_x, x_lo), x_hi), 0.001, '%.4f',
+        f'{prefix}_lk_me_x')
+
     if sig_g.size > 1:
-        me_sig = cols[2].slider(
-            'sigma_single (km/s)', float(sig_g[0]), float(sig_g[-1]),
+        me_sig = _synced_slider_input(
+            cols[2], f'σ_single  (best: {def_sig:.1f})',
+            float(sig_g[0]), float(sig_g[-1]),
             min(max(def_sig, float(sig_g[0])), float(sig_g[-1])),
-            0.1, key=f'{prefix}_lk_me_sig')
+            0.1, '%.2f', f'{prefix}_lk_me_sig')
     else:
         me_sig = def_sig
+
     me_logPmax = None
     if _lp_g.size > 1:
         _dlp = float(bv.get('logPmax', float(_lp_g[0])))
         _c = cols[3] if sig_g.size > 1 else cols[2]
-        me_logPmax = _c.slider(
-            'logP_max', float(_lp_g[0]), float(_lp_g[-1]),
+        me_logPmax = _synced_slider_input(
+            _c, f'logP_max  (best: {_dlp:.2f})',
+            float(_lp_g[0]), float(_lp_g[-1]),
             min(max(_dlp, float(_lp_g[0])), float(_lp_g[-1])),
-            0.1, key=f'{prefix}_lk_me_logPmax')
+            0.01, '%.3f', f'{prefix}_lk_me_logPmax')
 
     obs_drv = np.asarray(result.get('obs_delta_rv'))
     be = result.get('bin_edges')
@@ -326,21 +362,24 @@ def _render_lk_model_explorer(
     med_cdf, lo_cdf, hi_cdf, pooled_drv = _me_cdf_band(
         me_fb, me_x, me_sig, sigma_m, tuple(be.tolist()), n_sets=50)
 
-    # -- Score metric (D4-style dual boxes) -------------------------
+    # ── WORKING — do not change this code · D17: Score metric cards (logL) ──
     _logL = multinomial_log_likelihood(obs_drv, pooled_drv, lk_be)
-    _score_val = f'{_logL:.3f}'
+    # Compute logL for the global best-fit
+    _bf_med, _, _, _bf_pooled = _me_cdf_band(
+        def_fb, def_x, def_sig, sigma_m, tuple(be.tolist()), n_sets=50)
+    _logL_best = multinomial_log_likelihood(obs_drv, _bf_pooled, lk_be)
 
     mc1, mc2 = st.columns(2)
     mc1.metric(
         label='Current (Explorer)',
         value=f'f_bin={me_fb:.3f}, {x_label}={me_x:.2f}',
-        delta=f'ln L = {_logL:.4f}',
+        delta=f'logL = {_logL:.4f}',
         delta_color='off',
     )
     mc2.metric(
         label='Global best',
         value=f'f_bin={def_fb:.3f}, {x_label}={def_x:.2f}',
-        delta=f'ln L = {_best_score:.4f}' if _best_score else '--',
+        delta=f'logL = {_logL_best:.4f}',
         delta_color='off',
     )
 
@@ -382,12 +421,18 @@ def _render_lk_model_explorer(
             mode='lines', name='Best-fit (algorithm)',
             line=dict(color='#E25A53', width=2, dash='dot', shape='hv'),
         ))
+    # Full x-range: cover all observed data + bin edges
+    _xmax_cdf = float(np.nanmax(obs_drv)) if len(obs_drv) else 1.0
+    _be_finite = be[np.isfinite(be)]
+    if len(_be_finite):
+        _xmax_cdf = max(_xmax_cdf, float(np.max(_be_finite)))
     fig_cdf.update_layout(**{
         **PLOTLY_THEME,
         'title': dict(
-            text=f'CDF -- ln L = {_score_val}',
+            text=f'CDF -- logL = {_logL:.3f}',
             font=dict(size=14)),
         'xaxis_title': 'ΔRV (km/s)',
+        'xaxis_range': [0, _xmax_cdf * 1.05],
         'yaxis_title': 'Cumulative fraction',
         'height': 380,
         'legend': dict(x=0.6, y=0.15),
@@ -422,7 +467,7 @@ def _render_lk_model_explorer(
         st.dataframe(pd.DataFrame(_br), use_container_width=True,
                      hide_index=True)
 
-    # -- 4 heatmaps (2×2) with green dot at current position --------
+    # ── WORKING — do not change this code · D17: 4 heatmaps (2×2) with green dot ──
     _sig_g_hm = np.asarray(result.get('sigma_grid', []))
     _lp_g_hm = np.asarray(result.get('logPmax_grid', []))
     _has_4hm = (_sig_g_hm.size > 1 and _lp_g_hm.size > 1 and p_nd.ndim >= 3)
@@ -483,7 +528,8 @@ def _render_lk_model_explorer(
                                show_d=False, height=350,
                                x_label='σ_single (km/s)',
                                y_label='log₁₀(P_max)',
-                               x_name='σ', scoring_label='Likelihood',
+                               x_name='σ', y_name='log₁₀(P_max)',
+                               scoring_label='Likelihood',
                                colorbar_title_override='Max Norm. L')
                 _green_dot(_fig2, me_sig, me_logPmax if me_logPmax else _lp_g_hm[0])
                 st.plotly_chart(_fig2, use_container_width=True,
@@ -508,13 +554,14 @@ def _render_lk_model_explorer(
                                show_d=False, height=350,
                                x_label='σ_single (km/s)',
                                y_label='log₁₀(P_max)',
-                               x_name='σ', scoring_label='log L',
+                               x_name='σ', y_name='log₁₀(P_max)',
+                               scoring_label='log L',
                                colorbar_title_override='Max log L')
                 _green_dot(_fig4, me_sig, me_logPmax if me_logPmax else _lp_g_hm[0])
                 st.plotly_chart(_fig4, use_container_width=True,
                                 key=f'{prefix}_lk_me_hm_unnorm_siglp')
 
-    # -- Histogram overlay ----------------------------------------
+    # ── WORKING — do not change this code · D17: Histogram overlay ──
     sim_drv_single = pooled_drv[:1000]
     fig_hist = go.Figure()
     fig_hist.add_trace(go.Histogram(
@@ -537,7 +584,7 @@ def _render_lk_model_explorer(
     st.plotly_chart(fig_hist, use_container_width=True,
                     key=f'{prefix}_lk_me_hist')
 
-    # -- Detection fraction vs threshold --------------------------
+    # ── WORKING — do not change this code · D17: Detection fraction vs threshold ──
     max_drv = max(float(np.max(obs_drv)),
                   float(np.max(sim_drv_single)))
     thresholds = np.linspace(0, max_drv * 1.1, 100)

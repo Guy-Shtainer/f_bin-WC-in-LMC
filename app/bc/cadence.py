@@ -132,6 +132,12 @@ def _render_top_heatmaps(p, result, fbin_g, pi_g, sigma_g, logPmax_g,
                 _unnorm_1d_vals = [float(np.nanmax(_lr[i_s]))
                                    if np.any(np.isfinite(_lr[i_s])) else 0.0
                                    for i_s in range(sigma_g.size)]
+            elif _has_lp:
+                _unnorm_1d_grid = logPmax_g
+                _unnorm_1d_label = 'log₁₀(P_max)'
+                _unnorm_1d_vals = [float(np.nanmax(_lr[i_lp]))
+                                   if np.any(np.isfinite(_lr[i_lp])) else 0.0
+                                   for i_lp in range(logPmax_g.size)]
 
     x_g = pi_g if is_dsilva else sigma_g
     x_label = 'π' if is_dsilva else 'σ_single (km/s)'
@@ -170,7 +176,8 @@ def _render_top_heatmaps(p, result, fbin_g, pi_g, sigma_g, logPmax_g,
                 show_d=False, height=height,
                 x_label='σ_single (km/s)',
                 y_label='log₁₀(P_max)',
-                x_name='σ', scoring_label='Likelihood',
+                x_name='σ', y_name='log₁₀(P_max)',
+                scoring_label='Likelihood',
                 colorbar_title_override='Max Norm. L',
             )
             st.plotly_chart(_fig2, use_container_width=use_cw,
@@ -207,7 +214,8 @@ def _render_top_heatmaps(p, result, fbin_g, pi_g, sigma_g, logPmax_g,
                     show_d=False, height=height,
                     x_label='σ_single (km/s)',
                     y_label='log₁₀(P_max)',
-                    x_name='σ', scoring_label='log L',
+                    x_name='σ', y_name='log₁₀(P_max)',
+                    scoring_label='log L',
                     colorbar_title_override='Max log L',
                 )
                 st.plotly_chart(_fig4, use_container_width=use_cw,
@@ -457,6 +465,29 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
         'classification': cls,
     }
 
+    # ── Grid Range Exclusion (folded, above heatmaps) ──────────────────
+    from bc.helpers import render_grid_exclusion
+    _exc_mask = render_grid_exclusion(
+        f'{p}_likelihood_analysis', fbin_grid,
+        pi_grid if _is_dsilva else sigma_grid,
+        'f_bin', 'π' if _is_dsilva else 'σ_single',
+        sigma_grid=sigma_grid if _is_dsilva else None,
+    )
+
+    # Apply exclusion mask to result for downstream (corner plot, scoring detail)
+    # Top heatmaps get unmasked lk_arr so best-fit star stays correct
+    if _exc_mask is not None and _exc_mask.any():
+        _masked_result = dict(result)
+        if 'logL_raw' in result:
+            _lr_m = np.asarray(result['logL_raw'], dtype=float).copy()
+            _lr_m[..., _exc_mask] = np.nan
+            _masked_result['logL_raw'] = _lr_m
+        if 'likelihood' in result:
+            _lk_m = np.asarray(result['likelihood'], dtype=float).copy()
+            _lk_m[..., _exc_mask] = np.nan
+            _masked_result['likelihood'] = _lk_m
+        model_ctx['result'] = _masked_result
+
     # ── 4 heatmaps at top (live during run, persist after) ──────────────
     _render_top_heatmaps(p, result, fbin_grid, pi_grid, sigma_grid,
                          logPmax_grid, lk_arr, _cad_lp_idx, _is_dsilva,
@@ -567,7 +598,7 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
         '\u25b6\ufe0f Run', key=f'{p}_run_btn', type='primary')
     _save_clicked = _a2.button(
         '\U0001f4be Save result', key=f'{p}_save_btn')
-    # ── WORKING · cancel-save-resume ──
+    # ── WORKING — do not change this code · cancel-save-resume ──
     _cancel_btn = _a3.button(
         '\u23f9 Cancel', key=f'{p}_cancel_btn')
     _cancel_save_btn = _a4.button(
@@ -601,7 +632,7 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
         else:
             st.warning('No result to save. Run first.')
 
-    # ── WORKING · cancel-save-resume ──
+    # ── WORKING — do not change this code · cancel-save-resume ──
     if _cancel_btn and f'{p}_job' in st.session_state:
         st.session_state[f'{p}_job']['cancel'] = True
         st.session_state[f'{p}_job']['cancel_mode'] = 'discard'
@@ -609,7 +640,7 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
         st.session_state[f'{p}_job']['cancel'] = True
         st.session_state[f'{p}_job']['cancel_mode'] = 'save'
 
-    # ── WORKING · cancel-save-resume ──
+    # ── WORKING — do not change this code · cancel-save-resume ──
     _cad_auto_resume = st.session_state.pop(f'{p}_auto_resume', False)
     _job_running = (f'{p}_job' in st.session_state
                     and st.session_state[f'{p}_job'].get('status')
@@ -618,7 +649,7 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
         st.warning(
             'A simulation is already running. Cancel or wait before '
             'starting a new run.')
-    # ── WORKING · cancel-save-resume ──
+    # ── WORKING — do not change this code · cancel-save-resume ──
     if (_run_btn or _cad_auto_resume) and not _job_running:
         _sh = settings_hash(settings)
         if obs_override is not None:
@@ -706,7 +737,7 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
             },
         }
 
-        # ── WORKING · cancel-save-resume ──
+        # ── WORKING — do not change this code · cancel-save-resume ──
         # Check for partial resume
         _cad_resume_path = st.session_state.pop(
             f'{p}_resume_from', None)

@@ -225,6 +225,7 @@ def _eval_3d_quadratic(coeffs_10, x, y, z):
             + g*x + h*y + i*z + j)
 
 
+# ── WORKING — do not change this code · D9: 1D slice rendering function ──
 def _render_cvm_1d_plot(col, t_grid, S_grid, label, best_t, best_S,
                         coeffs, fit_range, caption_text, height=300,
                         log_transform=False):
@@ -236,7 +237,7 @@ def _render_cvm_1d_plot(col, t_grid, S_grid, label, best_t, best_S,
             return np.log10(np.where(arr > 0, arr, np.nan))
         return arr
 
-    _y_title = 'log10(-log L)' if log_transform else '-log L'
+    _y_title = 'log₁₀(log L)' if log_transform else 'log L'
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=t_grid, y=_disp(S_grid), mode='markers',
@@ -251,7 +252,7 @@ def _render_cvm_1d_plot(col, t_grid, S_grid, label, best_t, best_S,
         x=[best_t], y=[float(_disp(np.array([best_S]))[0])], mode='markers',
         marker=dict(symbol='star', size=14, color='#00CC66',
                     line=dict(width=1, color='black')),
-        name='Minimum'))
+        name='Maximum'))
     fig.update_layout(**{**_theme, 'title': dict(text=f'{_y_title} vs {label}'),
                          'xaxis': dict(title=label), 'yaxis': dict(title=_y_title),
                          'height': height, 'showlegend': False})
