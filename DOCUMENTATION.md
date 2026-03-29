@@ -223,6 +223,64 @@ and open questions. Written for thesis reference.
 
 ---
 
+### 2026-03-29 — Graph review round 4: approvals, UI overhaul, cadence-aware re-sim
+
+**What was done:**
+- Completed graph review round 4 (continuing #162/#163): approved H2, H4,
+  D9, D10, D15, D17, D18 — bringing total approved/resolved to 17/17.
+- D15 Summary Table rewritten with cadence-aware re-simulation using
+  `simulate_delta_rv_cadence_aware()` instead of the previous `_me_cdf_band()`
+  approach. Table now includes: normalised likelihood row (with asterisk noting
+  grid normalisation), raw logL row, σ/logP values in the Re-sim column marked
+  with "(grid)" to indicate they come from grid best rather than interpolation.
+  Normalised likelihood computed as exp(logL_interp − logL_max).
+- D17 Model Explorer overhauled: synced slider+number_input pairs with
+  bidirectional callbacks, reset counter pattern for clean widget state on
+  reset, logL metric cards showing best vs current scores, CDF x-axis.
+- D18 CDF Sanity Check fixed to correctly render 5 random draws.
+- Live polling (B2): added logP_max 1D fallback chart alongside σ_single 1D
+  profile. Added NoneType guard on `live_heatmaps` dict access.
+- Grid Range Exclusion (G1) moved above top heatmaps in `cadence.py` with
+  folded `st.expander` (default collapsed).
+- Top heatmaps: added logP_max-only 1D fallback for Langer model (when σ grid
+  has size 1), added `y_name` parameter to heatmap calls.
+- Renamed "Observed Binary Fraction vs Threshold" → "Simulated Binary Fraction
+  vs Threshold" in `render_shared.py` and `sim_plots.py` to avoid confusion
+  between simulated and real observations.
+- GRAPHS_PER_METHOD.md fully updated: all MODIFY targets resolved, Cadence
+  Langer note added (π unused → use f_bin vs logP_max or f_bin alone).
+- WORKING flags throughout `cadence.py` updated to include "do not change
+  this code" per project convention.
+
+**Key results:**
+- All 17 graphs in GRAPHS_PER_METHOD.md now resolved (WORKING ✓, REMOVED, or
+  FOLDED). No remaining MODIFY targets except G1 (grid exclusion position,
+  already implemented but pending final review).
+
+**Methodology notes for paper:**
+- Re-simulation at interpolated best-fit now uses cadence-aware simulation
+  (same pipeline as the grid search), ensuring consistency. Previous approach
+  used non-cadence `_me_cdf_band()`.
+- Normalised likelihood at interpolated point: L_norm = exp(logL_interp − logL_max),
+  where logL_max is the maximum over the entire grid.
+
+**Decisions:**
+- Cadence-aware re-sim replaces `_me_cdf_band()` for D15 — ensures the
+  re-simulation at the interpolated best-fit uses the same cadence library,
+  weights, and period model as the original grid search.
+- "Observed" → "Simulated" for the binary fraction vs threshold plot title,
+  since the data shown is from Monte Carlo simulations, not real observations.
+
+**Bugs found and fixed:**
+- NoneType error when `live_heatmaps` key returns None instead of empty dict
+  (polling.py). No new COMMON_ERRORS entry — one-off guard.
+- Model Explorer reset button was broken (deleting session_state keys didn't
+  force widget re-creation). Fixed with reset counter pattern.
+
+**Open questions:** None new.
+
+---
+
 ### 2026-02-25 — Webapp creation, bias correction page, performance fixes
 
 **What was done:**
