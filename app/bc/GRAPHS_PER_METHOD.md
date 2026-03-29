@@ -27,14 +27,22 @@
 
 ## Rendering Order (top to bottom as user sees it)
 
+### Grid Range Exclusion (`cadence.py`) — above heatmaps, default folded
+
+| # | ID | Graph | Status | File | Comment |
+|---|-----|-------|--------|------|---------|
+| - | G1 | Grid Range Exclusion (folded `st.expander`) | **MODIFY** | `render_lk_scoring.py` → move to `cadence.py` | Currently inside Likelihood Analysis section. Move above top heatmaps. Default `expanded=False`. Exclusion mask must still apply to scoring detail below |
+
 ### Top Heatmaps (`cadence.py` → `_render_top_heatmaps()`) — live during runs, persistent after
 
 | # | ID | Graph | Status | File | Comment |
 |---|-----|-------|--------|------|---------|
 | 0a | H1 | Normalized Likelihood (f_bin × π) at best σ/logP | **WORKING ✓** | `cadence.py` | |
-| 0b | H2 | Max Normalized Likelihood (σ × logP_max) | **WORKING ✓** | `cadence.py` | |
+| 0b | H2 | Max Normalized Likelihood (σ × logP_max) | **WORKING ✓** | `cadence.py` | Approved 2026-03-29 |
 | 0c | H3 | log L (f_bin × π) at best σ/logP | **WORKING ✓** | `cadence.py` | |
-| 0d | H4 | Max log L (σ × logP_max) | **WORKING ✓** | `cadence.py` | |
+| 0d | H4 | Max log L (σ × logP_max) | **WORKING ✓** | `cadence.py` | Approved 2026-03-29 |
+
+> **Cadence Langer note:** π is constant/unused → heatmap should be `f_bin` vs `log₁₀(P_max)` if available, or simply `f_bin` (1D).
 
 ### Shared Section (`render_shared.py` → `render_shared_section()`)
 
@@ -53,13 +61,13 @@
 | # | ID | Graph | Status | File | Comment |
 |---|-----|-------|--------|------|---------|
 | - | B1 | Live Heatmap | **WORKING ✓** | `polling.py` | |
-| - | B2 | Live σ/logPmax Profile | **WORKING ✓** | `polling.py` + `runners_cadence.py` | 2D heatmap when both σ and logPmax scanned. Fallback: separate 1D charts |
+| - | B2 | Live σ/logPmax Profile | **WORKING ✓** | `polling.py` + `runners_cadence.py` | 2D heatmap when both σ and logPmax scanned. Fallback: separate 1D charts for σ-only or logP-only. Fixed 2026-03-29 |
 
 ### Likelihood Analysis (`render_lk.py` → `render_lk_scoring.py` → `render_lk_fit.py` → `render_lk_explorer.py`)
 
 | # | ID | Graph | Status | File | Comment |
 |---|-----|-------|--------|------|---------|
-| 6 | A3 | Max logL vs σ/logPmax (unnormalized) | **MODIFY** | `render_shared.py` (called from `render_lk.py`) | MOVE: place as RIGHT panel of D5a (unnormalized row). Replace current D5a right panel (σ×logPmax max-L) with this. See D1/D5a for full layout reorganization |
+| 6 | A3 | ~~Max logL vs σ/logPmax (unnormalized)~~ | **FOLDED** | `cadence.py` | Now part of top heatmaps (H2/H4). Original MODIFY target (D5a) was removed. |
 | 7 | D1 | ~~Primary Heatmap~~ | **MOVED** | `cadence.py` | Moved to top heatmaps (H1-H4). Sliders removed. |
 | - | ~~D2-D3~~ | ~~Extra Heatmaps~~ | **REMOVED** | | Covered by A3 upgrade |
 | - | ~~D4~~ | ~~Best-Fit Metric Cards~~ | **REMOVED** | `render_lk.py` | Redundant with top heatmaps |
@@ -68,16 +76,16 @@
 | - | ~~D5c~~ | ~~Normalized Likelihood Heatmap~~ | **REMOVED** | | |
 | - | ~~E6~~ | ~~Per-Bin Breakdown Table~~ | **MOVED** | | Moved to Shared Section (#2b), directly under A2 CDF |
 | 11 | E7 | LaTeX Methodology Explainer (good + bad example) | **WORKING ✓** | `render_lk_fit.py` | Approved 2026-03-25 |
-| 12 | D10 | 3D Parabolic Surface | **WORKING ✓** | `render_lk_scoring.py` | Approved 2026-03-26 |
-| 13 | D9 | 1D Slices (parabolic fit + HDI) | **MODIFY** | `render_lk_scoring.py` | (1) Only show f_bin and π slices — remove σ and logP_max 1D slices. (2) LaTeX axis labels. (3) Change star marker from yellow to green |
+| 12 | D10 | 3D Parabolic Surface | **WORKING ✓** | `render_lk_scoring.py` | Approved 2026-03-29 |
+| 13 | D9 | 1D Slices (parabolic fit + HDI) | **WORKING ✓** | `render_lk_scoring.py` | Approved 2026-03-29 |
 | - | ~~D11~~ | ~~3D Projections (N-D fit)~~ | **REMOVED** | | Simplified to f_bin×π only |
 | - | ~~D12~~ | ~~Score vs σ Profile~~ | **REMOVED** | | Covered by A3 |
 | - | ~~D13~~ | ~~Score vs logPmax Profile~~ | **REMOVED** | | Covered by A3 |
 | 14 | D14 | Corner Plot (N×N marginals) | **WORKING ✓** | `render_lk_fit.py` | Approved 2026-03-25 |
-| 15 | D15 | Summary Table (with interpolation + auto re-sim) | **MODIFY** | `render_lk.py` | (1) Auto re-sim immediately when interpolated result available — no button needed. (2) Re-sim result gets its own column in same table. (3) Interpolation is on 3D -logL vs f_bin×π at best σ/logP — no interpolation on σ/logP themselves. (4) N_sets change + Enter triggers re-sim automatically (no button) |
+| 15 | D15 | Summary Table (with interpolation + cadence-aware re-sim) | **WORKING ✓** | `render_lk.py` | Approved 2026-03-29. Cadence-aware re-sim, normalized likelihood with asterisk, logL row, σ/logP in re-sim with (grid) note |
 | - | ~~D16~~ | ~~Re-sim CDF at Interpolated Best-Fit~~ | **FOLDED** | | Folded into D15 (auto re-sim after interpolation) |
-| 16 | D17 | Model Explorer (sliders + reset + score comparison) | **MODIFY** | `render_lk_explorer.py` | (1) No green dots on sliders for best-fit. (2) Reset button broken. (3) LnL display: mimic the metric boxes from D4 (best + current). (4) Remove ability to explore from top sliders — just show best-fit model. (5) Add all 4 heatmaps (norm f_bin×π, norm σ×logP, unnorm f_bin×π, unnorm σ×logP) with green dot for current. (6) Remove green shade/thick line from CDF |
-| 17 | D18 | CDF Sanity Check (5 random draws, cadence only) | **MODIFY** | `render_lk_explorer.py` | Only 1 line visible — 5 simulated CDFs not rendering. Fix to show 5 semi-transparent + observed solid white |
+| 16 | D17 | Model Explorer (sliders + reset + score comparison) | **WORKING ✓** | `render_lk_explorer.py` | Approved 2026-03-29. Synced slider+number_input, logL metric cards, CDF x-axis, reset counter |
+| 17 | D18 | CDF Sanity Check (5 random draws, cadence only) | **WORKING ✓** | `render_lk_explorer.py` | Approved 2026-03-29 |
 | - | ~~E5~~ | ~~Likelihood CDF with Bin Overlay~~ | **REMOVED** | | Redundant with A2 CDF |
 
 ---
