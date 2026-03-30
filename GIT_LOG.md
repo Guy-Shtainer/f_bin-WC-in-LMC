@@ -6,14 +6,16 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
-## 2026-03-30 — Langer cadence tab: full graph review + code duplication + D14/D15/D17 fixes
+## 2026-03-30 — Langer cadence tab: full graph review + code duplication + D14/D15/D17 fixes + autosave
 
 | Hash | Summary |
 |------|---------|
 | `eb0d9c6` | Cadence Langer: full graph review, code duplication (5 render files + polling), D14 axis fix, D15 constant-σ row, D17 langer2020 sim + slider dedup |
 | `751aa94` | End-of-day docs: TODO #164-168, DOCUMENTATION.md, daily log, learnings |
+| `b69e3b3` | Add autosave checkpoint to cadence simulation runner (every 120s) |
+| `45f5108` | End-of-day docs: TODO #169 (autosave), DOCUMENTATION.md, daily log |
 
-**Tag: `v260330-working`** — Langer cadence tab graph review + D14/D15/D17 fixes
+**Tag: `v260330-working`** — Langer graph review + D14/D15/D17 fixes + simulation autosave
 
 ---
 
