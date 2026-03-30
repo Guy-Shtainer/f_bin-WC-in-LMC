@@ -350,7 +350,7 @@ def _add_2d_heatmap(fig, row, col, x_grid, y_grid, z_2d,
     ), row=row, col=col)
 
 
-# WORKING — do not change this code (D14: Corner Plot)
+# D14: Corner Plot (fixed 2026-03-30, pending user approval)
 def _render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
                            ndim_mode, result, prefix, pal, use_cw=True):
     """Render N-parameter corner plot for Likelihood scoring."""
@@ -382,8 +382,13 @@ def _render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
             if _has_lp:
                 _all_grids.append(_logPmax_g)
                 _all_names.append('logPmax')
-            _all_grids.extend([fbin_g, x_g])
-            _all_names.extend(['fbin', x_name])
+            # x_g is sigma for Langer; add only if scanned (size > 1)
+            # Must come BEFORE fbin to match runner axis order [logPmax, sigma, fbin]
+            if x_g.size > 1:
+                _all_grids.append(x_g)
+                _all_names.append(x_name)
+            _all_grids.append(fbin_g)
+            _all_names.append('fbin')
             p_nd = _squeeze_to_match(p_nd, len(_all_grids))
         else:
             _all_grids = []
@@ -415,9 +420,10 @@ def _render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
         _hdi = _info['hdi']
         _bv = _info['best_vals']
 
-        # Determine which axes to show
+        # Determine which axes to show — only scanned dimensions (size > 1)
         show_axes = []
-        show_axes.append((x_name, x_g, x_display_label))
+        if x_g.size > 1:
+            show_axes.append((x_name, x_g, x_display_label))
         show_axes.append(('fbin', fbin_g, 'f_bin'))
         if 'sigma' in _all_names and x_name != 'sigma':
             _sig_idx = _all_names.index('sigma')

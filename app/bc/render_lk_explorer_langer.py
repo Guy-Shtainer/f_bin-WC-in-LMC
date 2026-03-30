@@ -45,11 +45,11 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
 # ---------------------------------------------------------------------------
 
 @st.cache_data(show_spinner=False)
-def _me_cdf_band(
-    fb: float, x_val: float, sigma_s: float, sigma_m: float,
+def _me_cdf_band_langer(
+    fb: float, logPmax: float, sigma_s: float, sigma_m: float,
     bin_edges_tuple: tuple, n_sets: int = 50,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Run *n_sets* simulations and return (median_cdf, lo_cdf, hi_cdf, pooled_drv)."""
+    """Langer-specific CDF band: uses langer2020 period model with logP_max."""
     from wr_bias_simulation import (
         simulate_delta_rv_sample, SimulationConfig,
         BinaryParameterConfig,
@@ -59,8 +59,9 @@ def _me_cdf_band(
     for si in range(n_sets):
         cfg = SimulationConfig(n_stars=1000, sigma_single=sigma_s,
                                sigma_measure=sigma_m)
-        drv = simulate_delta_rv_sample(fb, x_val, cfg,
-                                       BinaryParameterConfig(),
+        bin_cfg = BinaryParameterConfig(
+            period_model='langer2020', logP_max=logPmax)
+        drv = simulate_delta_rv_sample(fb, 0.0, cfg, bin_cfg,
                                        np.random.default_rng(42 + si))
         all_cdfs.append(_binned_cdf(drv, _be))
         all_drv.append(drv)
@@ -90,15 +91,15 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
             multinomial_log_likelihood,
         )
         fb = float(interp.get('f_bin', 0.5))
-        xv = float(interp.get('pi', interp.get('sigma',
-                   interp.get('y_val', 0.0))))
+        _lp_resim = float(interp.get('logPmax',
+                          interp.get('y_val', 3.5)))
         sig = float(interp.get('sigma', result.get('sigma_meas', 5.0)))
         be = (np.asarray(result['bin_edges'])
               if 'bin_edges' in result else DEFAULT_DRV_BIN_EDGES)
         lk_be = (np.asarray(result['likelihood_bin_edges'])
                  if 'likelihood_bin_edges' in result else be)
-        med_c, lo_c, hi_c, pooled = _me_cdf_band(
-            fb, xv, sig, float(result.get('sigma_meas', 3.0)),
+        med_c, lo_c, hi_c, pooled = _me_cdf_band_langer(
+            fb, _lp_resim, sig, float(result.get('sigma_meas', 3.0)),
             tuple(be.tolist()), n_sets=int(ns))
         obs = np.asarray(result.get('obs_delta_rv', []))
         rx = np.concatenate([[0.0], be])
@@ -233,7 +234,7 @@ def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
 # Model Explorer -- interactive grid browser
 # ---------------------------------------------------------------------------
 
-# WORKING — do not change this code (D17: Model Explorer)
+# D17: Model Explorer (fixed 2026-03-30, pending user approval)
 def _render_lk_model_explorer(
     result: dict, display_name: str,
     fbin_g: np.ndarray, x_g: np.ndarray, x_name: str, x_label: str,
@@ -267,22 +268,33 @@ def _render_lk_model_explorer(
 
     bv = me_info['best_vals']
     def_fb = float(bv.get('fbin', 0.5))
-    def_x = float(bv.get(x_name, 0.0))
-    def_sig = float(bv.get('sigma', result.get('sigma_meas', 5.0)))
+    # Sigma may be constant (not in bv) — fall back to grid value
+    _sig_const = np.asarray(result.get('sigma_grid', [5.0]))
+    def_sig = float(bv.get('sigma',
+                    float(_sig_const[0]) if _sig_const.size > 0
+                    else result.get('sigma_meas', 5.0)))
+    _lp_g = np.asarray(result.get('logPmax_grid', []))
+    def_logPmax = float(bv.get('logPmax',
+                        float(_lp_g[0]) if _lp_g.size > 0 else 3.5))
+    # x_name='sigma' for Langer — fall back to constant sigma value
+    def_x = float(bv.get(x_name, def_sig))
 
     # Reset counter — slider keys include counter so reset forces new widgets
     _reset_key = f'{prefix}_lk_me_reset_count'
     _rc = st.session_state.get(_reset_key, 0)
 
     # Reset button + best-fit labels
-    _lp_g = np.asarray(result.get('logPmax_grid', []))
     _best_score = me_info.get('best_score', 0)
     _reset_col1, _reset_col2 = st.columns([0.7, 0.3])
     with _reset_col1:
-        _best_parts = [f'f_bin={def_fb:.3f}', f'{x_label}={def_x:.2f}']
+        _best_parts = [f'f_bin={def_fb:.3f}']
+        if _lp_g.size > 1:
+            _best_parts.append(f'logP_max={def_logPmax:.2f}')
         _sig_g_pre = np.asarray(result.get('sigma_grid', []))
         if _sig_g_pre.size > 1:
             _best_parts.append(f'σ={def_sig:.1f}')
+        else:
+            _best_parts.append(f'σ={def_sig:.1f} (constant)')
         st.caption(f'Best-fit model: {", ".join(_best_parts)}  |  Score: {_best_score:.4f}')
     with _reset_col2:
         if st.button('🟢 Reset to best', key=f'{prefix}_lk_me_reset'):
@@ -291,7 +303,7 @@ def _render_lk_model_explorer(
 
     # Sliders + synced number inputs for precise control
     sig_g = np.asarray(result.get('sigma_grid', []))
-    _ncols = 4 if _lp_g.size > 1 else 3
+    _ncols = 1 + (1 if sig_g.size > 1 else 0) + (1 if _lp_g.size > 1 else 0)
 
     def _synced_slider_input(col, label, mn, mx, default, step, fmt, key_base):
         """Slider + number_input with bidirectional sync."""
@@ -320,36 +332,30 @@ def _render_lk_model_explorer(
         return float(st.session_state[_k_sl])
 
     cols = st.columns(_ncols)
+    _col_idx = 0
 
     me_fb = _synced_slider_input(
-        cols[0], f'f_bin  (best: {def_fb:.3f})',
+        cols[_col_idx], f'f_bin  (best: {def_fb:.3f})',
         0.0, 1.0, def_fb, 0.001, '%.4f', f'{prefix}_lk_me_fb')
+    _col_idx += 1
 
-    x_lo, x_hi = (float(x_g[0]) if len(x_g) else -3.0,
-                   float(x_g[-1]) if len(x_g) else 3.0)
-    if x_lo < x_hi:
-        me_x = _synced_slider_input(
-            cols[1], f'{x_label}  (best: {def_x:.3f})',
-            x_lo, x_hi, min(max(def_x, x_lo), x_hi), 0.001, '%.4f',
-            f'{prefix}_lk_me_x')
-    else:
-        me_x = def_x
-
+    # For Langer: x_g IS sigma — use a single σ slider (not both x and σ)
     if sig_g.size > 1:
         me_sig = _synced_slider_input(
-            cols[2], f'σ_single  (best: {def_sig:.1f})',
+            cols[_col_idx], f'σ_single  (best: {def_sig:.1f})',
             float(sig_g[0]), float(sig_g[-1]),
             min(max(def_sig, float(sig_g[0])), float(sig_g[-1])),
             0.1, '%.2f', f'{prefix}_lk_me_sig')
+        _col_idx += 1
     else:
         me_sig = def_sig
+    me_x = me_sig  # x_name='sigma' for Langer — keep in sync
 
     me_logPmax = None
     if _lp_g.size > 1:
-        _dlp = float(bv.get('logPmax', float(_lp_g[0])))
-        _c = cols[3] if sig_g.size > 1 else cols[2]
+        _dlp = float(bv.get('logPmax', def_logPmax))
         me_logPmax = _synced_slider_input(
-            _c, f'logP_max  (best: {_dlp:.2f})',
+            cols[_col_idx], f'logP_max  (best: {_dlp:.2f})',
             float(_lp_g[0]), float(_lp_g[-1]),
             min(max(_dlp, float(_lp_g[0])), float(_lp_g[-1])),
             0.01, '%.3f', f'{prefix}_lk_me_logPmax')
@@ -361,27 +367,36 @@ def _render_lk_model_explorer(
     lk_be = np.asarray(lk_be) if lk_be is not None else be
     sigma_m = float(result.get('sigma_meas', 3.0))
 
-    # Multi-seed CDF band (cached)
-    med_cdf, lo_cdf, hi_cdf, pooled_drv = _me_cdf_band(
-        me_fb, me_x, me_sig, sigma_m, tuple(be.tolist()), n_sets=50)
+    # Multi-seed CDF band (cached) — Langer: uses langer2020 period model
+    _lp_for_sim = me_logPmax if me_logPmax is not None else def_logPmax
+    med_cdf, lo_cdf, hi_cdf, pooled_drv = _me_cdf_band_langer(
+        me_fb, _lp_for_sim, me_sig, sigma_m, tuple(be.tolist()), n_sets=50)
 
-    # ── WORKING — do not change this code · D17: Score metric cards (logL) ──
+    # ── D17: Score metric cards (logL) ──
     _logL = multinomial_log_likelihood(obs_drv, pooled_drv, lk_be)
     # Compute logL for the global best-fit
-    _bf_med, _, _, _bf_pooled = _me_cdf_band(
-        def_fb, def_x, def_sig, sigma_m, tuple(be.tolist()), n_sets=50)
+    _bf_med, _, _, _bf_pooled = _me_cdf_band_langer(
+        def_fb, def_logPmax, def_sig, sigma_m, tuple(be.tolist()), n_sets=50)
     _logL_best = multinomial_log_likelihood(obs_drv, _bf_pooled, lk_be)
 
     mc1, mc2 = st.columns(2)
+    _cur_parts = [f'f_bin={me_fb:.3f}']
+    _best_parts_mc = [f'f_bin={def_fb:.3f}']
+    if me_logPmax is not None:
+        _cur_parts.append(f'logP={me_logPmax:.2f}')
+        _best_parts_mc.append(f'logP={def_logPmax:.2f}')
+    if sig_g.size > 1:
+        _cur_parts.append(f'σ={me_sig:.1f}')
+        _best_parts_mc.append(f'σ={def_sig:.1f}')
     mc1.metric(
         label='Current (Explorer)',
-        value=f'f_bin={me_fb:.3f}, {x_label}={me_x:.2f}',
+        value=', '.join(_cur_parts),
         delta=f'logL = {_logL:.4f}',
         delta_color='off',
     )
     mc2.metric(
         label='Global best',
-        value=f'f_bin={def_fb:.3f}, {x_label}={def_x:.2f}',
+        value=', '.join(_best_parts_mc),
         delta=f'logL = {_logL_best:.4f}',
         delta_color='off',
     )
@@ -398,10 +413,10 @@ def _render_lk_model_explorer(
     if _show_bestfit and info is not None:
         _bf_bv = info.get('best_vals', {})
         _bf_fb = float(_bf_bv.get('fbin', 0.5))
-        _bf_x = float(_bf_bv.get(x_name, 0.0))
-        _bf_sig = float(_bf_bv.get('sigma', me_sig))
-        _bf_med, _bf_lo, _bf_hi, _ = _me_cdf_band(
-            _bf_fb, _bf_x, _bf_sig, sigma_m,
+        _bf_sig = float(_bf_bv.get('sigma', def_sig))
+        _bf_lp = float(_bf_bv.get('logPmax', def_logPmax))
+        _bf_med, _bf_lo, _bf_hi, _ = _me_cdf_band_langer(
+            _bf_fb, _bf_lp, _bf_sig, sigma_m,
             tuple(be.tolist()), n_sets=50)
 
     fig_cdf = go.Figure()
@@ -438,6 +453,7 @@ def _render_lk_model_explorer(
         'xaxis_range': [0, _xmax_cdf * 1.05],
         'yaxis_title': 'Cumulative fraction',
         'height': 380,
+        'margin': dict(l=60, r=30, t=40, b=50),
         'legend': dict(x=0.6, y=0.15),
     })
     # -- Bin overlay toggle (uses likelihood bins, not CDF bins) ----
@@ -470,7 +486,8 @@ def _render_lk_model_explorer(
         st.dataframe(pd.DataFrame(_br), use_container_width=True,
                      hide_index=True)
 
-    # ── WORKING — do not change this code · D17: 4 heatmaps (2×2) with green dot ──
+    # ── D17: 4 heatmaps (2×2) with green dot — Langer version ──
+    # For Langer: primary heatmap = f_bin × logP_max, secondary = σ×logP
     _sig_g_hm = np.asarray(result.get('sigma_grid', []))
     _lp_g_hm = np.asarray(result.get('logPmax_grid', []))
     _has_4hm = (_sig_g_hm.size > 1 and _lp_g_hm.size > 1 and p_nd.ndim >= 3)
@@ -481,28 +498,42 @@ def _render_lk_model_explorer(
         _me_sig_idx = int(np.argmin(np.abs(_sig_g_hm - me_sig)))
         _me_lp_idx = int(np.argmin(np.abs(_lp_g_hm - me_logPmax))) if me_logPmax is not None else 0
 
-        # Slice normalized likelihood at current σ/logP
+        # Slice to f_bin × logP_max at current σ
+        # Langer array layout: [logPmax, sigma, fbin, pi=1] (4D) or [sigma, fbin, pi=1] (3D)
         if p_nd.ndim == 4:
-            _norm_fbpi = p_nd[_me_lp_idx, _me_sig_idx]
-            _norm_siglp = np.nanmax(p_nd, axis=(2, 3))
+            # [logP, sigma, fbin, pi] → slice at current σ → [logP, fbin, pi]
+            _slice_at_sig = p_nd[:, _me_sig_idx, :, :]
+            # Squeeze pi=1 → [logP, fbin]
+            if _slice_at_sig.shape[-1] == 1:
+                _slice_at_sig = _slice_at_sig[..., 0]
+            _norm_fb_lp = _slice_at_sig.T  # → [fbin, logP] for heatmap
+            _norm_siglp = np.nanmax(p_nd, axis=(2, 3))  # [logP, sigma]
         elif p_nd.ndim == 3:
-            _norm_fbpi = p_nd[_me_sig_idx]
-            _norm_siglp = np.nanmax(p_nd, axis=2) if p_nd.ndim == 3 else p_nd
+            # [sigma, fbin, pi] → slice at current σ → [fbin, pi]
+            _slice_at_sig = p_nd[_me_sig_idx]
+            if _slice_at_sig.shape[-1] == 1:
+                _slice_at_sig = _slice_at_sig[..., 0]
+            # Only fbin left — can't make f_bin×logP heatmap
+            _norm_fb_lp = None
+            _norm_siglp = None
         else:
-            _norm_fbpi = p_nd
+            _norm_fb_lp = None
             _norm_siglp = None
 
-        # Unnormalized -logL
+        # Unnormalized logL — same slicing
         _logL_raw = result.get('logL_raw')
-        _unnorm_fbpi = _unnorm_siglp = None
+        _unnorm_fb_lp = _unnorm_siglp = None
         if _logL_raw is not None:
             _lr = np.asarray(_logL_raw, dtype=float)
             if _lr.ndim == 4:
-                _unnorm_fbpi = _lr[_me_lp_idx, _me_sig_idx]
+                _lr_slice = _lr[:, _me_sig_idx, :, :]
+                if _lr_slice.shape[-1] == 1:
+                    _lr_slice = _lr_slice[..., 0]
+                _unnorm_fb_lp = _lr_slice.T
                 _unnorm_siglp = np.nanmax(_lr, axis=(2, 3))
             elif _lr.ndim == 3:
-                _unnorm_fbpi = _lr[_me_sig_idx]
-                _unnorm_siglp = np.nanmax(_lr, axis=2)
+                _unnorm_fb_lp = None
+                _unnorm_siglp = None
 
         def _green_dot(fig, x_val, y_val):
             fig.add_trace(go.Scatter(
@@ -515,15 +546,16 @@ def _render_lk_model_explorer(
         st.markdown('#### Heatmaps at Current Explorer Position')
         _hm_r1c1, _hm_r1c2 = st.columns(2)
         with _hm_r1c1:
-            _fig1 = _mkhm(_norm_fbpi, fbin_g, x_g,
-                           title='Normalized Likelihood (f<sub>bin</sub> × π)',
-                           show_d=False, height=350,
-                           x_label=x_label, x_name=x_name,
-                           scoring_label='Likelihood',
-                           colorbar_title_override='Norm. L')
-            _green_dot(_fig1, me_x, me_fb)
-            st.plotly_chart(_fig1, use_container_width=True,
-                            key=f'{prefix}_lk_me_hm_norm_fbpi')
+            if _norm_fb_lp is not None:
+                _fig1 = _mkhm(_norm_fb_lp, fbin_g, _lp_g_hm,
+                               title='Normalized Likelihood (f_bin × logP_max)',
+                               show_d=False, height=350,
+                               x_label='log₁₀(P_max)', x_name='logPmax',
+                               scoring_label='Likelihood',
+                               colorbar_title_override='Norm. L')
+                _green_dot(_fig1, me_logPmax if me_logPmax else _lp_g_hm[0], me_fb)
+                st.plotly_chart(_fig1, use_container_width=True,
+                                key=f'{prefix}_lk_me_hm_norm_fbpi')
         with _hm_r1c2:
             if _norm_siglp is not None:
                 _fig2 = _mkhm(_norm_siglp, _lp_g_hm, _sig_g_hm,
@@ -540,14 +572,14 @@ def _render_lk_model_explorer(
 
         _hm_r2c1, _hm_r2c2 = st.columns(2)
         with _hm_r2c1:
-            if _unnorm_fbpi is not None:
-                _fig3 = _mkhm(_unnorm_fbpi, fbin_g, x_g,
-                               title='log L (f<sub>bin</sub> × π)',
+            if _unnorm_fb_lp is not None:
+                _fig3 = _mkhm(_unnorm_fb_lp, fbin_g, _lp_g_hm,
+                               title='log L (f_bin × logP_max)',
                                show_d=False, height=350,
-                               x_label=x_label, x_name=x_name,
+                               x_label='log₁₀(P_max)', x_name='logPmax',
                                scoring_label='log L',
                                colorbar_title_override='log L')
-                _green_dot(_fig3, me_x, me_fb)
+                _green_dot(_fig3, me_logPmax if me_logPmax else _lp_g_hm[0], me_fb)
                 st.plotly_chart(_fig3, use_container_width=True,
                                 key=f'{prefix}_lk_me_hm_unnorm_fbpi')
         with _hm_r2c2:
@@ -582,6 +614,7 @@ def _render_lk_model_explorer(
         'xaxis_title': 'DeltaRV (km/s)',
         'yaxis_title': 'Probability density',
         'height': 380,
+        'margin': dict(l=60, r=30, t=40, b=50),
         'legend': dict(x=0.65, y=0.95),
     })
     st.plotly_chart(fig_hist, use_container_width=True,
@@ -612,15 +645,18 @@ def _render_lk_model_explorer(
         annotation_position='top right',
         annotation_font_color='#E25A53',
     )
+    _det_parts = [f'f_bin={me_fb:.3f}']
+    if me_logPmax is not None:
+        _det_parts.append(f'logP={me_logPmax:.2f}')
     fig_det.update_layout(**{
         **PLOTLY_THEME,
         'title': dict(
-            text=(f'Detection Fraction (f_bin={me_fb:.3f}, '
-                  f'{x_label}={me_x:.2f})'),
+            text=f'Detection Fraction ({", ".join(_det_parts)})',
             font=dict(size=14)),
         'xaxis_title': 'DeltaRV threshold (km/s)',
         'yaxis_title': 'Fraction above threshold',
         'height': 380,
+        'margin': dict(l=60, r=30, t=40, b=50),
         'yaxis': dict(range=[0, 1.05]),
         'legend': dict(x=0.65, y=0.95),
     })

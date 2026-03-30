@@ -131,6 +131,12 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         best_hi_cdf = None
         completed = 0
 
+        # Store grid arrays in job dict for live rendering (Langer H1-H4)
+        job['_grids'] = {
+            'fbin_grid': fbin_grid, 'pi_grid': pi_grid,
+            'sigma_grid': sigma_grid, 'logPmax_grid': logPmax_scan_vals,
+        }
+
         import time as _time
         t_start = _time.time()
 
@@ -288,6 +294,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                                 'is_final': _is_final,
                             }
                         job['live_heatmaps'] = _method_live
+                        job['_logL_raw_live'] = logL_raw.copy()
                         # Build status summary
                         _lk_disp = _method_live['likelihood']['p']
                         _, _, _spv = _best_point(_lk_disp, fbin_grid, sigma_grid)
@@ -337,6 +344,7 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                                 'is_final': _is_final,
                             }
                         job['live_heatmaps'] = _method_live
+                        job['_logL_raw_live'] = logL_raw.copy()
 
                         # Live 1D σ graph (max likelihood per sigma slice)
                         if n_sig > 1:

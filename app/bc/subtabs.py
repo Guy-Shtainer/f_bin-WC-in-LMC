@@ -279,11 +279,18 @@ def render_model_subtabs(p: str, model_ctx: dict) -> None:
         st.info('Run a simulation or load a saved result to see analysis.')
         return
 
-    # ── Shared section (render_shared.py) ─────────────────────────────────
-    from bc.render_shared import render_shared_section
+    # ── Shared section ─────────────────────────────────────────────────────
+    _ndim = model_ctx.get('ndim_mode', '')
+    if _ndim in ('langer', 'cadence_langer'):
+        from bc.render_shared_langer import render_shared_section
+    else:
+        from bc.render_shared import render_shared_section
     method_results = render_shared_section(p, model_ctx)
 
     # ── Likelihood scoring ────────────────────────────────────────────────
     st.markdown('---')
-    from bc.render_lk import render_lk_tab
+    if _ndim in ('langer', 'cadence_langer'):
+        from bc.render_lk_langer import render_lk_tab
+    else:
+        from bc.render_lk import render_lk_tab
     render_lk_tab(p, model_ctx, method_results)

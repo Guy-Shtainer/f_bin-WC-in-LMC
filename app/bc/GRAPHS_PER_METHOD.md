@@ -25,7 +25,7 @@
 
 ---
 
-## Rendering Order (top to bottom as user sees it)
+## Cadence Dsilva — Rendering Order (top to bottom as user sees it)
 
 ### Grid Range Exclusion (`cadence.py`) — above heatmaps, default folded
 
@@ -52,9 +52,9 @@
 | 2 | A2 | CDF Comparison (observed lightblue line + params in legend) | **WORKING ✓** | `render_shared.py` | |
 | 2b | E6 | Per-Bin Likelihood Breakdown Table | **WORKING ✓** | `render_lk_fit.py` (called from `render_shared.py`) | |
 | - | ~~A4~~ | ~~Period Distribution Histogram~~ | **REMOVED** | | Already present inside A6 orbital histograms (logP panel) |
-| 3 | A5 | Binary Fraction vs ΔRV Threshold | **WORKING ✓** | `render_shared.py` | |
-| 4 | A6 | Orbital Histograms (9-panel + best-model subtitle) | **WORKING ✓** | `render_shared.py` | |
-| 5 | A7 | Methodology Equations (LaTeX) | **WORKING ✓** | `render_shared.py` | |
+| 3 | A5 | Binary Fraction vs ΔRV Threshold | **WORKING ✓** | `render_shared.py` | **Dsilva has same issues as Langer had:** (1) Blue curve labeled "Observed" is actually simulated — rename to "Simulated". (2) No real observed curve shown — add white step curve from `obs_delta_rv`. (3) Caption says "Observed" for simulated data. Apply same fix as Langer version when ready. |
+| 4 | A6 | Orbital Histograms (9-panel + best-model subtitle) | **WORKING ✓** | `render_shared.py` | **Dsilva has same issue:** When M₁ is fixed (constant), histogram shows fake flat rectangle instead of vertical line. Same constant-parameter fix needed as Langer version. Apply when ready. |
+| 5 | A7 | Methodology Equations (LaTeX) | **WORKING ✓** | `render_shared.py` | **Dsilva has wrong σ description:** says "σ_total = √(σ_single² + σ_measure²)" but code actually draws from N(v_sys, σ_single) then adds σ_measure separately. Fix text to match code when ready. |
 
 ### Live Run Section (`polling.py`) — visible during active simulation
 
@@ -90,6 +90,95 @@
 
 ---
 
+## Cadence Langer — Rendering Order (top to bottom as user sees it)
+
+> **Key differences from Dsilva:** **Primary axes = f_bin × logP_max** (NOT σ_single). π grid unused `[0.0]`. σ_single is either constant (preset) or optionally scanned as a secondary axis. Period model = `langer2020` (Case A + Case B mixture). `has_case_AB = True` → A6 has "Case A vs Case B" radio option.
+> All code is currently shared with Dsilva via `_render_cadence_results()` — **must be duplicated** into Langer-specific files to avoid breaking Dsilva's 2-week-tested code.
+>
+> **Langer grid combos:** (1) f_bin only → 1D. (2) f_bin × logP_max → heatmap f_bin×logP_max. (3) f_bin × σ → heatmap f_bin×σ. (4) f_bin × σ × logP_max → heatmap f_bin×logP_max + 1D σ profile.
+
+### Grid Range Exclusion (`cadence.py:468-475`)
+
+| # | ID | Graph | Status | File | Notes |
+|---|-----|-------|--------|------|-------|
+| 0 | G1 | Grid Range Exclusion (folded expander) | **BROKEN** | `cadence.py` | Broken, same as Dsilva. Will deal with it later |
+
+### Top Heatmaps (`cadence.py:45-230`, `_render_top_heatmaps`)
+
+| # | ID | Graph | Status | File | Notes |
+|---|-----|-------|--------|------|-------|
+| 1 | H1 | Normalized Likelihood — LEFT primary heatmap | **WORKING ✓** | `cadence.py` | Approved 2026-03-30 (Langer). Uses `_render_top_heatmaps_langer`. f_bin×logP_max (default), f_bin×σ (if no logP), 1D f_bin (if only f_bin). Live-updates every 3s during runs via `polling_langer.py`. |
+| 2 | H2 | Max Norm. Likelihood — RIGHT secondary panel | **WORKING ✓** | `cadence.py` | Approved 2026-03-30 (Langer). 1D σ profile only when 3 grids scanned. Otherwise empty. |
+| 3 | H3 | log L — LEFT primary heatmap (unnormalized) | **WORKING ✓** | `cadence.py` | Approved 2026-03-30 (Langer). Same logic as H1 for raw logL. |
+| 4 | H4 | Max log L — RIGHT secondary panel (unnormalized) | **WORKING ✓** | `cadence.py` | Approved 2026-03-30 (Langer). Same logic as H2 for raw logL. |
+|   |    | Best-fit caption (f_bin, σ, optionally logP_max) | **WORKING ✓** | `cadence.py` | Approved 2026-03-30 (Langer). Only shows scanned params. Constants marked "(constant)". |
+
+### Shared Section (`render_shared.py:784-835`, `render_shared_section`)
+
+| # | ID | Graph | Status | File | Notes |
+|---|-----|-------|--------|------|-------|
+| 5 | A1 | Summary Table (best f_bin, σ_single, HDI, logP_max if scanned, interp, logL) | **WORKING ✓** | `render_shared_langer.py` | Approved 2026-03-30 (Langer). Explicit 4-case grid handler matching runner dimension order. Constant σ shown as "X.XX (constant)" with "—" for HDI. |
+| 6 | A2 | CDF Comparison (observed lightblue + model gold, 100 runs, median+68% bands) | **WORKING ✓** | `render_shared_langer.py` | Approved 2026-03-30 (Langer). Observed CDF uses `shape='hv'` for step rendering. Model CDF renders with 68% band. Legend correct. Toggle hides line+band together. |
+| 7 | E6 | Per-Bin Likelihood Breakdown Table (obs vs sim counts per bin) | **WORKING ✓** | `render_lk_fit.py` (called from `render_shared.py`) | Approved 2026-03-30 (Langer) |
+| 8 | A5 | Binary Fraction vs ΔRV Threshold (gap annotation, missed/singles shading) | **WORKING ✓** | `render_shared_langer.py` | Approved 2026-03-30 (Langer). Simulated curve correctly labeled. Real observed step curve (white, `shape='hv'`) added from `obs_delta_rv`. Caption clarified. |
+| 9 | A6 | Orbital Histograms (9-panel 3×3, radio: detected/missed/all/**Case A vs B**) | **WORKING ✓** | `render_shared_langer.py` | Approved 2026-03-30 (Langer). Constant parameters (e=0, M₁=10) show vertical line instead of fake histogram. q density > 1 is correct (narrow distribution). |
+| 10 | A7 | Methodology Equations (LaTeX expander) | **WORKING ✓** | `render_shared_langer.py` | Approved 2026-03-30 (Langer). Full Langer-specific inline expander with LaTeX equations. Correct σ description (σ_single + separate σ_measure). Langer period model (Case A + B mixture equation). Likelihood scoring only. No K-S/CvM. |
+
+### Likelihood Analysis (`render_lk.py:123-169` → `render_lk_scoring.py:95-416`)
+
+| # | ID | Graph | Status | File | Notes |
+|---|-----|-------|--------|------|-------|
+| 11 |    | "Likelihood Analysis" header | **WORKING ✓** | `render_lk_scoring.py` | Static text |
+| 12 | E7 | Methodology Explainer (good+bad example, expander) | **WORKING ✓** | `render_lk_fit.py` | Approved 2026-03-25 (Dsilva), 2026-03-30 (Langer). Model-agnostic |
+| 13 |    | "3D Parabolic Surface & Interpolation" header | **BROKEN** | `render_lk_scoring.py` | See D10 notes |
+| 14 |    | Fit mode radio (Height/Range/Neighborhood) + controls | **BROKEN** | `render_lk_scoring.py` | See D10 notes |
+| 15 |    | Parabolic best-fit success message | **BROKEN** | `render_lk_scoring.py` | See D10 notes |
+| 16 |    | Camera preset radio (Default/Top-down/Front/Side) | **BROKEN** | `render_lk_scoring.py` | See D10 notes |
+| 17 | D10 | 3D Parabolic Surface | **BROKEN** | `render_lk_scoring.py` | **Completely broken for Langer.** Shared code with Dsilva is causing problems. **Prefer duplicate Langer-specific code** to avoid breaking Dsilva (2 weeks of fixes). **Logic should be:** (1) f_bin × logP_max → 3D parabolic surface over f_bin × logP_max → logL. If σ is also scanned, pick the σ slice with best max-likelihood for the surface. (2) f_bin only → simple 1D parabola interpolation, no 3D surface needed. **Also fix:** `f<sub>bin</sub>` rendering as raw HTML in captions/labels — must render properly everywhere. |
+| 18 | D9a | 1D Parabolic Slice — f_bin (left col) | **BROKEN** | `render_lk_scoring.py` | See D10 notes. Only show 1D slices when there are 2+ grid dimensions. For f_bin-only runs, the 1D parabola IS the main interpolation (no separate slice). |
+| 19 | D9b | 1D Parabolic Slice — σ_single/logP_max (right col) | **BROKEN** | `render_lk_scoring.py` | See D10 notes. Should slice logP_max (not σ_single) when primary heatmap is f_bin × logP_max. |
+| 20 |    | 1D slice context caption (σ/logP values) | **BROKEN** | `render_lk_scoring.py` | `f<sub>bin</sub>` renders as raw HTML text instead of formatted. Fix all HTML-in-caption occurrences. |
+
+### Corner Plot + Summary (`render_lk.py:373-560`, `render_lk_fit.py:352-550`)
+
+| # | ID | Graph | Status | File | Notes |
+|---|-----|-------|--------|------|-------|
+| 21 | D14 | Corner Plot — Likelihood (expander, N×N: diagonal=1D posteriors, lower=2D heatmaps) | **TO-TEST** | `render_lk_fit_langer.py` | Fixed 2026-03-30: axis ordering + constant-sigma exclusion. Only scanned dims shown. |
+| 22 |    | "Best-fit Summary -- Likelihood" header | | `render_lk.py` | |
+| 23 |    | N_sets for re-simulation number_input | | `render_lk.py` | |
+| 24 | D15 | Best-fit Summary Table (Parameter / Best grid / Mode±HDI68 / Interpolated / Re-sim) | **TO-TEST** | `render_lk_langer.py` | Fixed 2026-03-30: constant σ shows actual value + "(constant)". f_bin/logPmax correct after D14 axis fix. Interpolated column depends on D10. |
+| 25 |    | Normalized logL asterisk caption | | `render_lk.py` | |
+
+### Model Explorer (`render_lk.py:529-542`, `render_lk_explorer.py:236-631`)
+
+| # | ID | Graph | Status | File | Notes |
+|---|-----|-------|--------|------|-------|
+| 26 | D17 | Model Explorer (folded expander) | **TO-TEST** | `render_lk_explorer_langer.py` | Fixed 2026-03-30: Langer period model, correct best-fit extraction, dynamic sliders/labels. See sub-element notes below. |
+
+**Inside D17 expander:**
+
+| Sub | Element | Status | Notes |
+|------|---------|--------|-------|
+| D17a | Best-fit caption + 🟢 Reset button | **TO-TEST** | Fixed: shows f_bin, logP_max (if scanned), σ (constant annotated) |
+| D17b | Sliders: f_bin, σ_single (+ logP_max if scanned) + synced number_inputs | **TO-TEST** | Fixed: dynamic column count, σ hidden when constant, logPmax slider correct |
+| D17c | Score metric cards (Current vs Global, logL) | **TO-TEST** | Fixed: shows all scanned params, logL only |
+| D17d | Compare with best-fit checkbox | **TO-TEST** | Uses Langer CDF simulation |
+| D17e | Show likelihood bin edges checkbox | **TO-TEST** | Works |
+| D17f | CDF plot (observed white + explorer gold) | **TO-TEST** | Fixed: uses langer2020 period model, proper logP_max |
+| D17g | Per-bin breakdown table | **TO-TEST** | Conditional: bins checkbox ON |
+| D17h | 4 heatmaps (2×2) with green dot at explorer position | **TO-TEST** | Conditional: BOTH σ AND logP scanned |
+| D17i | ΔRV Distribution histogram (observed vs simulated overlay) | **TO-TEST** | Code present, works with fixed CDF simulation |
+| D17j | Detection Fraction vs threshold (observed vs simulated) | **TO-TEST** | Fixed: title shows f_bin + logP, simulation uses Langer model |
+| D17k | Explorer caption | **TO-TEST** | |
+
+### CDF Sanity Check (`render_lk.py:544-560`, `render_lk_explorer.py:148-229`)
+
+| # | ID | Graph | Status | File | Notes |
+|---|-----|-------|--------|------|-------|
+| 27 | D18 | CDF Sanity Check (5 random draws × 25 stars vs observed) | **BROKEN** | `render_lk_explorer.py` | **BUG 1:** Title shows `f_bin=nan` — cascading from broken best-fit extraction. **BUG 2:** 5 draw CDFs are all flat at 0 — simulating with nan f_bin produces no binaries. Once best-fit values are fixed, draws should appear. **BUG 3:** Graph overflows right panel — x-axis too wide, shrink so entire plot is visible. **BUG 4:** Must use cadence-aware simulation with Langer period model, not generic `simulate_delta_rv_sample`. Duplicate working Dsilva cadence code. |
+
+---
+
 ## Removed Graphs (backed up in Backups/)
 
 D2-D3, D4, D5a, D5b, D5c, D8, D11, D12, D13, A2 (old), A4, E5, D16 (folded into D15),
@@ -98,6 +187,11 @@ E8, E9, all K-S/CvM/weighted graphs
 ---
 
 ## Change Log
+
+### 2026-03-30: Cadence Langer Graph Catalog
+- Added full "Cadence Langer — Rendering Order" section with 27 top-level elements + 11 D17 sub-elements
+- Renamed existing rendering order to "Cadence Dsilva" for clarity
+- Documented Langer-specific differences: σ_single x-axis, Case A vs B radio, langer2020 period model
 
 ### 2026-03-26: LogL Consistency + Cleanup
 - **Removed:** D4 (metric cards, redundant with top heatmaps), D5a (logL heatmap, duplicate of H3)

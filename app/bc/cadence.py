@@ -36,6 +36,7 @@ from bc.runners import _run_cadence_bg
 from bc.extras import _render_error_model_selector
 from bc.subtabs import render_model_subtabs
 from bc.polling import _poll_cadence_job
+from bc.polling_langer import _poll_cadence_job_langer
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -230,6 +231,177 @@ def _render_top_heatmaps(p, result, fbin_g, pi_g, sigma_g, logPmax_g,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# WORKING — do not change this code (H1-H4 Langer: top heatmaps + live updates)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_top_heatmaps_langer(p, result, fbin_g, pi_g, sigma_g, logPmax_g,
+                                lk_arr, best_lp_idx, is_dsilva, height, use_cw):
+    """Render top heatmaps — Langer-specific version.
+
+    Array layout: [logPmax, sigma, fbin, pi=1] (4D) or [sigma, fbin, pi=1] (3D).
+    Primary axes = f_bin × logP_max.  σ is secondary.
+
+    Grid combos:
+      f_bin only          → 1D f_bin profile (left), nothing (right)
+      f_bin × σ           → heatmap f_bin × σ (left), nothing (right)
+      f_bin × logP        → heatmap f_bin × logP (left), nothing (right)
+      f_bin × σ × logP    → heatmap f_bin × logP at best σ (left), 1D σ (right)
+    """
+    if not np.any(np.isfinite(lk_arr)):
+        return
+
+    _has_sig = sigma_g.size > 1
+    _has_lp = logPmax_g.size > 1
+    _bf = np.unravel_index(int(np.nanargmax(lk_arr)), lk_arr.shape)
+
+    # ── Helper: extract left heatmap and right 1D from an ND array ────
+    def _extract_left_right(arr):
+        """Return (left_2d, left_y_grid, left_y_label, right_1d_vals, right_grid, right_label).
+
+        left_2d: [fbin, y_axis] heatmap data.  y_axis = logP or σ.
+        right: 1D profile of the secondary axis (only when 3 grids).
+        """
+        if arr is None or not np.any(np.isfinite(arr)):
+            return None, None, None, None, None, None
+
+        if _has_sig and _has_lp:
+            # 3 grids → left = f_bin × logP (at best σ), right = 1D σ
+            if arr.ndim == 4:
+                # [logP, sigma, fbin, pi=1]
+                _best_sig = int(_bf[1])
+                _slice = arr[:, _best_sig, :, 0]  # [logP, fbin]
+                _left = _slice.T  # [fbin, logP]
+                # 1D σ: max over logP×fbin×pi for each σ
+                _r1d = [float(np.nanmax(arr[:, s, :, :]))
+                        if np.any(np.isfinite(arr[:, s, :, :])) else np.nan
+                        for s in range(sigma_g.size)]
+            else:
+                return None, None, None, None, None, None
+            return (_left, logPmax_g, 'log₁₀(P_max)',
+                    _r1d, sigma_g, 'σ_single (km/s)')
+
+        elif _has_lp:
+            # 2 grids: f_bin × logP (σ constant)
+            if arr.ndim == 4:
+                # [logP, sigma=1, fbin, pi=1] → squeeze σ and pi
+                _left = arr[:, 0, :, 0].T  # [fbin, logP]
+            elif arr.ndim == 3:
+                # [logP, fbin, pi=1] — shouldn't happen for Langer but handle
+                _left = arr[:, :, 0].T if arr.shape[-1] == 1 else arr[:, :].T
+            else:
+                return None, None, None, None, None, None
+            return _left, logPmax_g, 'log₁₀(P_max)', None, None, None
+
+        elif _has_sig:
+            # 2 grids: f_bin × σ (logP constant)
+            if arr.ndim == 3:
+                # [sigma, fbin, pi=1]
+                _left = arr[:, :, 0].T  # [fbin, sigma]
+            elif arr.ndim == 4:
+                # [logP=1, sigma, fbin, pi=1]
+                _left = arr[0, :, :, 0].T  # [fbin, sigma]
+            else:
+                return None, None, None, None, None, None
+            return _left, sigma_g, 'σ_single (km/s)', None, None, None
+
+        else:
+            # 1 grid: f_bin only → 1D profile
+            # Squeeze to 1D
+            _flat = arr.ravel()
+            if _flat.size == fbin_g.size:
+                return None, None, None, _flat.tolist(), fbin_g, 'f_bin'
+            return None, None, None, None, None, None
+
+    # ── Extract for normalized likelihood ─────────────────────────────
+    _n_left, _n_y_g, _n_y_lbl, _n_r1d, _n_r_g, _n_r_lbl = \
+        _extract_left_right(lk_arr)
+
+    # ── Extract for unnormalized logL ─────────────────────────────────
+    _logL_raw = result.get('logL_raw')
+    _u_arr = np.asarray(_logL_raw, dtype=float) if _logL_raw is not None else None
+    _u_left, _u_y_g, _u_y_lbl, _u_r1d, _u_r_g, _u_r_lbl = \
+        _extract_left_right(_u_arr)
+
+    # ── Best-fit caption (only scanned params) ────────────────────────
+    _bf_parts = []
+    # f_bin is always scanned
+    _bf_fb_idx = _bf[-2] if lk_arr.ndim >= 2 else 0
+    _bf_parts.append(f'f_bin={float(fbin_g[_bf_fb_idx]):.3f}')
+    if _has_lp:
+        _bf_parts.append(f'logP_max={float(logPmax_g[_bf[0]]):.2f}')
+    if _has_sig:
+        _si = _bf[1] if lk_arr.ndim == 4 else _bf[0]
+        _bf_parts.append(f'σ_single={float(sigma_g[_si]):.1f} km/s')
+    elif sigma_g.size == 1:
+        _bf_parts.append(f'σ_single={float(sigma_g[0]):.1f} km/s (constant)')
+    st.caption(f'Best-fit: {", ".join(_bf_parts)}')
+
+    # ── Row 1: Normalized likelihood ──────────────────────────────────
+    _r1c1, _r1c2 = st.columns(2)
+    with _r1c1:
+        if _n_left is not None:
+            _title_y = _n_y_lbl.replace('σ_single (km/s)', 'σ_single').replace('log₁₀(P_max)', 'logP_max')
+            _fig1 = _make_heatmap_fig(
+                _n_left, fbin_g, _n_y_g,
+                title=f'Normalized Likelihood (f_bin × {_title_y})',
+                show_d=False, height=height,
+                x_label=_n_y_lbl, x_name='logPmax' if _n_y_lbl.startswith('log') else 'sigma',
+                scoring_label='Likelihood',
+                colorbar_title_override='Norm. Likelihood',
+            )
+            st.plotly_chart(_fig1, use_container_width=use_cw,
+                            key=f'{p}_top_norm_fbpi')
+        elif _n_r1d is not None and _n_r_lbl == 'f_bin':
+            # f_bin only → 1D profile
+            _fig1 = _make_max_pval_fig(
+                _n_r_g, _n_r1d, height=height,
+                x_label='f_bin', stat_label='Norm. Likelihood',
+            )
+            st.plotly_chart(_fig1, use_container_width=use_cw,
+                            key=f'{p}_top_norm_1d')
+    with _r1c2:
+        if _n_r1d is not None and _n_r_lbl != 'f_bin':
+            _fig2 = _make_max_pval_fig(
+                _n_r_g, _n_r1d, height=height,
+                x_label=_n_r_lbl, stat_label='Norm. Likelihood',
+            )
+            st.plotly_chart(_fig2, use_container_width=use_cw,
+                            key=f'{p}_top_norm_1d')
+
+    # ── Row 2: Unnormalized logL ──────────────────────────────────────
+    if _u_left is not None or (_u_r1d is not None and _u_r_lbl == 'f_bin'):
+        _r2c1, _r2c2 = st.columns(2)
+        with _r2c1:
+            if _u_left is not None:
+                _title_y = _u_y_lbl.replace('σ_single (km/s)', 'σ_single').replace('log₁₀(P_max)', 'logP_max')
+                _fig3 = _make_heatmap_fig(
+                    _u_left, fbin_g, _u_y_g,
+                    title=f'log L (f_bin × {_title_y})',
+                    show_d=False, height=height,
+                    x_label=_u_y_lbl, x_name='logPmax' if _u_y_lbl.startswith('log') else 'sigma',
+                    scoring_label='log L',
+                    colorbar_title_override='log L',
+                )
+                st.plotly_chart(_fig3, use_container_width=use_cw,
+                                key=f'{p}_top_unnorm_fbpi')
+            elif _u_r1d is not None and _u_r_lbl == 'f_bin':
+                _fig3 = _make_max_pval_fig(
+                    _u_r_g, _u_r1d, height=height,
+                    x_label='f_bin', stat_label='log L',
+                )
+                st.plotly_chart(_fig3, use_container_width=use_cw,
+                                key=f'{p}_top_unnorm_1d')
+        with _r2c2:
+            if _u_r1d is not None and _u_r_lbl != 'f_bin':
+                _fig4 = _make_max_pval_fig(
+                    _u_r_g, _u_r1d, height=height,
+                    x_label=_u_r_lbl, stat_label='log L',
+                )
+                st.plotly_chart(_fig4, use_container_width=use_cw,
+                                key=f'{p}_top_unnorm_1d')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Result display: build model_ctx + delegate to subtabs
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -246,6 +418,13 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
     status = _poll_cadence_job(p)
     if status != 'done':
         return
+
+    # For Langer: clear final live heatmaps — H1-H4 already show everything,
+    # the separate live heatmap rendered by polling is redundant and shows π.
+    if not _is_dsilva:
+        for _lk in ('_final_live_heatmaps', '_final_live_sigma_1d',
+                     '_final_live_logPmax_1d', '_final_live_sigma_logPmax_2d'):
+            st.session_state.pop(f'{p}{_lk}', None)
 
     result = st.session_state.get(f'{p}_result')
     if result is None or result.get('likelihood') is None:
@@ -489,9 +668,274 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
         model_ctx['result'] = _masked_result
 
     # ── 4 heatmaps at top (live during run, persist after) ──────────────
-    _render_top_heatmaps(p, result, fbin_grid, pi_grid, sigma_grid,
-                         logPmax_grid, lk_arr, _cad_lp_idx, _is_dsilva,
-                         _ch, _use_cw)
+    if _is_dsilva:
+        _render_top_heatmaps(p, result, fbin_grid, pi_grid, sigma_grid,
+                             logPmax_grid, lk_arr, _cad_lp_idx, _is_dsilva,
+                             _ch, _use_cw)
+    else:
+        _render_top_heatmaps_langer(p, result, fbin_grid, pi_grid, sigma_grid,
+                                    logPmax_grid, lk_arr, _cad_lp_idx, _is_dsilva,
+                                    _ch, _use_cw)
+
+    render_model_subtabs(p, model_ctx)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Langer-specific results display (duplicate of _render_cadence_results)
+# Uses _poll_cadence_job_langer which has no f_bin×π heatmap rendering.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_cadence_results_langer(p: str, _is_dsilva: bool, bin_cfg=None,
+                                   settings: dict = None,
+                                   obs_override: 'np.ndarray | None' = None) -> None:
+    """Langer-specific right-column results display.
+
+    Same as _render_cadence_results but uses _poll_cadence_job_langer
+    (no f_bin×π heatmaps). H1-H4 handle all heatmap display.
+    """
+    _ch = int(st.session_state.get('bc_canvas_height', 520))
+    _cw_raw = int(st.session_state.get('bc_canvas_width', 0))
+    _cw = _cw_raw if _cw_raw > 0 else None
+    _use_cw = (_cw is None)
+
+    # Poll job status — Langer version (no f_bin×π heatmaps)
+    status = _poll_cadence_job_langer(p)
+    if status != 'done':
+        return
+
+    result = st.session_state.get(f'{p}_result')
+    if result is None or result.get('likelihood') is None:
+        st.warning('No results found.')
+        return
+
+    # ── Extract grids ─────────────────────────────────────────────────────
+    fbin_grid = np.asarray(result['fbin_grid'])
+    pi_grid = np.asarray(result['pi_grid'])
+    sigma_grid = np.asarray(result['sigma_grid'])
+    logPmax_grid = np.asarray(result.get('logPmax_grid', []))
+    _has_logPmax_scan = len(logPmax_grid) > 1
+    lk_arr = np.asarray(result['likelihood'])
+
+    n_sig = len(sigma_grid)
+    _is_langer_sigma = (not _is_dsilva) and n_sig > 1
+
+    # ── logPmax: use best-fit index (slider removed) ────────────────────
+    _cad_lp_idx = 0
+    if _has_logPmax_scan and lk_arr.ndim == 4:
+        if np.any(np.isfinite(lk_arr)):
+            _best_flat = int(np.nanargmax(lk_arr))
+            _cad_lp_idx = _best_flat // (
+                lk_arr.shape[1] * lk_arr.shape[2] * lk_arr.shape[3])
+        else:
+            _cad_lp_idx = 0
+
+    # ── Determine x-axis and ndim_mode ────────────────────────────────────
+    if _is_langer_sigma:
+        _cad_ndim_mode = 'cadence_langer'
+        _cad_x_g = np.asarray(sigma_grid)
+        _cad_x_name = 'sigma'
+        _cad_x_label = 'sigma_single'
+        _cad_x_disp = 'sigma_single (km/s)'
+    else:
+        _cad_ndim_mode = 'cadence_langer'
+        _cad_x_g = np.asarray(sigma_grid)
+        _cad_x_name = 'sigma'
+        _cad_x_label = 'sigma_single'
+        _cad_x_disp = 'sigma_single (km/s)'
+
+    # ── Determine best-fit indices for outer slice selection ───────────────
+    _lk_for_slice = lk_arr
+    if _has_logPmax_scan and _lk_for_slice.ndim == 4:
+        _lk_for_slice = _lk_for_slice[_cad_lp_idx]
+
+    _cad_outer_list = []
+    if _has_logPmax_scan:
+        _cad_outer_list.append(_cad_lp_idx)
+    if n_sig > 1:
+        _cad_best_s = 0
+        if np.any(np.isfinite(_lk_for_slice)):
+            _lkmax_list = [float(np.nanmax(_lk_for_slice[s]))
+                           for s in range(n_sig)]
+            _cad_best_s = int(np.argmax(_lkmax_list))
+        _cad_outer_list.append(_cad_best_s)
+    elif _lk_for_slice.ndim == 3 and not _has_logPmax_scan:
+        _cad_outer_list.append(0)
+    _cad_outer = tuple(_cad_outer_list) if _cad_outer_list else None
+
+    # ── Find global best-fit for gap_sim ──────────────────────────────────
+    _full_lk = np.asarray(result['likelihood'])
+    if not np.any(np.isfinite(_full_lk)):
+        st.warning('No finite likelihood values in grid \u2014 cannot run analysis.')
+        return
+
+    _flat_best = int(np.nanargmax(_full_lk))
+    _shape = _full_lk.shape
+    if _full_lk.ndim == 4:
+        _best_lp_idx = _flat_best // (_shape[1] * _shape[2] * _shape[3])
+        _rem = _flat_best % (_shape[1] * _shape[2] * _shape[3])
+        _best_sig_idx = _rem // (_shape[2] * _shape[3])
+        _best_fb_idx = (_rem // _shape[3]) % _shape[2]
+        _best_pi_idx = _rem % _shape[3]
+    elif _full_lk.ndim == 3:
+        _best_lp_idx = 0
+        _best_sig_idx = _flat_best // (_shape[1] * _shape[2])
+        _best_fb_idx = (_flat_best // _shape[2]) % _shape[1]
+        _best_pi_idx = _flat_best % _shape[2]
+    else:
+        _best_lp_idx = 0
+        _best_sig_idx = 0
+        _best_fb_idx = _flat_best // _shape[1]
+        _best_pi_idx = _flat_best % _shape[1]
+
+    best_fbin_v = float(fbin_grid[_best_fb_idx])
+    best_pi_v = 0.0
+    best_sigma_v = float(sigma_grid[_best_sig_idx])
+    ana_logPmax = float(logPmax_grid[_best_lp_idx]) if len(logPmax_grid) > 0 \
+        else float(st.session_state.get(f'{p}_logP_max', 5.0))
+
+    # ── Load observed data ────────────────────────────────────────────────
+    _settings = settings or {}
+    cls = _settings.get('classification', {})
+    thresh_dRV = float(cls.get('threshold_dRV', 45.5))
+    sh_analysis = settings_hash(_settings) if _settings else ''
+    if obs_override is not None:
+        obs_drv_analysis = obs_override
+        obs_detail = None
+        try:
+            cadence_list_a, cadence_weights_a = cached_load_cadence(sh_analysis)
+        except Exception:
+            cadence_list_a = cadence_weights_a = None
+        _has_obs = True
+    else:
+        try:
+            obs_drv_analysis, obs_detail = cached_load_observed_delta_rvs(sh_analysis)
+            cadence_list_a, cadence_weights_a = cached_load_cadence(sh_analysis)
+            _has_obs = True
+        except Exception:
+            obs_drv_analysis = obs_detail = cadence_list_a = cadence_weights_a = None
+            _has_obs = False
+
+    # ── Compute gap_sim at best-fit for analysis plots ────────────────────
+    gap_sim = None
+    _bin_cfg_explore = None
+    if _has_obs:
+        from wr_bias_simulation import (
+            SimulationConfig, BinaryParameterConfig, simulate_with_params,
+        )
+        if bin_cfg is not None:
+            _bin_cfg_explore = bin_cfg
+        else:
+            _bin_cfg_explore = BinaryParameterConfig(
+                logP_min=float(st.session_state.get(f'{p}_logP_min', 0.15)),
+                logP_max=float(st.session_state.get(f'{p}_logP_max', 5.0)),
+                period_model='langer2020',
+                e_model=str(st.session_state.get(f'{p}_e_model', 'flat')),
+                e_max=float(st.session_state.get(f'{p}_e_max', 0.9)),
+                mass_primary_model=str(
+                    st.session_state.get(f'{p}_mass_model', 'fixed')),
+                mass_primary_fixed=float(
+                    st.session_state.get(f'{p}_mass_fixed', 10.0)),
+                q_model=str(st.session_state.get(f'{p}_q_model', 'flat')),
+                q_range=(float(st.session_state.get(f'{p}_q_min', 0.1)),
+                         float(st.session_state.get(f'{p}_q_max', 2.0))),
+                langer_q_mu=float(
+                    st.session_state.get(f'{p}_lq_mu', 0.7)),
+                langer_q_sigma=float(
+                    st.session_state.get(f'{p}_lq_sig', 0.2)),
+            )
+
+        _d_sigma_meas = float(
+            st.session_state.get(f'{p}_sigma_meas', 1.622))
+        _sim_cfg_gap = SimulationConfig(
+            n_stars=10000,
+            sigma_single=best_sigma_v,
+            sigma_measure=_d_sigma_meas,
+            cadence_library=cadence_list_a,
+            cadence_weights=cadence_weights_a,
+        )
+        _gap_fp = (best_fbin_v, best_pi_v, best_sigma_v,
+                   ana_logPmax, _full_lk.shape)
+        if (st.session_state.get(f'{p}_gap_fingerprint') != _gap_fp
+                or f'{p}_gap_sim' not in st.session_state):
+            rng_diag = np.random.default_rng(42)
+            st.session_state[f'{p}_gap_sim'] = simulate_with_params(
+                best_fbin_v, best_pi_v,
+                _sim_cfg_gap, _bin_cfg_explore, rng_diag,
+            )
+            st.session_state[f'{p}_gap_fingerprint'] = _gap_fp
+            st.session_state.pop(f'{p}_sim_drv', None)
+        gap_sim = st.session_state[f'{p}_gap_sim']
+
+    # ── Inject missing keys into result (backward compat for old .npz) ───
+    if 'obs_delta_rv' not in result and obs_drv_analysis is not None:
+        result['obs_delta_rv'] = obs_drv_analysis
+    if 'sigma_meas' not in result:
+        result['sigma_meas'] = float(
+            st.session_state.get(f'{p}_sigma_meas', 1.622))
+    if 'cadence_library' not in result and cadence_list_a is not None:
+        result['cadence_library'] = cadence_list_a
+
+    # ── Build model_ctx and delegate to subtabs ───────────────────────────
+    model_ctx = {
+        'model_type': 'cadence_langer',
+        'ndim_mode': _cad_ndim_mode,
+        'x_name': _cad_x_name,
+        'x_label': _cad_x_label,
+        'x_display_label': _cad_x_disp,
+        'period_model': 'langer2020',
+        'has_case_AB': True,
+        'result': result,
+        'fbin_g': fbin_grid,
+        'x_g': _cad_x_g,
+        'sigma_g': np.asarray(sigma_grid),
+        'logPmax_g': logPmax_grid if len(logPmax_grid) > 0 else np.array(
+            [float(st.session_state.get(f'{p}_logP_max', 5.0))]),
+        'gap_sim': gap_sim,
+        'obs_delta_rv': obs_drv_analysis,
+        'obs_detail': obs_detail,
+        'cadence_list': cadence_list_a,
+        'cadence_weights': cadence_weights_a,
+        'n_stars_sim': 10000,
+        'sigma_meas': float(
+            st.session_state.get(f'{p}_sigma_meas', 1.622)),
+        'bin_cfg': _bin_cfg_explore,
+        'logP_min': float(st.session_state.get(f'{p}_logP_min', 0.15)),
+        'logP_max': ana_logPmax,
+        'thresh_dRV': thresh_dRV,
+        'canvas_height': _ch,
+        'canvas_width': _cw,
+        'use_container_width': _use_cw,
+        'disp_outer_slices': _cad_outer,
+        'settings': _settings,
+        'classification': cls,
+    }
+
+    # ── Grid Range Exclusion (folded, above heatmaps) ──────────────────
+    from bc.helpers import render_grid_exclusion
+    _exc_mask = render_grid_exclusion(
+        f'{p}_likelihood_analysis', fbin_grid,
+        sigma_grid,
+        'f_bin', 'σ_single',
+        sigma_grid=None,
+    )
+
+    # Apply exclusion mask to result for downstream (corner plot, scoring detail)
+    if _exc_mask is not None and _exc_mask.any():
+        _masked_result = dict(result)
+        if 'logL_raw' in result:
+            _lr_m = np.asarray(result['logL_raw'], dtype=float).copy()
+            _lr_m[..., _exc_mask] = np.nan
+            _masked_result['logL_raw'] = _lr_m
+        if 'likelihood' in result:
+            _lk_m = np.asarray(result['likelihood'], dtype=float).copy()
+            _lk_m[..., _exc_mask] = np.nan
+            _masked_result['likelihood'] = _lk_m
+        model_ctx['result'] = _masked_result
+
+    # ── H1-H4 heatmaps (Langer-specific) ──────────────────────────────
+    _render_top_heatmaps_langer(p, result, fbin_grid, pi_grid, sigma_grid,
+                                logPmax_grid, lk_arr, _cad_lp_idx, _is_dsilva,
+                                _ch, _use_cw)
 
     render_model_subtabs(p, model_ctx)
 
@@ -1079,5 +1523,5 @@ def _render_cadence_langer_tab(p: str, settings: dict, sm,
             logPmax_scan_vals=_cl_logPmax_vals,
             obs_override=obs_override)
 
-    _render_cadence_results(p, _is_dsilva, _bin_cfg, settings=settings,
-                            obs_override=obs_override)
+    _render_cadence_results_langer(p, _is_dsilva, _bin_cfg, settings=settings,
+                                   obs_override=obs_override)
