@@ -1379,7 +1379,9 @@ future bug fixes, per the project's five mandatory pre-fix blocks.
 
 **Decisions:** Never modify shared Dsilva code — duplicate first. Status after fix = TO-TEST; only user approves WORKING. Plan mode mandatory for all changes.
 
-**Open questions:** D10 parabolic surface needs Langer adaptation. D18 CDF sanity check needs cadence-aware simulation. Model comparison methodology (Dsilva vs Langer) and likelihood bin sensitivity analysis needed.
+**Autosave feature:** Added automatic periodic checkpointing to the cadence simulation runner (`runners_cadence.py`). Every 120 seconds during a running simulation, the existing `_save_partial_cadence()` function is called to write a `.npz` checkpoint. After the first autosave, `resume_from_path` is updated so subsequent autosaves overwrite the same file rather than creating new ones. This covers both Dsilva and Langer models (shared runner). The autosaved partial files use the same format as Cancel & Save, so they appear in the partial results table and support Load/Resume/Delete operations.
+
+**Open questions:** D10 parabolic surface needs Langer adaptation. D18 CDF sanity check needs cadence-aware simulation. Model comparison methodology (Dsilva vs Langer) and likelihood bin sensitivity analysis needed. Autosave visual indicator (toast/progress text annotation) not yet implemented.
 
 ---
 
