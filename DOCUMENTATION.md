@@ -1369,4 +1369,18 @@ future bug fixes, per the project's five mandatory pre-fix blocks.
 
 ---
 
-*Last updated: 2026-03-26*
+### 2026-03-30: Langer cadence tab — full graph review, code duplication, D14/D15/D17 fixes
+
+**What was done:** Comprehensive graph-by-graph review of the Cadence Langer tab. All 27 graph elements (+ 11 D17 sub-elements) catalogued in GRAPHS_PER_METHOD.md. Five shared rendering files duplicated into Langer-specific copies to protect Dsilva's tested code. Three broken graphs fixed: D14 corner plot (axis ordering + constant-σ exclusion), D15 summary table (constant-σ row), D17 model explorer (langer2020 period model, deduplicated slider, margin fixes).
+
+**Key results:** 12 Langer graphs approved WORKING (H1-H4, A1, A2, E6, E7, A5, A6, A7). D14, D15, D17 fixed → TO-TEST. D10 and D18 remain BROKEN.
+
+**Methodology notes for paper:** The Langer 2020 period model (Case A/B mixture, weight_A=0.3) is now correctly used in the model explorer's CDF simulation. The `logP_max` parameter controls the upper period truncation. Primary grid axes for Langer: f_bin × logP_max (σ_single is secondary/constant).
+
+**Decisions:** Never modify shared Dsilva code — duplicate first. Status after fix = TO-TEST; only user approves WORKING. Plan mode mandatory for all changes.
+
+**Open questions:** D10 parabolic surface needs Langer adaptation. D18 CDF sanity check needs cadence-aware simulation. Model comparison methodology (Dsilva vs Langer) and likelihood bin sensitivity analysis needed.
+
+---
+
+*Last updated: 2026-03-30*
