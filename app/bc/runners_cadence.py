@@ -178,6 +178,9 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                 n_sets=np.array(n_sets),
             )
             job['partial_saved'] = True
+            return _partial_path
+
+        _AUTOSAVE_INTERVAL = 120  # seconds
 
         with mp.Pool(processes=int(n_proc),
                      initializer=_init_worker,
@@ -436,6 +439,11 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                                     'logPmax_vals': logPmax_scan_vals.tolist(),
                                     'max_likelihood_2d': _max_2d.tolist(),
                                 }
+
+                # Autosave checkpoint (every 120 seconds)
+                if _now - job.get('_last_autosave', 0) >= _AUTOSAVE_INTERVAL:
+                    job['_last_autosave'] = _now
+                    resume_from_path = _save_partial_cadence()
 
         # Normalize logL → likelihood [0,1]
         _logL_max = np.nanmax(logL_raw)
