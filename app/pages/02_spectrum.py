@@ -16,81 +16,13 @@ import streamlit as st
 import pandas as pd
 
 from shared import inject_theme, render_sidebar, get_settings_manager, get_obs_manager, PLOTLY_THEME
+from spectrum_helpers import DIAGNOSTIC_LINES, LINE_COLORS, render_absorption_search
 import specs
 
 st.set_page_config(page_title='Spectrum — WR Binary', page_icon='📊', layout='wide')
 inject_theme()
 settings = render_sidebar('Spectrum')
 sm = get_settings_manager()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Constants: diagnostic spectral lines (wavelength in Ångströms)
-# ─────────────────────────────────────────────────────────────────────────────
-# Each entry: { 'name': str, 'wave': float (Å), 'element': str, 'type': 'abs'|'em' }
-DIAGNOSTIC_LINES: dict[str, list[dict]] = {
-    'Hydrogen (Balmer)': [
-        {'name': 'Hα',  'wave': 6562.8, 'element': 'H', 'type': 'abs'},
-        {'name': 'Hβ',  'wave': 4861.3, 'element': 'H', 'type': 'abs'},
-        {'name': 'Hγ',  'wave': 4340.5, 'element': 'H', 'type': 'abs'},
-        {'name': 'Hδ',  'wave': 4101.7, 'element': 'H', 'type': 'abs'},
-        {'name': 'Hε',  'wave': 3970.1, 'element': 'H', 'type': 'abs'},
-    ],
-    'He I (OB companion)': [
-        {'name': 'He I 4026', 'wave': 4026.2, 'element': 'He I', 'type': 'abs'},
-        {'name': 'He I 4388', 'wave': 4387.9, 'element': 'He I', 'type': 'abs'},
-        {'name': 'He I 4471', 'wave': 4471.5, 'element': 'He I', 'type': 'abs'},
-        {'name': 'He I 4922', 'wave': 4921.9, 'element': 'He I', 'type': 'abs'},
-        {'name': 'He I 5876', 'wave': 5875.6, 'element': 'He I', 'type': 'abs'},
-        {'name': 'He I 6678', 'wave': 6678.2, 'element': 'He I', 'type': 'abs'},
-    ],
-    'He II (hot companion)': [
-        {'name': 'He II 4200', 'wave': 4199.8, 'element': 'He II', 'type': 'abs'},
-        {'name': 'He II 4542', 'wave': 4541.6, 'element': 'He II', 'type': 'abs'},
-        {'name': 'He II 4686', 'wave': 4685.7, 'element': 'He II', 'type': 'em'},
-        {'name': 'He II 5412', 'wave': 5411.5, 'element': 'He II', 'type': 'abs'},
-    ],
-    'Carbon (WC diagnostic)': [
-        {'name': 'C III 5696', 'wave': 5696.0, 'element': 'C', 'type': 'em'},
-        {'name': 'C IV 5801', 'wave': 5801.3, 'element': 'C', 'type': 'em'},
-        {'name': 'C IV 5812', 'wave': 5811.9, 'element': 'C', 'type': 'em'},
-    ],
-    'Nitrogen (WN diagnostic)': [
-        {'name': 'N III 4634', 'wave': 4634.1, 'element': 'N', 'type': 'em'},
-        {'name': 'N III 4641', 'wave': 4640.6, 'element': 'N', 'type': 'em'},
-        {'name': 'N IV 4058', 'wave': 4057.8, 'element': 'N', 'type': 'em'},
-        {'name': 'N V 4604',  'wave': 4603.7, 'element': 'N', 'type': 'em'},
-        {'name': 'N V 4620',  'wave': 4619.9, 'element': 'N', 'type': 'em'},
-    ],
-    'Oxygen (WC diagnostic)': [
-        {'name': 'O V 3144',  'wave': 3144.0, 'element': 'O', 'type': 'em'},
-        {'name': 'O IV 3412', 'wave': 3412.0, 'element': 'O', 'type': 'em'},
-        {'name': 'O VI 3811', 'wave': 3811.4, 'element': 'O', 'type': 'em'},
-        {'name': 'O VI 3834', 'wave': 3834.2, 'element': 'O', 'type': 'em'},
-        {'name': 'O III 5007','wave': 5006.8, 'element': 'O', 'type': 'em'},
-        {'name': 'O VI 5290', 'wave': 5290.0, 'element': 'O', 'type': 'em'},
-        {'name': 'O V 5590',  'wave': 5590.0, 'element': 'O', 'type': 'em'},
-        {'name': 'O III 5592','wave': 5592.3, 'element': 'O', 'type': 'em'},
-    ],
-    'Interstellar / Other': [
-        {'name': 'Na I D1', 'wave': 5895.9, 'element': 'Na', 'type': 'abs'},
-        {'name': 'Na I D2', 'wave': 5889.9, 'element': 'Na', 'type': 'abs'},
-        {'name': 'DIB 4430', 'wave': 4430.0, 'element': 'DIB', 'type': 'abs'},
-        {'name': 'DIB 5780', 'wave': 5780.5, 'element': 'DIB', 'type': 'abs'},
-        {'name': 'DIB 5797', 'wave': 5797.1, 'element': 'DIB', 'type': 'abs'},
-    ],
-}
-
-# Color mapping for element groups
-_LINE_COLORS = {
-    'H':     '#5DADE2',   # light blue
-    'He I':  '#48C9B0',   # teal / cyan
-    'He II': '#AF7AC5',   # purple
-    'C':     '#F5B041',   # orange
-    'N':     '#58D68D',   # green
-    'O':     '#E74C3C',   # red
-    'Na':    '#AEB6BF',   # grey
-    'DIB':   '#AEB6BF',   # grey
-}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Classification persistence
@@ -377,7 +309,7 @@ if show_diag_lines and selected_groups and data is not None:
                 w = linfo['wave']
                 if w < wmin or w > wmax:
                     continue
-                color = _LINE_COLORS.get(linfo['element'], '#AEB6BF')
+                color = LINE_COLORS.get(linfo['element'], '#AEB6BF')
                 dash_style = 'dash' if linfo['type'] == 'abs' else 'dot'
                 fig.add_vline(
                     x=w, line_width=1, line_dash=dash_style,
@@ -520,7 +452,7 @@ if show_diag_lines and selected_groups:
         lines_in_group = DIAGNOSTIC_LINES.get(group_name, [])
         if lines_in_group:
             elem = lines_in_group[0]['element']
-            color = _LINE_COLORS.get(elem, '#AEB6BF')
+            color = LINE_COLORS.get(elem, '#AEB6BF')
             line_type = lines_in_group[0]['type']
             style = '- - -' if line_type == 'abs' else '· · ·'
             legend_items.append(
@@ -528,6 +460,18 @@ if show_diag_lines and selected_groups:
             )
     if legend_items:
         st.markdown(' &nbsp;|&nbsp; '.join(legend_items), unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ABSORPTION LINE SEARCH (SB1/SB2 companion detection)
+# ═══════════════════════════════════════════════════════════════════════════
+render_absorption_search(
+    star_name=star_name,
+    band=band,
+    epochs=epochs,
+    load_spectrum_fn=load_spectrum,
+    get_mjd_fn=get_mjd,
+    plotly_theme=PLOTLY_THEME,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CLASSIFICATION WORKFLOW
@@ -541,11 +485,26 @@ current_class = classifications.get(star_name, {})
 # ── Quick classification for current star ────────────────────────────────────
 st.markdown(f'### Classify: **{star_name}**')
 
-cls_col1, cls_col2, cls_col3 = st.columns([1, 1, 2])
-
 current_type = current_class.get('type', 'Unknown')
 current_conf = current_class.get('confidence', 'Low')
 current_notes = current_class.get('notes', '')
+
+# Show current status badge above the form
+if current_type != 'Unknown':
+    _badge_colors = {
+        'SB1': '#E25A53', 'SB2': '#E25A53', 'SB2?': '#F5B041',
+        'Single': '#4A90D9', 'Composite': '#AF7AC5', 'Unknown': '#8C8C8C',
+    }
+    _badge_color = _badge_colors.get(current_type, '#8C8C8C')
+    st.markdown(
+        f'Current: <span style="background:{_badge_color}; color:white; padding:2px 10px; '
+        f'border-radius:4px; font-weight:600">{current_type}</span> '
+        f'(confidence: {current_conf})'
+        + (f' — <em>{current_notes}</em>' if current_notes else ''),
+        unsafe_allow_html=True,
+    )
+
+cls_col1, cls_col2, cls_col3 = st.columns([1, 1, 2])
 
 new_type = cls_col1.selectbox(
     'Classification',
@@ -593,21 +552,6 @@ if save_clicked:
     st.toast(f'Classification saved for {star_name}: {new_type} ({new_conf})')
     st.rerun()
 
-# Show current status badge
-if current_type != 'Unknown':
-    badge_colors = {
-        'SB1': '#E25A53', 'SB2': '#E25A53', 'SB2?': '#F5B041',
-        'Single': '#4A90D9', 'Composite': '#AF7AC5', 'Unknown': '#8C8C8C',
-    }
-    badge_color = badge_colors.get(current_type, '#8C8C8C')
-    st.markdown(
-        f'Current: <span style="background:{badge_color}; color:white; padding:2px 10px; '
-        f'border-radius:4px; font-weight:600">{current_type}</span> '
-        f'(confidence: {current_conf})'
-        + (f' — <em>{current_notes}</em>' if current_notes else ''),
-        unsafe_allow_html=True,
-    )
-
 # ── RV measurements table ───────────────────────────────────────────────────
 st.markdown('### RV Measurements (primary line)')
 rv_rows = []
@@ -625,7 +569,10 @@ for ep in epochs:
         })
 
 if rv_rows:
-    st.dataframe(pd.DataFrame(rv_rows), use_container_width=True, hide_index=True)
+    df_rv = pd.DataFrame(rv_rows)
+    mean_rv = df_rv['RV (km/s)'].mean()
+    df_rv['ΔRV (km/s)'] = (df_rv['RV (km/s)'] - mean_rv).round(2)
+    st.dataframe(df_rv, use_container_width=True, hide_index=True)
 else:
     st.info('No RV data saved for this star on the primary line.')
 
@@ -660,6 +607,10 @@ for t in _CLASS_TYPES:
         summary_parts.append(f'**{t}**: {count}')
 if summary_parts:
     st.markdown(' · '.join(summary_parts))
+
+# Type filter
+filter_types = st.multiselect('Filter by type', _CLASS_TYPES, default=_CLASS_TYPES, key='cls_filter_types')
+df_cls = df_cls[df_cls['Type'].isin(filter_types)]
 
 # Styled table — highlight current star, color-code types
 def _style_type(val):

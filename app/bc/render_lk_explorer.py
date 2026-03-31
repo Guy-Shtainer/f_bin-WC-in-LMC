@@ -47,7 +47,7 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
 @st.cache_data(show_spinner=False)
 def _me_cdf_band(
     fb: float, x_val: float, sigma_s: float, sigma_m: float,
-    bin_edges_tuple: tuple, n_sets: int = 50,
+    bin_edges_tuple: tuple, logPmax: float = 5.0, n_sets: int = 50,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Run *n_sets* simulations and return (median_cdf, lo_cdf, hi_cdf, pooled_drv)."""
     from wr_bias_simulation import (
@@ -60,7 +60,7 @@ def _me_cdf_band(
         cfg = SimulationConfig(n_stars=1000, sigma_single=sigma_s,
                                sigma_measure=sigma_m)
         drv = simulate_delta_rv_sample(fb, x_val, cfg,
-                                       BinaryParameterConfig(),
+                                       BinaryParameterConfig(logP_max=logPmax),
                                        np.random.default_rng(42 + si))
         all_cdfs.append(_binned_cdf(drv, _be))
         all_drv.append(drv)
@@ -97,9 +97,13 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
               if 'bin_edges' in result else DEFAULT_DRV_BIN_EDGES)
         lk_be = (np.asarray(result['likelihood_bin_edges'])
                  if 'likelihood_bin_edges' in result else be)
+        _lpm = float(interp.get('logPmax', 5.0))
+        _lp_g_ri = np.asarray(result.get('logPmax_grid', []))
+        if _lp_g_ri.size >= 1:
+            _lpm = float(interp.get('logPmax', float(_lp_g_ri[0])))
         med_c, lo_c, hi_c, pooled = _me_cdf_band(
             fb, xv, sig, float(result.get('sigma_meas', 3.0)),
-            tuple(be.tolist()), n_sets=int(ns))
+            tuple(be.tolist()), logPmax=_lpm, n_sets=int(ns))
         obs = np.asarray(result.get('obs_delta_rv', []))
         rx = np.concatenate([[0.0], be])
 
@@ -354,6 +358,11 @@ def _render_lk_model_explorer(
             min(max(_dlp, float(_lp_g[0])), float(_lp_g[-1])),
             0.01, '%.3f', f'{prefix}_lk_me_logPmax')
 
+    # Resolve effective logP_max for simulation
+    _eff_logPmax = me_logPmax if me_logPmax is not None else float(
+        _lp_g[0] if _lp_g.size >= 1 else 5.0)
+    _bf_logPmax = float(bv.get('logPmax', _eff_logPmax))
+
     obs_drv = np.asarray(result.get('obs_delta_rv'))
     be = result.get('bin_edges')
     be = np.asarray(be) if be is not None else DEFAULT_DRV_BIN_EDGES
@@ -363,13 +372,15 @@ def _render_lk_model_explorer(
 
     # Multi-seed CDF band (cached)
     med_cdf, lo_cdf, hi_cdf, pooled_drv = _me_cdf_band(
-        me_fb, me_x, me_sig, sigma_m, tuple(be.tolist()), n_sets=50)
+        me_fb, me_x, me_sig, sigma_m, tuple(be.tolist()),
+        logPmax=_eff_logPmax, n_sets=50)
 
     # ── WORKING — do not change this code · D17: Score metric cards (logL) ──
     _logL = multinomial_log_likelihood(obs_drv, pooled_drv, lk_be)
     # Compute logL for the global best-fit
     _bf_med, _, _, _bf_pooled = _me_cdf_band(
-        def_fb, def_x, def_sig, sigma_m, tuple(be.tolist()), n_sets=50)
+        def_fb, def_x, def_sig, sigma_m, tuple(be.tolist()),
+        logPmax=_bf_logPmax, n_sets=50)
     _logL_best = multinomial_log_likelihood(obs_drv, _bf_pooled, lk_be)
 
     mc1, mc2 = st.columns(2)
@@ -400,9 +411,10 @@ def _render_lk_model_explorer(
         _bf_fb = float(_bf_bv.get('fbin', 0.5))
         _bf_x = float(_bf_bv.get(x_name, 0.0))
         _bf_sig = float(_bf_bv.get('sigma', me_sig))
+        _bf_lp = float(_bf_bv.get('logPmax', _bf_logPmax))
         _bf_med, _bf_lo, _bf_hi, _ = _me_cdf_band(
             _bf_fb, _bf_x, _bf_sig, sigma_m,
-            tuple(be.tolist()), n_sets=50)
+            tuple(be.tolist()), logPmax=_bf_lp, n_sets=50)
 
     fig_cdf = go.Figure()
     fig_cdf.add_trace(go.Scatter(
@@ -470,39 +482,98 @@ def _render_lk_model_explorer(
         st.dataframe(pd.DataFrame(_br), use_container_width=True,
                      hide_index=True)
 
-    # ── WORKING — do not change this code · D17: 4 heatmaps (2×2) with green dot ──
+    # ── D17: Explorer heatmaps (2×2) with green dot ──
     _sig_g_hm = np.asarray(result.get('sigma_grid', []))
     _lp_g_hm = np.asarray(result.get('logPmax_grid', []))
-    _has_4hm = (_sig_g_hm.size > 1 and _lp_g_hm.size > 1 and p_nd.ndim >= 3)
-    if _has_4hm:
+    _has_multi_sig = _sig_g_hm.size > 1
+    _has_multi_lp = _lp_g_hm.size > 1
+    _can_show_fbpi = (p_nd.ndim >= 2)
+    _can_show_siglp = (_has_multi_sig and _has_multi_lp)
+    if _can_show_fbpi:
         from bc.helpers import _make_heatmap_fig as _mkhm
 
         # Find current slider indices
-        _me_sig_idx = int(np.argmin(np.abs(_sig_g_hm - me_sig)))
-        _me_lp_idx = int(np.argmin(np.abs(_lp_g_hm - me_logPmax))) if me_logPmax is not None else 0
+        _me_sig_idx = int(np.argmin(np.abs(_sig_g_hm - me_sig))) if _has_multi_sig else 0
+        _me_lp_idx = (int(np.argmin(np.abs(_lp_g_hm - me_logPmax)))
+                      if me_logPmax is not None and _has_multi_lp else 0)
 
-        # Slice normalized likelihood at current σ/logP
+        # Slice normalized likelihood at current σ/logP → 2D (fbin × pi)
         if p_nd.ndim == 4:
             _norm_fbpi = p_nd[_me_lp_idx, _me_sig_idx]
-            _norm_siglp = np.nanmax(p_nd, axis=(2, 3))
         elif p_nd.ndim == 3:
-            _norm_fbpi = p_nd[_me_sig_idx]
-            _norm_siglp = np.nanmax(p_nd, axis=2) if p_nd.ndim == 3 else p_nd
+            # 3D: leading axis is logP (if scanned) or sigma (if scanned)
+            if _has_multi_lp:
+                _norm_fbpi = p_nd[_me_lp_idx]
+            elif _has_multi_sig:
+                _norm_fbpi = p_nd[_me_sig_idx]
+            else:
+                _norm_fbpi = p_nd[0]
         else:
             _norm_fbpi = p_nd
-            _norm_siglp = None
 
-        # Unnormalized -logL
+        # Secondary 2D heatmap: σ × logP (only when both scanned)
+        _norm_siglp = None
+        if _can_show_siglp and p_nd.ndim == 4:
+            _norm_siglp = np.nanmax(p_nd, axis=(2, 3))
+
+        # 1D profile when only one extra axis is scanned
+        _norm_1d_vals = None
+        _norm_1d_grid = None
+        _norm_1d_label = None
+        _norm_1d_dot = None
+        if not _can_show_siglp:
+            if _has_multi_lp:
+                _norm_1d_grid = _lp_g_hm
+                _norm_1d_label = 'log₁₀(P_max)'
+                _norm_1d_dot = _eff_logPmax
+                if p_nd.ndim == 4:
+                    # 4D [logP, sigma, fbin, pi] — slice at sigma, max over fbin×pi
+                    _norm_1d_vals = np.array([
+                        float(np.nanmax(p_nd[i, _me_sig_idx]))
+                        if np.any(np.isfinite(p_nd[i, _me_sig_idx])) else 0.0
+                        for i in range(_lp_g_hm.size)])
+                elif p_nd.ndim == 3:
+                    _norm_1d_vals = np.array([
+                        float(np.nanmax(p_nd[i])) if np.any(np.isfinite(p_nd[i])) else 0.0
+                        for i in range(_lp_g_hm.size)])
+            elif _has_multi_sig:
+                _norm_1d_grid = _sig_g_hm
+                _norm_1d_label = 'σ_single (km/s)'
+                _norm_1d_dot = me_sig
+                if p_nd.ndim == 3:
+                    _norm_1d_vals = np.array([
+                        float(np.nanmax(p_nd[i])) if np.any(np.isfinite(p_nd[i])) else 0.0
+                        for i in range(_sig_g_hm.size)])
+
+        # Unnormalized logL
         _logL_raw = result.get('logL_raw')
         _unnorm_fbpi = _unnorm_siglp = None
+        _unnorm_1d_vals = None
         if _logL_raw is not None:
             _lr = np.asarray(_logL_raw, dtype=float)
             if _lr.ndim == 4:
                 _unnorm_fbpi = _lr[_me_lp_idx, _me_sig_idx]
-                _unnorm_siglp = np.nanmax(_lr, axis=(2, 3))
+                if _can_show_siglp:
+                    _unnorm_siglp = np.nanmax(_lr, axis=(2, 3))
+                elif _norm_1d_grid is not None and _has_multi_lp:
+                    _unnorm_1d_vals = np.array([
+                        float(np.nanmax(_lr[i, _me_sig_idx]))
+                        if np.any(np.isfinite(_lr[i, _me_sig_idx])) else np.nan
+                        for i in range(_norm_1d_grid.size)])
             elif _lr.ndim == 3:
-                _unnorm_fbpi = _lr[_me_sig_idx]
-                _unnorm_siglp = np.nanmax(_lr, axis=2)
+                if _has_multi_lp:
+                    _unnorm_fbpi = _lr[_me_lp_idx]
+                elif _has_multi_sig:
+                    _unnorm_fbpi = _lr[_me_sig_idx]
+                else:
+                    _unnorm_fbpi = _lr[0]
+                # 1D unnormalized profile
+                if _norm_1d_grid is not None:
+                    _unnorm_1d_vals = np.array([
+                        float(np.nanmax(_lr[i])) if np.any(np.isfinite(_lr[i])) else np.nan
+                        for i in range(_norm_1d_grid.size)])
+            elif _lr.ndim == 2:
+                _unnorm_fbpi = _lr
 
         def _green_dot(fig, x_val, y_val):
             fig.add_trace(go.Scatter(
@@ -537,6 +608,25 @@ def _render_lk_model_explorer(
                 _green_dot(_fig2, me_sig, me_logPmax if me_logPmax else _lp_g_hm[0])
                 st.plotly_chart(_fig2, use_container_width=True,
                                 key=f'{prefix}_lk_me_hm_norm_siglp')
+            elif _norm_1d_vals is not None:
+                _fig2 = go.Figure()
+                _fig2.add_trace(go.Scatter(
+                    x=_norm_1d_grid, y=_norm_1d_vals, mode='lines+markers',
+                    line=dict(color=_METHOD_COLOR, width=2),
+                    name='Max Norm. L'))
+                if _norm_1d_dot is not None:
+                    _dot_idx = int(np.argmin(np.abs(_norm_1d_grid - _norm_1d_dot)))
+                    _green_dot(_fig2, float(_norm_1d_grid[_dot_idx]),
+                               float(_norm_1d_vals[_dot_idx]))
+                _fig2.update_layout(**{
+                    **PLOTLY_THEME, 'height': 350,
+                    'title': dict(text=f'Max Norm. Likelihood vs {_norm_1d_label}',
+                                  font=dict(size=14)),
+                    'xaxis_title': _norm_1d_label,
+                    'yaxis_title': 'Max Norm. Likelihood',
+                })
+                st.plotly_chart(_fig2, use_container_width=True,
+                                key=f'{prefix}_lk_me_hm_norm_siglp')
 
         _hm_r2c1, _hm_r2c2 = st.columns(2)
         with _hm_r2c1:
@@ -561,6 +651,25 @@ def _render_lk_model_explorer(
                                scoring_label='log L',
                                colorbar_title_override='Max log L')
                 _green_dot(_fig4, me_sig, me_logPmax if me_logPmax else _lp_g_hm[0])
+                st.plotly_chart(_fig4, use_container_width=True,
+                                key=f'{prefix}_lk_me_hm_unnorm_siglp')
+            elif _unnorm_1d_vals is not None:
+                _fig4 = go.Figure()
+                _fig4.add_trace(go.Scatter(
+                    x=_norm_1d_grid, y=_unnorm_1d_vals, mode='lines+markers',
+                    line=dict(color=_METHOD_COLOR, width=2),
+                    name='Max log L'))
+                if _norm_1d_dot is not None:
+                    _dot_idx = int(np.argmin(np.abs(_norm_1d_grid - _norm_1d_dot)))
+                    _green_dot(_fig4, float(_norm_1d_grid[_dot_idx]),
+                               float(_unnorm_1d_vals[_dot_idx]))
+                _fig4.update_layout(**{
+                    **PLOTLY_THEME, 'height': 350,
+                    'title': dict(text=f'Max log L vs {_norm_1d_label}',
+                                  font=dict(size=14)),
+                    'xaxis_title': _norm_1d_label,
+                    'yaxis_title': 'Max log L',
+                })
                 st.plotly_chart(_fig4, use_container_width=True,
                                 key=f'{prefix}_lk_me_hm_unnorm_siglp')
 

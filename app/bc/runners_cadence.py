@@ -471,6 +471,17 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             'likelihood_bin_edges': params.get('likelihood_bin_edges'),
         }
 
+        # Argmax best-fit (raw grid maximum)
+        if np.any(np.isfinite(likelihood)):
+            _flat_best = int(np.nanargmax(likelihood))
+            _best_idx = np.unravel_index(_flat_best, likelihood.shape)
+            if likelihood.ndim == 4:
+                result['argmax_fbin'] = float(fbin_grid[_best_idx[2]])
+            elif likelihood.ndim == 3:
+                result['argmax_fbin'] = float(fbin_grid[_best_idx[1]])
+            elif likelihood.ndim == 2:
+                result['argmax_fbin'] = float(fbin_grid[_best_idx[0]])
+
         # HDI68 (likelihood-based) — marginalize over logPmax if 4-D
         _lk_for_hdi = likelihood
         if _scan_logPmax:
@@ -528,6 +539,10 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                 if _Lpost_sig.sum() > 0:
                     mL_sig, loL_sig, hiL_sig = _hdi68(sigma_grid, _Lpost_sig)
                     result.update(mode_sigma_L=mL_sig, lo_sigma_L=loL_sig, hi_sigma_L=hiL_sig)
+
+        # Total runtime
+        _total_elapsed = _time.time() - t_start
+        result['runtime_seconds'] = _total_elapsed
 
         # Save result (skip for validation runs)
         if not params.get('skip_save', False):

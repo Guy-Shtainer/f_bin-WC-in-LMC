@@ -199,6 +199,18 @@ def _scan_partial_metadata(model: str) -> pd.DataFrame:
                     _idx = np.unravel_index(_flat, ks_p.shape)
                     best_fb = f'{float(fb[_idx[0]]):.3f}'
 
+            # Runtime
+            if 'runtime_seconds' in d:
+                _rt = float(d['runtime_seconds'])
+                if _rt >= 3600:
+                    runtime_str = f'{_rt/3600:.1f}h'
+                elif _rt >= 60:
+                    runtime_str = f'{_rt/60:.1f}m'
+                else:
+                    runtime_str = f'{_rt:.0f}s'
+            else:
+                runtime_str = '—'
+
             # Timestamp
             ts = str(d.get('timestamp', '\u2014'))
             ts = ts.replace('T', ' ')[:19]
@@ -289,7 +301,9 @@ def _scan_partial_metadata(model: str) -> pd.DataFrame:
                 'ΔRV max': drv_max_val,
                 'Scoring': scoring_val,
                 'Best p': f'{best_p:.5f}',
-                'Best f_bin': best_fb,
+                'f_bin (max)': best_fb,
+                'f_bin (HDI)': '—',
+                'Runtime': runtime_str,
                 'File': name,
                 '_path': path,
                 '_pct': pct,
@@ -416,6 +430,19 @@ def _scan_result_metadata(model: str | None = None) -> pd.DataFrame:
                 ks_p = d.get('ks_p', np.array([0]))
                 best_p = float(np.nanmax(ks_p))
                 best_fb = f'{float(d["mode_fbin"]):.3f}' if 'mode_fbin' in d else '—'
+                argmax_fb = f'{float(d["argmax_fbin"]):.3f}' if 'argmax_fbin' in d else '—'
+
+                # Runtime
+                if 'runtime_seconds' in d:
+                    _rt = float(d['runtime_seconds'])
+                    if _rt >= 3600:
+                        runtime_str = f'{_rt/3600:.1f}h'
+                    elif _rt >= 60:
+                        runtime_str = f'{_rt/60:.1f}m'
+                    else:
+                        runtime_str = f'{_rt:.0f}s'
+                else:
+                    runtime_str = '—'
 
                 # Timestamp
                 ts = str(d['timestamp']) if 'timestamp' in d else '—'
@@ -504,7 +531,9 @@ def _scan_result_metadata(model: str | None = None) -> pd.DataFrame:
                     'ΔRV max': drv_max_val,
                     'Scoring': scoring_val,
                     'Best p': f'{best_p:.5f}',
-                    'Best f_bin': best_fb,
+                    'f_bin (max)': argmax_fb,
+                    'f_bin (HDI)': best_fb,
+                    'Runtime': runtime_str,
                     'File': name,
                     '_path': path,
                 })
