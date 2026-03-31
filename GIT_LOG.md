@@ -6,22 +6,23 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
-## 2026-03-31 — σ_p2p significance criterion, spectrum page overhaul, explorer bugfixes
+## 2026-03-31 — σ_p2p significance criterion, spectrum page overhaul, explorer bugfixes, likelihood binning
 
 | Hash | Summary |
 |------|---------|
-| `a6aa20b` | Add significance criterion to binary fraction graphs + spectrum page zoom nav |
-| `cd4b5e8` | End-of-day documentation: work log, TODO audit, E043 error entry |
+| `a46e7f4` | End-of-day documentation: binning methodology, TODO audit, daily log |
+| `40fd943` | Fix IndexError in likelihood explanation (bins>4) + add L bins column to file browser |
+| `c7d5635` | Update GIT_LOG.md with 2026-03-31 commits and working tag |
 | `d36cdac` | Paper: add σ_p2p significance criterion and Bartzakos correction to bias correction section |
-
-Earlier today (committed in previous sessions):
+| `cd4b5e8` | End-of-day documentation: work log, TODO audit, E043 error entry |
+| `a6aa20b` | Add significance criterion to binary fraction graphs + spectrum page zoom nav |
 | `ee38837` | Restructure spectrum page into 3 tabs with persistent state |
 | `04124f8` | Add sigma_p2p significance criterion to bias correction pipeline |
 | `9e03996` | Spectrum page: absorption search, LMC correction, show-all-epochs, graph descriptions |
 | `4e4b227` | Checkpoint: WIP changes before adding sigma_p2p significance criterion |
 | `1d9b11f` | Update settings and command history log |
 
-Tag: `v260331-working` — σ_p2p significance, spectrum overhaul, Dsilva explorer bugfixes, Bartzakos correction.
+Tag: `v260331-working` — σ_p2p significance, spectrum overhaul, Dsilva explorer bugfixes, Bartzakos correction, likelihood binning methodology, L bins column.
 
 ---
 
