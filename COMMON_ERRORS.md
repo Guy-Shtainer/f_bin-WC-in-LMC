@@ -488,3 +488,13 @@ When you encounter a new recurring error, add it here with:
 4. **Why** it happens
 5. **Where** it was found
 6. Update the **Quick-Scan Regex** at the top if a new greppable pattern was added
+
+### E043 — `result['settings']` is a JSON string, not a dict
+
+| | |
+|---|---|
+| **Bad** | `result.get('settings', {}).get('sigma_factor', 4.0)` |
+| **Fix** | `json.loads(str(result.get('settings', '{}'))).get('sigma_factor', 4.0)` |
+| **Grep** | `result\.get\('settings'.*\.get\(` |
+| **Why** | `runners_cadence.py` stores settings via `json.dumps()`. When loaded from `.npz`, it becomes a numpy string array. Calling `.get()` on it raises `AttributeError: 'numpy.ndarray' object has no attribute 'get'`. |
+| **Found in** | `app/bc/render_lk_explorer.py`, `app/bc/render_lk_explorer_langer.py` (2026-03-31) |

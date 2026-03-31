@@ -1385,4 +1385,42 @@ future bug fixes, per the project's five mandatory pre-fix blocks.
 
 ---
 
-*Last updated: 2026-03-30*
+### 2026-03-31 — σ_p2p significance criterion, spectrum page overhaul, Dsilva explorer bugfixes
+
+**What was done:**
+- **Measurement noise in bias simulation:** `simulate_with_params()` now adds per-epoch measurement noise via `_draw_measurement_noise()` and returns σ_p2p = √(σ_max² + σ_min²) at the epochs of maximum and minimum RV. For fixed error models, σ_p2p = √2 · σ_measure.
+- **4σ significance criterion on all binary fraction vs threshold graphs:** Both simulated curves (`(ΔRV > T) & (ΔRV − 4σ_p2p > 0)`) and observed curves now apply the same significance filter. Prevents artificial 100% detection at threshold = 0.
+- **Bartzakos correction:** All observed binary fraction curves now use N = 28 (denominator) with +3 known binaries in the numerator, giving a floor of 3/28 ≈ 10.7% at high thresholds.
+- **Observed stair-step CDF added to Dsilva graph** (previously only Langer had it). White stairs using real obs_delta_rv data.
+- **Explorer JSON bug fixed:** `result['settings']` in .npz files is a JSON string, not a dict. Fixed with `json.loads(str(...))` in both explorer files (E043).
+- **Dsilva explorer: logP_max passthrough fix:** `_me_cdf_band()` now accepts and passes `logPmax` parameter to `BinaryParameterConfig`. Previously all explorer CDF bands used default logP_max=5.0 regardless of grid settings — verified with smoke test (19.4% CDF difference between logPmax=3.03 vs 6.0).
+- **Dsilva explorer: heatmap visibility fix:** Explorer heatmaps now show for single-sigma runs (relaxed condition). Added 1D logP profile as secondary plot; fixed 4D→1D profile bug.
+- **Dsilva explorer: f_bin table columns:** Results table now shows both "f_bin (max)" (argmax) and "f_bin (HDI)" (marginalized mode) as separate columns. Added runtime_seconds column.
+- **Spectrum page complete overhaul:** Created `app/spectrum_helpers.py` (314 lines) with DIAGNOSTIC_LINES, LINE_PRESETS, absorption search functions. Implemented absorption depth heatmap + epoch difference plot for SB1/SB2 detection. Added LMC redshift correction toggle (v_LMC = 262.2 km/s) applied at all 6 wavelength conversion sites. Added show-all-epochs checkbox. Restructured page into 3 tabs (Spectrum / Max ΔRV / Classification) with independent selectors and session_state persistence. Added zoom history navigation (Back/Forward/Home + preset region buttons). Added scientific descriptions to all graph sections.
+
+**Key results:**
+- σ_p2p significance criterion now ensures consistency between simulated and observed binary fraction curves across all threshold values.
+- logP_max slider in Dsilva explorer produces 19.4% CDF change (logPmax=3.03 vs 6.0), confirming correct passthrough.
+- Bartzakos correction sets observed binary fraction floor at 10.7% (3/28) rather than 0%.
+
+**Methodology notes for paper:**
+- The significance criterion (ΔRV − 4σ_p2p > 0) is now applied identically in both the simulation pipeline and the observational analysis, following the same detection criteria described in the methods section. This was added to bias_correction.tex.
+- For the fixed error model, σ_p2p = √2 · σ_measure (constant for all stars) since both epochs share the same error distribution.
+- For distribution error models, σ_p2p uses the actual per-epoch noise magnitudes drawn from the error distribution.
+
+**Decisions:**
+- Show both argmax and HDI f_bin in explorer table (user chose both over argmax-only).
+- Keep Plotly for spectrum page (st.pyplot renders static PNG only, no toolbar in browser).
+- Max ΔRV tab gets independent star selector (not linked to main spectrum tab).
+- Zoom history tracks preset jumps only (Streamlit limitation prevents capturing manual Plotly zooms).
+
+**Bugs found and fixed:** E043 (result['settings'] JSON string vs dict), logP_max default passthrough in explorer CDF, 4D→1D profile dimension mismatch, heatmap visibility for single-sigma runs.
+
+**Open questions:**
+- User has not yet visually confirmed the significance + Bartzakos graphs or the spectrum page overhaul — all features are TO-TEST.
+- Langer simulation analogous fixes (from daily log: "issues with both Dsilva and Langer, only Dsilva addressed so far").
+- Zoom history only tracks preset jumps, not manual Plotly scroll-zooms.
+
+---
+
+*Last updated: 2026-03-31*

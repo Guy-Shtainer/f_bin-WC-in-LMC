@@ -20,7 +20,7 @@ Rules are NEVER deleted — only archived when the underlying code/pattern is ve
 
 ### Data & Debugging
 - **NEVER display fabricated data**: Every axis, legend, title, and annotation must match actual data. If a parameter wasn't scanned (size=1), NEVER show it as an axis. If data is simulated, label it "Simulated" not "Observed". Showing fake data is the #1 unacceptable behavior. Prefer duplicate code over shared code that silently shows wrong data. (last_triggered: 2026-03-30)
-- **ALWAYS plan before non-trivial code changes**: Use plan mode. Never jump into fixing code without planning first — cascading bugs result from rushing. The user explicitly corrected this THREE TIMES in one session (2026-03-30). Even when user gives visual feedback with obvious fixes, STILL enter plan mode first. No exceptions. (last_triggered: 2026-03-30)
+- **ALWAYS plan before non-trivial code changes**: Use plan mode. Never jump into fixing code without planning first — cascading bugs result from rushing. The user corrected this 5+ times across sessions. Even when fixing a bug you just introduced, PLAN THE FIX. "It's obvious" is not an excuse. (last_triggered: 2026-03-31)
 - **NEVER self-approve WORKING flags**: Only the user can flag graphs/code as WORKING after visual inspection. After fixing code, set status to TO-TEST in GRAPHS_PER_METHOD.md. Do NOT add `# WORKING — do not change this code` comments. Wait for explicit user approval ("approved", "looks good", "working"). (last_triggered: 2026-03-30)
 - **Never modify shared Dsilva code — duplicate first**: When Dsilva and Langer share rendering code, always create a Langer-specific copy (e.g., `render_shared_langer.py`) before making changes. Dsilva's 2-week-tested code must never be touched. (last_triggered: 2026-03-30)
 - **Don't make unrequested changes**: Only change what was asked. Swapping logL for normalized likelihood, adding features, or "improving" nearby code causes bugs and destroys trust. (last_triggered: 2026-03-30)
@@ -49,7 +49,8 @@ Rules are NEVER deleted — only archived when the underlying code/pattern is ve
 - **Replicate across both cadence tabs**: Cadence Dsilva and Cadence Langer must have identical features. (last_triggered: 2026-03-18)
 - **Compact side-by-side layouts**: Group min/max, μ/σ pairs in 2-column; 3-column for grid scans; sliders full-width. (last_triggered: 2026-03-15)
 - **File size limit 800 lines**: Pre-plan splitting. Thin-wrapper pattern for pages. Check `wc -l` before adding. (last_triggered: 2026-03-18)
-- **4σ significance in playground**: f(T) curve must apply ΔRV − 4σ > 0, not just ΔRV > threshold. (last_triggered: 2026-03-18)
+- **4σ significance in playground**: f(T) curve must apply ΔRV − 4σ > 0, not just ΔRV > threshold. Applies to ALL binary fraction vs threshold graphs — both simulated AND observed curves. (last_triggered: 2026-03-31)
+- **result['settings'] is JSON string**: In .npz results, `result['settings']` is stored via `json.dumps()` → becomes numpy string array on load. Must `json.loads(str(result.get('settings', '{}')))` before calling `.get()`. (last_triggered: 2026-03-31)
 
 ### Streamlit Quirks
 - **st.caption() truncates** in narrow columns → `st.markdown(unsafe_allow_html=True)` with `<span>`
