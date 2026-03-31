@@ -226,5 +226,8 @@
   "likelihood_bin_config": {
     "mode": "Manual",
     "manual_edges": "0, 45.5, 100, 250"
+  },
+  "ui_drv": {
+    "last_star": "HD  32228"
   }
 }

@@ -507,8 +507,11 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
         _obs_drv = np.sort(np.asarray(obs_delta_rv))
         _n_bartz = 3
         _total_pop = len(_obs_drv) + _n_bartz
+        # Apply same significance floor as simulated curve
+        _obs_sig_floor = nsigma * float(sigma_p2p[0]) if (sigma_p2p is not None and len(sigma_p2p) > 0) else 0.0
         _obs_fbin_curve = np.array(
-            [float(np.sum(_obs_drv > t) + _n_bartz) / _total_pop for t in _obs_drv])
+            [float(np.sum((_obs_drv > t) & (_obs_drv > _obs_sig_floor)) + _n_bartz) / _total_pop
+             for t in _obs_drv])
         fig.add_trace(go.Scatter(
             x=_obs_drv, y=_obs_fbin_curve, mode='lines',
             name='Observed f_bin(threshold)',

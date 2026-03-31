@@ -155,6 +155,17 @@ def _load_all_lines_rvs(star_name: str) -> dict:
     return load_star_rvs_all_lines(star_name, obs=get_obs_manager())
 
 _MODEL_COLORS = ['#AEB6BF', '#82E0AA', '#F0B27A', '#BB8FCE', '#85C1E9', '#F1948A']
+_ZOOM_PRESETS = {
+    'Full range': None,
+    'C IV 5808-5812': (5750, 5870),
+    'C III 5696': (5640, 5750),
+    'He I 4471': (4420, 4520),
+    'He I 5876': (5820, 5930),
+    'He II 4686': (4630, 4740),
+    'Hα 6563': (6510, 6620),
+    'Hβ 4861': (4810, 4920),
+    'O VI 3811-3834': (3760, 3890),
+}
 _MODELS_DIR = os.path.join(_ROOT, 'Data', 'Models_for_Guy')
 _OVERLAY_COLORS = ['#E25A53', '#58D68D', '#AF7AC5', '#F5B041', '#5DADE2', '#AEB6BF']
 
@@ -253,6 +264,47 @@ def _render_spectrum_tab(star_name, epoch, band, apply_lmc, epochs):
             'Select line groups to display', all_groups, default=all_groups[:4], key='spec_diag_groups',
         )
 
+    # ── Zoom navigation ────────────────────────────────────────────────
+    # Initialize zoom history
+    if 'spec_zoom_history' not in st.session_state:
+        st.session_state['spec_zoom_history'] = []
+        st.session_state['spec_zoom_idx'] = -1
+
+    zn_c1, zn_c2, zn_c3, zn_c4 = st.columns([1, 1, 1, 2])
+    _go_back = zn_c1.button('◀ Back', key='spec_zoom_back')
+    _go_fwd = zn_c2.button('▶ Forward', key='spec_zoom_fwd')
+    _go_home = zn_c3.button('⟲ Home', key='spec_zoom_home')
+    _preset = zn_c4.selectbox(
+        'Jump to region', list(_ZOOM_PRESETS.keys()), index=0, key='spec_zoom_preset',
+    )
+
+    # Handle navigation
+    _hist = st.session_state['spec_zoom_history']
+    _idx = st.session_state['spec_zoom_idx']
+    _xrange = None
+
+    if _go_back and _idx > 0:
+        st.session_state['spec_zoom_idx'] = _idx - 1
+        _xrange = _hist[_idx - 1]
+    elif _go_fwd and _idx < len(_hist) - 1:
+        st.session_state['spec_zoom_idx'] = _idx + 1
+        _xrange = _hist[_idx + 1]
+    elif _go_home:
+        _xrange = None  # full range
+        st.session_state['spec_zoom_idx'] = -1
+    elif _preset != 'Full range':
+        _xrange = _ZOOM_PRESETS[_preset]
+        if _xrange is not None:
+            # Push to history (truncate forward history)
+            _hist = _hist[:_idx + 1] if _idx >= 0 else []
+            _hist.append(_xrange)
+            st.session_state['spec_zoom_history'] = _hist
+            st.session_state['spec_zoom_idx'] = len(_hist) - 1
+    else:
+        # Restore current position from history
+        if _idx >= 0 and _idx < len(_hist):
+            _xrange = _hist[_idx]
+
     # ── Build spectrum figure ────────────────────────────────────────────
     fig = go.Figure()
     wave = np.array([])
@@ -330,10 +382,13 @@ def _render_spectrum_tab(star_name, epoch, band, apply_lmc, epochs):
         if rv_val is not None:
             st.info(f'RV ({primary_line}): **{rv_val:.1f} ± {err_val:.1f} km/s**  (epoch {epoch})')
 
+    _xaxis_cfg = {**PLOTLY_THEME.get('xaxis', {}), 'title': 'Wavelength (Å)'}
+    if _xrange is not None:
+        _xaxis_cfg['range'] = list(_xrange)
     fig.update_layout(**{
         **PLOTLY_THEME,
         'title': dict(text=f'{star_name}  —  Epoch {epoch}  —  {band}'),
-        'xaxis': {**PLOTLY_THEME.get('xaxis', {}), 'title': 'Wavelength (Å)'},
+        'xaxis': _xaxis_cfg,
         'yaxis': {**PLOTLY_THEME.get('yaxis', {}), 'title': 'Normalised flux'},
         'height': 550,
         'legend': {**PLOTLY_THEME.get('legend', {}), 'bgcolor': 'rgba(30,30,46,0.85)'},
