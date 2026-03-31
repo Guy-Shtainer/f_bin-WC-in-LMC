@@ -503,6 +503,15 @@ def _scan_result_metadata(model: str | None = None) -> pd.DataFrame:
                     _wA = lp.get('weight_A', '—')
                     langer_summary = f"wA={_wA}"
 
+                # Likelihood bin edges
+                _lbe = d.get('likelihood_bin_edges')
+                if _lbe is not None and len(_lbe) > 0:
+                    _lbe_strs = [f'{e:.0f}' if np.isfinite(e) else '∞'
+                                 for e in np.asarray(_lbe, dtype=float)]
+                    lk_bins_str = f'[{", ".join(_lbe_strs)}]'
+                else:
+                    lk_bins_str = '—'
+
                 d.close()
 
                 rows.append({
@@ -529,6 +538,7 @@ def _scan_result_metadata(model: str | None = None) -> pd.DataFrame:
                     'Adaptive': adaptive_val,
                     'ΔRV bin': drv_bin,
                     'ΔRV max': drv_max_val,
+                    'L bins': lk_bins_str,
                     'Scoring': scoring_val,
                     'Best p': f'{best_p:.5f}',
                     'f_bin (max)': argmax_fb,

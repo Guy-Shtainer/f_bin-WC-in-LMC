@@ -742,7 +742,7 @@ def _render_likelihood_explanation(
         for i in range(len(edges) - 1):
             lo, hi = edges[i], edges[i + 1]
             bin_labels.append(f'[{lo:.0f}, inf)' if np.isinf(hi) else f'[{lo:.0f}, {hi:.0f})')
-        example_p = np.array([0.60, 0.25, 0.10, 0.05])[:len(n_obs)]
+        example_p = np.geomspace(0.60, 0.05, len(n_obs))
         example_p = example_p / example_p.sum()
         ex_rows = []
         ex_total = 0.0
