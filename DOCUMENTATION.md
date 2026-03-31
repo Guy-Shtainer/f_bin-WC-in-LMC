@@ -1414,12 +1414,20 @@ future bug fixes, per the project's five mandatory pre-fix blocks.
 - Max ΔRV tab gets independent star selector (not linked to main spectrum tab).
 - Zoom history tracks preset jumps only (Streamlit limitation prevents capturing manual Plotly zooms).
 
-**Bugs found and fixed:** E043 (result['settings'] JSON string vs dict), logP_max default passthrough in explorer CDF, 4D→1D profile dimension mismatch, heatmap visibility for single-sigma runs.
+**Bugs found and fixed:** E043 (result['settings'] JSON string vs dict), logP_max default passthrough in explorer CDF, 4D→1D profile dimension mismatch, heatmap visibility for single-sigma runs, IndexError in likelihood explanation when bins > 4 (hardcoded 4-element array vs dynamic bin count).
+
+**Likelihood binning methodology (evening session):**
+- Analysed D'Silva et al. (2023) Section 4.2 binning strategy: 4 coarse ΔRV bins `[0, 50, 250, 650, ∞]` km/s, designed for their 11 Galactic WNL stars. With our 25 LMC WC stars, finer binning (5–6 bins) is statistically justified — more objects per bin, more discriminating power in the multinomial likelihood.
+- Evaluated data-driven binning (placing edges at observed CDF steps) vs fixed presets. Concluded that bin edges should be chosen *a priori* based on data structure and physical meaning — NOT optimised to maximise likelihood (which would be circular).
+- Selected new bin edges: `[0, 15, 45.5, 150, 300, ∞]` (5 bins). Rationale: (1) 15 km/s separates wind-variability noise from real ΔRV; (2) 45.5 km/s is the detection threshold — physically meaningful binary/single boundary; (3) 150 km/s and 300 km/s correspond to observed CDF structure; (4) upper edge ~300 captures all observed data (max ΔRV ≈ 354 km/s).
+- Added `L bins` column to the file browser result table, displaying the likelihood bin edges stored in each .npz result file.
 
 **Open questions:**
 - User has not yet visually confirmed the significance + Bartzakos graphs or the spectrum page overhaul — all features are TO-TEST.
 - Langer simulation analogous fixes (from daily log: "issues with both Dsilva and Langer, only Dsilva addressed so far").
 - Zoom history only tracks preset jumps, not manual Plotly scroll-zooms.
+- Preset bin configuration UI not yet implemented — user wants to think more about methodology before committing to a preset system.
+- Continuous CDF methods (Cramér–von Mises, Anderson-Darling) as alternatives to binned likelihood — discussed but not pursued.
 
 ---
 

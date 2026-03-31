@@ -118,10 +118,10 @@
     "pi_steps": 100,
     "n_sets": 7000,
     "scan_sigma": true,
-    "sigma_single": 6.0,
-    "sigma_min": 6.0,
-    "sigma_max": 10.0,
-    "sigma_steps": 9,
+    "sigma_single": 7.5,
+    "sigma_min": 3.0,
+    "sigma_max": 20.0,
+    "sigma_steps": 37,
     "sigma_meas": 1.622,
     "orbital": {
       "logP_min": 0.15,
@@ -156,9 +156,9 @@
     "errp_single_1": 0.7986,
     "errp_single_2": 0.7744,
     "scan_logPmax": true,
-    "logPmax_scan_steps": 70,
-    "logPmax_scan_min": 1.0,
-    "logPmax_scan_max": 9.0
+    "logPmax_scan_steps": 34,
+    "logPmax_scan_min": 2.0,
+    "logPmax_scan_max": 8.0
   },
   "grid_cadence_langer": {
     "fbin_min": 0.01,
@@ -225,9 +225,6 @@
   },
   "likelihood_bin_config": {
     "mode": "Manual",
-    "manual_edges": "0, 45.5, 100, 250"
-  },
-  "ui_drv": {
-    "last_star": "HD  32228"
+    "manual_edges": "0,15, 45.5, 150, 300"
   }
 }
