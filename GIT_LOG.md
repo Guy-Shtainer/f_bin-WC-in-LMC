@@ -6,6 +6,25 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-03-31 — σ_p2p significance criterion, spectrum page overhaul, explorer bugfixes
+
+| Hash | Summary |
+|------|---------|
+| `a6aa20b` | Add significance criterion to binary fraction graphs + spectrum page zoom nav |
+| `cd4b5e8` | End-of-day documentation: work log, TODO audit, E043 error entry |
+| `d36cdac` | Paper: add σ_p2p significance criterion and Bartzakos correction to bias correction section |
+
+Earlier today (committed in previous sessions):
+| `ee38837` | Restructure spectrum page into 3 tabs with persistent state |
+| `04124f8` | Add sigma_p2p significance criterion to bias correction pipeline |
+| `9e03996` | Spectrum page: absorption search, LMC correction, show-all-epochs, graph descriptions |
+| `4e4b227` | Checkpoint: WIP changes before adding sigma_p2p significance criterion |
+| `1d9b11f` | Update settings and command history log |
+
+Tag: `v260331-working` — σ_p2p significance, spectrum overhaul, Dsilva explorer bugfixes, Bartzakos correction.
+
+---
+
 ## 2026-03-30 — Langer cadence tab: full graph review + code duplication + D14/D15/D17 fixes + autosave
 
 | Hash | Summary |
