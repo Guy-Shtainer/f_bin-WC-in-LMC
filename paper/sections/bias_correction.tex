@@ -67,8 +67,20 @@ generate \Nsim synthetic stellar systems as follows:
 \label{sec:ks_test}
 
 For each grid point, we compute the peak-to-peak
-$\Delta\mathrm{RV}_\mathrm{max}$ of each simulated star and construct the
-cumulative distribution function (CDF) of $\Delta\mathrm{RV}$ values. We
+$\Delta\mathrm{RV}_\mathrm{max}$ of each simulated star. A simulated star
+is classified as a detected binary only if it satisfies the same two
+criteria applied to the real data (Sect.~\ref{sec:binary_class}): (1)
+$\Delta\mathrm{RV}_\mathrm{max} > T$ for a given threshold $T$, and (2)
+$\Delta\mathrm{RV} - \sigthresh\,\sigma_\mathrm{p2p} > 0$, where
+$\sigma_\mathrm{p2p} = \sqrt{\sigma_\mathrm{max}^2 +
+\sigma_\mathrm{min}^2}$ is the combined measurement uncertainty at the
+epochs of maximum and minimum RV. This significance criterion prevents
+noise-dominated detections at low thresholds and ensures consistency
+between the simulated and observed binary fraction curves. The three known
+Bartzakos binaries are added to the observed count at all thresholds
+(denominator $N = 28$).
+
+We then construct the CDF of $\Delta\mathrm{RV}$ values and
 employ two complementary scoring methods to compare the simulated and
 observed distributions:
 
