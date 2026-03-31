@@ -127,6 +127,7 @@ def render_absorption_search(
     load_spectrum_fn,
     get_mjd_fn,
     plotly_theme: dict,
+    lmc_doppler_factor: float = 1.0,
 ):
     """Render the full absorption line search section: controls + heatmap + epoch diff."""
     st.markdown('---')
@@ -168,7 +169,7 @@ def render_absorption_search(
             w = np.asarray(spec.get('wavelengths', spec.get('wave', [])))
             f = np.asarray(spec.get('normalized_flux', spec.get('flux', [])))
             if len(w) > 0:
-                waves_per_epoch[ep] = w * 10.0   # nm -> Å
+                waves_per_epoch[ep] = w * 10.0 / lmc_doppler_factor  # nm -> Å, LMC corrected
                 fluxes_per_epoch[ep] = f
 
     if not waves_per_epoch:
@@ -218,6 +219,11 @@ def render_absorption_search(
         'height': 350,
     })
     st.plotly_chart(fig_heat, use_container_width=True)
+    st.caption(
+        'Minimum flux near each absorption line across all epochs. '
+        'Red = deep absorption (possible companion feature), green = continuum. '
+        'Consistent detections across epochs suggest a real spectral feature rather than noise.'
+    )
 
     # Summary
     detections = [r for r in rows if r['Min Flux'] < threshold]
@@ -230,7 +236,11 @@ def render_absorption_search(
 
     # ── Graph 2: Epoch Difference ────────────────────────────────────────────
     st.markdown('### Epoch Difference')
-    st.caption('Subtract two epochs to reveal shifting absorption features from a companion.')
+    st.caption(
+        'Subtracting two epochs reveals features that shift between observations. '
+        'Derivative-like residuals (positive-then-negative bumps) near absorption lines indicate a companion '
+        'whose spectral lines shift with orbital phase. Flat residuals mean no detectable companion motion.'
+    )
 
     diff_c1, diff_c2 = st.columns(2)
     diff_ep1 = diff_c1.selectbox('Epoch A', ep_list, index=0, key='absdiff_ep1')

@@ -19,6 +19,17 @@ from shared import inject_theme, render_sidebar, get_settings_manager, get_obs_m
 from spectrum_helpers import DIAGNOSTIC_LINES, LINE_COLORS, render_absorption_search
 import specs
 
+# LMC systemic velocity correction (non-relativistic Doppler)
+LMC_RV_KMS = 262.2
+C_KMS = 299_792.458
+LMC_DOPPLER_FACTOR = 1.0 + LMC_RV_KMS / C_KMS
+
+
+def _correct_wave(wave_angstrom: np.ndarray, apply: bool) -> np.ndarray:
+    """Divide wavelengths by LMC Doppler factor to shift from observed to rest frame."""
+    return wave_angstrom / LMC_DOPPLER_FACTOR if apply else wave_angstrom
+
+
 st.set_page_config(page_title='Spectrum — WR Binary', page_icon='📊', layout='wide')
 inject_theme()
 settings = render_sidebar('Spectrum')
@@ -78,6 +89,7 @@ band = col3.selectbox(
     key='spec_band',
     on_change=lambda: sm.save(['ui', 'last_band'], value=st.session_state['spec_band'])
 )
+apply_lmc = col3.checkbox('LMC redshift correction', value=True, key='spec_lmc_corr')
 
 # ── Load star ────────────────────────────────────────────────────────────────
 obs  = get_obs_manager()
@@ -149,10 +161,14 @@ mjd     = get_mjd(star_name, epoch)
 # ── Overlay options ──────────────────────────────────────────────────────────
 opt_col1, opt_col2 = st.columns(2)
 
-# Overlay multiple epochs
-overlay_eps = opt_col1.multiselect(
-    'Overlay epochs', [e for e in epochs if e != epoch], key='spec_overlay_eps',
-)
+# One-click: show all epochs
+show_all_epochs = opt_col1.checkbox('Show all epochs', key='spec_show_all_epochs')
+if show_all_epochs:
+    overlay_eps = [e for e in epochs if e != epoch]
+else:
+    overlay_eps = opt_col1.multiselect(
+        'Overlay epochs', [e for e in epochs if e != epoch], key='spec_overlay_eps',
+    )
 vert_offset = 0.0
 if overlay_eps:
     vert_offset = opt_col1.slider(
@@ -248,7 +264,7 @@ if data is not None:
     wave = np.asarray(data.get('wavelengths', data.get('wave', [])))
     flux = np.asarray(data.get('normalized_flux', data.get('flux', [])))
     if len(wave) > 0:
-        wave = wave * 10.0  # nm → Å (npz stores nm; display in Å)
+        wave = _correct_wave(wave * 10.0, apply_lmc)  # nm → Å, optionally LMC-corrected
         mjd_str = f'  MJD {mjd:.2f}' if mjd else ''
         fig.add_trace(go.Scatter(
             x=wave, y=flux, mode='lines',
@@ -266,7 +282,7 @@ for oi, ov_ep in enumerate(overlay_eps):
         w2 = np.asarray(ov_data.get('wavelengths', ov_data.get('wave', [])))
         f2 = np.asarray(ov_data.get('normalized_flux', ov_data.get('flux', [])))
         if len(w2) > 0:
-            w2 = w2 * 10.0  # nm → Å
+            w2 = _correct_wave(w2 * 10.0, apply_lmc)
             f2 = f2 + vert_offset * (oi + 1)
             mjd2 = get_mjd(star_name, ov_ep)
             mjd_str2 = f'  MJD {mjd2:.2f}' if mjd2 else ''
@@ -291,7 +307,8 @@ em_lines = settings.get('emission_lines', {})
 if show_em_lines and em_lines and data is not None:
     for line_name, rng in em_lines.items():
         if isinstance(rng, (list, tuple)) and len(rng) == 2:
-            lo, hi = float(rng[0]) * 10, float(rng[1]) * 10   # nm → Å
+            _lo_hi = _correct_wave(np.array([float(rng[0]) * 10, float(rng[1]) * 10]), apply_lmc)
+            lo, hi = float(_lo_hi[0]), float(_lo_hi[1])
             fig.add_vrect(x0=lo, x1=hi,
                           fillcolor='rgba(255,215,0,0.08)',
                           line_width=0.5, line_color='gold',
@@ -343,7 +360,12 @@ fig.update_layout(**{
     'legend': {**PLOTLY_THEME.get('legend', {}), 'bgcolor': 'rgba(30,30,46,0.85)'},
 })
 st.plotly_chart(fig, use_container_width=True)
-st.caption('Spectrum viewer — zoom with scroll, pan with drag. Dashed lines = absorption features, dotted = emission features.')
+st.caption(
+    'Normalized flux vs. wavelength for the selected epoch. '
+    'Overlay epochs and model spectra to identify companion signatures. '
+    'Emission bumps and absorption dips encode WR wind physics and any companion contribution.'
+)
+st.caption('Zoom with scroll, pan with drag. Dashed lines = absorption, dotted = emission.')
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MAX ΔRV EPOCH COMPARISON
@@ -356,7 +378,10 @@ def _load_all_lines_rvs(star_name: str) -> dict:
 
 st.markdown('---')
 st.markdown('## Max ΔRV Epoch Comparison')
-st.caption('Automatically shows the two epochs with the largest radial-velocity separation for the selected emission line.')
+st.caption(
+    'Displays the two epochs with the largest radial-velocity separation for the selected emission line. '
+    'A large Delta-RV indicates binary orbital motion; the spectral shift is visible near emission line centers.'
+)
 
 _all_rvs = _load_all_lines_rvs(star_name)
 # Filter to lines with ≥2 epochs
@@ -399,9 +424,9 @@ else:
 
     if _spec_lo is not None and _spec_hi is not None:
         fig_drv = go.Figure()
-        _wlo = np.asarray(_spec_lo.get('wavelengths', _spec_lo.get('wave', []))) * 10.0
+        _wlo = _correct_wave(np.asarray(_spec_lo.get('wavelengths', _spec_lo.get('wave', []))) * 10.0, apply_lmc)
         _flo = np.asarray(_spec_lo.get('normalized_flux', _spec_lo.get('flux', [])))
-        _whi = np.asarray(_spec_hi.get('wavelengths', _spec_hi.get('wave', []))) * 10.0
+        _whi = _correct_wave(np.asarray(_spec_hi.get('wavelengths', _spec_hi.get('wave', []))) * 10.0, apply_lmc)
         _fhi = np.asarray(_spec_hi.get('normalized_flux', _spec_hi.get('flux', []))) + drv_offset
 
         _mjd_lo_str = f'  MJD {_mjd_lo:.2f}' if _mjd_lo else ''
@@ -421,7 +446,8 @@ else:
         _line_rng = _em_lines.get(sel_line)
         _xrange = None
         if _line_rng and isinstance(_line_rng, (list, tuple)) and len(_line_rng) == 2:
-            _lo_a, _hi_a = float(_line_rng[0]) * 10, float(_line_rng[1]) * 10
+            _drv_lo_hi = _correct_wave(np.array([float(_line_rng[0]) * 10, float(_line_rng[1]) * 10]), apply_lmc)
+            _lo_a, _hi_a = float(_drv_lo_hi[0]), float(_drv_lo_hi[1])
             fig_drv.add_vrect(x0=_lo_a, x1=_hi_a, fillcolor='rgba(255,215,0,0.10)',
                               line_width=0.5, line_color='gold',
                               annotation_text=sel_line, annotation_position='top left',
@@ -471,6 +497,7 @@ render_absorption_search(
     load_spectrum_fn=load_spectrum,
     get_mjd_fn=get_mjd,
     plotly_theme=PLOTLY_THEME,
+    lmc_doppler_factor=LMC_DOPPLER_FACTOR if apply_lmc else 1.0,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
