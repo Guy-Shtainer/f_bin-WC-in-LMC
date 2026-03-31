@@ -1032,6 +1032,7 @@ def simulate_with_params(
     -------
     dict with keys:
         delta_rv   : ndarray (N,)      — peak-to-peak ΔRV for every system
+        sigma_p2p  : ndarray (N,)      — propagated measurement error on ΔRV
         is_binary  : ndarray (N,) bool  — True if the system is a binary
         P_days     : ndarray (n_bin,)   — orbital period [days], binaries only
         e          : ndarray (n_bin,)   — eccentricity, binaries only
@@ -1050,6 +1051,12 @@ def simulate_with_params(
 
     times_list = sim_cfg.sample_times_for_systems(N, rng)
     delta_all = np.zeros(N, dtype=float)
+    sigma_p2p_all = np.zeros(N, dtype=float)
+
+    _is_fixed_single = (sim_cfg.error_model_single == 'fixed'
+                        or not sim_cfg.error_params_single)
+    _is_fixed_binary = (sim_cfg.error_model_binary == 'fixed'
+                        or not sim_cfg.error_params_binary)
 
     # Singles
     single_groups: dict = {}
@@ -1062,9 +1069,25 @@ def simulate_with_params(
         n_stars_grp = len(ks)
         v = rng.normal(loc=sim_cfg.v_sys, scale=sim_cfg.sigma_single,
                        size=(n_stars_grp, n_ep))
-        drv = v.max(axis=1) - v.min(axis=1)
+        # Add per-epoch measurement noise (same as simulate_delta_rv_sample)
+        noise = _draw_measurement_noise(
+            sim_cfg.error_model_single, sim_cfg.error_params_single,
+            sim_cfg.sigma_measure, size=v.shape, rng=rng)
+        v += noise
+        # Compute ΔRV and σ_p2p
+        rows = np.arange(n_stars_grp)
+        idx_max = np.argmax(v, axis=1)
+        idx_min = np.argmin(v, axis=1)
+        drv = v[rows, idx_max] - v[rows, idx_min]
+        if _is_fixed_single:
+            sig_p2p = np.full(n_stars_grp, np.sqrt(2.0) * sim_cfg.sigma_measure)
+        else:
+            sig_p2p = np.sqrt(
+                np.abs(noise[rows, idx_max]) ** 2
+                + np.abs(noise[rows, idx_min]) ** 2)
         for idx_in_grp, k in enumerate(ks):
             delta_all[k] = drv[idx_in_grp]
+            sigma_p2p_all[k] = sig_p2p[idx_in_grp]
 
     # Binaries — keep orbital params
     out_P = np.array([])
@@ -1114,8 +1137,25 @@ def simulate_with_params(
             v = sim_cfg.v_sys + K1[js, None] * (
                 np.cos(omega[js, None] + nu) + e[js, None] * np.cos(omega[js, None])
             )
-            drv = v.max(axis=1) - v.min(axis=1)
+            # Add per-epoch measurement noise (same as simulate_delta_rv_sample)
+            noise = _draw_measurement_noise(
+                sim_cfg.error_model_binary, sim_cfg.error_params_binary,
+                sim_cfg.sigma_measure, size=v.shape, rng=rng)
+            v += noise
+            # Compute ΔRV and σ_p2p
+            n_grp = len(js)
+            rows = np.arange(n_grp)
+            idx_max = np.argmax(v, axis=1)
+            idx_min = np.argmin(v, axis=1)
+            drv = v[rows, idx_max] - v[rows, idx_min]
+            if _is_fixed_binary:
+                sig_p2p = np.full(n_grp, np.sqrt(2.0) * sim_cfg.sigma_measure)
+            else:
+                sig_p2p = np.sqrt(
+                    np.abs(noise[rows, idx_max]) ** 2
+                    + np.abs(noise[rows, idx_min]) ** 2)
             delta_all[ks] = drv
+            sigma_p2p_all[ks] = sig_p2p
 
         out_P = P_days
         out_e = e
@@ -1126,6 +1166,7 @@ def simulate_with_params(
 
     return {
         'delta_rv': delta_all,
+        'sigma_p2p': sigma_p2p_all,
         'is_binary': is_binary,
         'P_days': out_P,
         'e': out_e,

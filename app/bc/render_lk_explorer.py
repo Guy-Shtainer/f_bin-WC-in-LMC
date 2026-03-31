@@ -700,8 +700,21 @@ def _render_lk_model_explorer(
     max_drv = max(float(np.max(obs_drv)),
                   float(np.max(sim_drv_single)))
     thresholds = np.linspace(0, max_drv * 1.1, 100)
-    frac_obs = np.array([(obs_drv > T).mean() for T in thresholds])
-    frac_sim = np.array([(sim_drv_single > T).mean()
+    # Significance criterion: ΔRV − nsigma·σ_p2p > 0 (sqrt(2)·σ_m for fixed model)
+    try:
+        import json as _json
+        _sett = _json.loads(str(result.get('settings', '{}')))
+        _nsigma = float(_sett.get('sigma_factor', 4.0))
+    except Exception:
+        _nsigma = 4.0
+    _sig_p2p_const = np.sqrt(2.0) * sigma_m
+    _sig_floor = _nsigma * _sig_p2p_const
+    # Bartzakos correction: 3 confirmed binaries excluded from sample → +3 numerator, /28 denominator
+    _n_bartz = 3
+    _total_pop = len(obs_drv) + _n_bartz
+    frac_obs = np.array([(float(np.sum((obs_drv > T) & (obs_drv > _sig_floor))) + _n_bartz) / _total_pop
+                         for T in thresholds])
+    frac_sim = np.array([((sim_drv_single > T) & (sim_drv_single > _sig_floor)).mean()
                          for T in thresholds])
 
     fig_det = go.Figure()

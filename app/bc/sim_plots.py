@@ -149,19 +149,30 @@ def render_period_distribution(p, gap_sim, bin_detected_mask, bin_missed_mask,
 def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
                                         observed_fbin, thresh_dRV, missed_count,
                                         total_bin, detected_bin_count, pal,
-                                        model_label=''):
+                                        model_label='', obs_delta_rv=None,
+                                        sigma_p2p=None, nsigma=4.0):
     """Binary fraction vs deltaRV threshold with gap annotation."""
     st.markdown('### Simulated Binary Fraction vs Threshold')
 
     n_sim = len(gap_drv)
     thresh_arr = np.linspace(0, float(np.max(gap_drv) * 1.05), 200)
-    fbin_curve = np.array([float(np.sum(gap_drv > t)) / n_sim for t in thresh_arr])
+    # Significance mask: ΔRV - nsigma * σ_p2p > 0
+    if sigma_p2p is not None:
+        sig_mask = (gap_drv - nsigma * sigma_p2p) > 0
+    else:
+        sig_mask = np.ones(n_sim, dtype=bool)
+    bin_sig = sig_mask[gap_is_bin]
+    sin_sig = sig_mask[~gap_is_bin]
+    fbin_curve = np.array([float(np.sum((gap_drv > t) & sig_mask)) / n_sim
+                           for t in thresh_arr])
     bin_drv_all = gap_drv[gap_is_bin]
     sin_drv_all = gap_drv[~gap_is_bin]
     missed_bin_curve = np.array(
-        [float(np.sum(bin_drv_all <= t)) / n_sim for t in thresh_arr])
+        [float(np.sum((bin_drv_all <= t) | ~bin_sig)) / n_sim
+         for t in thresh_arr])
     false_pos_curve = np.array(
-        [float(np.sum(sin_drv_all > t)) / n_sim for t in thresh_arr])
+        [float(np.sum((sin_drv_all > t) & sin_sig)) / n_sim
+         for t in thresh_arr])
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -175,7 +186,19 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
             line=dict(width=0), mode='lines', name='Singles above threshold', showlegend=True))
     fig.add_trace(go.Scatter(
         x=thresh_arr, y=fbin_curve, mode='lines',
-        name='Observed f_bin(threshold)', line=dict(color=_CLR_OBS, width=2.5)))
+        name='Simulated f_bin(threshold)', line=dict(color=_CLR_OBS, width=2.5)))
+    # Real observed binary fraction curve (step/stairs)
+    # Bartzakos correction: 3 confirmed binaries excluded from sample → +3 numerator, /28 denominator
+    if obs_delta_rv is not None and len(obs_delta_rv) > 0:
+        _obs_drv = np.sort(np.asarray(obs_delta_rv))
+        _n_bartz = 3
+        _total_pop = len(_obs_drv) + _n_bartz
+        _obs_fbin_curve = np.array(
+            [float(np.sum(_obs_drv > t) + _n_bartz) / _total_pop for t in _obs_drv])
+        fig.add_trace(go.Scatter(
+            x=_obs_drv, y=_obs_fbin_curve, mode='lines',
+            name='Observed f_bin(threshold)',
+            line=dict(color='white', width=2.5, shape='hv')))
     fig.add_hline(y=intrinsic_fbin, line_dash='dot', line_color=_CLR_DETECTED,
                   line_width=2,
                   annotation_text=f'Intrinsic f_bin = {intrinsic_fbin:.1%}',
@@ -192,7 +215,7 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
                     line=dict(width=2, color='black')),
         text=[f'{observed_fbin:.1%}'], textposition='top left',
         textfont=dict(size=12, color='#333333'),
-        name=f'Observed @ {thresh_dRV} km/s', showlegend=True))
+        name=f'Simulated @ {thresh_dRV} km/s', showlegend=True))
 
     gap_pct = intrinsic_fbin - observed_fbin
     fig.add_annotation(

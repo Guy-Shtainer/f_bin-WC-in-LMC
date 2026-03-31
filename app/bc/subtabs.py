@@ -121,13 +121,23 @@ def _render_analysis_plots(
     if gap_drv.size == 0:
         return
 
+    # Significance criterion: σ_p2p from simulate_with_params
+    _raw_sp = gap_sim.get('sigma_p2p')
+    sigma_p2p = np.asarray(_raw_sp) if _raw_sp is not None else None
+    nsigma = float(ctx.get('classification', {}).get('sigma_factor', 4.0))
+
     # Binary-only sub-masks: P_days, e, q etc. have N_binary entries,
     # not N_total, so masks must be relative to binary-only arrays.
     idx_bin = gap_sim.get('idx_bin')
     if idx_bin is None:
         idx_bin = np.where(gap_is_bin)[0]
     bin_drv = gap_drv[idx_bin] if idx_bin.size > 0 else np.array([])
-    bin_detected_mask = bin_drv > thresh_dRV
+    bin_sigma = sigma_p2p[idx_bin] if (sigma_p2p is not None and idx_bin.size > 0) else None
+    # Dual criterion: ΔRV > threshold AND ΔRV − nsigma·σ_p2p > 0
+    if bin_sigma is not None:
+        bin_detected_mask = (bin_drv > thresh_dRV) & ((bin_drv - nsigma * bin_sigma) > 0)
+    else:
+        bin_detected_mask = bin_drv > thresh_dRV
     bin_missed_mask = ~bin_detected_mask
 
     # Best-fit parameter values (from first available method)
@@ -149,14 +159,12 @@ def _render_analysis_plots(
     total_bin = int(np.sum(gap_is_bin))
     detected_bin_count = int(np.sum(bin_detected_mask))
     missed_count = int(np.sum(bin_missed_mask))
-    observed_fbin = detected_bin_count / max(len(gap_drv), 1)
-
-    # A4 Period distribution — REMOVED (already in A6 orbital histograms)
-    # render_period_distribution(
-    #     p, gap_sim, bin_detected_mask, bin_missed_mask,
-    #     logP_min, logP_max, ana_x_val,
-    #     x_label=x_label, has_case_AB=has_case_AB,
-    # )
+    # observed_fbin uses same dual criterion on ALL stars
+    if sigma_p2p is not None:
+        _all_sig_mask = (gap_drv - nsigma * sigma_p2p) > 0
+        observed_fbin = float(np.sum((gap_drv > thresh_dRV) & _all_sig_mask)) / max(len(gap_drv), 1)
+    else:
+        observed_fbin = detected_bin_count / max(len(gap_drv), 1)
 
     # Binary fraction vs threshold
     render_binary_fraction_vs_threshold(
@@ -164,6 +172,8 @@ def _render_analysis_plots(
         observed_fbin, thresh_dRV, missed_count,
         total_bin, detected_bin_count, pal,
         model_label=ctx['model_type'],
+        obs_delta_rv=ctx.get('obs_delta_rv'),
+        sigma_p2p=sigma_p2p, nsigma=nsigma,
     )
 
     # Orbital histograms
