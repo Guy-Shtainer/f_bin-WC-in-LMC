@@ -110,7 +110,7 @@ def _load_raw_spec(star_name: str, epoch: int, band: str):
             return None
         wave_nm = np.asarray(fit.data['WAVE'][0])
         flux = np.asarray(fit.data['FLUX'][0])
-        err = np.asarray(fit.data['ERR'][0]) if 'ERR' in fit.data else None
+        err = np.asarray(fit.data['ERR'][0]) if 'ERR' in fit.data.dtype.names else None
         wave_A = wave_nm * 10.0
         return wave_A, flux, err
     except Exception:

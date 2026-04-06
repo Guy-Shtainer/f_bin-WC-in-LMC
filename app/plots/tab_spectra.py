@@ -83,6 +83,8 @@ def render_spectra_subtab(settings: dict):
         st.success(f'Saved: {path} (+ HTML)')
 
     # ── Raw spectrum viewer ───────────────────────────────────────────
+    _BAND_COLORS = {'UVB': '#7B68EE', 'VIS': '#2E8B57', 'NIR': '#DC143C'}
+
     with st.expander('Raw Spectrum Viewer', expanded=False):
         c1r, c2r, c3r = st.columns(3)
         raw_star = c1r.selectbox('Star', specs.star_names, key='xsp_raw_star')
@@ -90,52 +92,111 @@ def render_spectra_subtab(settings: dict):
         raw_epochs = _get_epochs(raw_star)
         ep_raw = c3r.selectbox('Epoch', raw_epochs, key='xsp_raw_ep')
 
-        cr1, cr2, cr3 = st.columns(3)
+        cr1, cr2, cr3, cr4 = st.columns(4)
         raw_log = cr1.checkbox('Log scale', value=False, key='xsp_raw_log')
         raw_cont = cr2.checkbox('Show continuum', value=False, key='xsp_raw_cont')
         raw_lines_chk = cr3.checkbox('Show emission lines', value=False, key='xsp_raw_lines')
+        overlay_all = cr4.checkbox('Overlay all bands', value=False, key='xsp_raw_overlay')
 
-        raw_data = _load_raw_spec(raw_star, ep_raw, raw_band)
-        if raw_data is not None:
-            wave_A, flux, err = raw_data
+        if overlay_all:
+            # ── All bands overlaid (UVB + VIS + NIR) ──
             fig_raw = _academic_fig(
                 height=420,
                 xaxis_title='Wavelength (Ang.)', yaxis_title='Flux',
-                title=dict(text=f'{raw_star} -- {raw_band} -- Epoch {ep_raw} (raw)'),
+                title=dict(text=f'{raw_star} -- All Bands -- Epoch {ep_raw} (raw)'),
             )
             if raw_log:
                 fig_raw.update_layout(yaxis_type='log')
-
-            plot_flux = flux.copy()
-            if raw_log:
-                plot_flux = np.where(plot_flux > 0, plot_flux, np.nan)
-
-            fig_raw.add_trace(go.Scattergl(
-                x=wave_A, y=plot_flux, mode='lines',
-                line=dict(color=COLOR_SINGLE, width=1),
-                name=f'Epoch {ep_raw}',
-            ))
-
-            if raw_cont:
-                cont_data = _load_continuum(raw_star, ep_raw, raw_band)
-                if cont_data is not None:
-                    cont_flux = np.asarray(
-                        cont_data.get('interpolated_flux', cont_data)
-                        if isinstance(cont_data, dict) else cont_data
-                    )
-                    if cont_flux.ndim > 0 and len(cont_flux) == len(wave_A):
-                        fig_raw.add_trace(go.Scattergl(
-                            x=wave_A, y=cont_flux, mode='lines',
-                            line=dict(color='#DAA520', width=1.5, dash='dash'),
-                            name='Continuum',
-                        ))
-
+            any_data = False
+            for band in ('UVB', 'VIS', 'NIR'):
+                raw_data = _load_raw_spec(raw_star, ep_raw, band)
+                if raw_data is None:
+                    continue
+                any_data = True
+                wave_A, flux, _err = raw_data
+                plot_flux = np.where(flux > 0, flux, np.nan) if raw_log else flux.copy()
+                fig_raw.add_trace(go.Scattergl(
+                    x=wave_A, y=plot_flux, mode='lines',
+                    line=dict(color=_BAND_COLORS[band], width=1),
+                    name=band,
+                ))
             if raw_lines_chk:
                 _add_emission_bands(fig_raw, _get_emission_lines())
-
-            _show(fig_raw, 'Raw FITS spectrum (wavelengths converted from nm to Ang.).')
+            if any_data:
+                _show(fig_raw, 'All three bands overlaid (UVB, VIS, NIR) — raw FITS flux.')
+            else:
+                st.info('No raw data available for any band at this epoch.')
         else:
-            st.info('No raw data available for this star/epoch/band.')
+            # ── Single band ──
+            raw_data = _load_raw_spec(raw_star, ep_raw, raw_band)
+            if raw_data is not None:
+                wave_A, flux, err = raw_data
+                fig_raw = _academic_fig(
+                    height=420,
+                    xaxis_title='Wavelength (Ang.)', yaxis_title='Flux',
+                    title=dict(text=f'{raw_star} -- {raw_band} -- Epoch {ep_raw} (raw)'),
+                )
+                if raw_log:
+                    fig_raw.update_layout(yaxis_type='log')
+
+                plot_flux = flux.copy()
+                if raw_log:
+                    plot_flux = np.where(plot_flux > 0, plot_flux, np.nan)
+
+                fig_raw.add_trace(go.Scattergl(
+                    x=wave_A, y=plot_flux, mode='lines',
+                    line=dict(color=COLOR_SINGLE, width=1),
+                    name=f'Epoch {ep_raw}',
+                ))
+
+                if raw_cont:
+                    cont_data = _load_continuum(raw_star, ep_raw, raw_band)
+                    if cont_data is not None:
+                        cont_flux = np.asarray(
+                            cont_data.get('interpolated_flux', cont_data)
+                            if isinstance(cont_data, dict) else cont_data
+                        )
+                        if cont_flux.ndim > 0 and len(cont_flux) == len(wave_A):
+                            fig_raw.add_trace(go.Scattergl(
+                                x=wave_A, y=cont_flux, mode='lines',
+                                line=dict(color='#DAA520', width=1.5, dash='dash'),
+                                name='Continuum',
+                            ))
+
+                if raw_lines_chk:
+                    _add_emission_bands(fig_raw, _get_emission_lines())
+
+                _show(fig_raw, 'Raw FITS spectrum (wavelengths converted from nm to Ang.).')
+            else:
+                st.info('No raw data available for this star/epoch/band.')
+
+        # ── Stitched unnormalized spectrum (COMBINED band) ───────────
+        st.markdown('---')
+        st.markdown('**Stitched Unnormalized Spectrum (COMBINED band)**')
+        combined_data = _load_raw_spec(raw_star, ep_raw, 'COMBINED')
+        if combined_data is not None:
+            wave_comb, flux_comb, _err_comb = combined_data
+            fig_stitched = _academic_fig(
+                height=420,
+                xaxis_title='Wavelength (Ang.)', yaxis_title='Flux',
+                title=dict(text=f'{raw_star} -- COMBINED (stitched) -- Epoch {ep_raw}'),
+            )
+            if raw_log:
+                fig_stitched.update_layout(yaxis_type='log')
+            plot_flux_comb = (np.where(flux_comb > 0, flux_comb, np.nan)
+                              if raw_log else flux_comb.copy())
+            fig_stitched.add_trace(go.Scattergl(
+                x=wave_comb, y=plot_flux_comb, mode='lines',
+                line=dict(color=COLOR_BINARY, width=1),
+                name='COMBINED',
+            ))
+            if raw_lines_chk:
+                _add_emission_bands(fig_stitched, _get_emission_lines())
+            _show(fig_stitched,
+                  'Stitched unnormalized flux from COMBINED band '
+                  '(overlap regions SNR-weighted averaged).')
+        else:
+            st.info('No COMBINED band data available for this star/epoch.')
 
     # ── Error spectrum viewer ─────────────────────────────────────────
     with st.expander('Error Spectrum', expanded=False):
