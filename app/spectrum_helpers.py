@@ -56,31 +56,163 @@ DIAGNOSTIC_LINES: dict[str, list[dict]] = {
         {'name': 'O III 5592','wave': 5592.3, 'element': 'O', 'type': 'em'},
     ],
     'Interstellar / Other': [
-        {'name': 'Na I D1', 'wave': 5895.9, 'element': 'Na', 'type': 'abs'},
-        {'name': 'Na I D2', 'wave': 5889.9, 'element': 'Na', 'type': 'abs'},
-        {'name': 'DIB 4430', 'wave': 4430.0, 'element': 'DIB', 'type': 'abs'},
-        {'name': 'DIB 5780', 'wave': 5780.5, 'element': 'DIB', 'type': 'abs'},
-        {'name': 'DIB 5797', 'wave': 5797.1, 'element': 'DIB', 'type': 'abs'},
+        {'name': 'Ca II K',  'wave': 3933.7, 'element': 'ISM', 'type': 'abs'},
+        {'name': 'Ca II H',  'wave': 3968.5, 'element': 'ISM', 'type': 'abs'},
+        {'name': 'Na I D1',  'wave': 5895.9, 'element': 'ISM', 'type': 'abs'},
+        {'name': 'Na I D2',  'wave': 5889.9, 'element': 'ISM', 'type': 'abs'},
+        {'name': 'DIB 4430', 'wave': 4430.0, 'element': 'ISM', 'type': 'abs'},
+        {'name': 'DIB 5780', 'wave': 5780.5, 'element': 'ISM', 'type': 'abs'},
+        {'name': 'DIB 5797', 'wave': 5797.1, 'element': 'ISM', 'type': 'abs'},
+        {'name': 'DIB 6284', 'wave': 6283.8, 'element': 'ISM', 'type': 'abs'},
+    ],
+    'Telluric (Earth atmosphere)': [
+        {'name': 'O2 B-band', 'wave': 6870.0, 'element': 'Telluric', 'type': 'abs'},
+        {'name': 'H2O 7165',  'wave': 7165.0, 'element': 'Telluric', 'type': 'abs'},
+        {'name': 'O2 A-band', 'wave': 7605.0, 'element': 'Telluric', 'type': 'abs'},
+        {'name': 'H2O 8227',  'wave': 8227.0, 'element': 'Telluric', 'type': 'abs'},
+        {'name': 'H2O 9400',  'wave': 9400.0, 'element': 'Telluric', 'type': 'abs'},
     ],
 }
 
 LINE_COLORS = {
-    'H':     '#5DADE2',
-    'He I':  '#48C9B0',
-    'He II': '#AF7AC5',
-    'C':     '#F5B041',
-    'N':     '#58D68D',
-    'O':     '#E74C3C',
-    'Na':    '#AEB6BF',
-    'DIB':   '#AEB6BF',
+    'H':        '#5DADE2',
+    'He I':     '#48C9B0',
+    'He II':    '#AF7AC5',
+    'C':        '#F5B041',
+    'N':        '#58D68D',
+    'O':        '#E74C3C',
+    'ISM':      '#F5A623',      # orange — not companion features
+    'Telluric': '#E74C3C',      # red — not companion features
 }
 
 LINE_PRESETS = {
     'SB2 search (OB companion)': ['Hydrogen (Balmer)', 'He I (OB companion)', 'He II (hot companion)'],
     'WC diagnostic': ['Carbon (WC diagnostic)', 'Oxygen (WC diagnostic)'],
     'WN diagnostic': ['Nitrogen (WN diagnostic)'],
-    'All absorption': ['Hydrogen (Balmer)', 'He I (OB companion)', 'He II (hot companion)', 'Interstellar / Other'],
+    'Contamination (ISM + Telluric)': ['Interstellar / Other', 'Telluric (Earth atmosphere)'],
+    'All absorption': ['Hydrogen (Balmer)', 'He I (OB companion)', 'He II (hot companion)',
+                       'Interstellar / Other', 'Telluric (Earth atmosphere)'],
 }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Companion detection reference guide
+# ─────────────────────────────────────────────────────────────────────────────
+def render_companion_guide():
+    """Render the companion detection reference guide inside an st.expander."""
+    with st.expander('Companion Detection Reference Guide'):
+        st.markdown('''**Detectable companions** (WC stars are ~10^5 L_sun — only luminous companions visible):
+
+| Type | Spectral Type | Why visible | L/L_sun |
+|------|--------------|-------------|---------|
+| O stars | O3-O9 | Comparable luminosity; He II + He I + Balmer absorption | 10^4.5 - 10^6 |
+| B supergiants/giants | B0-B3 I/III | High luminosity; strong Balmer + He I | 10^3.5 - 10^5 |
+| A supergiants | A0-A2 I | Marginal; Balmer only, no He | 10^3 - 10^4 |
+| B/A main-sequence | B2-A0 V | Very diluted; only detectable for nearest/brightest WC | 10^2 - 10^3 |
+| G/K/M dwarfs | -- | **NOT detectable** — 10^-3 to 10^-5 of WC flux | <10 |
+''')
+
+        st.markdown('---')
+        st.markdown('''**Companion absorption lines — physical origin and details:**
+
+*Hydrogen Balmer series* — electron transitions to n=2 in neutral hydrogen. Present in ALL stellar
+photospheres cooler than ~50,000 K. Strongest in A-type stars (T~10,000 K), still strong in OB stars.
+
+| Line | Wavelength | Transition | Band | Notes |
+|------|-----------|------------|------|-------|
+| H-epsilon | 3970 A | n=7 -> 2 | UVB | Blended with Ca II H (3969 A) — hard to separate |
+| H-delta | 4102 A | n=6 -> 2 | UVB | Clean, good diagnostic |
+| H-gamma | 4341 A | n=5 -> 2 | UVB | Clean, good diagnostic |
+| H-beta | 4861 A | n=4 -> 2 | VIS | **Best Balmer line** — strong, unblended, far from WR emission |
+| H-alpha | 6563 A | n=3 -> 2 | VIS | Strongest Balmer, but often contaminated by nebular emission and WR wind |
+
+*He I lines* — singlet/triplet transitions in neutral helium. Require T > 15,000 K to populate
+excited states. Strongest in B0-B2 stars. Weaken in O3-O5 (He fully ionized), disappear below ~B5.
+
+| Line | Wavelength | Transition | Band | Notes |
+|------|-----------|------------|------|-------|
+| He I 4026 | 4026 A | 2p-5d (singlet) | UVB | Weak; blended region |
+| He I 4388 | 4388 A | 2p-5d (triplet) | UVB | Moderate strength |
+| He I 4471 | 4471 A | 2p-4d (triplet) | VIS | **Key B-star diagnostic** — strong, clean |
+| He I 4922 | 4922 A | 2p-4d (singlet) | VIS | Moderate; near H-beta |
+| He I 5876 | 5876 A | 2p-3d (triplet) | VIS | **Strongest He I line** — but close to Na I D (ISM, 5890 A) |
+| He I 6678 | 6678 A | 2p-3d (singlet) | VIS | Strong; clean region |
+
+*He II lines* — transitions in singly-ionized helium. Require T > 30,000 K (O-type stars).
+If you see He II absorption, the companion is an **O star** (very hot).
+
+| Line | Wavelength | Transition | Band | Notes |
+|------|-----------|------------|------|-------|
+| He II 4200 | 4200 A | n=4-11 (Pickering) | UVB | Weak Pickering series member |
+| He II 4542 | 4542 A | n=4-9 (Pickering) | VIS | Good O-star indicator |
+| He II 4686 | 4686 A | n=3-4 (Fowler) | VIS | **EMISSION from WR** — NOT a companion absorption line |
+| He II 5412 | 5412 A | n=4-7 (Pickering) | VIS | Clean O-star diagnostic |
+''')
+
+        st.markdown('---')
+        st.markdown('''**Companion-type "packages" — what to expect for each type:**
+
+| Companion | T_eff (K) | Balmer | He I | He II | Signature |
+|-----------|----------|--------|------|-------|-----------|
+| **O star** (O3-O9) | >30,000 | Strong | Moderate (He mostly ionized) | **Strong** (4542, 5412) | He II absorption = O star |
+| **Early B** (B0-B2) | 20,000-30,000 | Strong | **Strong** (4471, 5876, 6678) | Absent | He I without He II |
+| **Late B** (B3-B9) | 10,000-17,000 | Strong | Weak/absent | Absent | Balmer only, no He |
+| **A supergiant** (A0-A2 I) | 9,000-10,000 | **Very strong** (deepest) | Absent | Absent | Deep Balmer, no He (marginal) |
+
+Best model files to compare: O star -> G40000, Early B -> G32500/BG20000, Late B -> BG15000 (if available).
+''')
+
+        st.markdown('---')
+        st.markdown('''**Lines to IGNORE** (ISM = orange, Telluric = red on plots):
+
+| Line | Wavelength | Origin | Physical source | How to tell |
+|------|-----------|--------|----------------|------------|
+| Ca II K | 3934 A | ISM | Ca+ in interstellar gas clouds | Stationary; does NOT shift between epochs |
+| Ca II H | 3969 A | ISM | Ca+ in interstellar gas clouds | Blended with H-epsilon |
+| Na I D2 | 5890 A | ISM | Neutral Na in ISM clouds | Stationary; narrow doublet |
+| Na I D1 | 5896 A | ISM | Neutral Na in ISM clouds | Close to He I 5876 — don't confuse |
+| DIBs | 4430, 5780, 5797, 6284 A | ISM | Unknown carriers (large molecules?) | Broad, stationary, same in all stars |
+| O2 B-band | ~6870 A | Telluric | Molecular oxygen in Earth atm | Earth frame; identical in all stars |
+| O2 A-band | ~7605 A | Telluric | Molecular oxygen in Earth atm | Very strong; sharp lines |
+| H2O | 7165, 8227, 9400+ A | Telluric | Water vapor in Earth atm | Variable with weather; strong in NIR |
+
+**How to confirm a companion:**
+1. Absorption lines **shift between epochs** (ISM/telluric do NOT shift)
+2. Multiple lines shift by the **same delta-RV** — consistent velocity
+3. In SB2: absorption moves **opposite** to WR emission (anti-phase)
+4. Consistent with binary classification from CCF delta-RV
+5. Check the "package": O = He II + He I + Balmer; B = He I + Balmer; A = Balmer only
+''')
+
+        st.markdown('---')
+        st.markdown('''**Model spectrum naming convention** (TLUSTY BSTAR/OSTAR grids):
+
+Example: `BG20000g300v2.vis.rectvmac30vsini25.dat`
+
+| Part | Meaning | Example |
+|------|---------|---------|
+| `BG` / `G` | Grid: BG = BSTAR2006 (B stars), G = generic/OSTAR (O stars) | BG = B-star model |
+| `20000` | **T_eff** in Kelvin | 20,000 K ~ B2-B3 star |
+| `g300` | **log(g) x 100** — surface gravity | g300 = log g = 3.00 (giant) |
+| `v2` / `v10` | **Microturbulence** in km/s | v2 = 2 km/s |
+| `.vis` / `.uv` | **Wavelength range**: vis = optical, uv = ultraviolet | .vis = VIS band |
+| `.rect` | **Rectified** (continuum-normalized to ~1.0) | Compare directly to your normalized spectra |
+| `vmac30` | **Macroturbulent broadening** in km/s | vmac30 = 30 km/s |
+| `vsini25` | **Projected rotational velocity** (v sin i) in km/s | vsini25 = 25 km/s |
+
+**Quick T_eff -> spectral type guide:**
+
+| T_eff (K) | Spectral Type | Typical log g |
+|-----------|--------------|---------------|
+| 40,000+ | O5-O3 | 3.5-4.0 |
+| 32,500 | O9-B0 | 3.5-4.0 |
+| 25,000 | B1 | 3.0-4.0 |
+| 20,000 | B2-B3 | 3.0-3.5 |
+| 15,000 | B5-B7 | 3.0-4.0 |
+| 10,000 | A0 | 3.5-4.5 |
+
+log g ~ 4.0-4.5 = main sequence, ~3.0-3.5 = giant, ~1.0-2.0 = supergiant.
+''')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -187,8 +319,9 @@ def render_absorption_search(
         st.info('No absorption lines in the selected groups fall within the spectral range.')
         return
 
-    # Build heatmap arrays
-    line_names = list(dict.fromkeys(r['Line'] for r in rows))  # preserves order
+    # Build heatmap arrays — sort lines by wavelength (low → high, left → right)
+    _unique = {r['Line']: r['Wave (A)'] for r in rows}
+    line_names = sorted(_unique.keys(), key=lambda n: _unique[n])
     ep_list = sorted(set(r['Epoch'] for r in rows))
     z = np.full((len(ep_list), len(line_names)), np.nan)
     for r in rows:
