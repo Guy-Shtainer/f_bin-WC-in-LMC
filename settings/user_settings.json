@@ -226,5 +226,28 @@
   "likelihood_bin_config": {
     "mode": "Manual",
     "manual_edges": "0,15, 45.5, 150, 300"
+  },
+  "rv_modeling": {
+    "simulation": {
+      "error": {
+        "single": {
+          "errp": {
+            "0": 5.0
+          }
+        }
+      },
+      "pi": -1.0,
+      "nsim": 10000,
+      "seed": 42
+    },
+    "fitting": {
+      "parametric": {
+        "nsim": 100000,
+        "nep": 8
+      }
+    },
+    "playground": {
+      "fbin": 0.32
+    }
   }
 }

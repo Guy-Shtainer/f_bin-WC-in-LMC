@@ -25,12 +25,25 @@ from rv_modeling.compute import (
 # ---------------------------------------------------------------------------
 
 def _slider_dist_selector(label: str, key_prefix: str,
-                          default_dist: str = "Normal") -> tuple[str, tuple]:
+                          default_dist: str = "Normal",
+                          sm=None, settings_path=None,
+                          defaults=None) -> tuple[str, tuple]:
     """Distribution selector using sliders for instant updates."""
+    if defaults is None:
+        defaults = {}
+    _sp = settings_path or []
+
     dist_names = list(DIST_MAP.keys())
-    default_idx = dist_names.index(default_dist) if default_dist in dist_names else 0
+    _dd = defaults.get('dist', default_dist)
+    default_idx = dist_names.index(_dd) if _dd in dist_names else 0
+    _oc_d = {}
+    if sm is not None and _sp:
+        _k_d = f"{key_prefix}_dist"
+        _oc_d = dict(on_change=lambda k=_k_d, p=_sp: sm.save(
+            p + ['dist'], value=st.session_state[k]))
     dist_name = st.selectbox(f"{label} distribution", dist_names,
-                             index=default_idx, key=f"{key_prefix}_dist")
+                             index=default_idx, key=f"{key_prefix}_dist",
+                             **_oc_d)
 
     _slider_meta = {
         "Normal": [("μ", -100.0, 100.0, 0.0, 0.5),
@@ -51,15 +64,22 @@ def _slider_dist_selector(label: str, key_prefix: str,
     }
 
     pmeta = _slider_meta.get(dist_name, [])
+    saved_sp = defaults.get('sliders', {})
     params = []
     if pmeta:
         cols = st.columns(len(pmeta))
         for i, (plabel, pmin, pmax, default, step) in enumerate(pmeta):
             with cols[i]:
+                _init = float(saved_sp.get(str(i), default))
+                _oc_s = {}
+                if sm is not None and _sp:
+                    _k_s = f"{key_prefix}_s_{i}"
+                    _oc_s = dict(on_change=lambda k=_k_s, p=_sp, idx=str(i): sm.save(
+                        p + ['sliders', idx], value=st.session_state[k]))
                 val = st.slider(
                     plabel, pmin, pmax,
-                    float(st.session_state.get(f"{key_prefix}_s_{i}", default)),
-                    step, key=f"{key_prefix}_s_{i}",
+                    float(st.session_state.get(f"{key_prefix}_s_{i}", _init)),
+                    step, key=f"{key_prefix}_s_{i}", **_oc_s,
                 )
                 params.append(val)
     return dist_name, tuple(params)
@@ -165,6 +185,10 @@ def _render_playground_plot(
 def render_tab_playground(obs_data: dict) -> None:
     """Tab C: Playground — manually adjust distributions and see f(T) instantly."""
     t_dots, f_dots, e_dots = obs_data["t_dots"], obs_data["f_dots"], obs_data["e_dots"]
+    sm = obs_data.get('sm')
+    rvm = obs_data.get('rvm_settings', {})
+    pg_cfg = rvm.get('playground', {})
+    _PG = ['rv_modeling', 'playground']
 
     st.subheader("Playground")
     st.caption(
@@ -173,14 +197,26 @@ def render_tab_playground(obs_data: dict) -> None:
     )
 
     # ── Mode toggle ──
+    _mode_opts = ["Parametric", "Physics-based"]
+    _mode_def = pg_cfg.get("mode", "Parametric")
+    _mode_idx = _mode_opts.index(_mode_def) if _mode_def in _mode_opts else 0
+    _oc_mode = {}
+    if sm is not None:
+        _oc_mode = dict(on_change=lambda: sm.save(
+            _PG + ['mode'], value=st.session_state['rvm_pg_mode']))
     sim_mode = st.radio(
-        "Simulation mode", ["Parametric", "Physics-based"],
-        horizontal=True, key="rvm_pg_mode",
+        "Simulation mode", _mode_opts, index=_mode_idx,
+        horizontal=True, key="rvm_pg_mode", **_oc_mode,
     )
 
     # ── f_bin slider (shared) ──
-    pg_fbin = st.slider("f_bin (binary fraction)", 0.01, 0.99, 0.40, 0.01,
-                        key="rvm_pg_fbin")
+    _oc_fbin = {}
+    if sm is not None:
+        _oc_fbin = dict(on_change=lambda: sm.save(
+            _PG + ['fbin'], value=st.session_state['rvm_pg_fbin']))
+    pg_fbin = st.number_input("f_bin (binary fraction)",
+                              value=float(pg_cfg.get('fbin', 0.40)),
+                              step=0.01, key="rvm_pg_fbin", **_oc_fbin)
 
     if sim_mode == "Parametric":
         _render_parametric_branch(obs_data, pg_fbin, t_dots, f_dots, e_dots)
@@ -205,31 +241,53 @@ def render_tab_playground(obs_data: dict) -> None:
 
 def _render_parametric_branch(obs_data, pg_fbin, t_dots, f_dots, e_dots):
     """Parametric mode: scipy distribution draws."""
+    sm = obs_data.get('sm')
+    par_cfg = obs_data.get('rvm_settings', {}).get('playground', {}).get('parametric', {})
+    _PAR = ['rv_modeling', 'playground', 'parametric']
+
+    def _oc(field):
+        if sm is None:
+            return {}
+        _k = f'rvm_pg_{field}'
+        return dict(on_change=lambda k=_k, f=field, p=_PAR: sm.save(
+            p + [f], value=st.session_state[k]))
+
     # Distribution selectors
     col_s, col_b = st.columns(2)
     with col_s:
         st.markdown("**Single stars**")
         single_dist, single_params = _slider_dist_selector(
             "Single", "rvm_pg_sin", default_dist="Normal",
+            sm=sm, settings_path=_PAR + ['sin'],
+            defaults=par_cfg.get('sin', {}),
         )
     with col_b:
         st.markdown("**Binary stars**")
         best_dist = st.session_state.get("rvm_best_binary_dist", "Normal")
+        _bin_def = par_cfg.get('bin', {}).get('dist', best_dist)
         binary_dist, binary_params = _slider_dist_selector(
-            "Binary", "rvm_pg_bin", default_dist=best_dist,
+            "Binary", "rvm_pg_bin", default_dist=_bin_def,
+            sm=sm, settings_path=_PAR + ['bin'],
+            defaults=par_cfg.get('bin', {}),
         )
 
     # Sim controls
     sc1, sc2, sc3 = st.columns(3)
     with sc1:
-        n_sim = st.select_slider(
-            "N_sim", [10_000, 50_000, 100_000, 200_000],
-            value=50_000, key="rvm_pg_nsim",
+        n_sim = st.number_input(
+            "N_sim", value=int(par_cfg.get('n_sim', 50_000)),
+            step=10_000, key="rvm_pg_nsim", **_oc('nsim'),
         )
     with sc2:
-        n_epochs = st.number_input("N_epochs", 2, 20, 6, key="rvm_pg_nep")
+        n_epochs = st.number_input("N_epochs",
+                                   value=int(par_cfg.get('n_epochs', 6)),
+                                   step=1,
+                                   key="rvm_pg_nep", **_oc('nep'))
     with sc3:
-        seed = st.number_input("Seed", 0, 99999, 42, key="rvm_pg_seed")
+        seed = st.number_input("Seed",
+                               value=int(par_cfg.get('seed', 42)),
+                               step=1,
+                               key="rvm_pg_seed", **_oc('seed'))
 
     # Compute
     try:
@@ -259,8 +317,18 @@ def _render_parametric_branch(obs_data, pg_fbin, t_dots, f_dots, e_dots):
 
 def _render_physics_branch(obs_data, pg_fbin, t_dots, f_dots, e_dots):
     """Physics-based mode: orbital simulation + real cadences + error models."""
+    sm = obs_data.get('sm')
+    phys_cfg = obs_data.get('rvm_settings', {}).get('playground', {}).get('physics', {})
+    _PHY = ['rv_modeling', 'playground', 'physics']
     cadence_tuples = obs_data["cadence_tuples"]
     n_cadence = obs_data["n_cadence_stars"]
+
+    def _oc(field):
+        if sm is None:
+            return {}
+        _k = f'rvm_pg_phys_{field}'
+        return dict(on_change=lambda k=_k, f=field, p=_PHY: sm.save(
+            p + [f], value=st.session_state[k]))
 
     st.info(f"Using real observation cadences from {n_cadence} WR stars. "
             f"N_total = n_sets × {n_cadence}.")
@@ -268,23 +336,37 @@ def _render_physics_branch(obs_data, pg_fbin, t_dots, f_dots, e_dots):
     # sigma_single + seed + n_sets
     rc1, rc2, rc3 = st.columns(3)
     with rc1:
-        sigma_single = st.slider("σ_single (km/s)", 0.0, 30.0, 15.0, 0.5,
-                                  key="rvm_pg_phys_sigma_s")
+        sigma_single = st.number_input(
+            "σ_single (km/s)",
+            value=float(phys_cfg.get('sigma_single', 15.0)), step=0.5,
+            key="rvm_pg_phys_sigma_s", **_oc('sigma_s'))
     with rc2:
-        n_sets = st.select_slider(
-            "N_sets (×25 stars)", [10, 50, 100, 200, 500],
-            value=50, key="rvm_pg_phys_nsets",
+        n_sets = st.number_input(
+            "N_sets (×25 stars)",
+            value=int(phys_cfg.get('n_sets', 50)), step=10,
+            key="rvm_pg_phys_nsets", **_oc('nsets'),
         )
     with rc3:
-        seed = st.number_input("Seed", 0, 99999, 42, key="rvm_pg_phys_seed")
+        seed = st.number_input("Seed",
+                               value=int(phys_cfg.get('seed', 42)),
+                               step=1,
+                               key="rvm_pg_phys_seed", **_oc('seed'))
 
     # Error models
     st.markdown("#### RV Error Models")
-    err = render_error_model_pair("rvm_pg_phys")
+    err = render_error_model_pair(
+        "rvm_pg_phys", sm=sm,
+        settings_path=_PHY + ['error'],
+        defaults=phys_cfg.get('error', {}),
+    )
 
     # Orbital params
     st.markdown("#### Orbital Parameters")
-    orb = render_orbital_params("rvm_pg_phys")
+    orb = render_orbital_params(
+        "rvm_pg_phys", sm=sm,
+        settings_path=_PHY + ['orbital'],
+        defaults=phys_cfg.get('orbital', {}),
+    )
 
     # Compute
     try:

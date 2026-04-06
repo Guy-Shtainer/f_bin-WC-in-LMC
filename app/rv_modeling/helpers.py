@@ -105,22 +105,50 @@ _RVE_PARAM_META: dict[str, list] = {
 }
 
 
-def render_error_model_one(label: str, key_prefix: str) -> dict:
-    """Render one error-model selector. Returns {type, sigma_measure, params}."""
+def render_error_model_one(label: str, key_prefix: str,
+                           sm=None, settings_path=None,
+                           defaults=None) -> dict:
+    """Render one error-model selector. Returns {type, sigma_measure, params}.
+
+    When *sm* (SettingsManager) is provided, widget defaults are read from
+    *defaults* dict and every change is persisted to *settings_path* in
+    user_settings.json.
+    """
     import scipy.stats as sp_stats
     import streamlit as st
 
+    if defaults is None:
+        defaults = {}
+    _sp = settings_path or []
+
     options = ['Fixed', 'Normal', 'Log-normal', 'Gamma',
                'Weibull', 'Exponential', 'Flat (uniform)']
+    _def_type = defaults.get('err_type', 'Fixed')
+    _def_idx = options.index(_def_type) if _def_type in options else 0
+
+    _oc_type = {}
+    if sm is not None:
+        _k_type = f'{key_prefix}_err_type'
+        _oc_type = dict(on_change=lambda k=_k_type, p=_sp: sm.save(
+            p + ['err_type'], value=st.session_state[k]))
+
     err_model = st.selectbox(
-        label, options, index=0, key=f'{key_prefix}_err_type',
+        label, options, index=_def_idx, key=f'{key_prefix}_err_type',
         help='Fixed = constant σ_measure. Distribution = per-epoch error drawn from model.',
+        **_oc_type,
     )
 
     if err_model == 'Fixed':
+        _def_sigma = float(defaults.get('sigma_meas', 1.622))
+        _oc_sig = {}
+        if sm is not None:
+            _k_sig = f'{key_prefix}_sigma_meas'
+            _oc_sig = dict(on_change=lambda k=_k_sig, p=_sp: sm.save(
+                p + ['sigma_meas'], value=st.session_state[k]))
         sigma = st.number_input(
-            'σ_measure (km/s)', 0.001, 20.0, 1.622, 0.001,
+            'σ_measure (km/s)', 0.001, 20.0, _def_sigma, 0.001,
             format='%.3f', key=f'{key_prefix}_sigma_meas',
+            **_oc_sig,
         )
         return {'type': 'fixed', 'sigma_measure': float(sigma), 'params': ()}
 
@@ -128,12 +156,20 @@ def render_error_model_one(label: str, key_prefix: str) -> dict:
     params: list[float] = []
     if pmeta:
         cols = st.columns(len(pmeta))
+        saved_errp = defaults.get('errp', {})
         for i, (lbl, default, pmin, pmax, step) in enumerate(pmeta):
             with cols[i]:
+                _init = float(saved_errp.get(str(i), default))
+                _oc_p = {}
+                if sm is not None:
+                    _k_p = f'{key_prefix}_errp_{i}'
+                    _oc_p = dict(on_change=lambda k=_k_p, p=_sp, idx=str(i): sm.save(
+                        p + ['errp', idx], value=st.session_state[k]))
                 val = st.number_input(
                     lbl, min_value=pmin, max_value=pmax,
-                    value=float(st.session_state.get(f'{key_prefix}_errp_{i}', default)),
+                    value=float(st.session_state.get(f'{key_prefix}_errp_{i}', _init)),
                     step=step, format='%.4f', key=f'{key_prefix}_errp_{i}',
+                    **_oc_p,
                 )
                 params.append(val)
 
@@ -150,7 +186,9 @@ def render_error_model_one(label: str, key_prefix: str) -> dict:
     return {'type': err_model, 'sigma_measure': mean_val, 'params': tuple(params)}
 
 
-def render_error_model_pair(key_prefix: str) -> dict:
+def render_error_model_pair(key_prefix: str,
+                            sm=None, settings_path=None,
+                            defaults=None) -> dict:
     """Render two-column error-model selectors (Singles | Binaries).
 
     Returns dict with keys:
@@ -159,13 +197,25 @@ def render_error_model_pair(key_prefix: str) -> dict:
     """
     import streamlit as st
 
+    if defaults is None:
+        defaults = {}
+    _sp = settings_path or []
+
     c1, c2 = st.columns(2)
     with c1:
         st.markdown('**Singles error model**')
-        single = render_error_model_one('Error model (singles)', f'{key_prefix}_single')
+        single = render_error_model_one(
+            'Error model (singles)', f'{key_prefix}_single',
+            sm=sm, settings_path=_sp + ['single'] if sm else None,
+            defaults=defaults.get('single', {}),
+        )
     with c2:
         st.markdown('**Binaries error model**')
-        binary = render_error_model_one('Error model (binaries)', f'{key_prefix}_binary')
+        binary = render_error_model_one(
+            'Error model (binaries)', f'{key_prefix}_binary',
+            sm=sm, settings_path=_sp + ['binary'] if sm else None,
+            defaults=defaults.get('binary', {}),
+        )
     return {
         'type_single': single['type'],
         'sigma_measure': single['sigma_measure'],
@@ -176,53 +226,95 @@ def render_error_model_pair(key_prefix: str) -> dict:
     }
 
 
-def render_orbital_params(key_prefix: str) -> dict:
-    """Render always-visible orbital parameter controls. Returns param dict."""
+def render_orbital_params(key_prefix: str,
+                          sm=None, settings_path=None,
+                          defaults=None) -> dict:
+    """Render always-visible orbital parameter controls. Returns param dict.
+
+    When *sm* (SettingsManager) is provided, widget defaults are read from
+    *defaults* dict and every change is persisted via *settings_path*.
+    """
     import streamlit as st
 
+    if defaults is None:
+        defaults = {}
+    _sp = settings_path or []
+
+    def _oc(field):
+        """Build on_change kwargs for a widget that saves *field*."""
+        if sm is None:
+            return {}
+        _k = f'{key_prefix}_{field}'
+        return dict(on_change=lambda k=_k, f=field, p=_sp: sm.save(
+            p + [f], value=st.session_state[k]))
+
     # Row 1: Period model, pi, logP range
+    _pm_opts = ['powerlaw', 'langer2020']
+    _pm_def = defaults.get('period_model', 'powerlaw')
+    _pm_idx = _pm_opts.index(_pm_def) if _pm_def in _pm_opts else 0
+
     r1c1, r1c2, r1c3, r1c4 = st.columns(4)
     with r1c1:
         period_model = st.selectbox(
-            'Period model', ['powerlaw', 'langer2020'],
-            key=f'{key_prefix}_period_model',
+            'Period model', _pm_opts, index=_pm_idx,
+            key=f'{key_prefix}_period_model', **_oc('period_model'),
         )
     with r1c2:
-        pi = st.slider('π (power-law index)', -3.0, 3.0, 0.0, 0.1,
-                        key=f'{key_prefix}_pi')
+        pi = st.number_input('π (power-law index)',
+                             value=float(defaults.get('pi', 0.0)), step=0.1,
+                             key=f'{key_prefix}_pi', **_oc('pi'))
     with r1c3:
-        logP_min = st.number_input('logP_min', 0.01, 6.0, 0.15, 0.05,
-                                    format='%.2f', key=f'{key_prefix}_logPmin')
+        logP_min = st.number_input('logP_min', 0.01, 6.0,
+                                    float(defaults.get('logP_min', 0.15)), 0.05,
+                                    format='%.2f', key=f'{key_prefix}_logPmin',
+                                    **_oc('logPmin'))
     with r1c4:
-        logP_max = st.number_input('logP_max', 0.5, 8.0, 4.0, 0.1,
-                                    format='%.1f', key=f'{key_prefix}_logPmax')
+        logP_max = st.number_input('logP_max', 0.5, 8.0,
+                                    float(defaults.get('logP_max', 4.0)), 0.1,
+                                    format='%.1f', key=f'{key_prefix}_logPmax',
+                                    **_oc('logPmax'))
 
     # Row 2: Eccentricity, mass ratio, primary mass
+    _em_opts = ['flat', 'zero']
+    _em_def = defaults.get('e_model', 'flat')
+    _em_idx = _em_opts.index(_em_def) if _em_def in _em_opts else 0
+
+    _qm_opts = ['flat', 'langer', 'lognormal', 'reflected_lognormal', 'empirical']
+    _qm_def = defaults.get('q_model', 'flat')
+    _qm_idx = _qm_opts.index(_qm_def) if _qm_def in _qm_opts else 0
+
     r2c1, r2c2, r2c3, r2c4, r2c5 = st.columns(5)
     with r2c1:
-        e_model = st.selectbox('e model', ['flat', 'zero'],
-                               key=f'{key_prefix}_e_model')
+        e_model = st.selectbox('e model', _em_opts, index=_em_idx,
+                               key=f'{key_prefix}_e_model', **_oc('e_model'))
     with r2c2:
-        e_max = st.number_input('e_max', 0.0, 0.99, 0.9, 0.05,
-                                 format='%.2f', key=f'{key_prefix}_e_max')
+        e_max = st.number_input('e_max', 0.0, 0.99,
+                                 float(defaults.get('e_max', 0.9)), 0.05,
+                                 format='%.2f', key=f'{key_prefix}_e_max',
+                                 **_oc('e_max'))
     with r2c3:
-        q_model = st.selectbox('q model', ['flat', 'langer', 'lognormal',
-                                            'reflected_lognormal', 'empirical'],
-                               key=f'{key_prefix}_q_model')
+        q_model = st.selectbox('q model', _qm_opts, index=_qm_idx,
+                               key=f'{key_prefix}_q_model', **_oc('q_model'))
     with r2c4:
-        q_min = st.number_input('q_min', 0.01, 5.0, 0.1, 0.05,
-                                 format='%.2f', key=f'{key_prefix}_q_min')
+        q_min = st.number_input('q_min', 0.01, 5.0,
+                                 float(defaults.get('q_min', 0.1)), 0.05,
+                                 format='%.2f', key=f'{key_prefix}_q_min',
+                                 **_oc('q_min'))
     with r2c5:
-        q_max = st.number_input('q_max', 0.1, 10.0, 2.0, 0.1,
-                                 format='%.1f', key=f'{key_prefix}_q_max')
+        q_max = st.number_input('q_max', 0.1, 10.0,
+                                 float(defaults.get('q_max', 2.0)), 0.1,
+                                 format='%.1f', key=f'{key_prefix}_q_max',
+                                 **_oc('q_max'))
 
     r3c1, r3c2 = st.columns(2)
     with r3c1:
-        mass_primary = st.number_input('M₁ (M☉)', 1.0, 100.0, 10.0, 1.0,
-                                        key=f'{key_prefix}_mass1')
+        mass_primary = st.number_input('M₁ (M☉)', 1.0, 100.0,
+                                        float(defaults.get('mass1', 10.0)), 1.0,
+                                        key=f'{key_prefix}_mass1', **_oc('mass1'))
     with r3c2:
-        q_flipped = st.checkbox('q flipped (M₂ = M₁/q)', value=False,
-                                key=f'{key_prefix}_q_flipped')
+        q_flipped = st.checkbox('q flipped (M₂ = M₁/q)',
+                                value=bool(defaults.get('q_flipped', False)),
+                                key=f'{key_prefix}_q_flipped', **_oc('q_flipped'))
 
     result = dict(
         period_model=period_model, pi=float(pi),
@@ -234,47 +326,72 @@ def render_orbital_params(key_prefix: str) -> dict:
     )
 
     # Langer-specific params (Row 3)
-    langer_q_mu, langer_q_sigma = 0.7, 0.2
-    weight_A = 0.3
-    dist_A, mu_A, sigma_A = 'gaussian', 0.80, 0.35
-    dist_B, mu_B, sigma_B = 'reflected_lognormal', 2.0, 0.45
+    langer_q_mu = float(defaults.get('lqmu', 0.7))
+    langer_q_sigma = float(defaults.get('lqsig', 0.2))
+    weight_A = float(defaults.get('wA', 0.3))
+    dist_A = defaults.get('distA', 'gaussian')
+    mu_A = float(defaults.get('muA', 0.80))
+    sigma_A = float(defaults.get('sigA', 0.35))
+    dist_B = defaults.get('distB', 'reflected_lognormal')
+    mu_B = float(defaults.get('muB', 2.0))
+    sigma_B = float(defaults.get('sigB', 0.45))
 
     if period_model == 'langer2020':
         st.markdown('**Langer 2020 parameters**')
         lc1, lc2, lc3 = st.columns(3)
         with lc1:
-            weight_A = st.slider('weight_A (Case A fraction)', 0.0, 1.0, 0.3, 0.05,
-                                  key=f'{key_prefix}_wA')
+            weight_A = st.number_input('weight_A (Case A fraction)',
+                                       value=float(defaults.get('wA', 0.3)),
+                                       step=0.05,
+                                       key=f'{key_prefix}_wA', **_oc('wA'))
         with lc2:
-            langer_q_mu = st.number_input('q μ (Langer)', 0.1, 2.0, 0.7, 0.05,
-                                           format='%.2f', key=f'{key_prefix}_lqmu')
+            langer_q_mu = st.number_input('q μ (Langer)', 0.1, 2.0,
+                                           float(defaults.get('lqmu', 0.7)), 0.05,
+                                           format='%.2f', key=f'{key_prefix}_lqmu',
+                                           **_oc('lqmu'))
         with lc3:
-            langer_q_sigma = st.number_input('q σ (Langer)', 0.01, 1.0, 0.2, 0.01,
-                                              format='%.2f', key=f'{key_prefix}_lqsig')
+            langer_q_sigma = st.number_input('q σ (Langer)', 0.01, 1.0,
+                                              float(defaults.get('lqsig', 0.2)), 0.01,
+                                              format='%.2f', key=f'{key_prefix}_lqsig',
+                                              **_oc('lqsig'))
+
+        _dA_opts = ['gaussian', 'lognormal', 'reflected_lognormal', 'empirical']
+        _dA_def = defaults.get('distA', 'gaussian')
+        _dA_idx = _dA_opts.index(_dA_def) if _dA_def in _dA_opts else 0
 
         lc4, lc5, lc6 = st.columns(3)
         with lc4:
-            dist_A = st.selectbox('dist_A', ['gaussian', 'lognormal',
-                                              'reflected_lognormal', 'empirical'],
-                                  key=f'{key_prefix}_distA')
+            dist_A = st.selectbox('dist_A', _dA_opts, index=_dA_idx,
+                                  key=f'{key_prefix}_distA', **_oc('distA'))
         with lc5:
-            mu_A = st.number_input('μ_A', 0.01, 5.0, 0.80, 0.05,
-                                    format='%.2f', key=f'{key_prefix}_muA')
+            mu_A = st.number_input('μ_A', 0.01, 5.0,
+                                    float(defaults.get('muA', 0.80)), 0.05,
+                                    format='%.2f', key=f'{key_prefix}_muA',
+                                    **_oc('muA'))
         with lc6:
-            sigma_A = st.number_input('σ_A', 0.01, 2.0, 0.35, 0.05,
-                                       format='%.2f', key=f'{key_prefix}_sigA')
+            sigma_A = st.number_input('σ_A', 0.01, 2.0,
+                                       float(defaults.get('sigA', 0.35)), 0.05,
+                                       format='%.2f', key=f'{key_prefix}_sigA',
+                                       **_oc('sigA'))
+
+        _dB_opts = ['gaussian', 'lognormal', 'reflected_lognormal', 'empirical']
+        _dB_def = defaults.get('distB', 'reflected_lognormal')
+        _dB_idx = _dB_opts.index(_dB_def) if _dB_def in _dB_opts else 0
 
         lc7, lc8, lc9 = st.columns(3)
         with lc7:
-            dist_B = st.selectbox('dist_B', ['gaussian', 'lognormal',
-                                              'reflected_lognormal', 'empirical'],
-                                  index=2, key=f'{key_prefix}_distB')
+            dist_B = st.selectbox('dist_B', _dB_opts, index=_dB_idx,
+                                  key=f'{key_prefix}_distB', **_oc('distB'))
         with lc8:
-            mu_B = st.number_input('μ_B', 0.01, 5.0, 2.0, 0.1,
-                                    format='%.2f', key=f'{key_prefix}_muB')
+            mu_B = st.number_input('μ_B', 0.01, 5.0,
+                                    float(defaults.get('muB', 2.0)), 0.1,
+                                    format='%.2f', key=f'{key_prefix}_muB',
+                                    **_oc('muB'))
         with lc9:
-            sigma_B = st.number_input('σ_B', 0.01, 2.0, 0.45, 0.05,
-                                       format='%.2f', key=f'{key_prefix}_sigB')
+            sigma_B = st.number_input('σ_B', 0.01, 2.0,
+                                       float(defaults.get('sigB', 0.45)), 0.05,
+                                       format='%.2f', key=f'{key_prefix}_sigB',
+                                       **_oc('sigB'))
 
     result.update(
         weight_A=float(weight_A), dist_A=dist_A,

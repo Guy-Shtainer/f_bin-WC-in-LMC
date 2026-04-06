@@ -108,55 +108,116 @@ def _fit_all(data: np.ndarray) -> list[dict]:
 # Orbital parameter UI (moved from page.py)
 # ---------------------------------------------------------------------------
 
-def _render_orbital_params() -> dict:
-    """Render orbital parameter controls. Returns dict of all param values."""
+def _render_orbital_params(sm=None, defaults=None) -> dict:
+    """Render orbital parameter controls. Returns dict of all param values.
+
+    When *sm* is provided, every widget persists to
+    ['rv_modeling', 'simulation'] in user_settings.json.
+    """
+    _SIM = ['rv_modeling', 'simulation']
+    if defaults is None:
+        defaults = {}
+
+    def _oc(field, widget_key=None):
+        """Build on_change kwargs for *field*.
+
+        *widget_key* overrides the session_state key (default ``rvm_{field}``).
+        """
+        if sm is None:
+            return {}
+        _k = widget_key or f'rvm_{field}'
+        return dict(on_change=lambda k=_k, f=field, p=_SIM: sm.save(
+            p + [f], value=st.session_state[k]))
+
     # ── Preset callbacks ──
+    _dsilva_vals = {
+        "period_model": "powerlaw", "e_model": "flat", "q_model": "flat",
+        "sigma_single": 5.5, "logP_min": 0.15, "logP_max": 5.0,
+        "q_min": 0.1, "q_max": 2.0, "q_flipped": False,
+        "mass_model": "fixed", "mass_fixed": 10.0,
+    }
+    _dsilva_ss = {
+        "rvm_period": "powerlaw", "rvm_emod": "flat", "rvm_qmod": "flat",
+        "rvm_sigma_s": 5.5, "rvm_sigma_m": 1.622,
+        "rvm_logPmin": 0.15, "rvm_logPmax": 5.0,
+        "rvm_q_min": 0.1, "rvm_q_max": 2.0, "rvm_q_flip": False,
+        "rvm_mass_model": "fixed", "rvm_mass_fixed": 10.0,
+    }
+
     def _preset_dsilva():
-        for k, v in {
-            "rvm_period": "powerlaw", "rvm_emod": "flat", "rvm_qmod": "flat",
-            "rvm_sigma_s": 5.5, "rvm_sigma_m": 1.622,
-            "rvm_logPmin": 0.15, "rvm_logPmax": 5.0,
-            "rvm_q_min": 0.1, "rvm_q_max": 2.0, "rvm_q_flip": False,
-            "rvm_mass_model": "fixed", "rvm_mass_fixed": 10.0,
-        }.items():
+        for k, v in _dsilva_ss.items():
             st.session_state[k] = v
+        if sm is not None:
+            for f, v in _dsilva_vals.items():
+                sm.save(_SIM + [f], value=v)
+
+    _langer_vals = {
+        "period_model": "langer2020", "e_model": "zero",
+        "q_model": "lognormal", "sigma_single": 5.5,
+        "logP_min": 0.5, "logP_max": 3.5,
+        "q_min": 0.1, "q_max": 2.0, "q_flipped": False,
+        "lq_mu": 0.65, "lq_sig": 0.3,
+        "mass_model": "fixed", "mass_fixed": 10.0,
+        "weight_A": 0.20,
+        "dist_A": "gaussian", "mu_A": 0.80, "sigma_A": 0.35,
+        "dist_B": "reflected_lognormal", "mu_B": 2.0, "sigma_B": 0.45,
+    }
+    _langer_ss = {
+        "rvm_period": "langer2020", "rvm_emod": "zero",
+        "rvm_qmod": "lognormal",
+        "rvm_sigma_s": 5.5, "rvm_sigma_m": 1.622,
+        "rvm_logPmin": 0.5, "rvm_logPmax": 3.5,
+        "rvm_q_min": 0.1, "rvm_q_max": 2.0, "rvm_q_flip": False,
+        "rvm_lq_mu": 0.65, "rvm_lq_sig": 0.3,
+        "rvm_mass_model": "fixed", "rvm_mass_fixed": 10.0,
+        "rvm_wA": 0.20,
+        "rvm_distA": "gaussian", "rvm_muA": 0.80, "rvm_sigA": 0.35,
+        "rvm_distB": "reflected_lognormal", "rvm_muB": 2.0, "rvm_sigB": 0.45,
+    }
 
     def _preset_langer():
-        for k, v in {
-            "rvm_period": "langer2020", "rvm_emod": "zero",
-            "rvm_qmod": "lognormal",
-            "rvm_sigma_s": 5.5, "rvm_sigma_m": 1.622,
-            "rvm_logPmin": 0.5, "rvm_logPmax": 3.5,
-            "rvm_q_min": 0.1, "rvm_q_max": 2.0, "rvm_q_flip": False,
-            "rvm_lq_mu": 0.65, "rvm_lq_sig": 0.3,
-            "rvm_mass_model": "fixed", "rvm_mass_fixed": 10.0,
-            "rvm_wA": 0.20,
-            "rvm_distA": "gaussian", "rvm_muA": 0.80, "rvm_sigA": 0.35,
-            "rvm_distB": "reflected_lognormal", "rvm_muB": 2.0, "rvm_sigB": 0.45,
-        }.items():
+        for k, v in _langer_ss.items():
             st.session_state[k] = v
+        if sm is not None:
+            for f, v in _langer_vals.items():
+                sm.save(_SIM + [f], value=v)
 
     st.markdown("**Orbital simulation parameters**")
 
     # Row 1: core controls
+    _pm_opts = ["powerlaw", "langer2020"]
+    _pm_def = defaults.get("period_model", "powerlaw")
+    _pm_idx = _pm_opts.index(_pm_def) if _pm_def in _pm_opts else 0
+
+    _em_opts = ["flat", "zero"]
+    _em_def = defaults.get("e_model", "flat")
+    _em_idx = _em_opts.index(_em_def) if _em_def in _em_opts else 0
+
     r1a, r1b, r1c, r1d = st.columns(4)
     with r1a:
         period_model = st.selectbox(
-            "Period model", ["powerlaw", "langer2020"], index=0, key="rvm_period",
+            "Period model", _pm_opts, index=_pm_idx, key="rvm_period",
+            **_oc('period_model', 'rvm_period'),
         )
     with r1b:
-        pi_val: float = 0.0
-        weight_A: float = 0.3
+        pi_val: float = float(defaults.get("pi", 0.0))
+        weight_A: float = float(defaults.get("weight_A", 0.3))
         if period_model == "powerlaw":
-            pi_val = st.slider("π (power-law)", -3.0, 3.0, 0.0, 0.1, key="rvm_pi")
+            pi_val = st.number_input("π (power-law)", value=pi_val, step=0.1,
+                                     key="rvm_pi", **_oc('pi', 'rvm_pi'))
         else:
-            weight_A = st.slider("Weight A", 0.0, 1.0, 0.20, 0.05, key="rvm_wA")
+            weight_A = st.number_input("Weight A", value=weight_A, step=0.05,
+                                       key="rvm_wA",
+                                       **_oc('weight_A', 'rvm_wA'))
     with r1c:
-        e_model = st.selectbox("Eccentricity", ["flat", "zero"], key="rvm_emod")
+        e_model = st.selectbox("Eccentricity", _em_opts, index=_em_idx,
+                               key="rvm_emod", **_oc('e_model', 'rvm_emod'))
     with r1d:
-        e_max: float = 0.9
+        e_max: float = float(defaults.get("e_max", 0.9))
         if e_model == "flat":
-            e_max = st.slider("e_max", 0.1, 0.95, 0.9, 0.05, key="rvm_emax")
+            e_max = st.number_input("e_max", value=e_max, step=0.05,
+                                    key="rvm_emax",
+                                    **_oc('e_max', 'rvm_emax'))
         else:
             e_max = 0.0
             st.markdown("*e = 0*")
@@ -164,12 +225,15 @@ def _render_orbital_params() -> dict:
     # Row 2: sim size + presets
     r2a, r2b, r2c = st.columns(3)
     with r2a:
-        n_sim = st.select_slider(
-            "N_sim", options=[10_000, 50_000, 100_000, 200_000, 500_000],
-            value=100_000, key="rvm_nsim",
+        n_sim = st.number_input(
+            "N_sim", value=int(defaults.get("n_sim", 100_000)),
+            step=10_000, key="rvm_nsim", **_oc('n_sim', 'rvm_nsim'),
         )
     with r2b:
-        seed = st.number_input("Seed", 0, 99999, 42, key="rvm_seed")
+        seed = st.number_input("Seed",
+                               value=int(defaults.get("seed", 42)),
+                               step=1,
+                               key="rvm_seed", **_oc('seed', 'rvm_seed'))
     with r2c:
         pc1, pc2 = st.columns(2)
         with pc1:
@@ -180,75 +244,121 @@ def _render_orbital_params() -> dict:
                       on_click=_preset_langer, use_container_width=True)
 
     # Expanders for detailed parameters
+    _dist_opts = ["gaussian", "lognormal", "reflected_lognormal",
+                  "empirical", "flat"]
+
     exp1, exp2 = st.columns(2)
     with exp1:
         with st.expander("Period Distribution", expanded=False):
-            logP_min = st.number_input("logP_min", 0.01, 10.0, 0.15, 0.05,
-                                       key="rvm_logPmin")
-            logP_max = st.number_input("logP_max", 0.1, 10.0, 5.0, 0.1,
-                                       key="rvm_logPmax")
-            dist_A, mu_A, sigma_A = "gaussian", 0.80, 0.35
-            dist_B, mu_B, sigma_B = "reflected_lognormal", 2.0, 0.45
+            logP_min = st.number_input(
+                "logP_min",
+                value=float(defaults.get("logP_min", 0.15)), step=0.05,
+                key="rvm_logPmin", **_oc('logP_min', 'rvm_logPmin'))
+            logP_max = st.number_input(
+                "logP_max",
+                value=float(defaults.get("logP_max", 5.0)), step=0.1,
+                key="rvm_logPmax", **_oc('logP_max', 'rvm_logPmax'))
+
+            dist_A = defaults.get("dist_A", "gaussian")
+            mu_A = float(defaults.get("mu_A", 0.80))
+            sigma_A = float(defaults.get("sigma_A", 0.35))
+            dist_B = defaults.get("dist_B", "reflected_lognormal")
+            mu_B = float(defaults.get("mu_B", 2.0))
+            sigma_B = float(defaults.get("sigma_B", 0.45))
+
             if period_model == "langer2020":
                 st.markdown("**Component A (short-period)**")
-                _dist_opts = ["gaussian", "lognormal", "reflected_lognormal",
-                              "empirical", "flat"]
-                dist_A = st.selectbox("Dist A", _dist_opts, index=0, key="rvm_distA")
+                _dA_idx = _dist_opts.index(dist_A) if dist_A in _dist_opts else 0
+                dist_A = st.selectbox("Dist A", _dist_opts, index=_dA_idx,
+                                      key="rvm_distA",
+                                      **_oc('dist_A', 'rvm_distA'))
                 la1, la2 = st.columns(2)
                 with la1:
-                    mu_A = st.number_input("μ_A", 0.01, 10.0, 0.80, 0.05,
-                                           key="rvm_muA")
+                    mu_A = st.number_input("μ_A", value=mu_A, step=0.05,
+                                           key="rvm_muA",
+                                           **_oc('mu_A', 'rvm_muA'))
                 with la2:
-                    sigma_A = st.number_input("σ_A", 0.01, 5.0, 0.35, 0.05,
-                                              key="rvm_sigA")
+                    sigma_A = st.number_input("σ_A", value=sigma_A, step=0.05,
+                                              key="rvm_sigA",
+                                              **_oc('sigma_A', 'rvm_sigA'))
                 st.markdown("**Component B (long-period)**")
-                dist_B = st.selectbox("Dist B", _dist_opts, index=2, key="rvm_distB")
+                _dB_idx = _dist_opts.index(dist_B) if dist_B in _dist_opts else 2
+                dist_B = st.selectbox("Dist B", _dist_opts, index=_dB_idx,
+                                      key="rvm_distB",
+                                      **_oc('dist_B', 'rvm_distB'))
                 lb1, lb2 = st.columns(2)
                 with lb1:
-                    mu_B = st.number_input("μ_B", 0.01, 10.0, 2.0, 0.05,
-                                           key="rvm_muB")
+                    mu_B = st.number_input("μ_B", value=mu_B, step=0.05,
+                                           key="rvm_muB",
+                                           **_oc('mu_B', 'rvm_muB'))
                 with lb2:
-                    sigma_B = st.number_input("σ_B", 0.01, 5.0, 0.45, 0.05,
-                                              key="rvm_sigB")
+                    sigma_B = st.number_input("σ_B", value=sigma_B, step=0.05,
+                                              key="rvm_sigB",
+                                              **_oc('sigma_B', 'rvm_sigB'))
 
     with exp2:
         with st.expander("Mass & Mass Ratio", expanded=False):
             _q_opts = ["flat", "gaussian", "lognormal",
                        "reflected_lognormal", "empirical"]
-            q_model = st.selectbox("q model", _q_opts, index=0, key="rvm_qmod")
+            _q_def = defaults.get("q_model", "flat")
+            _q_idx = _q_opts.index(_q_def) if _q_def in _q_opts else 0
+            q_model = st.selectbox("q model", _q_opts, index=_q_idx,
+                                   key="rvm_qmod",
+                                   **_oc('q_model', 'rvm_qmod'))
             qq1, qq2 = st.columns(2)
             with qq1:
-                q_min = st.number_input("q_min", 0.01, 50.0, 0.1, 0.05,
-                                        key="rvm_q_min")
+                q_min = st.number_input(
+                    "q_min",
+                    value=float(defaults.get("q_min", 0.1)), step=0.05,
+                    key="rvm_q_min", **_oc('q_min', 'rvm_q_min'))
             with qq2:
-                q_max = st.number_input("q_max", 0.01, 50.0, 2.0, 0.1,
-                                        key="rvm_q_max")
-            q_flipped = st.checkbox("q flipped (M2=M1/q)", key="rvm_q_flip")
-            langer_q_mu, langer_q_sigma = 0.7, 0.2
+                q_max = st.number_input(
+                    "q_max",
+                    value=float(defaults.get("q_max", 2.0)), step=0.1,
+                    key="rvm_q_max", **_oc('q_max', 'rvm_q_max'))
+            q_flipped = st.checkbox(
+                "q flipped (M2=M1/q)",
+                value=bool(defaults.get("q_flipped", False)),
+                key="rvm_q_flip",
+                **_oc('q_flipped', 'rvm_q_flip'))
+            langer_q_mu = float(defaults.get("lq_mu", 0.7))
+            langer_q_sigma = float(defaults.get("lq_sig", 0.2))
             if q_model not in ("flat", "empirical"):
                 lqm1, lqm2 = st.columns(2)
                 with lqm1:
-                    langer_q_mu = st.number_input("q μ", 0.01, 50.0, 0.7, 0.05,
-                                                  key="rvm_lq_mu")
+                    langer_q_mu = st.number_input(
+                        "q μ", value=langer_q_mu, step=0.05,
+                        key="rvm_lq_mu",
+                        **_oc('lq_mu', 'rvm_lq_mu'))
                 with lqm2:
-                    langer_q_sigma = st.number_input("q σ", 0.01, 50.0, 0.2, 0.05,
-                                                     key="rvm_lq_sig")
+                    langer_q_sigma = st.number_input(
+                        "q σ", value=langer_q_sigma, step=0.05,
+                        key="rvm_lq_sig",
+                        **_oc('lq_sig', 'rvm_lq_sig'))
             st.markdown("---")
-            mass_model = st.selectbox("Primary mass", ["fixed", "uniform"],
-                                      key="rvm_mass_model")
-            mass_fixed = 10.0
-            mass_min, mass_max = 10.0, 20.0
+            _mm_opts = ["fixed", "uniform"]
+            _mm_def = defaults.get("mass_model", "fixed")
+            _mm_idx = _mm_opts.index(_mm_def) if _mm_def in _mm_opts else 0
+            mass_model = st.selectbox("Primary mass", _mm_opts, index=_mm_idx,
+                                      key="rvm_mass_model",
+                                      **_oc('mass_model', 'rvm_mass_model'))
+            mass_fixed = float(defaults.get("mass_fixed", 10.0))
+            mass_min = float(defaults.get("mass_min", 10.0))
+            mass_max = float(defaults.get("mass_max", 20.0))
             if mass_model == "fixed":
-                mass_fixed = st.number_input("M₁ (M☉)", 1.0, 200.0, 10.0, 1.0,
-                                             key="rvm_mass_fixed")
+                mass_fixed = st.number_input("M₁ (M☉)", value=mass_fixed, step=1.0,
+                                             key="rvm_mass_fixed",
+                                             **_oc('mass_fixed', 'rvm_mass_fixed'))
             else:
                 mm1, mm2 = st.columns(2)
                 with mm1:
-                    mass_min = st.number_input("M₁ min", 1.0, 200.0, 10.0, 1.0,
-                                               key="rvm_mass_min")
+                    mass_min = st.number_input("M₁ min", value=mass_min, step=1.0,
+                                               key="rvm_mass_min",
+                                               **_oc('mass_min', 'rvm_mass_min'))
                 with mm2:
-                    mass_max = st.number_input("M₁ max", 1.0, 200.0, 20.0, 1.0,
-                                               key="rvm_mass_max")
+                    mass_max = st.number_input("M₁ max", value=mass_max, step=1.0,
+                                               key="rvm_mass_max",
+                                               **_oc('mass_max', 'rvm_mass_max'))
 
     return dict(
         period_model=period_model, pi=pi_val, weight_A=weight_A,
@@ -271,11 +381,22 @@ def _render_orbital_params() -> dict:
 def _render_dist_fitting(data: np.ndarray, obs_data: dict, prefix: str = "rvm_df") -> None:
     """Render distribution fitting UI for the given data array."""
     _ax, _ay, _al = _theme_parts()
+    sm = obs_data.get('sm')
+    sim_cfg = obs_data.get('rvm_settings', {}).get('simulation', {})
+    _SIM = ['rv_modeling', 'simulation']
 
     st.subheader("Distribution Fitting")
 
     dist_names = list(_DIST_MAP.keys())
-    dist_name = st.selectbox("Distribution", dist_names, key=f"{prefix}_dist")
+    _df_def = sim_cfg.get('dist_fitting_dist', 'Normal')
+    _df_idx = dist_names.index(_df_def) if _df_def in dist_names else 0
+    _oc_df = {}
+    if sm is not None:
+        _oc_df = dict(on_change=lambda: sm.save(
+            _SIM + ['dist_fitting_dist'],
+            value=st.session_state[f"{prefix}_dist"]))
+    dist_name = st.selectbox("Distribution", dist_names, index=_df_idx,
+                             key=f"{prefix}_dist", **_oc_df)
     scipy_name = _DIST_MAP[dist_name]
 
     # ── Buttons ──
@@ -484,6 +605,11 @@ def _render_dist_fitting(data: np.ndarray, obs_data: dict, prefix: str = "rvm_df
 
 def render_tab_simulation(obs_data: dict) -> None:
     """Tab A: Binary RV Simulation — orbital sim + distribution fitting."""
+    sm = obs_data.get('sm')
+    rvm = obs_data.get('rvm_settings', {})
+    sim_cfg = rvm.get('simulation', {})
+    _SIM = ['rv_modeling', 'simulation']
+
     st.subheader("Binary RV Simulation")
     st.caption(
         "Simulate binary star systems with chosen orbital parameters "
@@ -492,15 +618,25 @@ def render_tab_simulation(obs_data: dict) -> None:
     )
 
     # ── Orbital parameter UI ──
-    params = _render_orbital_params()
+    params = _render_orbital_params(sm=sm, defaults=sim_cfg)
 
     # ── Error models ──
     st.markdown("**RV Error Models**")
-    err = render_error_model_pair("rvm_sim")
+    err = render_error_model_pair(
+        "rvm_sim", sm=sm,
+        settings_path=_SIM + ['error'],
+        defaults=sim_cfg.get('error', {}),
+    )
 
     # ── σ_single ──
-    sigma_single = st.slider("σ_single (km/s)", 0.0, 30.0, 5.5, 0.5,
-                              key="rvm_sim_sigma_s")
+    _oc_ss = {}
+    if sm is not None:
+        _oc_ss = dict(on_change=lambda: sm.save(
+            _SIM + ['sigma_single'],
+            value=st.session_state['rvm_sim_sigma_s']))
+    sigma_single = st.number_input("σ_single (km/s)",
+                                    value=float(sim_cfg.get('sigma_single', 5.5)),
+                                    step=0.5, key="rvm_sim_sigma_s", **_oc_ss)
 
     cadence_tuples = obs_data.get("cadence_tuples", ())
     n_cadence = obs_data.get("n_cadence_stars", 0)

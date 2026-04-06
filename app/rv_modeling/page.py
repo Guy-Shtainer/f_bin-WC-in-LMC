@@ -58,16 +58,27 @@ def render_rv_modeling_page() -> None:
     f_dots = f_obs[change_mask]
     e_dots = sig_err[change_mask]
 
+    # ── RV-modeling settings sub-tree ─────────────────────────────────
+    rvm_settings = current_settings.get('rv_modeling', {})
+    _RVM = ['rv_modeling']  # root path for sm.save()
+
     # ── Histogram binning control ──────────────────────────────────────
+    _bm_def = rvm_settings.get('bin_method', 'Auto (Freedman-Diaconis)')
+    _bm_idx = BIN_METHODS.index(_bm_def) if _bm_def in BIN_METHODS else 0
     with st.sidebar:
         st.markdown("**Histogram binning**")
         bin_method = st.selectbox(
-            "Binning method", BIN_METHODS, index=0, key="rvm_bin_method",
+            "Binning method", BIN_METHODS, index=_bm_idx, key="rvm_bin_method",
+            on_change=lambda: sm.save(_RVM + ['bin_method'],
+                                      value=st.session_state['rvm_bin_method']),
         )
-        manual_bins = 50
+        manual_bins = int(rvm_settings.get('manual_bins', 50))
         if bin_method == "Manual":
-            manual_bins = st.slider(
-                "Number of bins", 5, 200, 50, key="rvm_manual_bins",
+            manual_bins = st.number_input(
+                "Number of bins", value=manual_bins, step=5,
+                key="rvm_manual_bins",
+                on_change=lambda: sm.save(_RVM + ['manual_bins'],
+                                          value=st.session_state['rvm_manual_bins']),
             )
 
     # ── Load cadence library for physics-based mode ──────────────────
@@ -85,6 +96,7 @@ def render_rv_modeling_page() -> None:
         bin_method=bin_method, manual_bins=manual_bins,
         cadence_tuples=cadence_tuples,
         n_cadence_stars=len(cadence_lib),
+        sm=sm, rvm_settings=rvm_settings,
     )
 
     # ── Tabs ───────────────────────────────────────────────────────────

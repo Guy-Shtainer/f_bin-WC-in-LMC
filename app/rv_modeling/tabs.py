@@ -449,15 +449,24 @@ def render_tab_fraction_recovery(obs_data: dict):
     if t_optimal_main is None:
         t_optimal_main = 45.5
 
+    sm = obs_data.get('sm')
+    fr_cfg = obs_data.get('rvm_settings', {}).get('fraction_recovery', {})
+
     st.subheader("Recovered Binary Fraction vs Threshold")
     st.caption(
         "f_recovered(t) = (f_obs(t) − S_single(t)) / (S_binary(t) − S_single(t)). "
         "A stable plateau indicates reliable binary fraction recovery."
     )
 
+    _t_def = float(fr_cfg.get('threshold_slider', t_optimal_main))
+    _oc_t = {}
+    if sm is not None:
+        _oc_t = dict(on_change=lambda: sm.save(
+            ['rv_modeling', 'fraction_recovery', 'threshold_slider'],
+            value=st.session_state['rvm_t_slider']))
     t_slider = st.slider(
         "Highlight threshold (km/s)", 0.0, 300.0,
-        float(t_optimal_main), 1.0, key="rvm_t_slider",
+        _t_def, 1.0, key="rvm_t_slider", **_oc_t,
     )
 
     for mdl, label, clr, dash in [
@@ -549,8 +558,16 @@ def render_tab_global_correction(obs_data: dict):
     star_centered_rvs = obs_data["star_centered_rvs"]
     sig_err = obs_data["sig_err"]
 
+    sm = obs_data.get('sm')
+    gc_cfg = obs_data.get('rvm_settings', {}).get('global_correction', {})
+    _oc_np = {}
+    if sm is not None:
+        _oc_np = dict(on_change=lambda: sm.save(
+            ['rv_modeling', 'global_correction', 'n_prior'],
+            value=st.session_state['rvm_gc_nprior']))
     n_prior = st.number_input("N prior (Bartzakos known binaries)",
-                              0, 10, 3, key="rvm_gc_nprior")
+                              0, 10, int(gc_cfg.get('n_prior', 3)),
+                              key="rvm_gc_nprior", **_oc_np)
 
     res = st.session_state.get("rvm_sf_results")
     if res is None:

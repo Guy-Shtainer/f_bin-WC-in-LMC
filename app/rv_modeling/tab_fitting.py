@@ -42,12 +42,19 @@ _PARAM_META = {
 
 def _dist_selector(label: str, key_prefix: str,
                    default_dist: str = "Normal",
-                   default_params: tuple | None = None) -> tuple[str, tuple]:
+                   default_params: tuple | None = None,
+                   sm=None, settings_path=None) -> tuple[str, tuple]:
     """Render a distribution selector with parameter inputs."""
     dist_names = list(DIST_MAP.keys())
     default_idx = dist_names.index(default_dist) if default_dist in dist_names else 0
+    _oc_dist = {}
+    if sm is not None and settings_path is not None:
+        _k_d = f"{key_prefix}_dist"
+        _oc_dist = dict(on_change=lambda k=_k_d, p=settings_path: sm.save(
+            p + ['dist'], value=st.session_state[k]))
     dist_name = st.selectbox(f"{label} distribution", dist_names,
-                             index=default_idx, key=f"{key_prefix}_dist")
+                             index=default_idx, key=f"{key_prefix}_dist",
+                             **_oc_dist)
 
     pmeta = _PARAM_META.get(dist_name, [])
     params = []
@@ -60,10 +67,16 @@ def _dist_selector(label: str, key_prefix: str,
                         and i < len(default_params)
                         and st.session_state.get(f"{key_prefix}_dist") == default_dist):
                     init_val = float(default_params[i])
+                _oc_p = {}
+                if sm is not None and settings_path is not None:
+                    _k_p = f"{key_prefix}_p_{i}"
+                    _oc_p = dict(on_change=lambda k=_k_p, p=settings_path, idx=str(i): sm.save(
+                        p + ['params', idx], value=st.session_state[k]))
                 val = st.number_input(
                     plabel, min_value=pmin, max_value=pmax,
                     value=float(st.session_state.get(f"{key_prefix}_p_{i}", init_val)),
                     step=step, format="%.4f", key=f"{key_prefix}_p_{i}",
+                    **_oc_p,
                 )
                 params.append(val)
     return dist_name, tuple(params)
@@ -143,6 +156,10 @@ def render_tab_fitting(obs_data: dict) -> None:
     """Tab B: Parametric or physics-based model fitting."""
     t_dots, f_dots, e_dots = obs_data["t_dots"], obs_data["f_dots"], obs_data["e_dots"]
     n_stars = obs_data["n_stars"]
+    sm = obs_data.get('sm')
+    rvm = obs_data.get('rvm_settings', {})
+    fit_cfg = rvm.get('fitting', {})
+    _FIT = ['rv_modeling', 'fitting']
 
     st.subheader("Model Fitting")
     st.caption(
@@ -151,9 +168,16 @@ def render_tab_fitting(obs_data: dict) -> None:
     )
 
     # ── Mode toggle ──
+    _mode_opts = ["Parametric", "Physics-based"]
+    _mode_def = fit_cfg.get("mode", "Parametric")
+    _mode_idx = _mode_opts.index(_mode_def) if _mode_def in _mode_opts else 0
+    _oc_mode = {}
+    if sm is not None:
+        _oc_mode = dict(on_change=lambda: sm.save(
+            _FIT + ['mode'], value=st.session_state['rvm_fit_mode']))
     sim_mode = st.radio(
-        "Simulation mode", ["Parametric", "Physics-based"],
-        horizontal=True, key="rvm_fit_mode",
+        "Simulation mode", _mode_opts, index=_mode_idx,
+        horizontal=True, key="rvm_fit_mode", **_oc_mode,
     )
 
     if sim_mode == "Parametric":
@@ -211,6 +235,17 @@ def render_tab_fitting(obs_data: dict) -> None:
 
 def _render_parametric_fitting(obs_data, t_dots, f_dots, e_dots, n_stars):
     """Parametric model fitting branch."""
+    sm = obs_data.get('sm')
+    par_cfg = obs_data.get('rvm_settings', {}).get('fitting', {}).get('parametric', {})
+    _PAR = ['rv_modeling', 'fitting', 'parametric']
+
+    def _oc(field):
+        if sm is None:
+            return {}
+        _k = f'rvm_fit_{field}'
+        return dict(on_change=lambda k=_k, f=field, p=_PAR: sm.save(
+            p + [f], value=st.session_state[k]))
+
     # Auto-populate from Tab A
     best_dist = st.session_state.get("rvm_best_binary_dist")
     best_params = st.session_state.get("rvm_best_binary_params")
@@ -228,34 +263,48 @@ def _render_parametric_fitting(obs_data, t_dots, f_dots, e_dots, n_stars):
     col_s, col_b = st.columns(2)
     with col_s:
         st.markdown("**Single-star RV distribution**")
+        _sin_def = par_cfg.get('single_dist', 'Normal')
         single_dist, single_params = _dist_selector(
             "Single", "rvm_fit_sin",
-            default_dist="Normal", default_params=(0.0, 5.5),
+            default_dist=_sin_def, default_params=(0.0, 5.5),
+            sm=sm, settings_path=_PAR + ['sin'],
         )
     with col_b:
         st.markdown("**Binary-star RV distribution**")
+        _bin_def = par_cfg.get('binary_dist', best_dist or 'Normal')
         binary_dist, binary_params = _dist_selector(
             "Binary", "rvm_fit_bin",
-            default_dist=best_dist or "Normal",
+            default_dist=_bin_def,
             default_params=best_params,
+            sm=sm, settings_path=_PAR + ['bin'],
         )
 
     mc1, mc2, mc3, mc4 = st.columns(4)
     with mc1:
-        n_sim = st.select_slider(
-            "N_sim", [10_000, 50_000, 100_000, 200_000, 500_000],
-            value=100_000, key="rvm_fit_nsim",
+        n_sim = st.number_input(
+            "N_sim", value=int(par_cfg.get('n_sim', 100_000)),
+            step=10_000, key="rvm_fit_nsim", **_oc('nsim'),
         )
     with mc2:
-        n_epochs = st.number_input("N_epochs", 2, 20, 6, key="rvm_fit_nep")
+        n_epochs = st.number_input("N_epochs",
+                                   value=int(par_cfg.get('n_epochs', 6)),
+                                   step=1,
+                                   key="rvm_fit_nep", **_oc('nep'))
     with mc3:
-        seed = st.number_input("Seed", 0, 99999, 42, key="rvm_fit_seed")
+        seed = st.number_input("Seed",
+                               value=int(par_cfg.get('seed', 42)),
+                               step=1,
+                               key="rvm_fit_seed", **_oc('seed'))
     with mc4:
-        optimize_fbin = st.checkbox("Optimize f_bin", value=True,
-                                    key="rvm_fit_opt_fbin")
+        optimize_fbin = st.checkbox(
+            "Optimize f_bin",
+            value=bool(par_cfg.get('optimize_fbin', True)),
+            key="rvm_fit_opt_fbin", **_oc('opt_fbin'))
         if not optimize_fbin:
-            fixed_fbin = st.number_input("Fixed f_bin", 0.0, 1.0, 0.4, 0.01,
-                                         key="rvm_fit_fixed_fbin")
+            fixed_fbin = st.number_input(
+                "Fixed f_bin", 0.0, 1.0,
+                float(par_cfg.get('fixed_fbin', 0.4)), 0.01,
+                key="rvm_fit_fixed_fbin", **_oc('fixed_fbin'))
 
     run_fit = st.button("Run Model Fit", type="primary",
                         use_container_width=True, key="rvm_fit_run")
@@ -312,8 +361,18 @@ def _render_parametric_fitting(obs_data, t_dots, f_dots, e_dots, n_stars):
 
 def _render_physics_fitting(obs_data, t_dots, f_dots, e_dots, n_stars):
     """Physics-based model fitting branch."""
+    sm = obs_data.get('sm')
+    phys_cfg = obs_data.get('rvm_settings', {}).get('fitting', {}).get('physics', {})
+    _PHY = ['rv_modeling', 'fitting', 'physics']
     cadence_tuples = obs_data["cadence_tuples"]
     n_cadence = obs_data["n_cadence_stars"]
+
+    def _oc(field):
+        if sm is None:
+            return {}
+        _k = f'rvm_fit_phys_{field}'
+        return dict(on_change=lambda k=_k, f=field, p=_PHY: sm.save(
+            p + [f], value=st.session_state[k]))
 
     st.info(f"Using real observation cadences from {n_cadence} WR stars. "
             f"Binary RVs from orbital simulation (Kepler mechanics).")
@@ -321,33 +380,51 @@ def _render_physics_fitting(obs_data, t_dots, f_dots, e_dots, n_stars):
     # sigma_single + n_sets + seed
     rc1, rc2, rc3 = st.columns(3)
     with rc1:
-        sigma_single = st.slider("σ_single (km/s)", 0.0, 30.0, 15.0, 0.5,
-                                  key="rvm_fit_phys_sigma_s")
+        sigma_single = st.number_input(
+            "σ_single (km/s)",
+            value=float(phys_cfg.get('sigma_single', 15.0)), step=0.5,
+            key="rvm_fit_phys_sigma_s", **_oc('sigma_s'))
     with rc2:
-        n_sets = st.select_slider(
-            "N_sets (×25 stars)", [10, 50, 100, 200, 500],
-            value=50, key="rvm_fit_phys_nsets",
+        n_sets = st.number_input(
+            "N_sets (×25 stars)",
+            value=int(phys_cfg.get('n_sets', 50)), step=10,
+            key="rvm_fit_phys_nsets", **_oc('nsets'),
         )
     with rc3:
-        seed = st.number_input("Seed", 0, 99999, 42, key="rvm_fit_phys_seed")
+        seed = st.number_input("Seed",
+                               value=int(phys_cfg.get('seed', 42)),
+                               step=1,
+                               key="rvm_fit_phys_seed", **_oc('seed'))
 
     # Error models
     st.markdown("#### RV Error Models")
-    err = render_error_model_pair("rvm_fit_phys")
+    err = render_error_model_pair(
+        "rvm_fit_phys", sm=sm,
+        settings_path=_PHY + ['error'],
+        defaults=phys_cfg.get('error', {}),
+    )
 
     # Orbital params
     st.markdown("#### Orbital Parameters")
-    orb = render_orbital_params("rvm_fit_phys")
+    orb = render_orbital_params(
+        "rvm_fit_phys", sm=sm,
+        settings_path=_PHY + ['orbital'],
+        defaults=phys_cfg.get('orbital', {}),
+    )
 
     # f_bin optimization control
     oc1, oc2 = st.columns(2)
     with oc1:
-        optimize_fbin = st.checkbox("Optimize f_bin", value=True,
-                                    key="rvm_fit_phys_opt_fbin")
+        optimize_fbin = st.checkbox(
+            "Optimize f_bin",
+            value=bool(phys_cfg.get('optimize_fbin', True)),
+            key="rvm_fit_phys_opt_fbin", **_oc('opt_fbin'))
     with oc2:
         if not optimize_fbin:
-            fixed_fbin = st.number_input("Fixed f_bin", 0.0, 1.0, 0.4, 0.01,
-                                         key="rvm_fit_phys_fixed_fbin")
+            fixed_fbin = st.number_input(
+                "Fixed f_bin", 0.0, 1.0,
+                float(phys_cfg.get('fixed_fbin', 0.4)), 0.01,
+                key="rvm_fit_phys_fixed_fbin", **_oc('fixed_fbin'))
 
     run_fit = st.button("Run Physics Fit", type="primary",
                         use_container_width=True, key="rvm_fit_phys_run")
