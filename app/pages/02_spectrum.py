@@ -16,8 +16,10 @@ import plotly.graph_objects as go
 import streamlit as st
 import pandas as pd
 
-from shared import inject_theme, render_sidebar, get_settings_manager, get_obs_manager, PLOTLY_THEME
-from spectrum_helpers import DIAGNOSTIC_LINES, LINE_COLORS, render_absorption_search
+from shared import (inject_theme, render_sidebar, get_settings_manager, get_obs_manager,
+                    PLOTLY_THEME, COLOR_BINARY, COLOR_SINGLE, COLOR_UNKNOWN, COLOR_CLEANED)
+from spectrum_helpers import (DIAGNOSTIC_LINES, LINE_COLORS, render_absorption_search,
+                              render_companion_guide)
 import specs
 
 # LMC systemic velocity correction (non-relativistic Doppler)
@@ -154,6 +156,49 @@ def _load_all_lines_rvs(star_name: str) -> dict:
     from pipeline.load_observations import load_star_rvs_all_lines
     return load_star_rvs_all_lines(star_name, obs=get_obs_manager())
 
+
+@st.cache_data
+def _classify_star_line(star_name: str, line_name: str,
+                        _threshold: float = 45.5, _sigma_factor: float = 4.0) -> dict:
+    """Classify one star for a specific emission line (same logic as pipeline._classify)."""
+    import math
+    all_lines = _load_all_lines_rvs(star_name)
+    if line_name not in all_lines or len(all_lines[line_name]['rv']) < 2:
+        n = len(all_lines.get(line_name, {}).get('rv', []))
+        return {'is_binary': None, 'best_dRV': 0.0, 'best_sigma': float('nan'), 'n_epochs': n}
+    rv = np.array(all_lines[line_name]['rv'])
+    rv_err = np.array(all_lines[line_name]['rv_err'])
+    idx_min, idx_max = int(np.argmin(rv)), int(np.argmax(rv))
+    abs_base = float(abs(rv[idx_max] - rv[idx_min]))
+    sigma_base = math.sqrt(float(rv_err[idx_min])**2 + float(rv_err[idx_max])**2)
+    best_dRV, best_sigma = abs_base, sigma_base
+    found = (abs_base > _threshold) and ((abs_base - _sigma_factor * sigma_base) > 0.0)
+    if not found:
+        for i in range(len(rv)):
+            for k in range(i + 1, len(rv)):
+                if {i, k} == {idx_min, idx_max}:
+                    continue
+                d = float(abs(rv[k] - rv[i]))
+                sig = math.sqrt(float(rv_err[i])**2 + float(rv_err[k])**2)
+                if d > _threshold and (d - _sigma_factor * sig) > 0.0:
+                    if d > best_dRV:
+                        best_dRV, best_sigma = d, sig
+                    found = True
+    return {'is_binary': bool(found), 'best_dRV': best_dRV, 'best_sigma': best_sigma, 'n_epochs': len(rv)}
+
+
+@st.cache_data
+def _is_star_cleaned(star_name: str) -> bool:
+    """Check if any epoch/band has a saved include_range (spatial cleaning done)."""
+    _obs = get_obs_manager()
+    _star = _obs.load_star_instance(star_name, to_print=False)
+    for ep in _star.get_all_epoch_numbers():
+        for b in ['UVB', 'VIS', 'NIR']:
+            if _star.load_property('include_range', ep, b) is not None:
+                return True
+    return False
+
+
 _MODEL_COLORS = ['#AEB6BF', '#82E0AA', '#F0B27A', '#BB8FCE', '#85C1E9', '#F1948A']
 _ZOOM_PRESETS = {
     'Full range': None,
@@ -174,6 +219,7 @@ _OVERLAY_COLORS = ['#E25A53', '#58D68D', '#AF7AC5', '#F5B041', '#5DADE2', '#AEB6
 # TAB 1: SPECTRUM VIEWER
 # ═══════════════════════════════════════════════════════════════════════════
 def _render_spectrum_tab(star_name, epoch, band, apply_lmc, epochs):
+    render_companion_guide()
     data = load_spectrum(star_name, epoch, band)
     rv_prop = load_rvs(star_name, epoch)
     mjd = get_mjd(star_name, epoch)
@@ -693,6 +739,54 @@ def _render_classification_tab(star_name, epochs):
         _save_classifications({})
         st.toast('All classifications cleared.')
         st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Star info banner: binary classification + contamination status
+# ─────────────────────────────────────────────────────────────────────────────
+_all_line_data = _load_all_lines_rvs(star_name)
+_available_lines = sorted(_all_line_data.keys()) if _all_line_data else [primary_line]
+if primary_line not in _available_lines:
+    _available_lines.insert(0, primary_line)
+
+_cls_cfg = settings.get('classification', {})
+_cls_thresh = _cls_cfg.get('threshold_dRV', 45.5)
+_cls_sigma = _cls_cfg.get('sigma_factor', 4.0)
+
+_bc1, _bc2, _bc3 = st.columns([2, 4, 1])
+_check_line = _bc1.selectbox(
+    'Classification line', _available_lines,
+    index=_available_lines.index(primary_line) if primary_line in _available_lines else 0,
+    key='spec_class_line',
+)
+
+_cls = _classify_star_line(star_name, _check_line, _threshold=_cls_thresh, _sigma_factor=_cls_sigma)
+_cleaned = _is_star_cleaned(star_name)
+
+_is_bin = _cls['is_binary']
+_drv = _cls['best_dRV']
+_sig = _cls['best_sigma']
+_signif = _drv - 4.0 * _sig if not np.isnan(_sig) else float('nan')
+
+if _is_bin is True:
+    _stat = f'<span style="color:{COLOR_BINARY};font-weight:700;">Binary</span>'
+elif _is_bin is False:
+    _stat = f'<span style="color:{COLOR_SINGLE};font-weight:600;">Single</span>'
+else:
+    _stat = f'<span style="color:{COLOR_UNKNOWN};">Unknown</span>'
+_clean = (f'<span style="color:{COLOR_CLEANED};font-weight:600;">Cleaned</span>'
+          if _cleaned else f'<span style="color:{COLOR_UNKNOWN};">Not cleaned</span>')
+
+_bc2.markdown(
+    f'{_stat} &nbsp;|&nbsp; '
+    f'dRV = {_drv:.1f} km/s &nbsp; sigma = {_sig:.1f} &nbsp; '
+    f'dRV-4sigma = {_signif:.1f} &nbsp;|&nbsp; {_clean}',
+    unsafe_allow_html=True,
+)
+_bc3.markdown(
+    f'<span style="color:#8C8C8C;font-size:0.85rem;">{_cls["n_epochs"]} epochs</span>',
+    unsafe_allow_html=True,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
