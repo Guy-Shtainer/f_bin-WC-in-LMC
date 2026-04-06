@@ -1431,4 +1431,52 @@ future bug fixes, per the project's five mandatory pre-fix blocks.
 
 ---
 
-*Last updated: 2026-03-31*
+### 2026-04-06 — Spectrum companion detection tools + RV Modeling settings persistence
+
+**What was done:**
+- Spectrum page: Added telluric (O₂ A/B-band, H₂O) and ISM (Ca II H&K, DIB 6284)
+  diagnostic line groups for distinguishing interstellar absorption from companion
+  signatures. Added comprehensive companion detection guide with detectable companion
+  types, diagnostic absorption lines (Balmer, He I singlet/triplet, He II Pickering),
+  companion-type packages, and TLUSTY model naming decoder. Binary classification
+  info banner shows per-star ΔRV, σ, and significance for the selected line.
+- Fixed FITS loading bug in raw spectrum viewer: `'ERR' in fit.data` raises TypeError
+  on astropy `FITS_rec` structured arrays — changed to `'ERR' in fit.data.dtype.names`.
+  Added E044 to COMMON_ERRORS.md.
+- Added raw spectrum overlay (all bands on one plot) and stitched COMBINED view.
+- RV Modeling page: Implemented full file-based settings persistence across all 6 tabs
+  (~100+ widgets) using the existing `SettingsManager` pattern from the bias correction
+  page. Every configuration widget now saves to `settings/user_settings.json` via
+  `on_change` callbacks, reads defaults from JSON on page load. Settings survive
+  browser refresh. JSON structure: `rv_modeling.{simulation, fitting.{parametric,physics},
+  playground.{parametric,physics}, fraction_recovery, global_correction}`.
+- Converted all `select_slider` and `slider` widgets to unrestricted `number_input`
+  on the RV Modeling page per user request — no hard min/max limits on any setting.
+
+**Key results:**
+- No new scientific results this session — infrastructure and UI improvements only.
+
+**Methodology notes for paper:**
+- Companion detection methodology now documented in the webapp's Spectrum page guide:
+  O, B, A-type companions detectable via absorption features in WR spectra;
+  late-type (G/K/M) companions not visible against the strong emission continuum.
+
+**Decisions:**
+- Tab D (Sample Fit) instant sliders not persisted — they are auto-seeded from
+  best-fit results and intended for quick exploration, not configuration.
+- Playground distribution shape sliders remain as `st.slider` for instant visual
+  feedback; all other config widgets use `st.number_input`.
+
+**Bugs found and fixed:**
+- E044: `'COL' in fit.data` on astropy FITS_rec raises TypeError; use `.dtype.names`.
+- Settings save/load field name mismatch (e.g., `nsim` vs `n_sim`) causing silent
+  persistence failures — not greppable, requires manual audit.
+
+**Open questions:**
+- Spectrum page state persistence still unsolved — Streamlit's page navigation
+  behaviour prevents the `on_change` pattern from working as it does on bias
+  correction and RV Modeling pages. May need `@st.fragment` or alternative approach.
+
+---
+
+*Last updated: 2026-04-06*

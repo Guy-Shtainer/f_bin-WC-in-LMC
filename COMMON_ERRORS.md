@@ -498,3 +498,15 @@ When you encounter a new recurring error, add it here with:
 | **Grep** | `result\.get\('settings'.*\.get\(` |
 | **Why** | `runners_cadence.py` stores settings via `json.dumps()`. When loaded from `.npz`, it becomes a numpy string array. Calling `.get()` on it raises `AttributeError: 'numpy.ndarray' object has no attribute 'get'`. |
 | **Found in** | `app/bc/render_lk_explorer.py`, `app/bc/render_lk_explorer_langer.py` (2026-03-31) |
+
+---
+
+### E044 — `'COL' in fit.data` fails on astropy `FITS_rec`
+
+| | |
+|---|---|
+| **Bad** | `'ERR' in fit.data` |
+| **Fix** | `'ERR' in fit.data.dtype.names` |
+| **Grep** | `in fit\.data\b` or `in .*\.data\b` (manual check needed) |
+| **Why** | Astropy `FITS_rec` (structured array) doesn't support `str in FITS_rec` — raises `TypeError: Cannot compare structured or void to non-void arrays`. The `in` operator tries element-wise comparison, not column-name lookup. Use `.dtype.names` to check column existence. |
+| **Found in** | `app/plots/data.py` (2026-04-06) |
