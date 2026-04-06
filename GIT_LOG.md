@@ -6,6 +6,24 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-04-06 — Companion detection, raw spectrum fix, RV Modeling persistence
+
+| Hash | Summary |
+|------|---------|
+| `bdd35cd` | Add telluric/ISM diagnostic lines, companion detection guide, and heatmap wavelength sort |
+| `16396ca` | Add binary classification banner and companion guide to Spectrum page |
+| `fff25ab` | Fix ERR column check in plots/data.py + update tab_spectra rendering |
+| `e771669` | Add settings persistence to RV Modeling page + convert sliders to number_input |
+| `a8ba268` | End-of-day documentation: RV Modeling persistence, companion detection tools |
+
+Three sessions: (1) Raw spectrum FITS loading bug fix (E044) + overlay/stitched views.
+(2) Spectrum companion detection guide with telluric/ISM line groups, absorption line
+reference, and binary classification banner. (3) Full settings persistence for RV
+Modeling page (6 tabs, ~100+ widgets) mirroring Bias Correction pattern. Converted
+all sliders to unrestricted number_input. Tagged: `v260406-working`.
+
+---
+
 ## 2026-03-31 — σ_p2p significance criterion, spectrum page overhaul, explorer bugfixes, likelihood binning
 
 | Hash | Summary |
