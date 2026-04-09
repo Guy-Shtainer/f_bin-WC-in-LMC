@@ -6,6 +6,30 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-04-09 — Grid exclusion overhaul, CDF/Explorer consistency, Binary Fraction upgrade
+
+**Tag:** `v260409-working`
+
+| Hash | Summary |
+|------|---------|
+| `f0211c8` | Rewrite grid exclusion with range sliders for all axes (fbin, pi, sigma, logPmax) |
+| `73976ef` | Fix logP_max override + apply exclusion mask to heatmaps |
+| `bb6c7a2` | Fix gold star: argmax → nanargmax + guard all-NaN in find_best_grid_point |
+| `a705e0a` | Fix CDF comparison: use actual BinaryParameterConfig, n_sets, and extra_grids |
+| `5d38fcb` | Switch Model Explorer to cadence-aware simulation for comparable logL scores |
+| `9bc0eb4` | Upgrade Detection Fraction to full Binary Fraction chart + add WORKING flags |
+| `5779bdd` | End-of-day documentation: grid exclusion overhaul, CDF/Explorer fixes |
+
+**Major changes:**
+- Grid exclusion: range sliders for all axes, N-D masks, excluded regions blank on heatmaps
+- CDF comparison uses actual BinaryParameterConfig (was using defaults with wrong logP_max)
+- Per-bin table uses actual n_sets (was hardcoded 100)
+- Model Explorer uses cadence-aware simulation (logL scores now match grid)
+- Detection Fraction upgraded to full Binary Fraction vs Threshold with best-fit overlay
+- Gold star fix (nanargmax), extra_grids fix (only >1 value axes), sigma_meas None fix
+
+---
+
 ## 2026-04-06 — Companion detection, raw spectrum fix, RV Modeling persistence
 
 | Hash | Summary |
