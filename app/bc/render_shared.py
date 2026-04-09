@@ -243,6 +243,7 @@ def _render_all_methods_cdf(
     result: dict, method_results: dict,
     fbin_g: np.ndarray, x_g: np.ndarray, prefix: str,
     x_name: str = 'pi', x_label: str = 'π',
+    bin_cfg=None,
 ) -> None:
     """CDF comparison: observed vs best-fit model from each scoring method."""
     obs_drv = result.get('obs_delta_rv')
@@ -255,10 +256,11 @@ def _render_all_methods_cdf(
         )
     except ImportError:
         return
+    import dataclasses as _dc
+    _base_bin_cfg = bin_cfg if bin_cfg is not None else BinaryParameterConfig()
     _be = result.get('bin_edges')
     _be = DEFAULT_DRV_BIN_EDGES if _be is None else np.asarray(_be)
     obs_drv = np.asarray(obs_drv)
-    _n_obs = len(obs_drv)
     obs_cdf = _binned_cdf(obs_drv, _be)
     _obs_x = np.concatenate([[0.0], _be])
     _obs_y = np.concatenate([[0.0], obs_cdf])
@@ -276,15 +278,18 @@ def _render_all_methods_cdf(
         _mcolor = next((c for k, _, _, _, c in SCORING_METHODS if k == mk), '#888888')
         _mname = next((n for k, n, _, _, _ in SCORING_METHODS if k == mk), mk)
         try:
+            _cdf_bin_cfg = _dc.replace(
+                _base_bin_cfg,
+                logP_max=float(bv.get('logPmax', _base_bin_cfg.logP_max)))
             _all_cdfs = []
             for _seed_i in range(_n_cdf_sets):
                 sim_cfg = SimulationConfig(
-                    n_stars=_n_obs, sigma_single=float(sig_v),
-                    sigma_measure=float(result.get('sigma_meas', 3.0)))
+                    n_stars=1000, sigma_single=float(sig_v),
+                    sigma_measure=float(result.get('sigma_meas') or 3.0))
                 rng = np.random.default_rng(42 + _seed_i)
                 sim_drv = simulate_delta_rv_sample(
                     f_bin=float(fb), pi=float(pi_v),
-                    sim_cfg=sim_cfg, bin_cfg=BinaryParameterConfig(), rng=rng)
+                    sim_cfg=sim_cfg, bin_cfg=_cdf_bin_cfg, rng=rng)
                 _all_cdfs.append(_binned_cdf(sim_drv, _be))
             _all_cdfs = np.array(_all_cdfs)
             _med = np.median(_all_cdfs, axis=0)
@@ -343,7 +348,7 @@ def _render_all_methods_cdf(
     st.caption(
         f'Observed ΔRV CDF (solid white) vs simulated CDFs at each '
         f'method\'s best-fit parameters (dashed, median of {_n_cdf_sets} draws). '
-        f'Shaded bands show 16th-84th percentile range. N_stars={_n_obs}.')
+        f'Shaded bands show 16th-84th percentile range. N_stars=1000.')
 
 # ── From subtabs.py ──────────────────────────────────────────────────────────
 
@@ -355,12 +360,16 @@ def _build_extra_grids(ctx: dict) -> list[tuple[str, np.ndarray]] | None:
     """
     ndim = ctx['ndim_mode']
     extras: list[tuple[str, np.ndarray]] = []
-    # logPmax FIRST (axis 0 in 4D array)
+    # logPmax FIRST (axis 0 in 4D array) — only if actual grid search (>1 value)
     if ctx.get('logPmax_g') is not None and ndim in ('dsilva', 'cadence_dsilva'):
-        extras.append(('logPmax', ctx['logPmax_g']))
-    # sigma SECOND (axis 1 in 4D array)
+        _lpg = ctx['logPmax_g']
+        if len(_lpg) > 1:
+            extras.append(('logPmax', _lpg))
+    # sigma SECOND (axis 1 in 4D array) — only if actual grid search (>1 value)
     if ctx.get('sigma_g') is not None and ndim in ('dsilva', 'cadence_dsilva'):
-        extras.append(('sigma', ctx['sigma_g']))
+        _sg = ctx['sigma_g']
+        if len(_sg) > 1:
+            extras.append(('sigma', _sg))
     return extras if extras else None
 
 # WORKING — do not change this code (A3: Max Likelihood vs σ/logPmax)
@@ -695,9 +704,15 @@ def render_orbital_histograms(p, gap_sim, bin_detected_mask, bin_missed_mask,
     for ri in range(1, NR + 1):
         fig_mb.update_yaxes(title_text='Prob. density', row=ri, col=1)
     st.plotly_chart(fig_mb, use_container_width=True, key=f'{p}_missed_binaries')
+    _cap_parts = []
+    if ana_fbin is not None:
+        _cap_parts.append(f'f_bin={ana_fbin:.3f}')
+    if ana_x_val is not None:
+        _cap_parts.append(f'{x_label}={ana_x_val:.2f}')
+    _cap_model = ', '.join(_cap_parts) if _cap_parts else 'best-fit'
     st.caption(
         f'Orbital parameter distributions of simulated binaries at the '
-        f'best-fit model (f_bin={ana_fbin:.3f}, {x_label}={ana_x_val:.2f}). '
+        f'best-fit model ({_cap_model}). '
         f'**Detected** (red): {detected_bin_count} binaries with '
         f'\u0394RV > {thresh_dRV} km/s. '
         f'**Missed** (amber): {missed_count} binaries below threshold. '
@@ -845,7 +860,8 @@ def render_shared_section(p: str, model_ctx: dict) -> dict:
 
     _render_all_methods_cdf(
         result, method_results, model_ctx['fbin_g'], model_ctx['x_g'],
-        prefix=p, x_name=model_ctx['x_name'], x_label=model_ctx['x_label'])
+        prefix=p, x_name=model_ctx['x_name'], x_label=model_ctx['x_label'],
+        bin_cfg=model_ctx.get('bin_cfg'))
 
     # E6: Per-bin breakdown table (directly under CDF)
     _obs_drv_e6 = result.get('obs_delta_rv')

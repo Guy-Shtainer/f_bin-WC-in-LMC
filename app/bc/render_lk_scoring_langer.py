@@ -78,9 +78,13 @@ def _compute_pooled_sim(obs_delta_rv: np.ndarray, result: dict) -> np.ndarray | 
         sigma_single=sig_v,
         sigma_measure=float(result.get('sigma_meas', 3.0)),
     )
-    bin_cfg = BinaryParameterConfig()
+    logPmax_g = np.asarray(result.get('logPmax_grid', []))
+    _best_logPmax = float(logPmax_g[best_idx[0]]) if (
+        _lk_p.ndim == 4 and logPmax_g.size > 0) else 5.0
+    bin_cfg = BinaryParameterConfig(logP_max=_best_logPmax)
+    _n_sets = int(result.get('n_sets', 100))
     all_sim = []
-    for seed_i in range(100):
+    for seed_i in range(_n_sets):
         rng = np.random.default_rng(42 + seed_i)
         all_sim.append(simulate_delta_rv_sample(
             f_bin=fb, pi=pi_v, sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng))
