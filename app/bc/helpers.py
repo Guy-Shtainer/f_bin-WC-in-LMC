@@ -96,6 +96,17 @@ def _stable_cfg_hash(cfg: dict) -> str:
     ).hexdigest()[:16]
 
 
+def _make_range_slider(container, grid: np.ndarray, label: str, key: str):
+    """Render a range slider for a grid axis. Returns (min, max) tuple."""
+    vals = [float(v) for v in grid]
+    lo, hi = vals[0], vals[-1]
+    step = round(vals[1] - vals[0], 6) if len(vals) > 1 else 1.0
+    rng = container.slider(
+        f'{label} range', min_value=lo, max_value=hi,
+        value=(lo, hi), step=step, key=key)
+    return rng
+
+
 def render_grid_exclusion(
     prefix: str,
     x_grid: np.ndarray,
@@ -103,97 +114,82 @@ def render_grid_exclusion(
     x_label: str = 'f<sub>bin</sub>',
     y_label: str = 'π',
     sigma_grid: np.ndarray | None = None,
+    logPmax_grid: np.ndarray | None = None,
+    ndim: int = 2,
 ) -> np.ndarray:
-    """Render Grid Range Exclusion expander and return 2D boolean mask.
+    """Render Grid Range Exclusion expander and return N-D boolean mask.
 
-    Stores mask in st.session_state[f'{prefix}_exc_mask_2d'].
-    Returns mask (True = EXCLUDED).
+    Each grid axis gets a range slider. Points outside the selected range
+    are excluded (set to NaN) from likelihood fitting.
+
+    Stores 2D (x × y) projection in st.session_state[f'{prefix}_exc_mask_2d']
+    for backward compat with scoring_detail / render_lk_scoring consumers.
+    Returns full N-D mask matching the likelihood array shape (True = EXCLUDED).
     """
-    _x_vals = [float(v) for v in x_grid]
-    _y_vals = [float(v) for v in y_grid]
+    _has_sigma = (sigma_grid is not None and len(sigma_grid) > 1)
+    _has_logPmax = (logPmax_grid is not None and len(logPmax_grid) > 1)
 
     with st.expander('Grid Range Exclusion', expanded=False):
-        _exc_c1, _exc_c2 = st.columns(2)
+        # Row 1: primary axes (f_bin, π / σ_single)
+        _c1, _c2 = st.columns(2)
+        _x_lo, _x_hi = _make_range_slider(
+            _c1, x_grid, x_label, f'{prefix}_exc_xrange')
+        _y_lo, _y_hi = _make_range_slider(
+            _c2, y_grid, y_label, f'{prefix}_exc_yrange')
 
-        # Range sliders (single slider with 2 thumbs for min/max)
-        if len(x_grid) >= 5:
-            _x_range = _exc_c1.slider(
-                f'{x_label} range',
-                min_value=_x_vals[0], max_value=_x_vals[-1],
-                value=(_x_vals[0], _x_vals[-1]),
-                key=f'{prefix}_exc_xrange')
-            _x_min_exc, _x_max_exc = _x_range
-        else:
-            _x_sel = _exc_c1.multiselect(
-                f'{x_label} values to include', options=_x_vals,
-                default=_x_vals, key=f'{prefix}_exc_xsel')
-            _x_min_exc = min(_x_sel) if _x_sel else _x_vals[0]
-            _x_max_exc = max(_x_sel) if _x_sel else _x_vals[-1]
+        # Row 2: extra axes (σ_single, logP_max) when present
+        if _has_sigma or _has_logPmax:
+            _extra_cols = st.columns(
+                (1 if _has_sigma else 0) + (1 if _has_logPmax else 0))
+            _ci = 0
+            if _has_sigma:
+                _sig_lo, _sig_hi = _make_range_slider(
+                    _extra_cols[_ci], sigma_grid, 'σ_single',
+                    f'{prefix}_exc_sigrange')
+                _ci += 1
+            if _has_logPmax:
+                _lp_lo, _lp_hi = _make_range_slider(
+                    _extra_cols[_ci], logPmax_grid, 'logP_max',
+                    f'{prefix}_exc_lprange')
 
-        if len(y_grid) >= 5:
-            _y_range = _exc_c2.slider(
-                f'{y_label} range',
-                min_value=_y_vals[0], max_value=_y_vals[-1],
-                value=(_y_vals[0], _y_vals[-1]),
-                key=f'{prefix}_exc_yrange')
-            _y_min_exc, _y_max_exc = _y_range
-        else:
-            _y_sel = _exc_c2.multiselect(
-                f'{y_label} values to include', options=_y_vals,
-                default=_y_vals, key=f'{prefix}_exc_ysel')
-            _y_min_exc = min(_y_sel) if _y_sel else _y_vals[0]
-            _y_max_exc = max(_y_sel) if _y_sel else _y_vals[-1]
+    # Build 1D exclusion masks per axis (True = EXCLUDED)
+    _x_exc = (x_grid < _x_lo) | (x_grid > _x_hi)
+    _y_exc = (y_grid < _y_lo) | (y_grid > _y_hi)
+    _sig_exc = None
+    _lp_exc = None
+    if _has_sigma:
+        _sig_exc = (sigma_grid < _sig_lo) | (sigma_grid > _sig_hi)
+    if _has_logPmax:
+        _lp_exc = (logPmax_grid < _lp_lo) | (logPmax_grid > _lp_hi)
 
-        st.markdown('**Exclude specific values per axis:**')
-        _has_sigma = (sigma_grid is not None and len(sigma_grid) > 1)
-        _n_exc_cols = 3 if _has_sigma else 2
-        _exc_ax_cols = st.columns(_n_exc_cols)
-        _exc_x_vals = _exc_ax_cols[0].multiselect(
-            f'Exclude {x_label} values', options=_x_vals,
-            default=[], key=f'{prefix}_exc_x_vals')
-        _exc_y_vals = _exc_ax_cols[1].multiselect(
-            f'Exclude {y_label} values', options=_y_vals,
-            default=[], key=f'{prefix}_exc_y_vals')
-        if _has_sigma:
-            _sig_vals_list = [float(v) for v in sigma_grid]
-            _exc_ax_cols[2].multiselect(
-                'Exclude σ_single values', options=_sig_vals_list,
-                default=[], key=f'{prefix}_exc_sig_vals')
-
-    # Build exclusion mask (True = EXCLUDED)
-    if len(x_grid) >= 5:
-        _x_exc = (x_grid < _x_min_exc) | (x_grid > _x_max_exc)
-    else:
-        _x_inc_set = set(
-            [float(v) for v in (_x_sel if '_x_sel' in dir() else _x_vals)])
-        _x_exc = np.array([float(v) not in _x_inc_set for v in x_grid])
-    if len(y_grid) >= 5:
-        _y_exc = (y_grid < _y_min_exc) | (y_grid > _y_max_exc)
-    else:
-        _y_inc_set = set(
-            [float(v) for v in (_y_sel if '_y_sel' in dir() else _y_vals)])
-        _y_exc = np.array([float(v) not in _y_inc_set for v in y_grid])
-
-    _exc_x_set = set(_exc_x_vals)
-    _exc_y_set = set(_exc_y_vals)
-    for ix, xv in enumerate(x_grid):
-        if float(xv) in _exc_x_set:
-            _x_exc[ix] = True
-    for iy, yv in enumerate(y_grid):
-        if float(yv) in _exc_y_set:
-            _y_exc[iy] = True
-
+    # Always store 2D (x × y) projection for backward compat
     _exc_mask_2d = _x_exc[:, None] | _y_exc[None, :]
+    st.session_state[f'{prefix}_exc_mask_2d'] = _exc_mask_2d
+
+    # Build N-D mask matching likelihood array shape
+    if ndim == 4:
+        # [logPmax, sigma, fbin, pi]
+        _exc_mask = _x_exc[None, None, :, None] | _y_exc[None, None, None, :]
+        if _sig_exc is not None:
+            _exc_mask = _exc_mask | _sig_exc[None, :, None, None]
+        if _lp_exc is not None:
+            _exc_mask = _exc_mask | _lp_exc[:, None, None, None]
+    elif ndim == 3:
+        # [sigma, fbin, pi]
+        _exc_mask = _x_exc[None, :, None] | _y_exc[None, None, :]
+        if _sig_exc is not None:
+            _exc_mask = _exc_mask | _sig_exc[:, None, None]
+    else:
+        _exc_mask = _exc_mask_2d
 
     # Show exclusion count outside expander (always visible)
-    _n_excluded = int(_exc_mask_2d.sum())
+    _n_excluded = int(_exc_mask.sum())
     if _n_excluded > 0:
         st.caption(
-            f'Grid exclusion active: **{_n_excluded}** / {_exc_mask_2d.size} '
+            f'Grid exclusion active: **{_n_excluded}** / {_exc_mask.size} '
             f'points excluded from fitting')
 
-    st.session_state[f'{prefix}_exc_mask_2d'] = _exc_mask_2d
-    return _exc_mask_2d
+    return _exc_mask
 
 
 def _make_max_pval_fig(
