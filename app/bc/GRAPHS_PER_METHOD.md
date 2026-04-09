@@ -31,7 +31,7 @@
 
 | # | ID | Graph | Status | File | Comment |
 |---|-----|-------|--------|------|---------|
-| - | G1 | Grid Range Exclusion (folded `st.expander`) | **MODIFY** | `render_lk_scoring.py` → move to `cadence.py` | Currently inside Likelihood Analysis section. Move above top heatmaps. Default `expanded=False`. Exclusion mask must still apply to scoring detail below |
+| - | G1 | Grid Range Exclusion (folded `st.expander`) | **WORKING ✓** | `helpers.py` + `cadence.py` | Approved 2026-04-09. Range sliders for all axes (f_bin, π, σ_single, logP_max). N-D mask applied to heatmaps + downstream scoring. Excluded regions show blank. Best-fit star updates. 2D projection stored in session_state for backward compat. |
 
 ### Top Heatmaps (`cadence.py` → `_render_top_heatmaps()`) — live during runs, persistent after
 
@@ -49,8 +49,8 @@
 | # | ID | Graph | Status | File | Comment |
 |---|-----|-------|--------|------|---------|
 | 1 | A1 | Summary Table (best-fit + 68% HDI + logP_max + interpolated) | **WORKING ✓** | `render_shared.py` | |
-| 2 | A2 | CDF Comparison (observed lightblue line + params in legend) | **WORKING ✓** | `render_shared.py` | |
-| 2b | E6 | Per-Bin Likelihood Breakdown Table | **WORKING ✓** | `render_lk_fit.py` (called from `render_shared.py`) | |
+| 2 | A2 | CDF Comparison (observed lightblue line + params in legend) | **WORKING ✓** | `render_shared.py` | Fixed 2026-04-09: uses actual BinaryParameterConfig (with best-fit logP_max), n_stars=1000. Was using defaults. |
+| 2b | E6 | Per-Bin Likelihood Breakdown Table | **WORKING ✓** | `render_lk_fit.py` (called from `render_shared.py`) | Fixed 2026-04-09: n_sim uses actual n_sets from result (was hardcoded 100). Uses best-fit logP_max. |
 | - | ~~A4~~ | ~~Period Distribution Histogram~~ | **REMOVED** | | Already present inside A6 orbital histograms (logP panel) |
 | 3 | A5 | Binary Fraction vs ΔRV Threshold | **WORKING ✓** | `render_shared.py` | **Dsilva has same issues as Langer had:** (1) Blue curve labeled "Observed" is actually simulated — rename to "Simulated". (2) No real observed curve shown — add white step curve from `obs_delta_rv`. (3) Caption says "Observed" for simulated data. Apply same fix as Langer version when ready. |
 | 4 | A6 | Orbital Histograms (9-panel + best-model subtitle) | **WORKING ✓** | `render_shared.py` | **Dsilva has same issue:** When M₁ is fixed (constant), histogram shows fake flat rectangle instead of vertical line. Same constant-parameter fix needed as Langer version. Apply when ready. |
@@ -84,7 +84,7 @@
 | 14 | D14 | Corner Plot (N×N marginals) | **WORKING ✓** | `render_lk_fit.py` | Approved 2026-03-25 |
 | 15 | D15 | Summary Table (with interpolation + cadence-aware re-sim) | **WORKING ✓** | `render_lk.py` | Approved 2026-03-29. Cadence-aware re-sim, normalized likelihood with asterisk, logL row, σ/logP in re-sim with (grid) note |
 | - | ~~D16~~ | ~~Re-sim CDF at Interpolated Best-Fit~~ | **FOLDED** | | Folded into D15 (auto re-sim after interpolation) |
-| 16 | D17 | Model Explorer (sliders + reset + score comparison) | **WORKING ✓** | `render_lk_explorer.py` | Approved 2026-03-29. Synced slider+number_input, logL metric cards, CDF x-axis, reset counter |
+| 16 | D17 | Model Explorer (sliders + reset + score comparison) | **WORKING ✓** | `render_lk_explorer.py` | Approved 2026-04-09. Cadence-aware simulation for logL scores (matches grid). CDF + Binary Fraction plots with best-fit overlay. Full-featured detection fraction chart. |
 | 17 | D18 | CDF Sanity Check (5 random draws, cadence only) | **WORKING ✓** | `render_lk_explorer.py` | Approved 2026-03-29 |
 | - | ~~E5~~ | ~~Likelihood CDF with Bin Overlay~~ | **REMOVED** | | Redundant with A2 CDF |
 
@@ -101,7 +101,7 @@
 
 | # | ID | Graph | Status | File | Notes |
 |---|-----|-------|--------|------|-------|
-| 0 | G1 | Grid Range Exclusion (folded expander) | **BROKEN** | `cadence.py` | Broken, same as Dsilva. Will deal with it later |
+| 0 | G1 | Grid Range Exclusion (folded expander) | **WORKING ✓** | `helpers.py` + `cadence.py` | Approved 2026-04-09. Same fix as Dsilva: range sliders for all axes, N-D mask, excluded regions blank on heatmaps. |
 
 ### Top Heatmaps (`cadence.py:45-230`, `_render_top_heatmaps`)
 
@@ -164,11 +164,11 @@
 | D17c | Score metric cards (Current vs Global, logL) | **TO-TEST** | Fixed: shows all scanned params, logL only |
 | D17d | Compare with best-fit checkbox | **TO-TEST** | Uses Langer CDF simulation |
 | D17e | Show likelihood bin edges checkbox | **TO-TEST** | Works |
-| D17f | CDF plot (observed white + explorer gold) | **TO-TEST** | Fixed: uses langer2020 period model, proper logP_max |
+| D17f | CDF plot (observed white + explorer gold + best-fit overlay) | **TO-TEST** | Cadence-aware simulation. Best-fit overlay when checkbox checked. |
 | D17g | Per-bin breakdown table | **TO-TEST** | Conditional: bins checkbox ON |
 | D17h | 4 heatmaps (2×2) with green dot at explorer position | **TO-TEST** | Conditional: BOTH σ AND logP scanned |
 | D17i | ΔRV Distribution histogram (observed vs simulated overlay) | **TO-TEST** | Code present, works with fixed CDF simulation |
-| D17j | Detection Fraction vs threshold (observed vs simulated) | **TO-TEST** | Fixed: title shows f_bin + logP, simulation uses Langer model |
+| D17j | Binary Fraction vs Threshold (full-featured, copy-pasted from render_shared.py) | **TO-TEST** | Upgraded 2026-04-09: all traces (shading, gap annotation, diamond, crossings). Best-fit overlay when checkbox checked. |
 | D17k | Explorer caption | **TO-TEST** | |
 
 ### CDF Sanity Check (`render_lk.py:544-560`, `render_lk_explorer.py:148-229`)
@@ -187,6 +187,17 @@ E8, E9, all K-S/CvM/weighted graphs
 ---
 
 ## Change Log
+
+### 2026-04-09: Grid Exclusion, CDF, Explorer Overhaul
+- **G1 WORKING:** Rewrote grid exclusion with range sliders for all axes (f_bin, π, σ_single, logP_max). N-D masks. Excluded regions blank on heatmaps. Best-fit star updates correctly (nanargmax + all-NaN guard).
+- **A2 Fixed:** CDF comparison now uses actual BinaryParameterConfig (was using defaults with wrong logP_max). n_stars=1000.
+- **E6 Fixed:** Per-bin table n_sim uses actual n_sets from result (was hardcoded 100). Best-fit logP_max used.
+- **D17 Upgraded:** Model Explorer CDF + Binary Fraction now use cadence-aware simulation (matches grid runner). logL scores directly comparable. Best-fit overlay on both CDF and Binary Fraction charts.
+- **D17j Upgraded:** Detection Fraction → full "Binary Fraction vs Threshold" plot (copy-pasted from render_shared.py). All traces: shading, gap annotation, diamond, crossings, best-fit overlay.
+- **Gap sim logP_max:** BinaryParameterConfig for gap_sim now uses best-fit ana_logPmax when logPmax is a grid search axis.
+- **Gold star fix:** `find_best_grid_point` uses `nanargmax` + all-NaN guard.
+- **Extra grids fix:** `_build_extra_grids` only includes axes with >1 value (prevents grid/dim mismatch).
+- **Files:** helpers.py, cadence.py, subtabs.py, shared.py, render_shared.py, render_lk_scoring.py, render_lk_scoring_langer.py, render_lk_explorer.py
 
 ### 2026-03-30: Cadence Langer Graph Catalog
 - Added full "Cadence Langer — Rendering Order" section with 27 top-level elements + 11 D17 sub-elements

@@ -477,6 +477,26 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 | **Found in** | `app/bc/render_lk.py` — call to `_render_lk_corner_plot()` had `_DISPLAY_NAME` as an extra arg |
 | **Prevention** | After any refactor that changes function signatures: (1) grep all callers, (2) count positional args vs function def, (3) test the actual code path (not just import). |
 
+### E043 — `np.argmax` on array with NaN returns index 0
+
+| | |
+|---|---|
+| **Bad** | `np.argmax(arr)` when `arr` may contain NaN |
+| **Fix** | `np.nanargmax(arr)` (+ guard `np.any(np.isfinite(arr))` for all-NaN case) |
+| **Grep** | `np\.argmax\b` (check context — only bad if array may have NaN) |
+| **Why** | `np.argmax` treats NaN as greater than any finite value in C-level comparisons, returning the first NaN element (index 0). `np.nanargmax` skips NaN but raises `ValueError` on all-NaN. |
+| **Found in** | `app/shared.py` — `find_best_grid_point` placed gold star at (0,0) after grid exclusion NaN'd the array |
+
+### E044 — `dict.get(key, default)` returns None when key exists with value None
+
+| | |
+|---|---|
+| **Bad** | `float(result.get('sigma_meas', 3.0))` when `result['sigma_meas'] = None` |
+| **Fix** | `float(result.get('sigma_meas') or 3.0)` — the `or` catches both missing key AND None value |
+| **Grep** | N/A (not machine-detectable — depends on runtime dict contents) |
+| **Why** | `dict.get(key, default)` only uses `default` when the key is ABSENT. If the key exists with value `None`, `get()` returns `None`. `float(None)` → `TypeError`. |
+| **Found in** | `app/bc/render_shared.py` — CDF model trace silently crashed inside `try/except: pass` because `sigma_meas` was `None` in result dict |
+
 ---
 
 ## Adding New Errors

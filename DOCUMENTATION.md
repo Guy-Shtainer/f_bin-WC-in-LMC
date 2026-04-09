@@ -1477,6 +1477,45 @@ future bug fixes, per the project's five mandatory pre-fix blocks.
   behaviour prevents the `on_change` pattern from working as it does on bias
   correction and RV Modeling pages. May need `@st.fragment` or alternative approach.
 
+### 2026-04-09 — Grid exclusion overhaul, CDF/Explorer consistency fixes
+
+**What was done:**
+Major overhaul of the bias correction analysis pipeline focusing on grid exclusion, CDF consistency, and Model Explorer accuracy.
+
+- **Grid Range Exclusion (G1):** Completely rewrote `render_grid_exclusion` in `helpers.py`. Now provides range sliders for all grid axes (f_bin, π, σ_single, logP_max) with proper N-dimensional boolean masks matching the likelihood array shape (2D/3D/4D). Excluded regions appear blank (NaN) on all heatmaps. Best-fit star correctly updates to the best non-excluded point.
+- **logP_max best-fit override:** `BinaryParameterConfig` for `gap_sim` (the simulation at the best-fit point) now uses the best-fit `ana_logPmax` from the grid search when logPmax is a scanned axis, instead of the sidebar default value.
+- **Gold star placement:** Fixed `find_best_grid_point` in `shared.py` to use `np.nanargmax` instead of `np.argmax`, preventing NaN values from being selected as the maximum. Added all-NaN guard for fully-excluded slices.
+- **CDF Comparison (A2) consistency:** The CDF comparison now uses the actual `BinaryParameterConfig` from the model context (with correct logP_max, period model, eccentricity model) instead of `BinaryParameterConfig()` defaults. Changed simulation size from n_obs (~25) to 1000 stars per seed for statistical stability.
+- **Per-Bin Likelihood Breakdown (E6):** Fixed `_compute_pooled_sim` to use actual `n_sets` from the result file instead of a hardcoded 100 iterations. Also uses best-fit logP_max instead of default.
+- **Model Explorer cadence-aware simulation:** Switched `_me_cdf_band` from `simulate_delta_rv_sample` (basic, 1000 stars, no cadence) to `simulate_delta_rv_cadence_aware` (uses actual observation cadences, matches grid runner). This makes Explorer logL scores directly comparable to grid logL scores.
+- **Detection Fraction → Binary Fraction vs Threshold (D17j):** Upgraded the sparse 2-line Detection Fraction plot to a full-featured Binary Fraction vs Threshold chart (copy-pasted from `render_shared.py`), including missed binaries shading, singles shading, observed step function, intrinsic f_bin line, threshold crossing, gap annotation, and best-fit overlay.
+- **`_build_extra_grids` fix:** Only includes grid axes with >1 value, preventing grid count / array dimension mismatch that caused the CDF and summary table to vanish for simple 2D runs.
+
+**Key results:**
+- Grid exclusion now functional across all 4 grid dimension combinations (2D, 3D sigma-only, 3D logPmax-only, 4D)
+- Explorer logL scores now match grid logL scores (cadence-aware simulation)
+- All CDF and per-bin statistics use correct model parameters
+
+**Methodology notes for paper:**
+- The multinomial log-likelihood is computed from cadence-aware simulations that respect each star's actual observation cadence (deterministic assignment: star i always receives cadence i). The Model Explorer now uses the same methodology for direct comparability.
+
+**Decisions:**
+- Range sliders (not multiselects) for all grid exclusion axes
+- Explorer uses `simulate_delta_rv_cadence_aware` with actual cadences for logL comparability
+- Copy-paste existing working code for the Binary Fraction plot rather than rebuilding from scratch
+
+**Bugs found and fixed:**
+- E043: `np.argmax` on NaN arrays returns index 0 (gold star at corner)
+- E044: `dict.get(key, default)` returns None when key exists with None value (CDF crash)
+- Grid/dimension mismatch in `_build_extra_grids` hiding CDF for simple runs
+- `BinaryParameterConfig()` defaults used instead of actual model parameters in 3 places
+- Hardcoded `range(100)` instead of `result['n_sets']` in per-bin table
+- None-format crash in orbital histograms caption
+
+**Open questions:**
+- Langer tab grid exclusion: same code path but not user-tested yet
+- Explorer Binary Fraction uses `simulate_with_params` (10k stars) on every slider move — potential performance concern
+
 ---
 
-*Last updated: 2026-04-06*
+*Last updated: 2026-04-09*
