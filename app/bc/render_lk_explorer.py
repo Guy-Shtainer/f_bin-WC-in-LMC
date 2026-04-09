@@ -48,27 +48,49 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
 def _me_cdf_band(
     fb: float, x_val: float, sigma_s: float, sigma_m: float,
     bin_edges_tuple: tuple, logPmax: float = 5.0, n_sets: int = 50,
+    _cadence_library=None, _cadence_weights=None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Run *n_sets* simulations and return (median_cdf, lo_cdf, hi_cdf, pooled_drv)."""
+    """Run *n_sets* simulations and return (median_cdf, lo_cdf, hi_cdf, pooled_drv).
+
+    When _cadence_library is provided, uses cadence-aware simulation
+    (matching the grid runner). Otherwise falls back to basic simulation.
+    """
     from wr_bias_simulation import (
-        simulate_delta_rv_sample, SimulationConfig,
-        BinaryParameterConfig,
+        simulate_delta_rv_sample, simulate_delta_rv_cadence_aware,
+        SimulationConfig, BinaryParameterConfig,
     )
     _be = np.array(bin_edges_tuple)
-    all_cdfs, all_drv = [], []
-    for si in range(n_sets):
-        cfg = SimulationConfig(n_stars=1000, sigma_single=sigma_s,
-                               sigma_measure=sigma_m)
-        drv = simulate_delta_rv_sample(fb, x_val, cfg,
-                                       BinaryParameterConfig(logP_max=logPmax),
-                                       np.random.default_rng(42 + si))
-        all_cdfs.append(_binned_cdf(drv, _be))
-        all_drv.append(drv)
-    all_cdfs = np.array(all_cdfs)
+    bin_cfg = BinaryParameterConfig(logP_max=logPmax)
+
+    if _cadence_library is not None:
+        cfg = SimulationConfig(
+            n_stars=len(_cadence_library),
+            sigma_single=sigma_s, sigma_measure=sigma_m,
+            cadence_library=_cadence_library,
+            cadence_weights=_cadence_weights)
+        rng = np.random.default_rng(42)
+        res = simulate_delta_rv_cadence_aware(
+            fb, x_val, cfg, bin_cfg, rng, n_sets=n_sets, bin_edges=_be)
+        all_drv = res['all_delta_rv']
+        all_cdfs = np.array(
+            [_binned_cdf(all_drv[i], _be) for i in range(all_drv.shape[0])])
+        pooled = all_drv.ravel()
+    else:
+        all_cdfs, all_drv = [], []
+        for si in range(n_sets):
+            cfg = SimulationConfig(n_stars=1000, sigma_single=sigma_s,
+                                   sigma_measure=sigma_m)
+            drv = simulate_delta_rv_sample(fb, x_val, cfg, bin_cfg,
+                                           np.random.default_rng(42 + si))
+            all_cdfs.append(_binned_cdf(drv, _be))
+            all_drv.append(drv)
+        all_cdfs = np.array(all_cdfs)
+        pooled = np.concatenate(all_drv)
+
     return (np.median(all_cdfs, axis=0),
             np.percentile(all_cdfs, 16, axis=0),
             np.percentile(all_cdfs, 84, axis=0),
-            np.concatenate(all_drv))
+            pooled)
 
 
 # ---------------------------------------------------------------------------
@@ -369,18 +391,23 @@ def _render_lk_model_explorer(
     lk_be = result.get('likelihood_bin_edges')
     lk_be = np.asarray(lk_be) if lk_be is not None else be
     sigma_m = float(result.get('sigma_meas', 3.0))
+    _cad_lib = result.get('cadence_library')
+    _cad_wt = result.get('cadence_weights')
+    _n_sets_me = int(result.get('n_sets', 50))
 
-    # Multi-seed CDF band (cached)
+    # Multi-seed CDF band (cached, cadence-aware when available)
     med_cdf, lo_cdf, hi_cdf, pooled_drv = _me_cdf_band(
         me_fb, me_x, me_sig, sigma_m, tuple(be.tolist()),
-        logPmax=_eff_logPmax, n_sets=50)
+        logPmax=_eff_logPmax, n_sets=_n_sets_me,
+        _cadence_library=_cad_lib, _cadence_weights=_cad_wt)
 
-    # ── WORKING — do not change this code · D17: Score metric cards (logL) ──
+    # ── D17: Score metric cards (logL) ──
     _logL = multinomial_log_likelihood(obs_drv, pooled_drv, lk_be)
     # Compute logL for the global best-fit
     _bf_med, _, _, _bf_pooled = _me_cdf_band(
         def_fb, def_x, def_sig, sigma_m, tuple(be.tolist()),
-        logPmax=_bf_logPmax, n_sets=50)
+        logPmax=_bf_logPmax, n_sets=_n_sets_me,
+        _cadence_library=_cad_lib, _cadence_weights=_cad_wt)
     _logL_best = multinomial_log_likelihood(obs_drv, _bf_pooled, lk_be)
 
     mc1, mc2 = st.columns(2)
@@ -414,7 +441,8 @@ def _render_lk_model_explorer(
         _bf_lp = float(_bf_bv.get('logPmax', _bf_logPmax))
         _bf_med, _bf_lo, _bf_hi, _ = _me_cdf_band(
             _bf_fb, _bf_x, _bf_sig, sigma_m,
-            tuple(be.tolist()), logPmax=_bf_lp, n_sets=50)
+            tuple(be.tolist()), logPmax=_bf_lp, n_sets=_n_sets_me,
+            _cadence_library=_cad_lib, _cadence_weights=_cad_wt)
 
     fig_cdf = go.Figure()
     fig_cdf.add_trace(go.Scatter(
