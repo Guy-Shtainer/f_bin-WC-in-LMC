@@ -154,7 +154,7 @@ def _render_analysis_plots(
     intrinsic_fbin = float(gap_is_bin.mean()) if gap_is_bin.size > 0 else 0.5
     x_label = ctx['x_label']
     logP_min = ctx.get('logP_min', 0.15)
-    logP_max = ctx.get('logP_max', 4.0)
+    logP_max = ctx.get('logP_max', 5.0)
 
     total_bin = int(np.sum(gap_is_bin))
     detected_bin_count = int(np.sum(bin_detected_mask))

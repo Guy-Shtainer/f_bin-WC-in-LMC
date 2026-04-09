@@ -575,6 +575,10 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
                     st.session_state.get(f'{p}_lq_sig', 0.2)),
             )
 
+        # Override logP_max with best-fit value when grid search is active
+        if len(logPmax_grid) > 1:
+            _bin_cfg_explore.logP_max = ana_logPmax
+
         _d_sigma_meas = float(
             st.session_state.get(f'{p}_sigma_meas', 1.622))
         _sim_cfg_gap = SimulationConfig(
@@ -651,30 +655,43 @@ def _render_cadence_results(p: str, _is_dsilva: bool, bin_cfg=None,
         pi_grid if _is_dsilva else sigma_grid,
         'f_bin', 'π' if _is_dsilva else 'σ_single',
         sigma_grid=sigma_grid if _is_dsilva else None,
+        logPmax_grid=logPmax_grid if _has_logPmax_scan else None,
+        ndim=lk_arr.ndim,
     )
 
-    # Apply exclusion mask to result for downstream (corner plot, scoring detail)
-    # Top heatmaps get unmasked lk_arr so best-fit star stays correct
+    # Apply exclusion mask to result and heatmap data
+    _hm_lk = lk_arr
+    _hm_result = result
+    _hm_lp_idx = _cad_lp_idx
     if _exc_mask is not None and _exc_mask.any():
+        # Masked result for downstream scoring / summary table
         _masked_result = dict(result)
         if 'logL_raw' in result:
             _lr_m = np.asarray(result['logL_raw'], dtype=float).copy()
-            _lr_m[..., _exc_mask] = np.nan
+            _lr_m[_exc_mask] = np.nan
             _masked_result['logL_raw'] = _lr_m
         if 'likelihood' in result:
             _lk_m = np.asarray(result['likelihood'], dtype=float).copy()
-            _lk_m[..., _exc_mask] = np.nan
+            _lk_m[_exc_mask] = np.nan
             _masked_result['likelihood'] = _lk_m
         model_ctx['result'] = _masked_result
+        # Masked heatmap data (excluded regions show as blank)
+        _hm_lk = lk_arr.copy().astype(float)
+        _hm_lk[_exc_mask] = np.nan
+        _hm_result = _masked_result
+        # Recompute best logPmax slice index from masked data
+        if np.any(np.isfinite(_hm_lk)):
+            _hm_bf = np.unravel_index(int(np.nanargmax(_hm_lk)), _hm_lk.shape)
+            _hm_lp_idx = _hm_bf[0] if _hm_lk.ndim == 4 else _cad_lp_idx
 
     # ── 4 heatmaps at top (live during run, persist after) ──────────────
     if _is_dsilva:
-        _render_top_heatmaps(p, result, fbin_grid, pi_grid, sigma_grid,
-                             logPmax_grid, lk_arr, _cad_lp_idx, _is_dsilva,
+        _render_top_heatmaps(p, _hm_result, fbin_grid, pi_grid, sigma_grid,
+                             logPmax_grid, _hm_lk, _hm_lp_idx, _is_dsilva,
                              _ch, _use_cw)
     else:
-        _render_top_heatmaps_langer(p, result, fbin_grid, pi_grid, sigma_grid,
-                                    logPmax_grid, lk_arr, _cad_lp_idx, _is_dsilva,
+        _render_top_heatmaps_langer(p, _hm_result, fbin_grid, pi_grid, sigma_grid,
+                                    logPmax_grid, _hm_lk, _hm_lp_idx, _is_dsilva,
                                     _ch, _use_cw)
 
     render_model_subtabs(p, model_ctx)
@@ -844,6 +861,10 @@ def _render_cadence_results_langer(p: str, _is_dsilva: bool, bin_cfg=None,
                     st.session_state.get(f'{p}_lq_sig', 0.2)),
             )
 
+        # Override logP_max with best-fit value when grid search is active
+        if len(logPmax_grid) > 1:
+            _bin_cfg_explore.logP_max = ana_logPmax
+
         _d_sigma_meas = float(
             st.session_state.get(f'{p}_sigma_meas', 1.622))
         _sim_cfg_gap = SimulationConfig(
@@ -917,24 +938,35 @@ def _render_cadence_results_langer(p: str, _is_dsilva: bool, bin_cfg=None,
         sigma_grid,
         'f_bin', 'σ_single',
         sigma_grid=None,
+        logPmax_grid=logPmax_grid if _has_logPmax_scan else None,
+        ndim=lk_arr.ndim,
     )
 
-    # Apply exclusion mask to result for downstream (corner plot, scoring detail)
+    # Apply exclusion mask to result and heatmap data
+    _hm_lk = lk_arr
+    _hm_result = result
+    _hm_lp_idx = _cad_lp_idx
     if _exc_mask is not None and _exc_mask.any():
         _masked_result = dict(result)
         if 'logL_raw' in result:
             _lr_m = np.asarray(result['logL_raw'], dtype=float).copy()
-            _lr_m[..., _exc_mask] = np.nan
+            _lr_m[_exc_mask] = np.nan
             _masked_result['logL_raw'] = _lr_m
         if 'likelihood' in result:
             _lk_m = np.asarray(result['likelihood'], dtype=float).copy()
-            _lk_m[..., _exc_mask] = np.nan
+            _lk_m[_exc_mask] = np.nan
             _masked_result['likelihood'] = _lk_m
         model_ctx['result'] = _masked_result
+        _hm_lk = lk_arr.copy().astype(float)
+        _hm_lk[_exc_mask] = np.nan
+        _hm_result = _masked_result
+        if np.any(np.isfinite(_hm_lk)):
+            _hm_bf = np.unravel_index(int(np.nanargmax(_hm_lk)), _hm_lk.shape)
+            _hm_lp_idx = _hm_bf[0] if _hm_lk.ndim == 4 else _cad_lp_idx
 
     # ── H1-H4 heatmaps (Langer-specific) ──────────────────────────────
-    _render_top_heatmaps_langer(p, result, fbin_grid, pi_grid, sigma_grid,
-                                logPmax_grid, lk_arr, _cad_lp_idx, _is_dsilva,
+    _render_top_heatmaps_langer(p, _hm_result, fbin_grid, pi_grid, sigma_grid,
+                                logPmax_grid, _hm_lk, _hm_lp_idx, _is_dsilva,
                                 _ch, _use_cw)
 
     render_model_subtabs(p, model_ctx)
