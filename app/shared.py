@@ -454,7 +454,9 @@ def find_best_grid_point(
     x_vals: np.ndarray,
 ) -> tuple[float, float, float]:
     """Return (best_fbin, best_x, best_pval) from a 2-D K-S p-value grid."""
-    fi, pi = np.unravel_index(int(np.argmax(ks_p_2d)), ks_p_2d.shape)
+    if not np.any(np.isfinite(ks_p_2d)):
+        return float(fbin_vals[0]), float(x_vals[0]), float('nan')
+    fi, pi = np.unravel_index(int(np.nanargmax(ks_p_2d)), ks_p_2d.shape)
     return float(fbin_vals[fi]), float(x_vals[pi]), float(ks_p_2d[fi, pi])
 
 
