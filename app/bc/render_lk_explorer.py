@@ -269,9 +269,9 @@ def _render_lk_model_explorer(
     """Interactive Likelihood model explorer: sliders -> CDF + score + histogram + det frac."""
     try:
         from wr_bias_simulation import (
-            simulate_delta_rv_sample, SimulationConfig,
-            BinaryParameterConfig, DEFAULT_DRV_BIN_EDGES,
-            multinomial_log_likelihood,
+            simulate_delta_rv_sample, simulate_with_params,
+            SimulationConfig, BinaryParameterConfig,
+            DEFAULT_DRV_BIN_EDGES, multinomial_log_likelihood,
         )
     except ImportError:
         st.info('wr_bias_simulation not available for model explorer.')
@@ -724,58 +724,161 @@ def _render_lk_model_explorer(
     st.plotly_chart(fig_hist, use_container_width=True,
                     key=f'{prefix}_lk_me_hist')
 
-    # ── WORKING — do not change this code · D17: Detection fraction vs threshold ──
-    max_drv = max(float(np.max(obs_drv)),
-                  float(np.max(sim_drv_single)))
-    thresholds = np.linspace(0, max_drv * 1.1, 100)
-    # Significance criterion: ΔRV − nsigma·σ_p2p > 0 (sqrt(2)·σ_m for fixed model)
-    try:
-        import json as _json
-        _sett = _json.loads(str(result.get('settings', '{}')))
-        _nsigma = float(_sett.get('sigma_factor', 4.0))
-    except Exception:
-        _nsigma = 4.0
-    _sig_p2p_const = np.sqrt(2.0) * sigma_m
-    _sig_floor = _nsigma * _sig_p2p_const
-    # Bartzakos correction: 3 confirmed binaries excluded from sample → +3 numerator, /28 denominator
-    _n_bartz = 3
-    _total_pop = len(obs_drv) + _n_bartz
-    frac_obs = np.array([(float(np.sum((obs_drv > T) & (obs_drv > _sig_floor))) + _n_bartz) / _total_pop
-                         for T in thresholds])
-    frac_sim = np.array([((sim_drv_single > T) & (sim_drv_single > _sig_floor)).mean()
-                         for T in thresholds])
+    # ── WORKING — do not change this code (D17j: Binary Fraction vs Threshold) ──
+    from shared import get_palette as _gp
+    _pal = _gp()
+    _CLR_DETECTED = '#E25A53'
+    _CLR_MISSED = '#F5A623'
+    _CLR_OBS = '#4A90D9'
+    thresh_dRV = float(result.get('thresh_dRV', 45.5))
+    _nsigma = 4.0
+    # Simulate at current explorer params to get is_binary + sigma_p2p
+    _det_sim_cfg = SimulationConfig(
+        n_stars=10000, sigma_single=me_sig, sigma_measure=sigma_m,
+        cadence_library=_cad_lib, cadence_weights=_cad_wt)
+    _det_bin_cfg = BinaryParameterConfig(logP_max=_eff_logPmax)
+    _det_gap = simulate_with_params(
+        me_fb, me_x, _det_sim_cfg, _det_bin_cfg,
+        np.random.default_rng(42))
+    gap_drv = np.asarray(_det_gap['delta_rv'])
+    gap_is_bin = np.asarray(_det_gap['is_binary'], dtype=bool)
+    sigma_p2p = np.asarray(_det_gap.get('sigma_p2p', np.zeros(len(gap_drv))))
+    n_sim = len(gap_drv)
+    thresh_arr = np.linspace(0, float(np.max(gap_drv) * 1.05), 200)
+    # Significance mask: ΔRV - nsigma * σ_p2p > 0
+    if sigma_p2p is not None:
+        sig_mask = (gap_drv - _nsigma * sigma_p2p) > 0
+    else:
+        sig_mask = np.ones(n_sim, dtype=bool)
+    bin_sig = sig_mask[gap_is_bin]
+    sin_sig = sig_mask[~gap_is_bin]
+    fbin_curve = np.array([float(np.sum((gap_drv > t) & sig_mask)) / n_sim
+                           for t in thresh_arr])
+    bin_drv_all = gap_drv[gap_is_bin]
+    sin_drv_all = gap_drv[~gap_is_bin]
+    missed_bin_curve = np.array(
+        [float(np.sum((bin_drv_all <= t) | ~bin_sig)) / n_sim
+         for t in thresh_arr])
+    false_pos_curve = np.array(
+        [float(np.sum((sin_drv_all > t) & sin_sig)) / n_sim
+         for t in thresh_arr])
+    intrinsic_fbin = float(gap_is_bin.mean())
+    _idx_bin = np.where(gap_is_bin)[0]
+    _bin_drv = gap_drv[_idx_bin]
+    _bin_sigma = sigma_p2p[_idx_bin]
+    _bin_det = (_bin_drv > thresh_dRV) & ((_bin_drv - _nsigma * _bin_sigma) > 0)
+    total_bin = int(gap_is_bin.sum())
+    detected_bin_count = int(_bin_det.sum())
+    missed_count = total_bin - detected_bin_count
+    observed_fbin = float(np.sum((gap_drv > thresh_dRV) & sig_mask)) / n_sim
 
     fig_det = go.Figure()
     fig_det.add_trace(go.Scatter(
-        x=thresholds, y=frac_obs, mode='lines', name='Observed',
-        line=dict(color='#4A90D9', width=2.5),
-    ))
+        x=thresh_arr, y=missed_bin_curve,
+        fill='tozeroy', fillcolor='rgba(242,166,35,0.25)',
+        line=dict(width=0), mode='lines', name='Missed binaries', showlegend=True))
+    if np.any(false_pos_curve > 0):
+        fig_det.add_trace(go.Scatter(
+            x=thresh_arr, y=false_pos_curve,
+            fill='tozeroy', fillcolor='rgba(74,144,217,0.25)',
+            line=dict(width=0), mode='lines', name='Singles above threshold', showlegend=True))
     fig_det.add_trace(go.Scatter(
-        x=thresholds, y=frac_sim, mode='lines', name='Simulated',
-        line=dict(color=_METHOD_COLOR, width=2.5, dash='dash'),
-    ))
-    thresh_dRV = float(result.get('thresh_dRV', 45.5))
-    fig_det.add_vline(
-        x=thresh_dRV, line_dash='dot', line_color='#E25A53',
-        line_width=1.5,
-        annotation_text=f'Threshold={thresh_dRV:.0f}',
-        annotation_position='top right',
-        annotation_font_color='#E25A53',
-    )
+        x=thresh_arr, y=fbin_curve, mode='lines',
+        name='Simulated f_bin(threshold)', line=dict(color=_CLR_OBS, width=2.5)))
+    # Real observed binary fraction curve (step/stairs)
+    # Bartzakos correction: 3 confirmed binaries excluded from sample → +3 numerator, /28 denominator
+    if obs_drv is not None and len(obs_drv) > 0:
+        _obs_drv_s = np.sort(np.asarray(obs_drv))
+        _n_bartz = 3
+        _total_pop = len(_obs_drv_s) + _n_bartz
+        _obs_sig_floor = _nsigma * float(sigma_p2p[0]) if len(sigma_p2p) > 0 else 0.0
+        _obs_fbin_curve = np.array(
+            [float(np.sum((_obs_drv_s > t) & (_obs_drv_s > _obs_sig_floor)) + _n_bartz) / _total_pop
+             for t in _obs_drv_s])
+        fig_det.add_trace(go.Scatter(
+            x=_obs_drv_s, y=_obs_fbin_curve, mode='lines',
+            name='Observed f_bin(threshold)',
+            line=dict(color='white', width=2.5, shape='hv')))
+    fig_det.add_hline(y=intrinsic_fbin, line_dash='dot', line_color=_CLR_DETECTED,
+                      line_width=2, annotation_text=f'Intrinsic f_bin = {intrinsic_fbin:.1%}',
+                      annotation_position='top left',
+                      annotation_font=dict(size=11, color=_CLR_DETECTED))
+    # "Real threshold" — where intrinsic f_bin crosses observed fraction curve
+    _crossings = np.where(np.diff(np.sign(fbin_curve - intrinsic_fbin)))[0]
+    if len(_crossings) > 0:
+        _ci = _crossings[0]
+        _real_thresh = np.interp(intrinsic_fbin,
+                                 [fbin_curve[_ci + 1], fbin_curve[_ci]],
+                                 [thresh_arr[_ci + 1], thresh_arr[_ci]])
+        fig_det.add_vline(x=_real_thresh, line_dash='dot', line_color='#00CC66',
+                          line_width=2, annotation_text=f'Real threshold \u2248 {_real_thresh:.0f} km/s',
+                          annotation_position='bottom right',
+                          annotation_font=dict(size=10, color='#00CC66'))
+    fig_det.add_vline(x=thresh_dRV, line_dash='dash', line_color=_CLR_MISSED,
+                      line_width=2, annotation_text=f'Threshold = {thresh_dRV} km/s',
+                      annotation_position='top right',
+                      annotation_font=dict(size=11, color=_CLR_MISSED))
+    fig_det.add_trace(go.Scatter(
+        x=[thresh_dRV], y=[observed_fbin], mode='markers+text',
+        marker=dict(size=14, color='white', symbol='diamond',
+                    line=dict(width=2, color='black')),
+        text=[f'{observed_fbin:.1%}'], textposition='top left',
+        textfont=dict(size=12, color='#333333'),
+        name=f'Simulated @ {thresh_dRV} km/s', showlegend=True))
+    gap_pct = intrinsic_fbin - observed_fbin
+    fig_det.add_annotation(
+        x=thresh_dRV + 15, y=(intrinsic_fbin + observed_fbin) / 2,
+        text=f'Gap: {gap_pct:.1%}<br>({missed_count} missed / {total_bin} binaries)',
+        showarrow=False, font=dict(size=11, color=_CLR_MISSED),
+        bgcolor=_pal['annotation_bg'], bordercolor=_CLR_MISSED,
+        borderwidth=1, borderpad=4)
+    fig_det.add_annotation(
+        x=thresh_dRV, y=intrinsic_fbin, ax=thresh_dRV, ay=observed_fbin,
+        xref='x', yref='y', axref='x', ayref='y',
+        showarrow=True, arrowhead=3, arrowwidth=2, arrowcolor=_CLR_MISSED)
+    # Best-fit overlay (same pattern as CDF)
+    if _show_bestfit and info is not None:
+        _bf_bv2 = info.get('best_vals', {})
+        _bf_fb2 = float(_bf_bv2.get('fbin', 0.5))
+        _bf_x2 = float(_bf_bv2.get(x_name, 0.0))
+        _bf_sig2 = float(_bf_bv2.get('sigma', me_sig))
+        _bf_lp2 = float(_bf_bv2.get('logPmax', _eff_logPmax))
+        _bf_sim2 = SimulationConfig(
+            n_stars=10000, sigma_single=_bf_sig2,
+            sigma_measure=sigma_m,
+            cadence_library=_cad_lib, cadence_weights=_cad_wt)
+        _bf_bcfg2 = BinaryParameterConfig(logP_max=_bf_lp2)
+        _bf_gap2 = simulate_with_params(
+            _bf_fb2, _bf_x2, _bf_sim2, _bf_bcfg2,
+            np.random.default_rng(42))
+        _bf_drv2 = np.asarray(_bf_gap2['delta_rv'])
+        _bf_sp2 = np.asarray(_bf_gap2.get('sigma_p2p', np.zeros(len(_bf_drv2))))
+        _bf_n2 = len(_bf_drv2)
+        _bf_sig_m2 = (_bf_drv2 - _nsigma * _bf_sp2) > 0
+        _bf_fbin_c2 = np.array([float(np.sum((_bf_drv2 > t) & _bf_sig_m2)) / _bf_n2
+                                for t in thresh_arr])
+        fig_det.add_trace(go.Scatter(
+            x=thresh_arr, y=_bf_fbin_c2, mode='lines',
+            name='Best-fit (algorithm)',
+            line=dict(color=_CLR_DETECTED, width=2, dash='dot')))
     fig_det.update_layout(**{
         **PLOTLY_THEME,
-        'title': dict(
-            text=(f'Detection Fraction (f_bin={me_fb:.3f}, '
-                  f'{x_label}={me_x:.2f})'),
-            font=dict(size=14)),
-        'xaxis_title': 'DeltaRV threshold (km/s)',
-        'yaxis_title': 'Fraction above threshold',
-        'height': 380,
-        'yaxis': dict(range=[0, 1.05]),
-        'legend': dict(x=0.65, y=0.95),
+        'title': dict(text='Binary Fraction vs \u0394RV Threshold', font=dict(size=14)),
+        'xaxis_title': '\u0394RV threshold (km/s)', 'yaxis_title': 'Fraction of sample',
+        'height': 400, 'margin': dict(l=60, r=80, t=50, b=50),
+        'showlegend': True, 'legend': dict(x=0.55, y=0.95, font=dict(size=10)),
+        'yaxis': dict(range=[0, min(1.0, intrinsic_fbin * 1.5)]),
     })
     st.plotly_chart(fig_det, use_container_width=True,
                     key=f'{prefix}_lk_me_det')
+    st.caption(
+        f'Binary fraction as a function of \u0394RV threshold (Explorer). '
+        f'Blue curve = fraction classified as binary. Dashed red line = '
+        f'intrinsic f_bin = {intrinsic_fbin:.1%}. At threshold '
+        f'({thresh_dRV} km/s), observed fraction = '
+        f'{observed_fbin:.1%} \u2014 gap of {gap_pct:.1%} due to '
+        f'{missed_count} undetectable binaries. '
+        f'Amber = missed binaries; blue = singles above threshold.')
 
     st.caption(
         f'Likelihood model explorer for {display_name}. '

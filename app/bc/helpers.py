@@ -96,6 +96,7 @@ def _stable_cfg_hash(cfg: dict) -> str:
     ).hexdigest()[:16]
 
 
+# WORKING — do not change this code (G1: Grid Range Exclusion)
 def _make_range_slider(container, grid: np.ndarray, label: str, key: str):
     """Render a range slider for a grid axis. Returns (min, max) tuple."""
     vals = [float(v) for v in grid]

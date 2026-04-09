@@ -352,6 +352,7 @@ def _render_all_methods_cdf(
 
 # ── From subtabs.py ──────────────────────────────────────────────────────────
 
+# WORKING — do not change this code (extra_grids: only axes with >1 value)
 def _build_extra_grids(ctx: dict) -> list[tuple[str, np.ndarray]] | None:
     """Build the extra_grids list for multi-dim models.
 

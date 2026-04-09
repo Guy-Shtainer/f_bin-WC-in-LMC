@@ -448,6 +448,7 @@ def preload_all_data(settings: dict) -> None:
 # Shared analysis utilities (used by home page + bias correction)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# WORKING — do not change this code (gold star: nanargmax + all-NaN guard)
 def find_best_grid_point(
     ks_p_2d: np.ndarray,
     fbin_vals: np.ndarray,
