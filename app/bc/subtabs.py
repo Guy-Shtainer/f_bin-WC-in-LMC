@@ -140,16 +140,24 @@ def _render_analysis_plots(
         bin_detected_mask = bin_drv > thresh_dRV
     bin_missed_mask = ~bin_detected_mask
 
-    # Best-fit parameter values (from first available method)
-    ana_fbin = None
-    ana_x_val = None
-    for mk, _, _, _, _ in SCORING_METHODS:
-        mr = method_results.get(mk)
-        if mr and 'best_vals' in mr:
-            bv = mr['best_vals']
-            ana_fbin = bv.get('fbin')
-            ana_x_val = bv.get(ctx['x_name'])
-            break
+    # Best-fit parameter values — prefer best_model dict (exclusion-aware)
+    _bm = ctx.get('best_model')
+    if _bm:
+        ana_fbin = _bm['f_bin']
+        ana_x_val = _bm.get(
+            ctx['x_name'],
+            _bm.get('pi') if ctx['x_name'] == 'pi' else _bm.get('sigma_single'),
+        )
+    else:
+        ana_fbin = None
+        ana_x_val = None
+        for mk, _, _, _, _ in SCORING_METHODS:
+            mr = method_results.get(mk)
+            if mr and 'best_vals' in mr:
+                bv = mr['best_vals']
+                ana_fbin = bv.get('fbin')
+                ana_x_val = bv.get(ctx['x_name'])
+                break
 
     intrinsic_fbin = float(gap_is_bin.mean()) if gap_is_bin.size > 0 else 0.5
     x_label = ctx['x_label']
