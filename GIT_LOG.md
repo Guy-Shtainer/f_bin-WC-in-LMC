@@ -6,6 +6,22 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-04-13 — Exclusion-aware gap_sim + role-based agent team
+
+**Tag:** `v260413-working`
+
+| Hash | Summary |
+|------|---------|
+| `ba31e15` | Fix exclusion-aware gap_sim for Binary Orbital Properties histograms |
+| `c251859` | Document 2026-04-13: gap_sim exclusion fix + agent team creation |
+| `7a9621f` | Add role-based agent team and reorganise skills into per-agent dirs |
+
+**Major changes:**
+- `gap_sim` (10k-star simulation feeding orbital-property histograms) now respects grid exclusion: `_find_best_model()` helper in `cadence.py`, exclusion mask applied before best-fit / gap_sim in both Dsilva and Langer cadence renderers; `subtabs._render_analysis_plots` prefers `ctx['best_model']`.
+- 7-agent role-based team (coder/qa/designer/plots/scientist/writer/meta-tools) under `.claude/agents/` with file-based comms. 13 existing skills moved into per-agent `-skills/` dirs; 6 new skills added (paper-research, python-production, live-testing, testable-code, academic-writing, latex-helper). Orchestrator visible skills: 19→6.
+
+---
+
 ## 2026-04-09 — Grid exclusion overhaul, CDF/Explorer consistency, Binary Fraction upgrade
 
 **Tag:** `v260409-working`
