@@ -184,6 +184,191 @@ The bias correction page of the Streamlit webapp provides:
 
 ---
 
+## 4b. Intrinsic RV Variability of Single WR Stars and Period Range Justification
+
+The observed ΔRV of a single WR star is not zero: stochastic wind
+clumping, corotating interaction regions (CIRs), and sub-surface
+convection/pulsations all produce genuine radial velocity variations
+unrelated to orbital motion. Understanding this intrinsic scatter is
+essential for (i) setting the binary detection threshold and (ii)
+modelling the single-star contribution in the bias-correction simulation.
+
+### 4b.1 Wind-Induced RV Scatter by Subtype
+
+The Dsilva et al. (2020–2023) spectroscopic multiplicity survey provides
+the most systematic measurements of intrinsic wind variability (σ_w),
+obtained from high-cadence monitoring of known single or very long-period
+WR stars:
+
+| Subtype | Proxy star | Line           | σ_w (km/s) | Peak-to-peak (km/s) | Source          |
+|---------|-----------|----------------|------------|----------------------|-----------------|
+| WC      | WR 137    | Full spectrum  | 1.6–6      | < 10                 | Dsilva+2020 (I)|
+| WNE     | WR 138    | N V (weak)     | ~5         | ~15                  | Dsilva+2022 (II)|
+| WNE     | WR 138    | He II / N IV   | ~10        | —                    | Dsilva+2022 (II)|
+| WNL     | WR 136    | He II          | ~3–5       | —                    | Dsilva+2023 (III)|
+| WNL     | WR 136    | N V λ4945      | ~15        | —                    | Dsilva+2023 (III)|
+
+Key result: **WC stars exhibit systematically lower wind-induced RV scatter
+than WN stars.** The Dsilva survey explicitly notes that "WNE stars exhibit
+stronger line-profile variability" than WC stars (Paper II). This difference
+drives the choice of detection threshold: C = 10 km/s for WC (Paper I)
+versus C = 50 km/s = 3 × σ_w for WN (Papers II–III).
+
+Additional measurements from the broader literature:
+
+- **Schnurr et al. (2008):** 41 WNL stars in the LMC; 23 "constant" single
+  stars show σ = 16 km/s on He II λ4686. Variability threshold set at
+  σ_cut = 22.6 km/s (99.9% confidence).
+- **Nazé et al. (2022):** WR 7 (WN4) shows peak-to-peak ~50 km/s over
+  ~10 years, but erratic and non-orbital — attributed to simultaneous CIRs,
+  pulsations, and stochastic clumping.
+- **Koesterke et al. (2001):** WR 135 (WC8) and WR 111 (WC5) — C III λ5696
+  LPV at the ~1% level with subpeaks migrating from line center to wings.
+- **St-Louis et al. (2020):** WR 137 (WC7) — C III λ5696 shows only 0.4% rms
+  variability, "remarkably low."
+- **Kar et al. (2024):** WR 135 (WC8) — TESS detects high-frequency pulsations
+  in He II and C IV emission lines.
+
+### 4b.2 Line Dependence
+
+Higher-ionization lines formed closer to the stellar surface show less
+wind-induced scatter. Dsilva+2020 (Paper I) finds that "masks with ions of
+higher ionisation state are least affected by wind variability." For WC
+stars, C IV (the line used in our analysis) is among the least affected.
+Shenar et al. (2019) explicitly warns that He II λ4686 "should be avoided
+for RV measurements if possible because it is very susceptible to wind
+variability."
+
+Our choice of **C IV 5808–5812** is therefore optimal for minimising
+intrinsic scatter in WC stars.
+
+### 4b.3 Metallicity Effects on Wind Variability
+
+The LMC has lower metallicity (Z ≈ 0.5 Z⊙) than the Galaxy. This affects
+WR wind properties:
+
+- **Crowther et al. (2002):** LMC WC4 stars have ~0.2 dex lower wind
+  densities than Galactic WC5–8, with mass-loss scaling as Ṁ ∝ Z^(0.6±0.2).
+- **Vink & de Koter (2005):** WC wind metallicity dependence is less steep
+  than WN (Ṁ ∝ Z^0.86 for WC).
+- **Sander & Vink (2020):** Theory-based mass-loss recipe confirms strong
+  Eddington-Γ dependence at sub-solar Z.
+- **Chené et al. (2020):** Faster winds (as found in lower-Z environments)
+  show *lower* variability, counter to line-deshadowing instability (LDI)
+  predictions.
+
+Lower wind densities imply fewer and/or weaker clumps, suggesting that
+**intrinsic RV scatter of LMC WC stars is likely equal to or lower than
+that of Galactic WC stars.** The Galactic WC σ_w values of 0–6 km/s
+therefore represent an upper bound for our LMC sample.
+
+### 4b.4 Minimum RV Variability Floor
+
+Can a single WR star have σ_RV ≈ 0? No:
+
+**Observational evidence:**
+- The lowest measured σ_RV for any single WR star is **1.8 km/s** (WR 3,
+  WN3ha — the most compact subtype; Dsilva+2022).
+- Typical single WR stars: σ_RV = 3–10 km/s (Dsilva+2020–2023).
+- The measurement precision floor alone is ~1–3 km/s for high-S/N WR spectra.
+
+**Theoretical predictions (Grassitelli et al. 2016):**
+- Sub-surface convection in the iron opacity zone produces surface velocity
+  fluctuations that seed wind clumping.
+- M < 10 M⊙: convective velocities < 2 km/s (the theoretical floor).
+- M ≥ 10 M⊙: ~10 km/s; M ~ 15 M⊙: up to ~20 km/s.
+- Observational confirmation: variability amplitude increases linearly with
+  mass above 10 M⊙ (correlation coefficient ~0.7).
+
+**Practical floor:** σ_RV ≈ 2–3 km/s, combining measurement precision
+and minimum wind/convective variability. Our simulation parameter σ_single
+(scanned over 3–13 km/s in the grid) brackets the physically plausible range.
+
+### 4b.5 Period Range Justification
+
+Our simulation uses log P ∈ [0.15, 5.0] (days), spanning periods from
+~1.4 days to ~274 years. This range is justified as follows:
+
+**Observational constraints on WR binary periods:**
+
+| System  | Type       | Period         | log P  | Method          |
+|---------|-----------|----------------|--------|-----------------|
+| WR 146  | WN4+O     | ~810–1120 yr   | ~5.5   | Radio interf.   |
+| WR 125  | WC7+O9III | 28.12 yr       | ~4.01  | Spectroscopy    |
+| WR 137  | WC7pd+O9  | ~13 yr         | ~3.68  | Spectroscopy    |
+| WR 140  | WC7pd+O5.5| ~7.9 yr        | ~3.46  | Spectroscopy    |
+
+The longest spectroscopically confirmed WR binary (WR 125, logP ≈ 4.01)
+falls well within our grid. The radio-detected WR 146 (logP ≈ 5.5) is
+near our upper boundary but would be undetectable by RV methods.
+
+**Detection efficiency vs. period:**
+
+The RV semi-amplitude scales as K₁ ∝ P^(−1/3). For the Dsilva WC survey
+(threshold C = 10 km/s), detection probability is:
+- ≥ 90% at P < 100 d (logP < 2)
+- ~80% at P ~ 100 d
+- ~40% at P ~ 1000 d (logP = 3)
+- ~0% at P > 10⁴ d (logP > 4)
+
+With our higher threshold (45.5 km/s), detection efficiency drops even
+faster. Binaries with logP > 4.5 are essentially invisible to our survey.
+Extending logP_max beyond 5.0 would increase the inferred f_int (to account
+for undetectable long-period systems) but adds no constraining power from
+the data.
+
+**The Dsilva posterior constraints:**
+
+| Sample     | logP_max best-fit      | Notes                              |
+|------------|------------------------|------------------------------------|
+| WC (Gal.)  | 4.00 (+0.42/−0.34)    | Well-constrained                   |
+| WNE (Gal.) | 4.60 (+0.40/−0.77)    | Posterior hits grid boundary (5.0) |
+| WNL (Gal.) | 4.90 (+0.09/−3.40)    | Posterior hits grid boundary (5.0) |
+| WN combined| 4.99 (+0.00/−1.11)    | Pegged at boundary                 |
+
+For WC stars specifically, the posterior is well-constrained at logP_max ≈ 4.0,
+not requiring extension beyond our current grid.
+
+**Complementary evidence:**
+
+- **Sana et al. (2012):** O-star binary survey probed logP = 0.15–3.5 with
+  a period power-law π = −0.55 ± 0.22. The logP = 3.5 limit is observational,
+  not physical.
+- **Moe & Di Stefano (2017):** Total O-star companion frequency peaks at
+  logP ~ 3.5 and extends to logP ~ 8, but companions at logP > 5.5 are
+  primarily tertiary components in hierarchical triples.
+- **Deshmukh et al. (2024):** VLTI/GRAVITY interferometry of 39 Galactic
+  WR stars reveals a **"long-period binary desert"** — a lack of WR systems
+  at periods of a few hundred to a few thousand days (logP ~ 2–4). The
+  200-day period peak predicted by Case B mass-transfer models is not
+  observed. This suggests that extending logP_max adds primarily empty
+  parameter space.
+- **Sana et al. (2025):** 139 O-stars in the SMC — bias-corrected close
+  binary fraction ≥70%, with **no significant metallicity trend**. Validates
+  the Monte Carlo bias correction approach for low-Z massive stars.
+
+**Conclusion:** Our logP range of [0.15, 5.0] is well-justified. For WC
+stars, the Dsilva posterior favours logP_max ≈ 4.0. The scan of logP_max
+as a free parameter in our cadence-aware simulation (currently 1.0–10.0)
+allows the data to determine the optimal value without imposing a fixed
+choice.
+
+### 4b.6 Implications for Our Detection Threshold
+
+Our binary detection threshold of ΔRV > 45.5 km/s on C IV 5808–5812 is:
+
+- **~8–45× the WC wind variability σ_w** (0–6 km/s; Dsilva+2020)
+- **~3× the WNE peak-to-peak wind scatter** (15 km/s; Dsilva+2022)
+- **~2× the OB supergiant pulsational scatter** (20–25 km/s peak-to-peak;
+  Simón-Díaz et al. 2024)
+- **Well above the theoretical minimum** (2 km/s; Grassitelli+2016)
+
+The threshold is conservative: it virtually eliminates false positives from
+intrinsic variability while remaining sensitive to binaries with
+K₁ ≳ 23 km/s (half the threshold for a two-epoch survey).
+
+---
+
 ## 5. Key Numbers and Thresholds
 
 | Quantity                   | Value          | Source / Notes                        |
@@ -195,9 +380,17 @@ The bias correction page of the Streamlit webapp provides:
 | Detected binaries          | 10/25          | This work                             |
 | Total binary fraction      | 13/28 ≈ 46%   | Including 3 Bartzakos binaries        |
 | σ_single (wind variability) | ~15 km/s       | Intrinsic WR RV scatter              |
+| σ_w (WC, C IV)              | 0–6 km/s       | Dsilva+2020; lowest for high-ion lines|
+| σ_w (WNE, N V)              | ~5 km/s        | Dsilva+2022                           |
+| σ_w (WNE, He II)            | ~10 km/s       | Dsilva+2022                           |
+| Min observed σ_RV (single)  | 1.8 km/s       | WR 3 (WN3ha); Dsilva+2022            |
+| Theoretical σ_RV floor      | ~2 km/s        | Grassitelli+2016 (M < 10 M⊙)         |
 | σ_measure (per-epoch)       | ~5 km/s        | Formal CCF uncertainty               |
 | N_stars per simulation      | 10,000         | Monte-Carlo sample size              |
 | Period range (log P)        | [0.15, 5.0]    | Days; power-law distribution         |
+| logP_max (WC best-fit)      | 4.00 (+0.42/−0.34) | Dsilva+2020                      |
+| logP_max (WN combined)      | 4.99 (+0.00/−1.11) | Dsilva+2023; hits grid boundary  |
+| Longest spectro. WR binary  | logP ≈ 4.01    | WR 125 (28.12 yr); WC7+O9III         |
 | Eccentricity range          | [0, 0.9]       | Uniform (Dsilva model)               |
 | Mass ratio range            | [0.1, 2.0]     | Flat prior (Dsilva model)            |
 
@@ -207,11 +400,50 @@ The bias correction page of the Streamlit webapp provides:
 
 - Bartzakos, P., Moffat, A. F. J., & Niemela, V. S. 2001, MNRAS, 324, 18 —
   Original survey of 28 WC stars in the LMC.
-- Dsilva, K., et al. 2023 — Binary fraction bias correction methodology
-  (power-law period model, Monte-Carlo simulation framework).
-- Langer, N., et al. 2020 — Alternative period distribution model for OB+BH
-  systems (two-Gaussian mixture representing Case A and Case B mass transfer).
-- Zucker, S., & Mazeh, T. 1994, ApJ, 420, 806 — CCF methodology.
+- Chené, A.-N. & St-Louis, N. 2011, ApJ, 736, 140 — Systematic CIR search
+  in 68 apparently single Galactic WR stars.
+- Chené, A.-N., St-Louis, N., Moffat, A. F. J. & Gayley, K. G. 2020,
+  ApJ, 903, 113 — Clumping in WR winds; faster winds show lower variability.
+- Crowther, P. A. 2007, ARA&A, 45, 177 — Comprehensive WR review.
+- Crowther, P. A., et al. 2002, A&A, 392, 653 — LMC WC4 wind properties;
+  Ṁ ∝ Z^(0.6±0.2).
+- Deshmukh, M., et al. 2024, A&A, 692, A109 — VLTI/GRAVITY survey of 39
+  Galactic WR stars; long-period binary desert.
+- Dsilva, K., et al. 2020, A&A, 641, A26 — WC multiplicity survey (Paper I);
+  wind variability σ_w for WC stars.
+- Dsilva, K., et al. 2022, A&A, 664, A93 — WNE multiplicity survey (Paper II);
+  wind variability σ_w ~ 5–10 km/s; detection threshold C = 50 km/s.
+- Dsilva, K., et al. 2023, A&A, 674, A108 — WNL multiplicity survey (Paper III);
+  combined WN binary fraction and logP_max constraints.
+- Grassitelli, L., et al. 2016, A&A, 590, A12 — Sub-surface convection in WR
+  envelopes; predicted velocity floor ~2 km/s (M < 10 M⊙).
+- Kar, A., et al. 2024, AJ, 168, 199 — TESS pulsations in WR 135 (WC8);
+  C IV line variability.
+- Koesterke, L., Hamann, W.-R. & Urrutia, T. 2001, A&A, 379, 224 —
+  LPV in WR 135 (WC8) and WR 111 (WC5) on C III λ5696.
+- Langer, N., et al. 2020, A&A, 638, A39 — Period distribution model for
+  OB+BH systems (two-component mixture: Case A and Case B mass transfer).
+- Moe, M. & Di Stefano, R. 2017, ApJS, 230, 15 — Comprehensive binary
+  statistics; companion frequency peaks at logP ~ 3.5.
+- Nazé, Y., et al. 2022, MNRAS, 514, 2269 — WR 7 (WN4) multiple variability
+  timescales; peak-to-peak ~50 km/s (non-orbital).
+- Sana, H., et al. 2012, Science, 337, 444 — O-star binary fraction 69%;
+  period power-law π = −0.55 ± 0.22.
+- Sana, H., et al. 2025, Nature Astronomy, 9, 1337 — SMC O-star multiplicity;
+  ≥70% close binary fraction; no metallicity trend.
+- Sander, A. A. C. & Vink, J. S. 2020, MNRAS, 491, 4406 — Theory-based WR
+  mass-loss recipe; Γ and Z dependence.
+- Schnurr, O., et al. 2008, MNRAS, 389, 806 — LMC WNL survey; single-star
+  σ = 16 km/s.
+- Shenar, T., et al. 2019, A&A, 627, A151 — LMC WN binaries; He II λ4686
+  should be avoided for RV.
+- Simón-Díaz, S., et al. 2024, arXiv:2405.11209 — OB supergiant pulsational
+  RV up to 20–25 km/s; false-positive binary risk.
+- St-Louis, N., et al. 2020, MNRAS, 497, 4448 — WR 137 (WC7) C III λ5696
+  variability at 0.4% rms.
+- Vink, J. S. & de Koter, A. 2005, A&A, 442, 587 — WR wind metallicity
+  dependence; Ṁ ∝ Z^0.86 for WC.
+- Zucker, S. & Mazeh, T. 1994, ApJ, 420, 806 — CCF methodology.
 - Zucker, S., et al. 2003, MNRAS, 342, 1291 — Multi-order CCF formalism.
 
 ---
@@ -1518,4 +1750,35 @@ Major overhaul of the bias correction analysis pipeline focusing on grid exclusi
 
 ---
 
-*Last updated: 2026-04-09*
+---
+
+### 2026-04-13 — Exclusion-aware gap_sim + role-based agent team
+
+**What was done:**
+- **Exclusion-aware best-fit for orbital-property histograms.** Fixed an architectural ordering bug in the bias-correction cadence tabs: the 10k-star simulation feeding the Binary Orbital Properties histograms (`gap_sim`) was computed from the unmasked likelihood, so grid-exclusion sliders updated the heatmap best-fit but histograms stayed stale. Added a `_find_best_model()` helper in `app/bc/cadence.py` that extracts `{f_bin, pi, sigma_single, logP_max}` from a (possibly NaN-masked) likelihood array, and moved the grid-exclusion call to run *before* best-fit computation and `gap_sim` generation in both `_render_cadence_results` and `_render_cadence_results_langer`. `app/bc/subtabs.py::_render_analysis_plots` now prefers `ctx['best_model']` over legacy argmax lookups for histogram labels. For non-grid-searched axes (σ_single or logP_max), the helper reads `grid[0]` which equals the hardcoded parameter value. All 16 error-check phases passed (static, py_compile, import, smoke 2D/3D/4D/all-NaN/Langer, render).
+- **Role-based agent team.** Built a 7-agent team (`coder`/opus, `qa`/sonnet, `designer`/sonnet, `plots`/opus, `scientist`/opus, `writer`/opus, `meta-tools`/sonnet) under `.claude/agents/` with embedded domain knowledge and a file-based inter-agent communication system (`.claude/agents/comms/`). Reorganised the skill layout: moved 13 existing skills from `.claude/skills/` into per-agent `.claude/agents/{name}-skills/` directories, added 6 new skills (paper-research, python-production, live-testing, testable-code, academic-writing, latex-helper), and trimmed the orchestrator's visible skills from 19 to 6. Created `memory/current_focus.md` for live session state and `memory/feedback_file_size.md` capturing the <300-line preference.
+
+**Key results:**
+- Grid exclusion now consistently propagates to the Binary Orbital Properties histograms in both Dsilva and Langer cadence tabs.
+- Agent-team infrastructure in place; subagents cannot spawn subagents (Claude Code constraint), so the orchestrator coordinates role-specialised agents through the comms files.
+
+**Methodology notes for paper:**
+- None (infrastructure + UI-consistency fix only).
+
+**Decisions:**
+- Restructure render order (exclusion → best-fit → `gap_sim`) rather than compute `gap_sim` twice — no layout change since exclusion UI is already rendered between grid extraction and the heatmaps.
+- Store `best_model` only in `model_ctx` (transient per render); `gap_sim` persistence is handled by the existing fingerprint cache.
+- Role-based agent specialisation (coder/qa/designer/plots/scientist/writer) preferred over domain-based split (science/webapp) to match how the user delegates work.
+- Agents isolate their skills via dedicated `-skills/` directories rather than `disable-model-invocation: true`, keeping the orchestrator context small.
+
+**Bugs found and fixed:**
+- Ordering bug: grid-exclusion mask was applied after `gap_sim` was built, causing stale orbital-property histograms under exclusion. Not greppable — no COMMON_ERRORS entry added.
+
+**Open questions:**
+- Does the new agent team perform well on real tasks? Needs validation in the next working session.
+- Should the largest bias-correction modules (`cadence.py` ≈ 1566 lines, `analysis.py` ≈ 1203 lines) eventually be split, given the <300-line preference? Currently deferred due to breakage risk.
+- Are the six newly authored skills (paper-research, python-production, live-testing, testable-code, academic-writing, latex-helper) complete enough, or do they need iteration after first use?
+
+---
+
+*Last updated: 2026-04-13*
