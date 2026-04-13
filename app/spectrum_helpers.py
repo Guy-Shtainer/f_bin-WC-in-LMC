@@ -27,11 +27,13 @@ DIAGNOSTIC_LINES: dict[str, list[dict]] = {
         {'name': 'He I 5876', 'wave': 5875.6, 'element': 'He I', 'type': 'abs'},
         {'name': 'He I 6678', 'wave': 6678.2, 'element': 'He I', 'type': 'abs'},
     ],
-    'He II (hot companion)': [
+    'He II (OB companion absorption)': [
         {'name': 'He II 4200', 'wave': 4199.8, 'element': 'He II', 'type': 'abs'},
         {'name': 'He II 4542', 'wave': 4541.6, 'element': 'He II', 'type': 'abs'},
-        {'name': 'He II 4686', 'wave': 4685.7, 'element': 'He II', 'type': 'em'},
         {'name': 'He II 5412', 'wave': 5411.5, 'element': 'He II', 'type': 'abs'},
+    ],
+    'He II (WR emission)': [
+        {'name': 'He II 4686', 'wave': 4685.7, 'element': 'He II', 'type': 'em'},
     ],
     'Carbon (WC diagnostic)': [
         {'name': 'C III 5696', 'wave': 5696.0, 'element': 'C', 'type': 'em'},
@@ -48,12 +50,15 @@ DIAGNOSTIC_LINES: dict[str, list[dict]] = {
     'Oxygen (WC diagnostic)': [
         {'name': 'O V 3144',  'wave': 3144.0, 'element': 'O', 'type': 'em'},
         {'name': 'O IV 3412', 'wave': 3412.0, 'element': 'O', 'type': 'em'},
+        {'name': 'O III 5592','wave': 5592.3, 'element': 'O', 'type': 'em'},
+    ],
+    'Oxygen (WO diagnostic)': [
         {'name': 'O VI 3811', 'wave': 3811.4, 'element': 'O', 'type': 'em'},
         {'name': 'O VI 3834', 'wave': 3834.2, 'element': 'O', 'type': 'em'},
-        {'name': 'O III 5007','wave': 5006.8, 'element': 'O', 'type': 'em'},
         {'name': 'O VI 5290', 'wave': 5290.0, 'element': 'O', 'type': 'em'},
-        {'name': 'O V 5590',  'wave': 5590.0, 'element': 'O', 'type': 'em'},
-        {'name': 'O III 5592','wave': 5592.3, 'element': 'O', 'type': 'em'},
+    ],
+    'Nebular / Circumstellar': [
+        {'name': '[O III] 5007', 'wave': 5006.8, 'element': 'O', 'type': 'em'},
     ],
     'Interstellar / Other': [
         {'name': 'Ca II K',  'wave': 3933.7, 'element': 'ISM', 'type': 'abs'},
@@ -86,11 +91,11 @@ LINE_COLORS = {
 }
 
 LINE_PRESETS = {
-    'SB2 search (OB companion)': ['Hydrogen (Balmer)', 'He I (OB companion)', 'He II (hot companion)'],
+    'SB2 search (OB companion)': ['Hydrogen (Balmer)', 'He I (OB companion)', 'He II (OB companion absorption)'],
     'WC diagnostic': ['Carbon (WC diagnostic)', 'Oxygen (WC diagnostic)'],
     'WN diagnostic': ['Nitrogen (WN diagnostic)'],
     'Contamination (ISM + Telluric)': ['Interstellar / Other', 'Telluric (Earth atmosphere)'],
-    'All absorption': ['Hydrogen (Balmer)', 'He I (OB companion)', 'He II (hot companion)',
+    'All absorption': ['Hydrogen (Balmer)', 'He I (OB companion)', 'He II (OB companion absorption)',
                        'Interstellar / Other', 'Telluric (Earth atmosphere)'],
 }
 
@@ -351,7 +356,7 @@ def render_absorption_search(
         'yaxis': {**plotly_theme.get('yaxis', {}), 'title': 'Epoch'},
         'height': 350,
     })
-    st.plotly_chart(fig_heat, use_container_width=True)
+    st.plotly_chart(fig_heat, use_container_width=True, theme=None)
     st.caption(
         'Minimum flux near each absorption line across all epochs. '
         'Red = deep absorption (possible companion feature), green = continuum. '
@@ -428,7 +433,7 @@ def render_absorption_search(
                 x=w, line_width=1, line_dash=dash_style,
                 line_color=color, opacity=0.6,
                 annotation_text=linfo['name'],
-                annotation=dict(font_size=8, font_color=color, textangle=-90, yanchor='bottom'),
+                annotation=dict(font_size=11, font_color=color, textangle=-90, yanchor='bottom'),
                 annotation_position='top',
             )
 
@@ -438,9 +443,9 @@ def render_absorption_search(
         'xaxis': {**plotly_theme.get('xaxis', {}), 'title': 'Wavelength (Å)'},
         'yaxis': {**plotly_theme.get('yaxis', {}), 'title': 'Flux difference'},
         'height': 450,
-        'legend': {**plotly_theme.get('legend', {}), 'bgcolor': 'rgba(30,30,46,0.85)'},
+        'legend': {**plotly_theme.get('legend', {})},
     })
-    st.plotly_chart(fig_diff, use_container_width=True)
+    st.plotly_chart(fig_diff, use_container_width=True, theme=None)
 
     rms = float(np.sqrt(np.mean(diff_flux**2)))
     peak = float(np.max(np.abs(diff_flux)))
