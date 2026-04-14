@@ -732,6 +732,54 @@ def _render_compare_tab(p: str) -> None:
         pi_vals = res.get('pi_grid', np.array([]))
         logPmax_vals = res.get('logPmax_grid', np.array([]))
 
+        # Raw logL and observed ΔRV for AIC/BIC
+        logL_raw = res.get('logL_raw', None)
+        obs_delta_rv = res.get('obs_delta_rv', None)
+        if obs_delta_rv is not None:
+            try:
+                n_obs = int(len(obs_delta_rv))
+            except Exception:
+                n_obs = None
+        else:
+            n_obs = None
+
+        def _finalize_aicbic(info_dict, idx_tuple):
+            """Fill best_logL, n_obs, k_params, aic, bic on info_dict given argmax idx."""
+            # best_logL from logL_raw if shape matches lk
+            _lk_local = info_dict.get('lk_full')
+            if (logL_raw is not None and _lk_local is not None
+                    and np.asarray(logL_raw).shape == np.asarray(_lk_local).shape):
+                try:
+                    info_dict['best_logL'] = float(np.asarray(logL_raw)[idx_tuple])
+                except Exception:
+                    pass
+            # n_obs: obs_delta_rv → settings fallback → None
+            _n = n_obs
+            if _n is None:
+                try:
+                    _s_raw = res.get('settings', None)
+                    _s_dict = json.loads(str(_s_raw)) if _s_raw is not None else {}
+                    _ns = _s_dict.get('n_stars_sim', None)
+                    if _ns is not None:
+                        _n = int(_ns)
+                except Exception:
+                    _n = None
+            if _n is not None:
+                info_dict['n_obs'] = _n
+            # k_params: count axes with size > 1 among candidate grids
+            axes = [info_dict.get('fbin_vals'),
+                    info_dict.get('sigma_vals'),
+                    info_dict.get('logPmax_vals')]
+            if info_dict.get('type') == 'dsilva':
+                axes.append(info_dict.get('pi_vals'))
+            _k = sum(1 for a in axes if a is not None and np.asarray(a).size > 1)
+            info_dict['k_params'] = _k
+            # AIC / BIC
+            if 'best_logL' in info_dict:
+                info_dict['aic'] = 2.0 * _k - 2.0 * info_dict['best_logL']
+                if _n is not None and _n > 0:
+                    info_dict['bic'] = _k * float(np.log(_n)) - 2.0 * info_dict['best_logL']
+
         if pi_vals.size > 0:
             info['type'] = 'dsilva'
             info['fbin_vals'] = fbin_vals
@@ -756,6 +804,7 @@ def _render_compare_tab(p: str) -> None:
                 info['best_sigma'] = float(sigma_vals[idx[1]]) if sigma_vals.size > 0 else None
                 info['best_logPmax'] = float(logPmax_vals[idx[0]]) if logPmax_vals.size > 0 else None
                 info['best_lk'] = float(lk[idx])
+                _finalize_aicbic(info, idx)
             elif lk.ndim == 3:
                 flat_idx = int(np.nanargmax(lk))
                 idx = np.unravel_index(flat_idx, lk.shape)
@@ -765,6 +814,7 @@ def _render_compare_tab(p: str) -> None:
                 info['best_pi'] = float(pi_vals[idx[2]])
                 info['best_sigma'] = float(sigma_vals[idx[0]]) if sigma_vals.size > 0 else None
                 info['best_lk'] = float(lk[idx])
+                _finalize_aicbic(info, idx)
             elif lk.ndim == 2:
                 info['heatmap'] = lk
                 flat_idx = int(np.nanargmax(lk))
@@ -772,6 +822,7 @@ def _render_compare_tab(p: str) -> None:
                 info['best_fbin'] = float(fbin_vals[idx[0]])
                 info['best_pi'] = float(pi_vals[idx[1]])
                 info['best_lk'] = float(lk[idx])
+                _finalize_aicbic(info, idx)
             info['x_vals'] = pi_vals
             info['x_label'] = 'π'
         else:
@@ -788,6 +839,7 @@ def _render_compare_tab(p: str) -> None:
                 info['best_fbin'] = float(fbin_vals[idx[0]])
                 info['best_sigma'] = float(sigma_vals[idx[1]])
                 info['best_lk'] = float(lk[idx])
+                _finalize_aicbic(info, idx)
 
         for _hk in ('mode_fbin', 'lo_fbin', 'hi_fbin',
                      'mode_pi', 'lo_pi', 'hi_pi',
@@ -960,6 +1012,12 @@ def _render_compare_tab(p: str) -> None:
         # p-value
         _row['Likelihood'] = f'{_inf["best_lk"]:.5f}' if 'best_lk' in _inf else '—'
 
+        # Raw logL + model-selection stats
+        _row['logL'] = f'{_inf["best_logL"]:.3f}' if 'best_logL' in _inf else '—'
+        _row['k']    = str(_inf['k_params'])      if 'k_params'  in _inf else '—'
+        _row['AIC']  = f'{_inf["aic"]:.2f}'       if 'aic'       in _inf else '—'
+        _row['BIC']  = f'{_inf["bic"]:.2f}'       if 'bic'       in _inf else '—'
+
         # Re-simulation metrics
         if _has_resim_s:
             _v = _r['res'].get('resim_S_raw')
@@ -971,7 +1029,32 @@ def _render_compare_tab(p: str) -> None:
         _bf_rows.append(_row)
 
     _bf_df = pd.DataFrame(_bf_rows)
+
+    # ΔAIC / ΔBIC relative to the best (minimum) across the selected rows
+    for _col in ('AIC', 'BIC'):
+        if _col in _bf_df.columns:
+            _num = pd.to_numeric(_bf_df[_col], errors='coerce')
+            if _num.notna().any():
+                _ref = _num.min()
+                _bf_df[f'Δ{_col}'] = (_num - _ref).map(
+                    lambda v: f'{v:.2f}' if pd.notna(v) else '—')
+
+    # Reorder so Δ columns sit right after their base columns
+    _cols = list(_bf_df.columns)
+    for _base in ('AIC', 'BIC'):
+        _d = f'Δ{_base}'
+        if _base in _cols and _d in _cols:
+            _cols.remove(_d)
+            _cols.insert(_cols.index(_base) + 1, _d)
+    _bf_df = _bf_df[_cols]
+
     st.dataframe(_bf_df, use_container_width=True, hide_index=True)
+    st.caption(
+        "AIC = 2k − 2·logL   ·   BIC = k·ln(N) − 2·logL   "
+        "(lower is better; ΔAIC/ΔBIC relative to best row). "
+        "k = number of grid axes with >1 value in that run (fixed axes don't count). "
+        "N = observed ΔRV points."
+    )
 
     if _has_resim_s:
         st.caption('**S_raw** is the unweighted CvM distance — directly comparable across models. Lower = better fit.')
