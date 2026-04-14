@@ -6,6 +6,25 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-04-14 — AIC/BIC Compare tab + intrinsic-RV review + A&A plots audit
+
+**Tag:** `v260414-working`
+
+| Hash | Summary |
+|------|---------|
+| `4bf0450` | Add AIC/BIC model selection to Compare tab |
+| `e822912` | Strengthen plots agent: WCAG contrast + A&A standards + review protocol |
+| `f1411c4` | End-of-day 2026-04-14: intrinsic-RV review, AIC/BIC, standalone apps, A&A audit |
+
+**Major changes:**
+- Compare tab reports raw `logL`, dynamic `k`, `AIC/ΔAIC`, `BIC/ΔBIC` alongside the normalized likelihood; `k` derived from grid-axis sizes > 1, N=25.
+- DOCUMENTATION §4b added: intrinsic single-star RV variability (~40 citations), period-range justification; six new rows in §5 Key Numbers; references expanded 5→22.
+- Plots agent `.claude/agents/plots.md` gains HARD RULE #1 (WCAG contrast), A&A Journal Standards, 6-step review protocol.
+- TODO.md: #174–#177 logged (literature review, AIC/BIC, standalone apps, A&A plots audit).
+- Background: standalone `spectrum_app/` extracted (already on d53d92d); `rv_modeling_app/` still uncommitted pending validation.
+
+---
+
 ## 2026-04-13 — Exclusion-aware gap_sim + role-based agent team
 
 **Tag:** `v260413-working`
