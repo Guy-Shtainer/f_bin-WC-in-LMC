@@ -1781,4 +1781,42 @@ Major overhaul of the bias correction analysis pipeline focusing on grid exclusi
 
 ---
 
-*Last updated: 2026-04-13*
+### 2026-04-14 — Intrinsic RV variability review, AIC/BIC model comparison, standalone apps, A&A plot audit
+
+**What was done:**
+- **Intrinsic RV variability literature review (§4b).** Compiled ~40 quantitative citations on single-star ΔRV variability in Wolf–Rayet stars and authored a new `§4b Intrinsic RV Variability of Single WR Stars and Period Range Justification` (6 subsections: wind-induced scatter by subtype, line-dependence, metallicity effects, minimum RV floor, period-range justification, threshold implications). Expanded `§5 Key Numbers` with six new rows (σ_w per subtype, minimum observed σ_RV, theoretical RV floor, logP_max constraints, longest known spectroscopic-binary period). `§6 References` grew from 5 to 22 entries (Chené, Crowther, Deshmukh, Dsilva I/II/III, Grassitelli, Kar, Koesterke, Langer, Moe & Di Stefano, Nazé, Sana 2012/2025, Sander & Vink, Schnurr, Shenar, Simón-Díaz, St-Louis, Vink & de Koter).
+- **AIC/BIC model selection in the Compare tab.** Extended `_render_compare_tab()` in `app/bc/extras.py` so the best-fit comparison table reports raw `logL`, the number of free parameters `k`, and the information criteria `AIC`, `ΔAIC`, `BIC`, `ΔBIC` alongside the existing normalized likelihood. `k` is derived dynamically from the grid-axis sizes (> 1) so single-σ or single-logP_max runs get the correct penalty. N for BIC is the number of observed stars (25). Implementation stayed inside the Compare tab; the Dsilva and Langer tabs were intentionally untouched. `/error-check` passed pyflakes and render phases.
+- **Standalone `spectrum_app/` and `rv_modeling_app/`.** Promoted the spectrum viewer and RV-modeling pages to standalone Streamlit apps (isolated imports, shared `settings/user_settings.json` via namespaced keys). The spectrum app gained a peak-to-peak epoch banner and toggle, diagnostic-line-group quick-zoom buttons with type-aware Y ranges (abs [0.5, 1.3], emission data-driven, ISM / telluric [0, 1.2]), ISE anchor/interp toggles on the unnormalized chart, an unnormalized COMBINED panel with raw-FITS fallback for non-COMBINED bands, and LMC velocity correction. The RV-modeling app gained Laplace and Generalised-Normal distributions for double-exponential histogram fitting, an auto-fit-all ranking banner with AIC/BIC expander and positive-x clamping, and a 9-panel orbital-histogram grid in Tab A. Fixed a `KeyError 'n_epochs'` arising from a producer/consumer dict-contract mismatch by tightening both sides and preferring `.get(key, default)` for cross-module dicts.
+- **Scientific audit of `DIAGNOSTIC_LINES`.** Removed the misidentified `O V 5590`, moved `[O III] 5007` to a new *Nebular / Circumstellar* group, split `He II (hot companion)` into *OB companion absorption* and *WR emission*, and separated the oxygen block into distinct *WC* and *WO* diagnostic groups.
+- **A&A plot-style enforcement.** Strengthened the plots-agent definition (`.claude/agents/plots.md`) with HARD RULE #1 (WCAG contrast), the A&A Journal Standards section, and a mandatory six-step review protocol. Caught a recurring white-axis-title bug by adding `title.font.color=black` to `_ACADEMIC_AXIS` and `theme=None` on every `st.plotly_chart()` call. Fixed 12 chart-call sites missing `theme=None`, 7 bare-string axis titles, and 12 `update_xaxes/yaxes` calls missing `title_font`.
+
+**Key results:**
+- Period range `logP ∈ [0.15, 5.0]` is well-justified for WC binaries: Dsilva WC best-fit `logP_max = 4.00`, RV-detection efficiency drops to ≈ 0% beyond `logP ≈ 4.5`, and the Deshmukh binary desert occupies intermediate periods.
+- No minimum σ_RV should be imposed at zero: the observed floor is ≈ 1.8 km s⁻¹ (WR 3) and the theoretical floor is ≈ 2 km s⁻¹ (Grassitelli+2016). WC wind variability (0–6 km s⁻¹) is substantially lower than WN (5–15 km s⁻¹), so the 45.5 km s⁻¹ detection threshold remains very conservative.
+- Raw `logL` is biased toward Dsilva because Dsilva has an extra free parameter (π). AIC/BIC are the correct model-selection signal for a Dsilva-vs-Langer comparison in this pipeline.
+
+**Methodology notes for paper:**
+- Cite WC-specific σ_w values from Chené, St-Louis, Crowther, and Schnurr when motivating the detection threshold in the Methods section.
+- Report AIC/BIC (not raw max-logL) whenever comparing period models with different parameter counts. Document `k` counting: one DOF per grid axis with size > 1.
+- Use `§4b` of `DOCUMENTATION.md` as the canonical reference for the period-range justification in the paper's Methods/Discussion.
+
+**Decisions:**
+- Use AIC/BIC as the primary Dsilva-vs-Langer model-selection signal; defer a flat-π nested comparison as a follow-up variant.
+- Keep the existing normalized `Likelihood` column for continuity; add raw `logL` alongside, not in place of it.
+- Restrict the AIC/BIC edit to the Compare tab (scope guardrail) — the individual cadence tabs remain untouched.
+- Standalone apps share `settings/user_settings.json` with the main app via namespaced keys — accepted for dev use; no race conditions expected in single-developer workflow.
+- Matplotlib/A&A style + WCAG contrast is now a standing rule for every Plotly chart; enforced at agent level via `plots.md`.
+
+**Bugs found and fixed:**
+- `KeyError 'n_epochs'` — producer/consumer dict-contract mismatch between the orbital-parameter simulator and the histogram renderer. Both sides fixed; the pattern is captured in `memory/feedback_dict_contract_bugs.md` rather than `COMMON_ERRORS.md` (design pattern, not a greppable typo).
+- White axis titles on white backgrounds — caused by missing `title.font.color=black` on `_ACADEMIC_AXIS` and missing `theme=None` on `st.plotly_chart()` calls. Fixed globally in `app/spectrum_helpers.py` and captured in `memory/feedback_matplotlib_style.md` and `memory/feedback_aa_journal_style.md`.
+
+**Open questions:**
+- Is `simulate_binary_rvs_raw` in `wr_bias_simulation.py:817` skipping `_draw_measurement_noise`? Scientist flagged this as a possible bug in the Tab A raw-RV path — not yet confirmed.
+- `rv_modeling_app/` is not yet committed; needs first-run validation before committing.
+- Should the paper address the fixed `M₁ = 10 M⊙` assumption and the `q_max = 2.0` choice in the Methods? Only period and noise covered so far in the parameter-by-parameter review; eccentricity, mass ratio, primary mass, and inclination still to do.
+- Does the strengthened plots-agent review protocol actually catch contrast regressions on first pass? Needs a real-task trial.
+
+---
+
+*Last updated: 2026-04-14*
