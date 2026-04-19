@@ -530,3 +530,46 @@ When you encounter a new recurring error, add it here with:
 | **Grep** | `in fit\.data\b` or `in .*\.data\b` (manual check needed) |
 | **Why** | Astropy `FITS_rec` (structured array) doesn't support `str in FITS_rec` — raises `TypeError: Cannot compare structured or void to non-void arrays`. The `in` operator tries element-wise comparison, not column-name lookup. Use `.dtype.names` to check column existence. |
 | **Found in** | `app/plots/data.py` (2026-04-06) |
+
+### E045 — `st.slider` with `min_value == max_value` on single-value grid
+
+| | |
+|---|---|
+| **Bad** | `st.slider('range', min_value=lo, max_value=hi, ...)` when `lo == hi` |
+| **Fix** | Guard: `if lo >= hi: return lo, hi` — show static text instead of slider |
+| **Grep** | `\.slider\(` (manual check: ensure grid can't be single-value) |
+| **Why** | Streamlit requires `min_value < max_value`. When a grid axis has one value (e.g., fixed σ_single=7.5 in Langer model), `lo == hi` and the slider raises `StreamlitAPIException`. |
+| **Found in** | `app/bc/helpers.py:_make_range_slider` (2026-04-19) |
+
+### E046 — `st.button` inside conditional block: click dropped on rerun
+
+| | |
+|---|---|
+| **Bad** | Button rendered only when a one-shot session_state flag is set, then popped on first rerun. After click the condition is False → button isn't re-instantiated at its key → Streamlit drops the click → handler never fires. |
+| **Fix** | Before `st.stop()` in the "wait for click" branch, **re-arm** the session_state flag(s) that gated the outer `if`. Next rerun re-enters the block, re-renders the button at the same key, and the click is captured. In the click-handler branches, clear the re-armed flags to avoid an infinite loop. |
+| **Grep** | *(not greppable — structural pattern)* |
+| **Why** | Streamlit's button click is only consumed on the *next* rerun, and only if the widget is re-instantiated at the same key. If the outer `if` goes False because a flag was popped on the previous rerun, the button is gone and the click is silently discarded. Classic symptom: "nothing happens when I click the button." |
+| **Found in** | `app/bc/cadence.py` — resume-flow sim-context mismatch guard (2026-04-19). The `_auto_resume` / `_resume_from` flags are popped at the top of `_cadence_run_and_results`, so the mismatch buttons ("Start fresh" / "Cancel") were unreachable until the block re-armed both before `st.stop()`. |
+| **Prevention** | When rendering a button inside a one-shot-triggered block: either (1) re-arm the flags before `st.stop()` so the next rerun repaints the buttons, or (2) store button state explicitly in session_state from an `on_click` callback. |
+
+### E047 — Plotly `fill='toself'` band + `shape='hv'` step line mismatch
+
+| | |
+|---|---|
+| **Bad** | Percentile band drawn as a closed `fill='toself'` polygon (linear-interp edges) while the median/central line overlaid with `line=dict(..., shape='hv')`. Between two X points, the step line stays flat at y_{i-1} while the band's polygon edge slopes diagonally to (x_i, y_i). Median visually escapes the band even though `lo[i] ≤ med[i] ≤ hi[i]` is mathematically guaranteed. |
+| **Fix** | Replace single polygon with **two `shape='hv'` traces** + `fill='tonexty'`:<br>```python<br>go.Scatter(x=X, y=lo, mode='lines',<br>    line=dict(color='rgba(0,0,0,0)', shape='hv'), showlegend=False, hoverinfo='skip')<br>go.Scatter(x=X, y=hi, mode='lines',<br>    line=dict(color='rgba(0,0,0,0)', shape='hv'),<br>    fill='tonexty', fillcolor=..., showlegend=False, hoverinfo='skip')<br>```<br>The lo-trace MUST be added IMMEDIATELY before the hi-trace (`tonexty` targets the previous trace). |
+| **Grep** | `fill=.toself` combined with nearby `shape=.hv` (manual inspection — false positives for 2D confidence regions where no step line is overlaid) |
+| **Why** | Plotly `shape='hv'` on `fill='toself'` with a forward-then-reverse closed path has undefined behavior (the backward leg's step direction is ambiguous). The two-trace `fill='tonexty'` pattern is the standard Plotly idiom for stepped uncertainty bands. |
+| **Found in** | Bias correction page CDF plots (2026-04-19): `app/bc/render_shared.py:_render_all_methods_cdf`, `app/bc/render_shared_langer.py:_render_all_methods_cdf`, `app/bc/render_lk_explorer.py:_render_lk_resim_interp`, `app/bc/render_lk_explorer_langer.py:_render_lk_resim_interp`. Also present in the dead copies at `app/bc/analysis.py:460-465, 1101-1108`. |
+| **Prevention** | Whenever a central line uses `shape='hv'` (empirical CDFs, step histograms), the surrounding uncertainty band must use the same step shape. Check by zooming: if median visibly dips outside band near bin-edge transitions, you have this bug. |
+
+### E048 — Re-sim helper builds fresh `BinaryParameterConfig` — silent physics-config drift between grid scoring and CDF/score display
+
+| | |
+|---|---|
+| **Bad** | A cached re-sim helper that takes `fb, pi, sigma, logPmax, …` and internally does `bin_cfg = BinaryParameterConfig(logP_max=logPmax)`. Every other field (`logP_min`, `e_model`, `q_model`, `mass_primary_model`, `period_model`, …) silently reverts to module defaults, so the recomputed CDF/logL lives on a different physical surface than the one the grid worker scored. Symptoms: top-of-page CDF flatlines at 0.5 from ~27 → ~320 km/s; Model-Explorer "Global best logL" disagrees with the heatmap's `logL_raw[best_idx]`; user can manually find a higher-scoring point in the explorer that isn't actually higher on the real grid surface. |
+| **Fix** | (1) Accept the full bin_cfg as a parameter (as a hashable dict/tuple) + an explicit `period_model` string. Rebuild `BinaryParameterConfig(**bin_cfg_dict)` inside the helper, then override only `logP_max` (slider) and `period_model` (explicit arg). (2) Persist `bin_cfg` (as `vars(bin_cfg)` dict), `period_model`, and `cadence_weights` into the grid runner's `result` dict so downstream callers have everything they need. (3) All call sites pull from `result.get('bin_cfg'/'period_model'/'cadence_weights')` and pass through. (4) Keep a legacy fallback (`_bin_cfg_dict is None` → `BinaryParameterConfig()`) so old .npz files still load, with an `st.info()` notice. |
+| **Grep** | `BinaryParameterConfig\(logP_max=` (legitimate only inside `_me_cdf_band`/`_me_cdf_band_langer` as the legacy fallback). Any OTHER hit in a helper that also computes a CDF or logL is suspect. |
+| **Why** | `BinaryParameterConfig` is a dataclass with ~10 knobs — logP bounds, eccentricity model/max, primary-mass model/range, q model/range, Langer mixture params, `period_model`. Building a fresh one with just `logP_max=…` silently reverts the other 9 knobs to module defaults, which almost never match the user's run. The bug is especially nasty because it's cadence-silent (cadence_library was already threaded) and only shows up as a "the algorithm is wrong" complaint from the user — they see the explorer's re-sim disagree with the heatmap without any error message. |
+| **Found in** | `app/bc/render_lk_explorer.py:_me_cdf_band` (line 48) + 3 call sites; `app/bc/render_lk_explorer_langer.py:_me_cdf_band_langer` (line 48) + 4 call sites; `app/bc/render_shared.py:_render_all_methods_cdf` (line 284); `app/bc/render_shared_langer.py:_render_all_methods_cdf` (line 296); `app/bc/runners_cadence.py:480-496` (result dict — persist bin_cfg/period_model/cadence_weights). Fixed 2026-04-19. |
+| **Prevention** | When adding a new re-sim helper (CDF, logL, detection fraction, …), the input contract is: take either the full `bin_cfg` object OR its `vars(...)` dict. Never accept a subset like "(fb, pi, sigma, logPmax)" and synthesize a fresh `BinaryParameterConfig` from it. If the helper is `@st.cache_data`, pass the dict as a hashable tuple and prefix with `_` to skip the cache key (the underlying parameters already differentiate the call). Store every physics-affecting knob in the runner's result dict so downstream code never has to guess. See rule "Result-dict completeness contract" in `.claude/references/learnings.md`. |
