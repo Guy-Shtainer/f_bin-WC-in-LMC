@@ -6,6 +6,30 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-04-19 — Bias-correction reliability sprint (E045–E048), 7-agent comms activation
+
+**Tag:** `v260419-working`
+
+| Hash | Summary |
+|------|---------|
+| `8018e6b` | Bias-correction reliability sprint: Langer slider, resume-fingerprint, CDF helpers, Explorer-grid logL parity |
+| `ddcc108` | Activate 7-agent team comms protocol; rewrite designer + qa for UI loop |
+| `0d8f931` | End-of-day 2026-04-19: docs, error catalog (E045-E048), TODO entries 178-183 |
+| `b771413` | Add 2026-04-19 daily conversation log + Dsilva 2022 northern WNE reference paper |
+
+**Major changes:**
+- **E045 — Langer slider crash:** `_make_range_slider` now displays a static label when `min == max` (Langer fixes σ_single = 7.5).
+- **E046 — Cancel-resume sim-context fingerprint guard:** `_save_partial_cadence` now persists `sim_context` + `sim_context_hash` (additive npz keys); on resume `cadence.py` validates against the live signature and refuses with a field-level diff if `bin_cfg` / `sigma_meas` / `cadence_library` / `obs_delta_rv` / adaptive bin edges drifted (root cause of post-resume horizontal-row kink in `f_bin × σ_single` heatmap). Also fixed Streamlit `st.button`-in-conditional-block click-drop by re-arming session_state.
+- **E047 — Plot rendering:** Top "CDF Comparison" now routed through `_me_cdf_band` / `_me_cdf_band_langer` (was non-cadence-aware); replaced `fill='toself'` polygon with two `shape='hv'` traces using `fill='tonexty'` so the median dashed line stays inside the 16–84 band.
+- **E048 — Re-sim helper physics-config drift:** `_me_cdf_band` was discarding `bin_cfg` and silently defaulting `period_model='powerlaw'`, producing flat CDF + logL mismatches with the grid. Result dict now persists `bin_cfg`, `period_model`, `cadence_weights`, `cadence_library`, `sigma_meas`; helper threads the full config; Langer twin gained the missing cadence-aware branch; new regression test `scripts/test_explorer_logL_consistency.py`.
+- **7-agent system activated:** new `comms-protocol.md` + `agent-delegation.md` references; designer rewritten with UI Loop role + Acceptance Criteria; qa rewritten with PASS / FAIL / BLOCKED verdict; `CLAUDE.md` gained 3-line `## Agents` section.
+- **Corner-plot marginalization audit:** verdict — implementation matches Dsilva 2022 §5.2 under flat priors; no code changes.
+- **TODO.md:** entries 178–183 logged; **DOCUMENTATION.md §7** new 2026-04-19 entry; **COMMON_ERRORS.md** E045–E048 added; daily conversation log + Dsilva 2022 northern WNE reference paper added.
+
+**Pending visual verification (user):** rerun a bias-correction grid (any size) so the new result-dict fields land in a fresh `.npz`, then verify (1) top CDF tracks observed across the full ΔRV range; (2) Explorer "Global best logL" matches stored heatmap logL within ~0.3 at `n_sets ≥ 1000`; (3) caption no longer shows `logP_max=nan`; (4) same on Langer tab.
+
+---
+
 ## 2026-04-14 — AIC/BIC Compare tab + intrinsic-RV review + A&A plots audit
 
 **Tag:** `v260414-working`
