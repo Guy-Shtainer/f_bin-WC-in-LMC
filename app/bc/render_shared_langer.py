@@ -257,7 +257,7 @@ def _render_method_summary_section(
         'Best-fit parameters and 68% HDI from likelihood scoring.')
     return method_results
 
-# WORKING — do not change this code (A2: CDF Comparison — Langer version, approved 2026-03-30)
+# UPDATED 2026-04-19: CDF aligned with Model Explorer (shape='hv'; shared _me_cdf_band_langer).
 def _render_all_methods_cdf(
     result: dict, method_results: dict,
     fbin_g: np.ndarray, x_g: np.ndarray, prefix: str,
@@ -268,12 +268,13 @@ def _render_all_methods_cdf(
     if obs_drv is None or len(method_results) < 1:
         return
     try:
-        from wr_bias_simulation import (
-            DEFAULT_DRV_BIN_EDGES,
-            simulate_delta_rv_sample, SimulationConfig, BinaryParameterConfig,
-        )
+        from wr_bias_simulation import DEFAULT_DRV_BIN_EDGES
     except ImportError:
         return
+    from bc.render_lk_explorer_langer import _me_cdf_band_langer
+    from bc.render_lk_explorer import (
+        _result_bin_cfg_tuple, _result_period_model,
+    )
     _be = result.get('bin_edges')
     _be = DEFAULT_DRV_BIN_EDGES if _be is None else np.asarray(_be)
     obs_drv = np.asarray(obs_drv)
@@ -287,49 +288,58 @@ def _render_all_methods_cdf(
         x=_obs_x, y=_obs_y, mode='lines', name='Observed',
         line=dict(color='lightblue', width=2.5, shape='hv')))
 
-    _n_cdf_sets = 100
+    # E048: thread full physics config.
+    _bc_tuple_l = _result_bin_cfg_tuple(result)
+    _pm_l = _result_period_model(result, default='langer2020')
+    _cad_lib_l = result.get('cadence_library')
+    _cad_wt_l = result.get('cadence_weights')
+    if _bc_tuple_l is None and result.get('bin_cfg') is None:
+        st.info(
+            'Legacy result — this .npz has no stored bin_cfg/period_model; '
+            'CDFs are re-simulated with the orbital defaults from '
+            '`BinaryParameterConfig()`. Rerun the simulation for a guaranteed '
+            'match with the grid\'s stored logL_raw.')
+
+    _n_sets = int(result.get('n_sets', 50))
     for mk, info in method_results.items():
         bv = info['best_vals']
-        fb, pi_v = bv.get('fbin', 0.5), bv.get(x_name, 0.0)
+        fb = bv.get('fbin', 0.5)
         sig_v = bv.get('sigma', 5.0)
         _mcolor = next((c for k, _, _, _, c in SCORING_METHODS if k == mk), '#888888')
         _mname = next((n for k, n, _, _, _ in SCORING_METHODS if k == mk), mk)
         try:
-            _all_cdfs = []
-            for _seed_i in range(_n_cdf_sets):
-                sim_cfg = SimulationConfig(
-                    n_stars=_n_obs, sigma_single=float(sig_v),
-                    sigma_measure=float(result.get('sigma_meas', 3.0)))
-                rng = np.random.default_rng(42 + _seed_i)
-                sim_drv = simulate_delta_rv_sample(
-                    f_bin=float(fb), pi=float(pi_v),
-                    sim_cfg=sim_cfg, bin_cfg=BinaryParameterConfig(), rng=rng)
-                _all_cdfs.append(_binned_cdf(sim_drv, _be))
-            _all_cdfs = np.array(_all_cdfs)
-            _med = np.median(_all_cdfs, axis=0)
-            _lo = np.percentile(_all_cdfs, 16, axis=0)
-            _hi = np.percentile(_all_cdfs, 84, axis=0)
+            _med, _lo, _hi, _ = _me_cdf_band_langer(
+                float(fb), float(bv.get('logPmax', 5.0)),
+                float(sig_v), float(result.get('sigma_meas', 3.0)),
+                tuple(_be.tolist()), n_sets=_n_sets,
+                _cadence_library=_cad_lib_l, _cadence_weights=_cad_wt_l,
+                _bin_cfg_dict=_bc_tuple_l, period_model=_pm_l,
+            )
             _mx = np.concatenate([[0.0], _be])
             _my = np.concatenate([[0.0], _med])
             _loy = np.concatenate([[0.0], _lo])
             _hiy = np.concatenate([[0.0], _hi])
             _lbl = f'{_mname} (f<sub>bin</sub>={fb:.3f}'
-            if x_name in bv:
+            if x_name in bv and np.isfinite(bv[x_name]):
                 _lbl += f', π={bv[x_name]:.2f}' if x_name == 'pi' else f', {x_label}={bv[x_name]:.2f}'
-            if 'sigma' in bv and bv['sigma'] != 0:
+            if 'sigma' in bv and np.isfinite(bv['sigma']) and bv['sigma'] != 0:
                 _lbl += f', σ={bv["sigma"]:.1f}'
-            if 'logPmax' in bv and bv['logPmax'] != 0:
+            if ('logPmax' in bv and np.isfinite(bv['logPmax'])
+                    and bv['logPmax'] != 0):
                 _lbl += f', logP<sub>max</sub>={bv["logPmax"]:.2f}'
             _lbl += ')'
             fig_cdf.add_trace(go.Scatter(
-                x=np.concatenate([_mx, _mx[::-1]]),
-                y=np.concatenate([_hiy, _loy[::-1]]),
-                fill='toself', fillcolor=_hex_to_rgba(_mcolor, 0.2),
-                line=dict(color='rgba(0,0,0,0)'),
+                x=_mx, y=_loy, mode='lines',
+                line=dict(color='rgba(0,0,0,0)', shape='hv'),
+                legendgroup=mk, showlegend=False, hoverinfo='skip'))
+            fig_cdf.add_trace(go.Scatter(
+                x=_mx, y=_hiy, mode='lines',
+                line=dict(color='rgba(0,0,0,0)', shape='hv'),
+                fill='tonexty', fillcolor=_hex_to_rgba(_mcolor, 0.2),
                 legendgroup=mk, showlegend=False, hoverinfo='skip'))
             fig_cdf.add_trace(go.Scatter(
                 x=_mx, y=_my, mode='lines', name=_lbl,
-                legendgroup=mk, line=dict(color=_mcolor, width=2, dash='dash')))
+                legendgroup=mk, line=dict(color=_mcolor, width=2, dash='dash', shape='hv')))
         except Exception:
             pass
 
@@ -360,9 +370,9 @@ def _render_all_methods_cdf(
     })
     st.plotly_chart(fig_cdf, use_container_width=True, key=f'{prefix}_cdf_comparison')
     st.caption(
-        f'Observed ΔRV CDF (solid white) vs simulated CDFs at each '
-        f'method\'s best-fit parameters (dashed, median of {_n_cdf_sets} draws). '
-        f'Shaded bands show 16th-84th percentile range. N_stars={_n_obs}.')
+        f"Observed ΔRV CDF (solid) vs simulated CDFs at each method's "
+        f"best-fit parameters (dashed, median of {_n_sets} draws). "
+        f"Shaded bands = 16-84 percentile. N_stars={_n_obs}.")
 
 # ── From subtabs.py ──────────────────────────────────────────────────────────
 

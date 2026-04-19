@@ -48,28 +48,74 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
 def _me_cdf_band_langer(
     fb: float, logPmax: float, sigma_s: float, sigma_m: float,
     bin_edges_tuple: tuple, n_sets: int = 50,
+    _cadence_library=None, _cadence_weights=None,
+    _bin_cfg_dict=None, period_model: str = 'langer2020',
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Langer-specific CDF band: uses langer2020 period model with logP_max."""
+    """Langer-specific CDF band: uses langer2020 period model with logP_max.
+
+    E048 fix: when _bin_cfg_dict is supplied (hashable tuple from the grid
+    result), the full bin_cfg is reconstituted so the re-simulated CDF/logL
+    matches the physics surface the grid scored. When _cadence_library is
+    supplied, runs cadence-aware simulation (matching the grid worker).
+    """
     from wr_bias_simulation import (
-        simulate_delta_rv_sample, SimulationConfig,
-        BinaryParameterConfig,
+        simulate_delta_rv_sample, simulate_delta_rv_cadence_aware,
+        SimulationConfig, BinaryParameterConfig,
     )
     _be = np.array(bin_edges_tuple)
-    all_cdfs, all_drv = [], []
-    for si in range(n_sets):
-        cfg = SimulationConfig(n_stars=1000, sigma_single=sigma_s,
-                               sigma_measure=sigma_m)
+    if _bin_cfg_dict is not None:
+        try:
+            _bc_d = dict(_bin_cfg_dict)
+            bin_cfg = BinaryParameterConfig(**_bc_d)
+        except Exception:
+            bin_cfg = BinaryParameterConfig(
+                period_model='langer2020', logP_max=logPmax)
+    else:
         bin_cfg = BinaryParameterConfig(
             period_model='langer2020', logP_max=logPmax)
-        drv = simulate_delta_rv_sample(fb, 0.0, cfg, bin_cfg,
-                                       np.random.default_rng(42 + si))
-        all_cdfs.append(_binned_cdf(drv, _be))
-        all_drv.append(drv)
-    all_cdfs = np.array(all_cdfs)
+    bin_cfg.logP_max = float(logPmax)
+    bin_cfg.period_model = period_model
+
+    if _cadence_library is not None:
+        cfg = SimulationConfig(
+            n_stars=len(_cadence_library),
+            sigma_single=sigma_s, sigma_measure=sigma_m,
+            cadence_library=_cadence_library,
+            cadence_weights=_cadence_weights)
+        rng = np.random.default_rng(42)
+        res = simulate_delta_rv_cadence_aware(
+            fb, 0.0, cfg, bin_cfg, rng, n_sets=n_sets, bin_edges=_be)
+        all_drv = res['all_delta_rv']
+        all_cdfs = np.array(
+            [_binned_cdf(all_drv[i], _be) for i in range(all_drv.shape[0])])
+        pooled = all_drv.ravel()
+    else:
+        all_cdfs, all_drv_list = [], []
+        for si in range(n_sets):
+            cfg = SimulationConfig(n_stars=1000, sigma_single=sigma_s,
+                                   sigma_measure=sigma_m)
+            drv = simulate_delta_rv_sample(fb, 0.0, cfg, bin_cfg,
+                                           np.random.default_rng(42 + si))
+            all_cdfs.append(_binned_cdf(drv, _be))
+            all_drv_list.append(drv)
+        all_cdfs = np.array(all_cdfs)
+        pooled = np.concatenate(all_drv_list)
+
     return (np.median(all_cdfs, axis=0),
             np.percentile(all_cdfs, 16, axis=0),
             np.percentile(all_cdfs, 84, axis=0),
-            np.concatenate(all_drv))
+            pooled)
+
+
+# --- E048 helpers: reuse the Dsilva implementations ----------------------
+# Kept as thin re-exports so the Langer side doesn't duplicate the
+# freeze/load logic (memory rule allows duplication but there's no Dsilva
+# vs Langer divergence for these utilities — they operate only on the
+# result dict).
+from bc.render_lk_explorer import (  # noqa: E402
+    _result_bin_cfg_tuple,
+    _result_period_model,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -98,9 +144,17 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
               if 'bin_edges' in result else DEFAULT_DRV_BIN_EDGES)
         lk_be = (np.asarray(result['likelihood_bin_edges'])
                  if 'likelihood_bin_edges' in result else be)
+        # E048: thread full physics config.
+        _bc_tuple_l = _result_bin_cfg_tuple(result)
+        _pm_l = _result_period_model(result, default='langer2020')
+        _cad_lib_l = result.get('cadence_library')
+        _cad_wt_l = result.get('cadence_weights')
         med_c, lo_c, hi_c, pooled = _me_cdf_band_langer(
             fb, _lp_resim, sig, float(result.get('sigma_meas', 3.0)),
-            tuple(be.tolist()), n_sets=int(ns))
+            tuple(be.tolist()), n_sets=int(ns),
+            _cadence_library=_cad_lib_l, _cadence_weights=_cad_wt_l,
+            _bin_cfg_dict=_bc_tuple_l, period_model=_pm_l,
+        )
         obs = np.asarray(result.get('obs_delta_rv', []))
         rx = np.concatenate([[0.0], be])
 
@@ -115,11 +169,14 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
         _hi_y = np.concatenate([[0.0], hi_c])
         _lo_y = np.concatenate([[0.0], lo_c])
         fig.add_trace(go.Scatter(
-            x=np.concatenate([rx, rx[::-1]]),
-            y=np.concatenate([_hi_y, _lo_y[::-1]]),
-            fill='toself',
+            x=rx, y=_lo_y, mode='lines',
+            line=dict(color='rgba(0,0,0,0)', shape='hv'),
+            showlegend=False, hoverinfo='skip'))
+        fig.add_trace(go.Scatter(
+            x=rx, y=_hi_y, mode='lines',
+            line=dict(color='rgba(0,0,0,0)', shape='hv'),
+            fill='tonexty',
             fillcolor=_hex_to_rgba(_METHOD_COLOR, 0.2),
-            line=dict(color='rgba(0,0,0,0)'),
             showlegend=False, hoverinfo='skip'))
         fig.add_trace(go.Scatter(
             x=rx, y=np.concatenate([[0.0], med_c]),
@@ -366,17 +423,29 @@ def _render_lk_model_explorer(
     lk_be = result.get('likelihood_bin_edges')
     lk_be = np.asarray(lk_be) if lk_be is not None else be
     sigma_m = float(result.get('sigma_meas', 3.0))
+    # E048: full physics config + cadence library for grid-matching re-sim.
+    _cad_lib_me = result.get('cadence_library')
+    _cad_wt_me = result.get('cadence_weights')
+    _bc_tuple_me = _result_bin_cfg_tuple(result)
+    _pm_me = _result_period_model(result, default='langer2020')
+    _n_sets_me = int(result.get('n_sets', 50))
 
     # Multi-seed CDF band (cached) — Langer: uses langer2020 period model
     _lp_for_sim = me_logPmax if me_logPmax is not None else def_logPmax
     med_cdf, lo_cdf, hi_cdf, pooled_drv = _me_cdf_band_langer(
-        me_fb, _lp_for_sim, me_sig, sigma_m, tuple(be.tolist()), n_sets=50)
+        me_fb, _lp_for_sim, me_sig, sigma_m, tuple(be.tolist()),
+        n_sets=_n_sets_me,
+        _cadence_library=_cad_lib_me, _cadence_weights=_cad_wt_me,
+        _bin_cfg_dict=_bc_tuple_me, period_model=_pm_me)
 
     # ── D17: Score metric cards (logL) ──
     _logL = multinomial_log_likelihood(obs_drv, pooled_drv, lk_be)
     # Compute logL for the global best-fit
     _bf_med, _, _, _bf_pooled = _me_cdf_band_langer(
-        def_fb, def_logPmax, def_sig, sigma_m, tuple(be.tolist()), n_sets=50)
+        def_fb, def_logPmax, def_sig, sigma_m, tuple(be.tolist()),
+        n_sets=_n_sets_me,
+        _cadence_library=_cad_lib_me, _cadence_weights=_cad_wt_me,
+        _bin_cfg_dict=_bc_tuple_me, period_model=_pm_me)
     _logL_best = multinomial_log_likelihood(obs_drv, _bf_pooled, lk_be)
 
     mc1, mc2 = st.columns(2)
@@ -417,7 +486,9 @@ def _render_lk_model_explorer(
         _bf_lp = float(_bf_bv.get('logPmax', def_logPmax))
         _bf_med, _bf_lo, _bf_hi, _ = _me_cdf_band_langer(
             _bf_fb, _bf_lp, _bf_sig, sigma_m,
-            tuple(be.tolist()), n_sets=50)
+            tuple(be.tolist()), n_sets=_n_sets_me,
+            _cadence_library=_cad_lib_me, _cadence_weights=_cad_wt_me,
+            _bin_cfg_dict=_bc_tuple_me, period_model=_pm_me)
 
     fig_cdf = go.Figure()
     fig_cdf.add_trace(go.Scatter(

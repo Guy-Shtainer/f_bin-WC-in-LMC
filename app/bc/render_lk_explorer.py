@@ -49,18 +49,44 @@ def _me_cdf_band(
     fb: float, x_val: float, sigma_s: float, sigma_m: float,
     bin_edges_tuple: tuple, logPmax: float = 5.0, n_sets: int = 50,
     _cadence_library=None, _cadence_weights=None,
+    _bin_cfg_dict=None, period_model: str = 'powerlaw',
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Run *n_sets* simulations and return (median_cdf, lo_cdf, hi_cdf, pooled_drv).
 
     When _cadence_library is provided, uses cadence-aware simulation
     (matching the grid runner). Otherwise falls back to basic simulation.
+
+    Parameters
+    ----------
+    _bin_cfg_dict : tuple of (key, value) pairs OR None
+        Hashable (via the tuple form) full bin_cfg contents. When provided,
+        a BinaryParameterConfig is rebuilt from it and `logP_max` +
+        `period_model` are overridden per the other args. When None, falls
+        back to the legacy behaviour (BinaryParameterConfig with just
+        logP_max set). This mirrors the grid worker exactly — see E048.
+    period_model : str
+        'powerlaw' or 'langer2020'. Explicitly propagated to bin_cfg so the
+        period distribution used here matches the one scored by the grid.
     """
     from wr_bias_simulation import (
         simulate_delta_rv_sample, simulate_delta_rv_cadence_aware,
         SimulationConfig, BinaryParameterConfig,
     )
     _be = np.array(bin_edges_tuple)
-    bin_cfg = BinaryParameterConfig(logP_max=logPmax)
+    # Rebuild bin_cfg from the FULL dict when available. Fall back to the
+    # legacy (logP_max only) path for old .npz files that don't carry the
+    # bin_cfg payload.
+    if _bin_cfg_dict is not None:
+        try:
+            _bc_d = dict(_bin_cfg_dict)
+            bin_cfg = BinaryParameterConfig(**_bc_d)
+        except Exception:
+            bin_cfg = BinaryParameterConfig(logP_max=logPmax)
+    else:
+        bin_cfg = BinaryParameterConfig(logP_max=logPmax)
+    # Explorer slider (logPmax) always wins over the stored value.
+    bin_cfg.logP_max = float(logPmax)
+    bin_cfg.period_model = period_model
 
     if _cadence_library is not None:
         cfg = SimulationConfig(
@@ -93,6 +119,72 @@ def _me_cdf_band(
             pooled)
 
 
+def _bin_cfg_dict_as_hashable(bc_dict):
+    """Convert a bin_cfg dict (possibly with nested dict/list/tuple values)
+    into a hashable nested-tuple form suitable as a cache key.
+
+    Returns None when bc_dict is None/empty. Falls back to repr-string
+    for anything exotic.
+    """
+    if not bc_dict:
+        return None
+
+    def _freeze(v):
+        if isinstance(v, dict):
+            return tuple(sorted(
+                (k, _freeze(vv)) for k, vv in v.items()))
+        if isinstance(v, (list, tuple)):
+            return tuple(_freeze(vv) for vv in v)
+        if isinstance(v, np.ndarray):
+            return tuple(v.tolist())
+        try:
+            hash(v)
+            return v
+        except TypeError:
+            return repr(v)
+
+    try:
+        return tuple(sorted((str(k), _freeze(v)) for k, v in bc_dict.items()))
+    except Exception:
+        return None
+
+
+def _result_bin_cfg_tuple(result):
+    """Pull bin_cfg dict from result and return hashable tuple form."""
+    _raw = result.get('bin_cfg') if result is not None else None
+    if _raw is None:
+        return None
+    # .npz → np.array(dict, dtype=object) .item() recovers the dict. If the
+    # caller already unwrapped it (common on load), pass through.
+    if hasattr(_raw, 'item') and getattr(_raw, 'ndim', 1) == 0:
+        try:
+            _raw = _raw.item()
+        except Exception:
+            pass
+    if not isinstance(_raw, dict):
+        return None
+    return _bin_cfg_dict_as_hashable(_raw)
+
+
+def _result_period_model(result, default='powerlaw'):
+    """Read period_model from result, tolerating missing / numpy-string values."""
+    if result is None:
+        return default
+    _pm = result.get('period_model', default)
+    if _pm is None:
+        return default
+    # Handle 0-d numpy array
+    if hasattr(_pm, 'item') and getattr(_pm, 'ndim', 1) == 0:
+        try:
+            _pm = _pm.item()
+        except Exception:
+            pass
+    _pm = str(_pm)
+    if _pm in ('powerlaw', 'langer2020'):
+        return _pm
+    return default
+
+
 # ---------------------------------------------------------------------------
 # Re-simulation at interpolated best-fit point
 # ---------------------------------------------------------------------------
@@ -123,9 +215,20 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
         _lp_g_ri = np.asarray(result.get('logPmax_grid', []))
         if _lp_g_ri.size >= 1:
             _lpm = float(interp.get('logPmax', float(_lp_g_ri[0])))
+        # E048: pass full bin_cfg + period_model + cadence_weights so the
+        # re-simulated CDF/logL sits on the exact surface the grid scored.
+        _bc_tuple = _result_bin_cfg_tuple(result)
+        _pm_resim = _result_period_model(result, default='powerlaw')
+        _cad_lib_resim = result.get('cadence_library')
+        _cad_wt_resim = result.get('cadence_weights')
         med_c, lo_c, hi_c, pooled = _me_cdf_band(
             fb, xv, sig, float(result.get('sigma_meas', 3.0)),
-            tuple(be.tolist()), logPmax=_lpm, n_sets=int(ns))
+            tuple(be.tolist()), logPmax=_lpm, n_sets=int(ns),
+            _cadence_library=_cad_lib_resim,
+            _cadence_weights=_cad_wt_resim,
+            _bin_cfg_dict=_bc_tuple,
+            period_model=_pm_resim,
+        )
         obs = np.asarray(result.get('obs_delta_rv', []))
         rx = np.concatenate([[0.0], be])
 
@@ -140,11 +243,14 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
         _hi_y = np.concatenate([[0.0], hi_c])
         _lo_y = np.concatenate([[0.0], lo_c])
         fig.add_trace(go.Scatter(
-            x=np.concatenate([rx, rx[::-1]]),
-            y=np.concatenate([_hi_y, _lo_y[::-1]]),
-            fill='toself',
+            x=rx, y=_lo_y, mode='lines',
+            line=dict(color='rgba(0,0,0,0)', shape='hv'),
+            showlegend=False, hoverinfo='skip'))
+        fig.add_trace(go.Scatter(
+            x=rx, y=_hi_y, mode='lines',
+            line=dict(color='rgba(0,0,0,0)', shape='hv'),
+            fill='tonexty',
             fillcolor=_hex_to_rgba(_METHOD_COLOR, 0.2),
-            line=dict(color='rgba(0,0,0,0)'),
             showlegend=False, hoverinfo='skip'))
         fig.add_trace(go.Scatter(
             x=rx, y=np.concatenate([[0.0], med_c]),
@@ -394,12 +500,16 @@ def _render_lk_model_explorer(
     _cad_lib = result.get('cadence_library')
     _cad_wt = result.get('cadence_weights')
     _n_sets_me = int(result.get('n_sets', 50))
+    # E048: full physics config so the explorer's re-sim matches the grid.
+    _bc_tuple_me = _result_bin_cfg_tuple(result)
+    _pm_me = _result_period_model(result, default='powerlaw')
 
     # Multi-seed CDF band (cached, cadence-aware when available)
     med_cdf, lo_cdf, hi_cdf, pooled_drv = _me_cdf_band(
         me_fb, me_x, me_sig, sigma_m, tuple(be.tolist()),
         logPmax=_eff_logPmax, n_sets=_n_sets_me,
-        _cadence_library=_cad_lib, _cadence_weights=_cad_wt)
+        _cadence_library=_cad_lib, _cadence_weights=_cad_wt,
+        _bin_cfg_dict=_bc_tuple_me, period_model=_pm_me)
 
     # ── D17: Score metric cards (logL) ──
     _logL = multinomial_log_likelihood(obs_drv, pooled_drv, lk_be)
@@ -407,7 +517,8 @@ def _render_lk_model_explorer(
     _bf_med, _, _, _bf_pooled = _me_cdf_band(
         def_fb, def_x, def_sig, sigma_m, tuple(be.tolist()),
         logPmax=_bf_logPmax, n_sets=_n_sets_me,
-        _cadence_library=_cad_lib, _cadence_weights=_cad_wt)
+        _cadence_library=_cad_lib, _cadence_weights=_cad_wt,
+        _bin_cfg_dict=_bc_tuple_me, period_model=_pm_me)
     _logL_best = multinomial_log_likelihood(obs_drv, _bf_pooled, lk_be)
 
     mc1, mc2 = st.columns(2)
@@ -442,7 +553,8 @@ def _render_lk_model_explorer(
         _bf_med, _bf_lo, _bf_hi, _ = _me_cdf_band(
             _bf_fb, _bf_x, _bf_sig, sigma_m,
             tuple(be.tolist()), logPmax=_bf_lp, n_sets=_n_sets_me,
-            _cadence_library=_cad_lib, _cadence_weights=_cad_wt)
+            _cadence_library=_cad_lib, _cadence_weights=_cad_wt,
+            _bin_cfg_dict=_bc_tuple_me, period_model=_pm_me)
 
     fig_cdf = go.Figure()
     fig_cdf.add_trace(go.Scatter(

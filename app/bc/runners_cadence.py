@@ -22,6 +22,7 @@ from bc.helpers import (
     _build_descriptive_filename, _build_partial_filename,
     _scan_result_metadata, _append_run_history,
     _fmt_eta, _best_point,
+    build_sim_context_signature,
 )
 
 def _run_cadence_bg(job: dict, params: dict) -> None:
@@ -92,6 +93,27 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             return _tasks
 
         _cad_bin_edges = params.get('bin_edges', DEFAULT_DRV_BIN_EDGES)
+
+        # Build simulation-context signature for the resume safety guard.
+        # On resume, the cadence tab compares this against the live signature
+        # and refuses to mix incompatible cells (see app/bc/cadence.py).
+        _sim_context = build_sim_context_signature(
+            stable_cfg=stable_cfg,
+            bin_cfg=bin_cfg,
+            sigma_meas=sigma_meas,
+            period_model=period_model,
+            bin_edges=_cad_bin_edges,
+            likelihood_bin_edges=params.get('likelihood_bin_edges'),
+            error_model_single=params.get('error_model_single', 'fixed'),
+            error_params_single=params.get('error_params_single', ()),
+            error_model_binary=params.get('error_model_binary', 'fixed'),
+            error_params_binary=params.get('error_params_binary', ()),
+            cadence_list=cadence_list,
+            cadence_weights=cadence_weights,
+            obs_delta_rv=obs_delta_rv,
+        )
+        _sim_context_hash = _stable_cfg_hash(_sim_context)
+
         _initargs = (
             cadence_list, cadence_weights, obs_delta_rv,
             len(cadence_list), float(sigma_meas),
@@ -176,6 +198,8 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                 adaptive_bins=bool(params.get('adaptive_bins', False)),
                 settings=np.array(json.dumps(stable_cfg, default=str)),
                 n_sets=np.array(n_sets),
+                sim_context=np.array(json.dumps(_sim_context, default=str)),
+                sim_context_hash=np.array(_sim_context_hash),
             )
             job['partial_saved'] = True
             return _partial_path
@@ -453,6 +477,13 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             likelihood = np.zeros_like(logL_raw)
 
         # Build result (likelihood only)
+        # NOTE: bin_cfg/period_model/cadence_weights are persisted so every
+        # downstream re-sim helper can reproduce the exact physical surface
+        # scored by _single_grid_task_cadence_aware. See E048.
+        try:
+            _bin_cfg_dict_for_result = dict(vars(bin_cfg))
+        except Exception:
+            _bin_cfg_dict_for_result = {}
         result = {
             'fbin_grid': fbin_grid,
             'pi_grid': pi_grid,
@@ -469,6 +500,17 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             'mode': 'cadence_aware',
             'bin_edges': _cad_bin_edges,
             'likelihood_bin_edges': params.get('likelihood_bin_edges'),
+            'bin_cfg': _bin_cfg_dict_for_result,
+            'period_model': period_model,
+            'cadence_weights': (np.asarray(cadence_weights)
+                                if cadence_weights is not None else None),
+            # cadence_library is the list of per-star MJD arrays used by the
+            # cadence-aware simulator. Persist it so re-sim helpers can run
+            # the exact same cadence-assignment the grid saw. Stored as an
+            # object array because sublists have varying lengths.
+            'cadence_library': (np.array(cadence_list, dtype=object)
+                                if cadence_list is not None else None),
+            'sigma_meas': float(sigma_meas),
         }
 
         # Argmax best-fit (raw grid maximum)

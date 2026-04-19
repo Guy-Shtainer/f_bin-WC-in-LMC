@@ -96,12 +96,89 @@ def _stable_cfg_hash(cfg: dict) -> str:
     ).hexdigest()[:16]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Simulation-context signature (cadence resume guard)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _array_fingerprint(arr) -> str:
+    """Cheap content fingerprint for an ndarray-ish: shape|sha1[:12]."""
+    if arr is None:
+        return 'None'
+    a = np.asarray(arr)
+    return f'{tuple(a.shape)}|{hashlib.sha1(np.ascontiguousarray(a).tobytes()).hexdigest()[:12]}'
+
+
+def _cadence_lib_fingerprint(cadence_list, cadence_weights) -> str:
+    """Fingerprint a cadence library: number of stars + per-star MJD fingerprints + weights."""
+    if cadence_list is None:
+        return 'None'
+    parts = [f'n={len(cadence_list)}']
+    for i, c in enumerate(cadence_list):
+        parts.append(f'{i}:{_array_fingerprint(c)}')
+    parts.append(f'w={_array_fingerprint(cadence_weights)}')
+    return ';'.join(parts)
+
+
+def build_sim_context_signature(
+    *, stable_cfg, bin_cfg, sigma_meas, period_model,
+    bin_edges, likelihood_bin_edges,
+    error_model_single, error_params_single,
+    error_model_binary, error_params_binary,
+    cadence_list, cadence_weights, obs_delta_rv,
+) -> dict:
+    """Build a structured field-level signature of the simulation context.
+
+    Two signatures with the same dict are guaranteed to produce identical
+    per-cell logL values for any (i_lp, i_sig, i_fb, i_pi). Any difference
+    means resuming would mix incompatible cells.
+    """
+    bcfg_dict = {k: (list(v) if isinstance(v, tuple) else v)
+                 for k, v in vars(bin_cfg).items()}
+    return {
+        'stable_cfg': dict(stable_cfg) if stable_cfg else {},
+        'bin_cfg': bcfg_dict,
+        'sigma_meas': float(sigma_meas),
+        'period_model': str(period_model),
+        'bin_edges_fp': _array_fingerprint(bin_edges),
+        'likelihood_bin_edges_fp': _array_fingerprint(likelihood_bin_edges),
+        'error_model_single': str(error_model_single),
+        'error_params_single': list(error_params_single or ()),
+        'error_model_binary': str(error_model_binary),
+        'error_params_binary': list(error_params_binary or ()),
+        'cadence_lib_fp': _cadence_lib_fingerprint(cadence_list, cadence_weights),
+        'obs_delta_rv_fp': _array_fingerprint(obs_delta_rv),
+    }
+
+
+def diff_sim_contexts(old: dict, new: dict) -> list[str]:
+    """Return human-readable lines for fields whose values differ.
+
+    Recurses one level into nested dicts (e.g. bin_cfg, stable_cfg) so the
+    output is precise: `bin_cfg.logP_max: 5.0 → 5.5` rather than the whole dict.
+    """
+    diffs: list[str] = []
+    keys = sorted(set(old) | set(new))
+    for k in keys:
+        ov, nv = old.get(k, '<missing>'), new.get(k, '<missing>')
+        if isinstance(ov, dict) and isinstance(nv, dict):
+            for sk in sorted(set(ov) | set(nv)):
+                sov, snv = ov.get(sk, '<missing>'), nv.get(sk, '<missing>')
+                if sov != snv:
+                    diffs.append(f'  • {k}.{sk}:  {sov!r}  →  {snv!r}')
+        elif ov != nv:
+            diffs.append(f'  • {k}:  {ov!r}  →  {nv!r}')
+    return diffs
+
+
 # WORKING — do not change this code (G1: Grid Range Exclusion)
 def _make_range_slider(container, grid: np.ndarray, label: str, key: str):
     """Render a range slider for a grid axis. Returns (min, max) tuple."""
     vals = [float(v) for v in grid]
     lo, hi = vals[0], vals[-1]
-    step = round(vals[1] - vals[0], 6) if len(vals) > 1 else 1.0
+    if len(vals) < 2 or lo >= hi:
+        container.markdown(f'**{label}**: {lo:g} (fixed)')
+        return lo, hi
+    step = round(vals[1] - vals[0], 6)
     rng = container.slider(
         f'{label} range', min_value=lo, max_value=hi,
         value=(lo, hi), step=step, key=key)

@@ -25,6 +25,7 @@ from bc.helpers import (
     _render_partial_table,
     _scan_result_metadata,
     _make_max_pval_fig, _make_heatmap_fig,
+    build_sim_context_signature, diff_sim_contexts,
 )
 from bc.params import (
     _render_orbital_params_dsilva, _render_orbital_params_langer,
@@ -1224,7 +1225,11 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
         # Check for partial resume
         _cad_resume_path = st.session_state.pop(
             f'{p}_resume_from', None)
+        # Sim-context guard outcome: 'ok', 'mismatch', 'legacy', 'fresh', or None
+        _sim_ctx_status = None
+        _sim_ctx_diffs: list[str] = []
         if _cad_resume_path and os.path.exists(_cad_resume_path):
+            _cad_ptl = None
             try:
                 _cad_ptl = np.load(
                     _cad_resume_path, allow_pickle=True)
@@ -1264,10 +1269,114 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
                     f'\u267b\ufe0f Resuming from checkpoint '
                     f'({_n_pre}/{_n_tot} cells, '
                     f'{_n_pre / _n_tot * 100:.0f}%).')
-                _cad_ptl.close()
+
+                # ── Simulation-context drift guard ─────────────────
+                # Compare the checkpoint's sim_context against the live one.
+                # On mismatch, refuse to mix incompatible cells.
+                import json as _json
+                _ckpt_sim_ctx_raw = (
+                    _cad_ptl['sim_context']
+                    if 'sim_context' in _cad_ptl.files else None)
+                if _ckpt_sim_ctx_raw is None:
+                    _sim_ctx_status = 'legacy'
+                else:
+                    try:
+                        _ckpt_sim_ctx = _json.loads(
+                            str(np.asarray(_ckpt_sim_ctx_raw).item()))
+                    except Exception:
+                        _ckpt_sim_ctx = None
+
+                    if _ckpt_sim_ctx is None:
+                        _sim_ctx_status = 'legacy'
+                    else:
+                        _live_sim_ctx = build_sim_context_signature(
+                            stable_cfg=_cad_stable_cfg,
+                            bin_cfg=_bin_cfg,
+                            sigma_meas=_sigma_meas,
+                            period_model=_period_model,
+                            bin_edges=_cad_bin_edges,
+                            likelihood_bin_edges=_lk_bin_edges,
+                            error_model_single=(err_info or {}).get(
+                                'type_single', 'fixed'),
+                            error_params_single=(err_info or {}).get(
+                                'params_single', ()),
+                            error_model_binary=(err_info or {}).get(
+                                'type_binary', 'fixed'),
+                            error_params_binary=(err_info or {}).get(
+                                'params_binary', ()),
+                            cadence_list=cad_list,
+                            cadence_weights=cad_wts,
+                            obs_delta_rv=obs_drv,
+                        )
+                        _sim_ctx_diffs = diff_sim_contexts(
+                            _ckpt_sim_ctx, _live_sim_ctx)
+                        _sim_ctx_status = (
+                            'ok' if not _sim_ctx_diffs else 'mismatch')
             except Exception as e:
                 st.warning(
                     f'\u26a0\ufe0f Failed to load checkpoint: {e}')
+            finally:
+                if _cad_ptl is not None:
+                    try:
+                        _cad_ptl.close()
+                    except Exception:
+                        pass
+
+        # Surface the sim-context guard result before starting the thread.
+        if _sim_ctx_status == 'legacy':
+            st.warning(
+                '\u26a0\ufe0f Old checkpoint without sim-context signature '
+                '\u2014 cannot verify safety. Resuming may produce a '
+                'discontinuous heatmap. Use Resume on this checkpoint at '
+                'your own risk.')
+        elif _sim_ctx_status == 'mismatch':
+            _diff_text = '\n'.join(_sim_ctx_diffs) if _sim_ctx_diffs else (
+                '  (no field-level diff available)')
+            st.error(
+                '\u26a0\ufe0f **Cannot resume:** simulation context drifted '
+                'since checkpoint was saved.\n\n'
+                'The following parameter(s) changed:\n\n'
+                f'```\n{_diff_text}\n```\n\n'
+                'Resuming would mix cells computed with different parameters '
+                'and bias the likelihood. Either restore the original config '
+                'and try again, or click "Start fresh" to discard the '
+                'checkpoint cells and recompute the full grid with the '
+                'current config.')
+            _bcol1, _bcol2 = st.columns(2)
+            _start_fresh = _bcol1.button(
+                '\u25b6\ufe0f Start fresh with current config',
+                key=f'{p}_simctx_fresh', type='primary')
+            _cancel_resume = _bcol2.button(
+                '\u274c Cancel',
+                key=f'{p}_simctx_cancel')
+
+            if _start_fresh:
+                # Discard checkpoint cells and fall through to thread start
+                # with a fresh sim. Clear any re-armed signals from a prior
+                # pass so we don't loop on the next rerun.
+                st.session_state.pop(f'{p}_auto_resume', None)
+                st.session_state.pop(f'{p}_resume_from', None)
+                params['prefilled_logL_raw'] = None
+                params.pop('resume_from_path', None)
+                st.info('\u25b6\ufe0f Starting fresh with current config '
+                        '(checkpoint cells discarded).')
+                # IMPORTANT: do NOT st.stop() — fall through to thread start.
+            elif _cancel_resume:
+                # User explicitly cancelled. Clear the run trigger entirely.
+                st.session_state.pop(f'{p}_auto_resume', None)
+                st.session_state.pop(f'{p}_resume_from', None)
+                st.session_state.pop(f'{p}_job', None)
+                st.info('Resume cancelled. The checkpoint file is untouched.')
+                st.stop()
+            else:
+                # No button clicked yet: re-arm so the next rerun (triggered
+                # by the user clicking a button) re-enters this block,
+                # re-renders the buttons at the same keys, and captures the
+                # click on that rerun.
+                st.session_state[f'{p}_auto_resume'] = True
+                st.session_state[f'{p}_resume_from'] = _cad_resume_path
+                st.session_state.pop(f'{p}_job', None)
+                st.stop()
 
         t = threading.Thread(
             target=_run_cadence_bg, args=(job, params), daemon=True)
