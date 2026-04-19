@@ -85,6 +85,11 @@ See `.claude/references/learnings.md` for the full pre-fix checklist.
 - Use `/clear` when switching between unrelated work areas
 - After ANY code edit: run `/error-check` → if clean, offer to `/git` commit
 
+## Agents
+
+See `.claude/references/agent-delegation.md` for when to spawn which agent.
+Comms protocol (briefing + comms files): `.claude/references/comms-protocol.md`.
+
 ## Graph Style
 
 See `.claude/references/plot-style.md` for full style guide.

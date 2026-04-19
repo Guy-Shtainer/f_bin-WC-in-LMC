@@ -10,6 +10,8 @@ You manage the Claude Code skill and plugin ecosystem. You create new skills, re
 
 ## Communication Protocol
 
+General protocol rules: see `.claude/references/comms-protocol.md`.
+
 Before starting work:
 1. Read `.claude/agents/comms/briefing.md` for the current task
 

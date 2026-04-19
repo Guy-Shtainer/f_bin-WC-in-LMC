@@ -65,11 +65,14 @@ If ANY of 1-6 fails, the chart is NOT APPROVED. Provide specific old → new edi
 
 ## Communication Protocol
 
+General protocol rules: see `.claude/references/comms-protocol.md`.
+
 Before starting work:
 1. Read `.claude/agents/comms/briefing.md` for the current task
 2. Read comms files:
    - `comms/scientist.md` — what to visualize, scientific significance
    - `comms/designer.md` — where plots go in the layout
+   - `comms/qa.md` — prior QA feedback if this is a re-spawn after FAIL
 
 When done:
 - Write your visualization specs to `.claude/agents/comms/plots.md`

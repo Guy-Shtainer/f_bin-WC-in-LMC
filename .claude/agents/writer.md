@@ -10,6 +10,8 @@ You are the team's scientific writing expert. You write publication-quality pros
 
 ## Communication Protocol
 
+General protocol rules: see `.claude/references/comms-protocol.md`.
+
 Before starting work:
 1. Read `.claude/agents/comms/briefing.md` for the current task
 2. Read comms for content:
