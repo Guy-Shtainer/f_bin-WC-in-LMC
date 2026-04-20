@@ -6,6 +6,28 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-04-20 — Docs-only end-of-day (two code sprints UNCOMMITTED pending 2026-04-22 sign-off)
+
+**Tag:** *(none — code sprints awaiting visual sign-off; no working-version tag today.)*
+
+| Hash | Summary |
+|------|---------|
+| `6a13688` | End-of-day 2026-04-20: docs + daily log (code sprints uncommitted, awaiting 2026-04-22 sign-off) |
+
+**Major changes (committed — docs only):**
+- **TODO.md:** entries #184 (binning-robustness literature research), #185 (validation-tab overhaul + A&A diagnostics), #186 (Bin-Sensitivity sub-tab — 4 new `app/bc/` files + 6 A&A plots + mock-data validation mode). All three flagged `UNCOMMITTED — awaiting user visual sign-off ~2026-04-22`.
+- **DOCUMENTATION.md §7:** new 2026-04-20 work-log entry covering four sub-sessions — binning-robustness lit review (Dsilva 2022 Sect. 5.2 precedent, Sturges/Rice/Scott rules all giving ~5 bins for N=25, 5-step robustness protocol with AD cross-check), marginalization audit (flat-prior posterior ∝ likelihood ⇒ nansum over nuisance axes + trapezoid normalization verified correct for both Dsilva and Langer tabs), validation-tab overhaul (mock-preview + truth-vs-recovered table + f_bin(t) overlay + CDF overlay with bootstrap HDI band, plus `_AA_OVERRIDES` white-bg recipe), and the Bin-Sensitivity sub-tab (4-round scientist→plots→designer→coder→QA coordination, 8 scheme builders + SchemeResult scorer + 6 A&A-ready plots + mock-data validation mode with Δf_bin/Δπ columns). Includes paper-relevant methodology notes on bin-count defence, validation-diagnostic choice, posterior convention, and Anderson–Darling cross-check plan.
+- **daily_logs/2026-04-20.md:** full conversation log from all four sessions.
+
+**Uncommitted on `main` (awaiting 2026-04-22 visual sign-off):**
+- **Validation-tab overhaul:** `app/bc/validation.py` (`generate_mock_observations_detail`), `app/bc/render_validation.py` (grew ~330→1281 lines: pre-run mock preview, post-run truth-vs-recovered diagnostics, `_AA_OVERRIDES` white-bg styling), `app/bc/cadence.py` (added `n_sets_override` kwarg to both cadence tab renderers).
+- **Bin-Sensitivity sub-tab:** four new files `app/bc/bin_schemes.py`, `app/bc/bin_sensitivity_scorer.py`, `app/bc/bin_sensitivity_plots.py`, `app/bc/bin_sensitivity.py` (total ~2500 lines); surgical edits to `app/bc/__init__.py`, `app/bc/helpers.py`, `app/pages/05_bias_correction.py`. Companion memory/config updates: `memory/plot_preferences.md` (plot #6 STRONGLY APPROVED), `memory/likelihood_bin_sensitivity.md` (new 8-paper lit review + scheme formulas + pitfall catalogue).
+- **Agent system updates tied to today's work:** `.claude/agents/plots.md` (new `_AA_OVERRIDES` recipe + mandatory exit checklist), `.claude/agents/comms/*` (4-round comms trail from today's sprints), `.claude/references/learnings.md` (new top-of-Plot-Rendering entry on PLOTLY_THEME-is-dark trap).
+
+**Pending visual verification (user):** Guy runs the visual sweep on 2026-04-22 per `memory/pending_test_validation_diagnostics.md` and `memory/current_focus.md`. On PASS, sprint-commits follow: (1) validation-tab overhaul as one commit, (2) Bin-Sensitivity sub-tab + memory/plot_preferences + likelihood_bin_sensitivity + agent comms + learnings as one commit. Tag `v260422-working` created after sign-off.
+
+---
+
 ## 2026-04-19 — Bias-correction reliability sprint (E045–E048), 7-agent comms activation
 
 **Tag:** `v260419-working`
