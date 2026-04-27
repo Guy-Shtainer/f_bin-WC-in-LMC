@@ -1,0 +1,786 @@
+"""rv_modeling/tab_simulation.py — Tab A: Binary RV Simulation + distribution fitting."""
+from __future__ import annotations
+
+import warnings as _warnings
+
+import numpy as np
+import plotly.graph_objects as go
+import scipy.stats as sp_stats
+import streamlit as st
+
+from shared_lite import PLOTLY_THEME, COLOR_BINARY
+
+from rv_modeling.helpers import (
+    _theme_parts, _ann, resolve_nbins,
+    render_error_model_pair, render_orbital_histograms,
+)
+from rv_modeling.compute import (compute_binary_raw_rvs_cadence,
+                                 compute_physics_diagnostics)
+
+# ---------------------------------------------------------------------------
+# Distribution metadata (same definitions as bc.extras)
+# ---------------------------------------------------------------------------
+_DIST_MAP = {
+    "Normal": "norm", "Log-normal": "lognorm", "Gamma": "gamma",
+    "Weibull": "weibull_min", "Exponential": "expon",
+    "Flat (uniform)": "uniform",
+    "Laplace": "laplace", "Gen. Normal": "gennorm",
+}
+
+_PARAM_META = {
+    "Normal": [("μ (loc)", 0.0, -200.0, 200.0, 0.1),
+               ("σ (scale)", 20.0, 0.01, 200.0, 0.1)],
+    "Log-normal": [("s (shape)", 0.5, 0.01, 5.0, 0.01),
+                   ("loc", 0.0, -200.0, 200.0, 0.1),
+                   ("scale", 20.0, 0.01, 200.0, 0.1)],
+    "Gamma": [("a (shape)", 2.0, 0.01, 50.0, 0.01),
+              ("loc", 0.0, -200.0, 200.0, 0.1),
+              ("scale", 10.0, 0.01, 200.0, 0.1)],
+    "Weibull": [("c (shape)", 1.5, 0.01, 10.0, 0.01),
+                ("loc", 0.0, -200.0, 200.0, 0.1),
+                ("scale", 20.0, 0.01, 200.0, 0.1)],
+    "Exponential": [("loc", 0.0, -200.0, 200.0, 0.1),
+                    ("scale", 20.0, 0.01, 200.0, 0.1)],
+    "Flat (uniform)": [("loc (start)", -50.0, -500.0, 500.0, 0.1),
+                       ("scale (width)", 100.0, 0.01, 1000.0, 0.1)],
+    "Laplace": [("μ (loc)", 0.0, -200.0, 200.0, 0.1),
+                ("b (scale)", 20.0, 0.01, 200.0, 0.1)],
+    "Gen. Normal": [("β (shape)", 1.0, 0.1, 10.0, 0.1),
+                    ("loc", 0.0, -200.0, 200.0, 0.1),
+                    ("scale", 20.0, 0.01, 200.0, 0.1)],
+}
+
+
+# ---------------------------------------------------------------------------
+# Distribution fitting helpers
+# ---------------------------------------------------------------------------
+
+def _fit_distribution(data: np.ndarray, dist_name: str) -> dict | None:
+    """Fit a named distribution via MLE. Returns params + AIC/BIC."""
+    scipy_name = _DIST_MAP.get(dist_name)
+    if scipy_name is None or len(data) < 5:
+        return None
+    dist = getattr(sp_stats, scipy_name, None)
+    if dist is None:
+        return None
+    try:
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            params = dist.fit(data)
+        k = len(params)
+        n = len(data)
+        log_lik = float(np.sum(dist.logpdf(data, *params)))
+        if not np.isfinite(log_lik):
+            return None
+        aic = 2 * k - 2 * log_lik
+        bic = k * np.log(n) - 2 * log_lik
+        return {
+            "dist_name": dist_name, "scipy_name": scipy_name,
+            "params": params, "k": k, "n": n,
+            "log_lik": log_lik, "aic": aic, "bic": bic,
+        }
+    except Exception:
+        return None
+
+
+def _compute_aic_bic(data: np.ndarray, scipy_name: str,
+                     params: tuple) -> dict:
+    """Compute AIC/BIC for given params (manual adjustment)."""
+    dist = getattr(sp_stats, scipy_name)
+    k = len(params)
+    n = len(data)
+    try:
+        log_lik = float(np.sum(dist.logpdf(data, *params)))
+    except Exception:
+        log_lik = float("-inf")
+    if not np.isfinite(log_lik):
+        return {"aic": float("inf"), "bic": float("inf"), "log_lik": float("-inf")}
+    aic = 2 * k - 2 * log_lik
+    bic = k * np.log(n) - 2 * log_lik
+    return {"aic": aic, "bic": bic, "log_lik": log_lik}
+
+
+def _fit_all(data: np.ndarray) -> list[dict]:
+    """Fit all distributions, sort by AIC."""
+    results = []
+    for name in _DIST_MAP:
+        r = _fit_distribution(data, name)
+        if r is not None:
+            results.append(r)
+    results.sort(key=lambda x: x["aic"])
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Orbital parameter UI (moved from page.py)
+# ---------------------------------------------------------------------------
+
+def _render_orbital_params(sm=None, defaults=None) -> dict:
+    """Render orbital parameter controls. Returns dict of all param values.
+
+    When *sm* is provided, every widget persists to
+    ['rv_modeling', 'simulation'] in user_settings.json.
+    """
+    _SIM = ['rv_modeling', 'simulation']
+    if defaults is None:
+        defaults = {}
+
+    def _oc(field, widget_key=None):
+        """Build on_change kwargs for *field*.
+
+        *widget_key* overrides the session_state key (default ``rvm_{field}``).
+        """
+        if sm is None:
+            return {}
+        _k = widget_key or f'rvm_{field}'
+        return dict(on_change=lambda k=_k, f=field, p=_SIM: sm.save(
+            p + [f], value=st.session_state[k]))
+
+    # ── Preset callbacks ──
+    _dsilva_vals = {
+        "period_model": "powerlaw", "e_model": "flat", "q_model": "flat",
+        "sigma_single": 5.5, "logP_min": 0.15, "logP_max": 5.0,
+        "q_min": 0.1, "q_max": 2.0, "q_flipped": False,
+        "mass_model": "fixed", "mass_fixed": 10.0,
+    }
+    _dsilva_ss = {
+        "rvm_period": "powerlaw", "rvm_emod": "flat", "rvm_qmod": "flat",
+        "rvm_sigma_s": 5.5, "rvm_sigma_m": 1.622,
+        "rvm_logPmin": 0.15, "rvm_logPmax": 5.0,
+        "rvm_q_min": 0.1, "rvm_q_max": 2.0, "rvm_q_flip": False,
+        "rvm_mass_model": "fixed", "rvm_mass_fixed": 10.0,
+    }
+
+    def _preset_dsilva():
+        for k, v in _dsilva_ss.items():
+            st.session_state[k] = v
+        if sm is not None:
+            for f, v in _dsilva_vals.items():
+                sm.save(_SIM + [f], value=v)
+
+    _langer_vals = {
+        "period_model": "langer2020", "e_model": "zero",
+        "q_model": "lognormal", "sigma_single": 5.5,
+        "logP_min": 0.5, "logP_max": 3.5,
+        "q_min": 0.1, "q_max": 2.0, "q_flipped": False,
+        "lq_mu": 0.65, "lq_sig": 0.3,
+        "mass_model": "fixed", "mass_fixed": 10.0,
+        "weight_A": 0.20,
+        "dist_A": "gaussian", "mu_A": 0.80, "sigma_A": 0.35,
+        "dist_B": "reflected_lognormal", "mu_B": 2.0, "sigma_B": 0.45,
+    }
+    _langer_ss = {
+        "rvm_period": "langer2020", "rvm_emod": "zero",
+        "rvm_qmod": "lognormal",
+        "rvm_sigma_s": 5.5, "rvm_sigma_m": 1.622,
+        "rvm_logPmin": 0.5, "rvm_logPmax": 3.5,
+        "rvm_q_min": 0.1, "rvm_q_max": 2.0, "rvm_q_flip": False,
+        "rvm_lq_mu": 0.65, "rvm_lq_sig": 0.3,
+        "rvm_mass_model": "fixed", "rvm_mass_fixed": 10.0,
+        "rvm_wA": 0.20,
+        "rvm_distA": "gaussian", "rvm_muA": 0.80, "rvm_sigA": 0.35,
+        "rvm_distB": "reflected_lognormal", "rvm_muB": 2.0, "rvm_sigB": 0.45,
+    }
+
+    def _preset_langer():
+        for k, v in _langer_ss.items():
+            st.session_state[k] = v
+        if sm is not None:
+            for f, v in _langer_vals.items():
+                sm.save(_SIM + [f], value=v)
+
+    st.markdown("**Orbital simulation parameters**")
+
+    # Row 1: core controls
+    _pm_opts = ["powerlaw", "langer2020"]
+    _pm_def = defaults.get("period_model", "powerlaw")
+    _pm_idx = _pm_opts.index(_pm_def) if _pm_def in _pm_opts else 0
+
+    _em_opts = ["flat", "zero"]
+    _em_def = defaults.get("e_model", "flat")
+    _em_idx = _em_opts.index(_em_def) if _em_def in _em_opts else 0
+
+    r1a, r1b, r1c, r1d = st.columns(4)
+    with r1a:
+        period_model = st.selectbox(
+            "Period model", _pm_opts, index=_pm_idx, key="rvm_period",
+            **_oc('period_model', 'rvm_period'),
+        )
+    with r1b:
+        pi_val: float = float(defaults.get("pi", 0.0))
+        weight_A: float = float(defaults.get("weight_A", 0.3))
+        if period_model == "powerlaw":
+            pi_val = st.number_input("π (power-law)", value=pi_val, step=0.1,
+                                     key="rvm_pi", **_oc('pi', 'rvm_pi'))
+        else:
+            weight_A = st.number_input("Weight A", value=weight_A, step=0.05,
+                                       key="rvm_wA",
+                                       **_oc('weight_A', 'rvm_wA'))
+    with r1c:
+        e_model = st.selectbox("Eccentricity", _em_opts, index=_em_idx,
+                               key="rvm_emod", **_oc('e_model', 'rvm_emod'))
+    with r1d:
+        e_max: float = float(defaults.get("e_max", 0.9))
+        if e_model == "flat":
+            e_max = st.number_input("e_max", value=e_max, step=0.05,
+                                    key="rvm_emax",
+                                    **_oc('e_max', 'rvm_emax'))
+        else:
+            e_max = 0.0
+            st.markdown("*e = 0*")
+
+    # Row 2: sim size + presets
+    r2a, r2b, r2c = st.columns(3)
+    with r2a:
+        n_sim = st.number_input(
+            "N_sim", value=int(defaults.get("n_sim", 100_000)),
+            step=10_000, key="rvm_nsim", **_oc('n_sim', 'rvm_nsim'),
+        )
+    with r2b:
+        seed = st.number_input("Seed",
+                               value=int(defaults.get("seed", 42)),
+                               step=1,
+                               key="rvm_seed", **_oc('seed', 'rvm_seed'))
+    with r2c:
+        pc1, pc2 = st.columns(2)
+        with pc1:
+            st.button("Dsilva", key="rvm_preset_d",
+                      on_click=_preset_dsilva, use_container_width=True)
+        with pc2:
+            st.button("Langer", key="rvm_preset_l",
+                      on_click=_preset_langer, use_container_width=True)
+
+    # Expanders for detailed parameters
+    _dist_opts = ["gaussian", "lognormal", "reflected_lognormal",
+                  "empirical", "flat"]
+
+    exp1, exp2 = st.columns(2)
+    with exp1:
+        with st.expander("Period Distribution", expanded=False):
+            logP_min = st.number_input(
+                "logP_min",
+                value=float(defaults.get("logP_min", 0.15)), step=0.05,
+                key="rvm_logPmin", **_oc('logP_min', 'rvm_logPmin'))
+            logP_max = st.number_input(
+                "logP_max",
+                value=float(defaults.get("logP_max", 5.0)), step=0.1,
+                key="rvm_logPmax", **_oc('logP_max', 'rvm_logPmax'))
+
+            dist_A = defaults.get("dist_A", "gaussian")
+            mu_A = float(defaults.get("mu_A", 0.80))
+            sigma_A = float(defaults.get("sigma_A", 0.35))
+            dist_B = defaults.get("dist_B", "reflected_lognormal")
+            mu_B = float(defaults.get("mu_B", 2.0))
+            sigma_B = float(defaults.get("sigma_B", 0.45))
+
+            if period_model == "langer2020":
+                st.markdown("**Component A (short-period)**")
+                _dA_idx = _dist_opts.index(dist_A) if dist_A in _dist_opts else 0
+                dist_A = st.selectbox("Dist A", _dist_opts, index=_dA_idx,
+                                      key="rvm_distA",
+                                      **_oc('dist_A', 'rvm_distA'))
+                la1, la2 = st.columns(2)
+                with la1:
+                    mu_A = st.number_input("μ_A", value=mu_A, step=0.05,
+                                           key="rvm_muA",
+                                           **_oc('mu_A', 'rvm_muA'))
+                with la2:
+                    sigma_A = st.number_input("σ_A", value=sigma_A, step=0.05,
+                                              key="rvm_sigA",
+                                              **_oc('sigma_A', 'rvm_sigA'))
+                st.markdown("**Component B (long-period)**")
+                _dB_idx = _dist_opts.index(dist_B) if dist_B in _dist_opts else 2
+                dist_B = st.selectbox("Dist B", _dist_opts, index=_dB_idx,
+                                      key="rvm_distB",
+                                      **_oc('dist_B', 'rvm_distB'))
+                lb1, lb2 = st.columns(2)
+                with lb1:
+                    mu_B = st.number_input("μ_B", value=mu_B, step=0.05,
+                                           key="rvm_muB",
+                                           **_oc('mu_B', 'rvm_muB'))
+                with lb2:
+                    sigma_B = st.number_input("σ_B", value=sigma_B, step=0.05,
+                                              key="rvm_sigB",
+                                              **_oc('sigma_B', 'rvm_sigB'))
+
+    with exp2:
+        with st.expander("Mass & Mass Ratio", expanded=False):
+            _q_opts = ["flat", "gaussian", "lognormal",
+                       "reflected_lognormal", "empirical"]
+            _q_def = defaults.get("q_model", "flat")
+            _q_idx = _q_opts.index(_q_def) if _q_def in _q_opts else 0
+            q_model = st.selectbox("q model", _q_opts, index=_q_idx,
+                                   key="rvm_qmod",
+                                   **_oc('q_model', 'rvm_qmod'))
+            qq1, qq2 = st.columns(2)
+            with qq1:
+                q_min = st.number_input(
+                    "q_min",
+                    value=float(defaults.get("q_min", 0.1)), step=0.05,
+                    key="rvm_q_min", **_oc('q_min', 'rvm_q_min'))
+            with qq2:
+                q_max = st.number_input(
+                    "q_max",
+                    value=float(defaults.get("q_max", 2.0)), step=0.1,
+                    key="rvm_q_max", **_oc('q_max', 'rvm_q_max'))
+            q_flipped = st.checkbox(
+                "q flipped (M2=M1/q)",
+                value=bool(defaults.get("q_flipped", False)),
+                key="rvm_q_flip",
+                **_oc('q_flipped', 'rvm_q_flip'))
+            langer_q_mu = float(defaults.get("lq_mu", 0.7))
+            langer_q_sigma = float(defaults.get("lq_sig", 0.2))
+            if q_model not in ("flat", "empirical"):
+                lqm1, lqm2 = st.columns(2)
+                with lqm1:
+                    langer_q_mu = st.number_input(
+                        "q μ", value=langer_q_mu, step=0.05,
+                        key="rvm_lq_mu",
+                        **_oc('lq_mu', 'rvm_lq_mu'))
+                with lqm2:
+                    langer_q_sigma = st.number_input(
+                        "q σ", value=langer_q_sigma, step=0.05,
+                        key="rvm_lq_sig",
+                        **_oc('lq_sig', 'rvm_lq_sig'))
+            st.markdown("---")
+            _mm_opts = ["fixed", "uniform"]
+            _mm_def = defaults.get("mass_model", "fixed")
+            _mm_idx = _mm_opts.index(_mm_def) if _mm_def in _mm_opts else 0
+            mass_model = st.selectbox("Primary mass", _mm_opts, index=_mm_idx,
+                                      key="rvm_mass_model",
+                                      **_oc('mass_model', 'rvm_mass_model'))
+            mass_fixed = float(defaults.get("mass_fixed", 10.0))
+            mass_min = float(defaults.get("mass_min", 10.0))
+            mass_max = float(defaults.get("mass_max", 20.0))
+            if mass_model == "fixed":
+                mass_fixed = st.number_input("M₁ (M☉)", value=mass_fixed, step=1.0,
+                                             key="rvm_mass_fixed",
+                                             **_oc('mass_fixed', 'rvm_mass_fixed'))
+            else:
+                mm1, mm2 = st.columns(2)
+                with mm1:
+                    mass_min = st.number_input("M₁ min", value=mass_min, step=1.0,
+                                               key="rvm_mass_min",
+                                               **_oc('mass_min', 'rvm_mass_min'))
+                with mm2:
+                    mass_max = st.number_input("M₁ max", value=mass_max, step=1.0,
+                                               key="rvm_mass_max",
+                                               **_oc('mass_max', 'rvm_mass_max'))
+
+    return dict(
+        period_model=period_model, pi=pi_val, weight_A=weight_A,
+        e_model=e_model, e_max=e_max, q_model=q_model,
+        n_sim=int(n_sim),
+        seed=int(seed), logP_min=float(logP_min), logP_max=float(logP_max),
+        q_min=float(q_min), q_max=float(q_max), q_flipped=bool(q_flipped),
+        langer_q_mu=float(langer_q_mu), langer_q_sigma=float(langer_q_sigma),
+        mass_model=mass_model, mass_fixed=float(mass_fixed),
+        mass_min=float(mass_min), mass_max=float(mass_max),
+        dist_A=dist_A, mu_A=float(mu_A), sigma_A=float(sigma_A),
+        dist_B=dist_B, mu_B=float(mu_B), sigma_B=float(sigma_B),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Distribution fitting UI
+# ---------------------------------------------------------------------------
+
+def _render_dist_fitting(data: np.ndarray, obs_data: dict, prefix: str = "rvm_df") -> None:
+    """Render distribution fitting UI for the given data array."""
+    _ax, _ay, _al = _theme_parts()
+    sm = obs_data.get('sm')
+    sim_cfg = obs_data.get('rvm_settings', {}).get('simulation', {})
+    _SIM = ['rv_modeling', 'simulation']
+
+    st.subheader("Distribution Fitting")
+
+    dist_names = list(_DIST_MAP.keys())
+    _df_def = sim_cfg.get('dist_fitting_dist', 'Normal')
+    _df_idx = dist_names.index(_df_def) if _df_def in dist_names else 0
+    _oc_df = {}
+    if sm is not None:
+        _oc_df = dict(on_change=lambda: sm.save(
+            _SIM + ['dist_fitting_dist'],
+            value=st.session_state[f"{prefix}_dist"]))
+    dist_name = st.selectbox("Distribution", dist_names, index=_df_idx,
+                             key=f"{prefix}_dist", **_oc_df)
+    scipy_name = _DIST_MAP[dist_name]
+
+    # ── Buttons ──
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        auto_fit = st.button("Auto-fit (MLE)", key=f"{prefix}_autofit",
+                             use_container_width=True)
+    with btn_col2:
+        record_btn = st.button("Record fit", key=f"{prefix}_record",
+                               use_container_width=True)
+
+    # ── Auto-fit ──
+    if auto_fit:
+        result = _fit_distribution(data, dist_name)
+        if result is not None:
+            for i, val in enumerate(result["params"]):
+                st.session_state[f"{prefix}_p_{i}"] = float(val)
+            st.session_state[f"{prefix}_last_fit"] = result
+            # Store best fit for Tab B to use
+            st.session_state["rvm_best_binary_dist"] = dist_name
+            st.session_state["rvm_best_binary_params"] = tuple(result["params"])
+            st.toast(f"Auto-fit: {dist_name} (AIC={result['aic']:.1f})")
+        else:
+            st.warning(f"Auto-fit failed for {dist_name}.")
+
+    # ── Parameter inputs ──
+    pmeta = _PARAM_META.get(dist_name, [])
+    current_params = []
+    if pmeta:
+        pcols = st.columns(len(pmeta))
+        for i, (label, default, pmin, pmax, step) in enumerate(pmeta):
+            with pcols[i]:
+                val = st.number_input(
+                    label,
+                    value=float(st.session_state.get(f"{prefix}_p_{i}", default)),
+                    step=step, format="%.4f", key=f"{prefix}_p_{i}",
+                )
+            current_params.append(val)
+
+    params_tuple = tuple(current_params)
+
+    # ── Record fit to history ──
+    if record_btn and len(current_params) > 0:
+        stats = _compute_aic_bic(data, scipy_name, params_tuple)
+        hist = st.session_state.get(f"{prefix}_history", [])
+        hist.append({"dist": dist_name, "params": params_tuple, **stats})
+        st.session_state[f"{prefix}_history"] = hist
+        # Also store as best fit
+        st.session_state["rvm_best_binary_dist"] = dist_name
+        st.session_state["rvm_best_binary_params"] = params_tuple
+        st.toast("Fit recorded.")
+
+    # ── Histogram + PDF overlay ──
+    _nb = resolve_nbins(data, obs_data)
+    _hist_kw = dict(nbinsx=_nb) if _nb is not None else {}
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(
+        x=data, **_hist_kw, histnorm="probability density",
+        marker_color=COLOR_BINARY, opacity=0.6,
+        name="Simulated binary RVs",
+    ))
+
+    if len(current_params) > 0:
+        x_lo = max(float(data.min()) - 10, -500)
+        x_hi = min(float(data.max()) + 10, 500)
+        x_range = np.linspace(x_lo, x_hi, 500)
+        dist_obj = getattr(sp_stats, scipy_name)
+        try:
+            pdf = dist_obj.pdf(x_range, *params_tuple)
+            mask = np.isfinite(pdf)
+            fig.add_trace(go.Scatter(
+                x=x_range[mask], y=pdf[mask], mode="lines",
+                line=dict(color="#E25A53", width=2.5),
+                name=f"{dist_name} PDF",
+            ))
+        except Exception:
+            pass
+
+    fig.update_layout(**{
+        **PLOTLY_THEME,
+        "title": dict(text="Binary RV Distribution + Fitted PDF"),
+        "xaxis": {**_ax, "title": {**_ax.get("title", {}), "text": "Centred RV (km/s)"}},
+        "yaxis": {**_ay, "title": {**_ay.get("title", {}), "text": "Probability density"}},
+        "barmode": "overlay",
+        "height": 500,
+    })
+    st.plotly_chart(fig, use_container_width=True, theme=None)
+    st.caption(
+        f"Histogram of {len(data):,} centred binary RVs. "
+        f"Red line = {dist_name} PDF with current parameters."
+    )
+
+    # ── Statistics ──
+    if len(current_params) > 0:
+        stats = _compute_aic_bic(data, scipy_name, params_tuple)
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("AIC", f"{stats['aic']:.1f}")
+        s2.metric("BIC", f"{stats['bic']:.1f}")
+        s3.metric("log L", f"{stats['log_lik']:.1f}")
+        s4.metric("Data mean", f"{np.mean(data):.2f}")
+        s5.metric("Data std", f"{np.std(data):.2f}")
+
+    # ── Fit history ──
+    hist = st.session_state.get(f"{prefix}_history", [])
+    if hist:
+        with st.expander(f"Fit History ({len(hist)} entries)"):
+            import pandas as pd
+            df = pd.DataFrame(hist)
+            st.dataframe(df, use_container_width=True)
+            if st.button("Clear history", key=f"{prefix}_clear_hist"):
+                st.session_state[f"{prefix}_history"] = []
+                st.rerun()
+
+    # ── Auto-fit all distributions ──
+    st.markdown("---")
+    if st.button("Run Auto-Fit All Distributions", key=f"{prefix}_fitall",
+                 use_container_width=True):
+        all_fits = _fit_all(data)
+        if all_fits:
+            st.session_state[f"{prefix}_all_fits"] = all_fits
+            # Store best fit for Tab B
+            st.session_state["rvm_best_binary_dist"] = all_fits[0]["dist_name"]
+            st.session_state["rvm_best_binary_params"] = tuple(all_fits[0]["params"])
+        else:
+            st.warning("All distribution fits failed.")
+
+    all_fits = st.session_state.get(f"{prefix}_all_fits")
+    if all_fits:
+        import pandas as pd
+        _best = all_fits[0]
+        st.success(
+            f'Best fit: **{_best["dist_name"]}** '
+            f'(AIC = {_best["aic"]:.1f}, BIC = {_best["bic"]:.1f}, '
+            f'log L = {_best["log_lik"]:.1f})'
+        )
+        rows = [
+            {
+                "Rank": i + 1,
+                "Distribution": r["dist_name"],
+                "AIC": round(r["aic"], 2),
+                "BIC": round(r["bic"], 2),
+                "log L": round(r["log_lik"], 2),
+                "Params": ", ".join(f"{p:.3f}" for p in r["params"]),
+            }
+            for i, r in enumerate(all_fits)
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True,
+                     hide_index=True)
+
+        # Best-fit overlay
+        best = all_fits[0]
+        _nb2 = resolve_nbins(data, obs_data)
+        _hist_kw2 = dict(nbinsx=_nb2) if _nb2 is not None else {}
+        fig_best = go.Figure()
+        fig_best.add_trace(go.Histogram(
+            x=data, **_hist_kw2, histnorm="probability density",
+            marker_color="#4A90D9", opacity=0.5,
+            name="Data",
+        ))
+        _POSITIVE_ONLY = {'lognorm', 'gamma', 'weibull_min', 'expon'}
+        x_lo = max(float(data.min()) - 10, -500)
+        x_hi = min(float(data.max()) + 10, 500)
+        if best["scipy_name"] in _POSITIVE_ONLY:
+            x_lo = max(0.001, x_lo)
+        x_range = np.linspace(x_lo, x_hi, 500)
+        dist_obj = getattr(sp_stats, _DIST_MAP[best["dist_name"]])
+        try:
+            pdf = dist_obj.pdf(x_range, *best["params"])
+            mask = np.isfinite(pdf)
+            fig_best.add_trace(go.Scatter(
+                x=x_range[mask], y=pdf[mask], mode="lines",
+                line=dict(color="#E25A53", width=2.5),
+                name=f"Best: {best['dist_name']}",
+            ))
+        except Exception:
+            pass
+        fig_best.update_layout(**{
+            **PLOTLY_THEME,
+            "title": dict(text=f"Best Fit: {best['dist_name']}"),
+            "xaxis": {**_ax, "title": {**_ax.get("title", {}), "text": "Centred RV (km/s)"}},
+            "yaxis": {**_ay, "title": {**_ay.get("title", {}), "text": "Probability density"}},
+            "height": 400,
+        })
+        st.plotly_chart(fig_best, use_container_width=True, theme=None)
+
+        # Q-Q plot
+        st.markdown("**Q-Q Plot (best fit)**")
+        sorted_data = np.sort(data)
+        n = len(sorted_data)
+        theoretical_q = dist_obj.ppf(
+            np.linspace(0.01, 0.99, n), *best["params"]
+        )
+        fig_qq = go.Figure()
+        fig_qq.add_trace(go.Scatter(
+            x=theoretical_q, y=sorted_data, mode="markers",
+            marker=dict(size=4, color="#4A90D9", opacity=0.6),
+            name="Q-Q",
+        ))
+        qq_min = min(float(theoretical_q.min()), float(sorted_data.min()))
+        qq_max = max(float(theoretical_q.max()), float(sorted_data.max()))
+        fig_qq.add_trace(go.Scatter(
+            x=[qq_min, qq_max], y=[qq_min, qq_max],
+            mode="lines", line=dict(color="#888888", dash="dash", width=1.5),
+            name="y=x",
+        ))
+        fig_qq.update_layout(**{
+            **PLOTLY_THEME,
+            "title": dict(text=f"Q-Q: {best['dist_name']}"),
+            "xaxis": {**_ax, "title": {**_ax.get("title", {}), "text": "Theoretical quantiles"}},
+            "yaxis": {**_ay, "title": {**_ay.get("title", {}), "text": "Sample quantiles"}},
+            "height": 400,
+        })
+        st.plotly_chart(fig_qq, use_container_width=True, theme=None)
+
+        with st.expander('About AIC / BIC / log-likelihood'):
+            st.markdown(
+                "- **log L (log-likelihood)**: higher = better fit to data. "
+                "Sign is negative; less-negative is better.\n"
+                "- **AIC = 2k − 2 log L** where k = number of parameters. "
+                "Penalises complexity less harshly than BIC. **Lower is "
+                "better.** Good for prediction.\n"
+                "- **BIC = k log n − 2 log L** where n = sample size. "
+                "Stronger complexity penalty. **Lower is better.** Preferred "
+                "when n is large and you want the \"true\" model.\n"
+                "- Use AIC as the primary ranking; cross-check with BIC. A "
+                ">10 difference in AIC/BIC between two models is very strong "
+                "preference."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Main tab renderer
+# ---------------------------------------------------------------------------
+
+def render_tab_simulation(obs_data: dict) -> None:
+    """Tab A: Binary RV Simulation — orbital sim + distribution fitting."""
+    sm = obs_data.get('sm')
+    rvm = obs_data.get('rvm_settings', {})
+    sim_cfg = rvm.get('simulation', {})
+    _SIM = ['rv_modeling', 'simulation']
+
+    st.subheader("Binary RV Simulation")
+    st.caption(
+        "Simulate binary star systems with chosen orbital parameters "
+        "using real observation cadences from the 25 WR stars, then "
+        "fit statistical distributions to the resulting RV histogram."
+    )
+
+    # ── Orbital parameter UI ──
+    params = _render_orbital_params(sm=sm, defaults=sim_cfg)
+
+    # ── Error models ──
+    st.markdown("**RV Error Models**")
+    err = render_error_model_pair(
+        "rvm_sim", sm=sm,
+        settings_path=_SIM + ['error'],
+        defaults=sim_cfg.get('error', {}),
+    )
+
+    # ── σ_single ──
+    _oc_ss = {}
+    if sm is not None:
+        _oc_ss = dict(on_change=lambda: sm.save(
+            _SIM + ['sigma_single'],
+            value=st.session_state['rvm_sim_sigma_s']))
+    sigma_single = st.number_input("σ_single (km/s)",
+                                    value=float(sim_cfg.get('sigma_single', 5.5)),
+                                    step=0.5, key="rvm_sim_sigma_s", **_oc_ss)
+
+    cadence_tuples = obs_data.get("cadence_tuples", ())
+    n_cadence = obs_data.get("n_cadence_stars", 0)
+    if n_cadence > 0:
+        st.info(f"Using real observation cadences from {n_cadence} WR stars.")
+
+    # Populate consumer-expected keys so Tab D (Sample Fit) doesn't KeyError
+    if cadence_tuples:
+        params["n_epochs"] = int(np.median([len(c) for c in cadence_tuples]))
+        _all_times = [t for c in cadence_tuples for t in c]
+        params["time_span"] = (float(max(_all_times) - min(_all_times))
+                               if _all_times else 365.0)
+    else:
+        params.setdefault("n_epochs", 8)
+        params.setdefault("time_span", 365.0)
+    params.setdefault("n_sim", int(params.get("n_sim", 10000)))
+
+    # ── Recompute button ──
+    recompute = st.button("Simulate Binary RVs", type="primary",
+                          use_container_width=True, key="rvm_sim_btn")
+    st.caption("Generates centred per-epoch RVs for a pure-binary population.")
+
+    should_run = recompute or "rvm_raw_rvs" not in st.session_state
+
+    if should_run:
+        with st.spinner("Simulating binary RVs..."):
+            raw_rvs = compute_binary_raw_rvs_cadence(
+                n_sim=params["n_sim"],
+                period_model=params["period_model"], pi=params["pi"],
+                e_model=params["e_model"], e_max=params["e_max"],
+                q_model=params["q_model"], seed=params["seed"],
+                weight_A=params["weight_A"],
+                sigma_single=sigma_single,
+                sigma_measure=err["sigma_measure"],
+                error_model_single=err["type_single"],
+                error_params_single=err["params_single"],
+                error_model_binary=err["type_binary"],
+                error_params_binary=err["params_binary"],
+                logP_min=params["logP_min"], logP_max=params["logP_max"],
+                q_min=params["q_min"], q_max=params["q_max"],
+                q_flipped=params["q_flipped"],
+                langer_q_mu=params["langer_q_mu"],
+                langer_q_sigma=params["langer_q_sigma"],
+                mass_primary_model=params["mass_model"],
+                mass_primary_fixed=params["mass_fixed"],
+                mass_primary_min=params["mass_min"],
+                mass_primary_max=params["mass_max"],
+                dist_A=params["dist_A"], mu_A=params["mu_A"],
+                sigma_A=params["sigma_A"],
+                dist_B=params["dist_B"], mu_B=params["mu_B"],
+                sigma_B=params["sigma_B"],
+                cadence_tuples=cadence_tuples,
+            )
+            st.session_state["rvm_raw_rvs"] = raw_rvs
+            st.session_state["rvm_sim_params"] = params
+
+    # ── Show results ──
+    raw_rvs = st.session_state.get("rvm_raw_rvs")
+    if raw_rvs is None or len(raw_rvs) == 0:
+        st.info("Click **Simulate Binary RVs** to generate data.")
+        return
+
+    st.success(f"Generated {len(raw_rvs):,} centred RV values "
+               f"(median={np.median(raw_rvs):.1f}, std={np.std(raw_rvs):.1f} km/s).")
+
+    st.markdown("---")
+    _render_dist_fitting(raw_rvs, obs_data, prefix="rvm_df")
+
+    # ── Orbital parameter histograms ─────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Binary Orbital Properties")
+    st.caption("Distributions of the orbital parameters used to generate the simulated binaries above.")
+
+    try:
+        _n_per_set = max(1, len(cadence_tuples))
+        _n_sets_hist = max(1, int(np.ceil(params["n_sim"] / _n_per_set)))
+        diag = compute_physics_diagnostics(
+            f_bin=1.0,
+            pi=params["pi"],
+            n_sets=_n_sets_hist,
+            seed=params["seed"],
+            error_model_single=err["type_single"],
+            error_params_single=err["params_single"],
+            sigma_measure_single=err["sigma_measure"],
+            error_model_binary=err["type_binary"],
+            error_params_binary=err["params_binary"],
+            sigma_measure_binary=err["sigma_measure"],
+            sigma_single=sigma_single,
+            period_model=params["period_model"],
+            logP_min=params["logP_min"],
+            logP_max=params["logP_max"],
+            e_model=params["e_model"],
+            e_max=params["e_max"],
+            q_model=params["q_model"],
+            q_min=params["q_min"],
+            q_max=params["q_max"],
+            q_flipped=params["q_flipped"],
+            mass_primary_fixed=params["mass_fixed"],
+            weight_A=params["weight_A"],
+            dist_A=params["dist_A"],
+            mu_A=params["mu_A"],
+            sigma_A=params["sigma_A"],
+            dist_B=params["dist_B"],
+            mu_B=params["mu_B"],
+            sigma_B=params["sigma_B"],
+            langer_q_mu=params["langer_q_mu"],
+            langer_q_sigma=params["langer_q_sigma"],
+            cadence_tuples=cadence_tuples,
+        )
+        render_orbital_histograms(diag, f_bin=1.0, key_prefix="rvm_sim_orb")
+    except Exception as exc:
+        st.warning(f"Orbital diagnostics failed: {exc}")
