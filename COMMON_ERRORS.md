@@ -563,6 +563,29 @@ When you encounter a new recurring error, add it here with:
 | **Found in** | Bias correction page CDF plots (2026-04-19): `app/bc/render_shared.py:_render_all_methods_cdf`, `app/bc/render_shared_langer.py:_render_all_methods_cdf`, `app/bc/render_lk_explorer.py:_render_lk_resim_interp`, `app/bc/render_lk_explorer_langer.py:_render_lk_resim_interp`. Also present in the dead copies at `app/bc/analysis.py:460-465, 1101-1108`. |
 | **Prevention** | Whenever a central line uses `shape='hv'` (empirical CDFs, step histograms), the surrounding uncertainty band must use the same step shape. Check by zooming: if median visibly dips outside band near bin-edge transitions, you have this bug. |
 
+### E050 — `@st.cache_data` invoked from a background `threading.Thread`
+
+| | |
+|---|---|
+| **Symptom** | Background worker thread freezes silently after completing heavy work. Progress UI advances to the last step (e.g. "cell N/N"), then CPU drops to zero and the run never finishes. No traceback, no error. |
+| **Bad** | A `threading.Thread` runner calls a function decorated with `@st.cache_data` (or `@st.cache_resource`). Streamlit's cache assumes a `ScriptRunContext` on the calling thread. Without one, the cache-store step at the END of the call can deadlock on internal locks shared with the main ScriptRunner thread (especially when a `@st.fragment(run_every=1)` poller is touching cached state on the main thread). |
+| **Fix** | Bypass the cache on the bg-thread path — call the uncached inner function directly. Keep the cached wrapper only for main-thread callers. Add a NOTE comment above the cached wrapper: `# NOT safe to call from a background thread — no ScriptRunContext → deadlocks on cache locks.` |
+| **Grep** | Any `@st.cache_data`-decorated function called inside a `threading.Thread` target or any `_bg` / `_worker` function body. Pattern: `grep -nE '^(def |    ).*_bg\(\|_worker\(' app/` then check what cached helpers those call. |
+| **Why** | `st.cache_data` internally uses `threading.RLock` to serialize writes, and the key computation pulls from `ScriptRunContext`. A non-ScriptRunner thread has no context, so `st.runtime.scriptrunner.get_script_run_ctx()` returns `None`; the cache falls back to a shared global, but its write path still takes locks that the main thread may hold while polling state. The signature is distinctive: the progress callback (which writes directly to a shared dict, bypassing the cache) reports 100% completion, then everything stalls. |
+| **Found in** | `app/bc/bin_sensitivity_scorer.py:_run_all_schemes_bg` called `rescore_scheme_cached` (decorated) per-scheme; third scheme hung at "9900/9900" with zero CPU. Fixed 2026-04-23 by calling `rescore_scheme` directly from the bg runner. |
+| **Prevention** | Any function invoked from a `threading.Thread` must be cache-free. If you want result caching across runs, persist to disk via your own IO layer (e.g. `np.savez` in a sidecar folder) — do NOT reach for `@st.cache_data`. |
+
+### E049 — Plotly subplot inconsistency from scoped axis updates
+
+| | |
+|---|---|
+| **Symptom** | In a `make_subplots` figure, some subplots have frames, ticks, or gridlines that differ from others — random-looking inconsistency across panels of the same canvas. |
+| **Root cause** | `fig.update_xaxes(range=..., row=N)` without `col=` applies to the ENTIRE row only. Other rows fall back to auto-range / inherited defaults. Same for `col=M` without `row=`. |
+| **Fix** | Either pass both `row` and `col` (targets one subplot), or pass neither (targets all subplots — this is almost always what you want for styling). Use the `_apply_aa_axes(fig)` helper in `app/bc/bin_sensitivity_plots.py` as the canonical pattern: unscoped `fig.update_xaxes(...)` + `fig.update_yaxes(...)` after all traces are added. |
+| **Where it bit us** | `_plot_cdf_faceted` in `app/bc/bin_sensitivity_plots.py` was calling `fig.update_yaxes(range=[0, 1.05], col=1)` — only left column got the range lock, right column auto-ranged, giving the "some panels have horizontal gridlines, some don't" appearance. Fixed 2026-04-23 Session 5. |
+| **Grep** | Any `update_xaxes`/`update_yaxes` call with only `row=` or only `col=` (single-dimension scoping) in a subplot module. |
+| **Prevention** | Any `update_xaxes`/`update_yaxes` call in a subplot module must explicitly state whether it targets one subplot (both `row` AND `col`) or all (neither). Single-dimension scoping is a bug in almost all cases. |
+
 ### E048 — Re-sim helper builds fresh `BinaryParameterConfig` — silent physics-config drift between grid scoring and CDF/score display
 
 | | |
