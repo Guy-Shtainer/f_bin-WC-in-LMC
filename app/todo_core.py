@@ -6,12 +6,22 @@ All task data lives in TODO.md at the project root.
 """
 from __future__ import annotations
 
+import html
 import os
 import re
 from collections import Counter
 from datetime import datetime
 
 import streamlit as st
+
+# Split markdown-table rows on '|' only when NOT preceded by a backslash, so that
+# escaped pipes ('\|') inside cell values don't corrupt column alignment.
+_CELL_SPLIT = re.compile(r'(?<!\\)\|')
+
+
+def _escape_cell(s: str) -> str:
+    """Escape '|' characters inside a cell value for safe markdown-table storage."""
+    return str(s).replace('|', '\\|')
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -69,7 +79,8 @@ def _parse_table_rows(lines: list[str]) -> list[list[str]]:
         line = line.strip()
         if not line.startswith('|') or line.startswith('|--') or line.startswith('| --'):
             continue
-        cells = [c.strip() for c in line.split('|')[1:-1]]
+        cells = [c.strip().replace('\\|', '|')
+                 for c in _CELL_SPLIT.split(line)[1:-1]]
         if cells and all(c == '' or set(c) <= {'-', ' '} for c in cells):
             continue
         rows.append(cells)
@@ -168,13 +179,17 @@ def save_todos(open_tasks: list[dict], done_tasks: list[dict],
     )
     for t in open_tasks:
         lines.append(
-            f"| {t['id']} | {t['title']} | {t.get('description', '')} "
-            f"| {t.get('priority', 'medium')} | {t.get('tags', '')} "
-            f"| {t.get('status', 'open')} | {t.get('added_by', '')} "
-            f"| {t.get('suggested_by', '')} | {t.get('date_added', '')} "
+            f"| {_escape_cell(t['id'])} | {_escape_cell(t['title'])} "
+            f"| {_escape_cell(t.get('description', ''))} "
+            f"| {_escape_cell(t.get('priority', 'medium'))} "
+            f"| {_escape_cell(t.get('tags', ''))} "
+            f"| {_escape_cell(t.get('status', 'open'))} "
+            f"| {_escape_cell(t.get('added_by', ''))} "
+            f"| {_escape_cell(t.get('suggested_by', ''))} "
+            f"| {_escape_cell(t.get('date_added', ''))} "
             f"| {_bool_str(t.get('urgent', False))} "
             f"| {_bool_str(t.get('important', False))} "
-            f"| {t.get('notes', '')} |"
+            f"| {_escape_cell(t.get('notes', ''))} |"
         )
 
     lines.append('\n## Done\n')
@@ -190,14 +205,17 @@ def save_todos(open_tasks: list[dict], done_tasks: list[dict],
     )
     for t in done_tasks:
         lines.append(
-            f"| {t['id']} | {t['title']} | {t.get('description', '')} "
-            f"| {t.get('priority', 'medium')} | {t.get('tags', '')} "
-            f"| done | {t.get('added_by', '')} "
-            f"| {t.get('suggested_by', '')} | {t.get('date_added', '')} "
+            f"| {_escape_cell(t['id'])} | {_escape_cell(t['title'])} "
+            f"| {_escape_cell(t.get('description', ''))} "
+            f"| {_escape_cell(t.get('priority', 'medium'))} "
+            f"| {_escape_cell(t.get('tags', ''))} "
+            f"| done | {_escape_cell(t.get('added_by', ''))} "
+            f"| {_escape_cell(t.get('suggested_by', ''))} "
+            f"| {_escape_cell(t.get('date_added', ''))} "
             f"| {_bool_str(t.get('urgent', False))} "
             f"| {_bool_str(t.get('important', False))} "
-            f"| {t.get('date_done', '')} "
-            f"| {t.get('notes', '')} |"
+            f"| {_escape_cell(t.get('date_done', ''))} "
+            f"| {_escape_cell(t.get('notes', ''))} |"
         )
 
     if deleted_tasks:
@@ -206,9 +224,9 @@ def save_todos(open_tasks: list[dict], done_tasks: list[dict],
         lines.append('|----|-------|-------------|-------|')
         for t in deleted_tasks:
             lines.append(
-                f"| {t['id']} | {t['title']} "
-                f"| {t.get('date_deleted', '')} "
-                f"| {t.get('notes', '')} |"
+                f"| {_escape_cell(t['id'])} | {_escape_cell(t['title'])} "
+                f"| {_escape_cell(t.get('date_deleted', ''))} "
+                f"| {_escape_cell(t.get('notes', ''))} |"
             )
 
     lines.append('')
@@ -497,8 +515,11 @@ def render_todo_page() -> None:
         with col_title:
             title_md = f'**{task["title"]}**'
             if desc:
+                # Strip backticks (prevents Streamlit code-span green styling)
+                # and HTML-escape to block stray markup from injecting HTML.
+                desc_display = html.escape(desc).replace('`', '')
                 title_md += (f'  \n<span style="color:#888;font-size:0.85em">'
-                             f'{desc}</span>')
+                             f'{desc_display}</span>')
             st.markdown(title_md, unsafe_allow_html=True)
         with col_flags:
             if flags:
