@@ -29,6 +29,7 @@ from bc import (
     _render_rv_errors_tab,
     _render_compare_tab,
     _render_validation_tab,
+    _render_bin_sensitivity_tab,
 )
 
 st.set_page_config(
@@ -63,6 +64,7 @@ if 'bc_tabs' not in st.session_state:
     st.session_state['bc_tabs'] = [
         {'type': 'cadence_dsilva', 'name': 'Cadence (Dsilva)', 'prefix': 'cad'},
         {'type': 'cadence_langer', 'name': 'Cadence (Langer)', 'prefix': 'cal'},
+        {'type': 'bin_sensitivity', 'name': 'Bin Sensitivity', 'prefix': 'bsn'},
         {'type': 'rv_errors', 'name': 'RV Errors', 'prefix': 'rve'},
         {'type': 'compare', 'name': 'Compare', 'prefix': 'cmp'},
         {'type': 'validation', 'name': 'Validation', 'prefix': 'val'},
@@ -74,7 +76,8 @@ with _tab_mgmt_cols[1]:
     with st.popover('\u2795 Add tab'):
         _add_type = st.radio(
             'Tab type',
-            ['Cadence (Dsilva)', 'Cadence (Langer)', 'RV Errors', 'Compare', 'Validation'],
+            ['Cadence (Dsilva)', 'Cadence (Langer)', 'Bin Sensitivity',
+             'RV Errors', 'Compare', 'Validation'],
             key='_bc_add_tab_type',
         )
         _add_name = st.text_input('Tab name (optional)', key='_bc_add_tab_name')
@@ -83,6 +86,7 @@ with _tab_mgmt_cols[1]:
             _idx = len(st.session_state['bc_tabs'])
             _type_map = {'cadence (dsilva)': 'cadence_dsilva',
                          'cadence (langer)': 'cadence_langer',
+                         'bin sensitivity': 'bin_sensitivity',
                          'rv errors': 'rv_errors',
                          'compare': 'compare',
                          'validation': 'validation'}
@@ -110,6 +114,8 @@ for _tw, _ti in zip(_tab_widgets, st.session_state['bc_tabs']):
             _render_cadence_dsilva_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'cadence_langer':
             _render_cadence_langer_tab(_ti['prefix'], settings, sm)
+        elif _ti['type'] == 'bin_sensitivity':
+            _render_bin_sensitivity_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'rv_errors':
             _render_rv_errors_tab(_ti['prefix'], settings, sm)
         elif _ti['type'] == 'compare':

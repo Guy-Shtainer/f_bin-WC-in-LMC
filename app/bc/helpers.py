@@ -46,6 +46,41 @@ _CMP_DASHES = [
     'longdashdot', 'solid', 'dash', 'dot', 'dashdot',
 ]
 
+# Per-scheme color + dash pattern for the Bin-Sensitivity sub-tab.
+# Keys are scheme labels (e.g. 'dsilva_default' stays fixed even when users run
+# manual schemes). Unknown/manual scheme names fall through to
+# ``get_scheme_color()``'s cycling palette below.
+# Okabe-Ito-adjacent; WCAG AA on both dark (#1e1e2e) and light (#FFFFFF) bg.
+_BIN_SCHEME_COLORS: dict[str, tuple[str, str]] = {
+    'dsilva_default':     ('#DAA520', 'solid'),      # dark gold (reference)
+    'dsilva_shift_plus':  ('#DAA520', 'dash'),       # dark gold, dashed
+    'equal_width':        ('#4A90D9', 'solid'),      # steel blue
+    'log_spaced':         ('#E25A53', 'dash'),       # tomato red
+    'quantile':           ('#1B9E77', 'solid'),      # teal
+    'freedman_diaconis':  ('#9467BD', 'dot'),        # purple
+    'anchored':           ('#E69F00', 'dashdot'),    # orange
+    'custom':             ('#A0A0A0', 'longdash'),   # neutral grey
+}
+
+
+def get_scheme_color(scheme_name: str, index: int = 0) -> tuple[str, str]:
+    """Return (hex_color, plotly_dash) for a bin-sensitivity scheme.
+
+    Lookup order:
+      1. ``_BIN_SCHEME_COLORS[scheme_name]`` — fixed per-scheme entries (keeps
+         ``dsilva_default`` dark-gold even when it appears inside a manual list).
+      2. Fallback: cycle ``_CMP_COLORS`` / ``_CMP_DASHES`` by ``index`` for
+         user-named manual schemes with no hardcoded entry.
+
+    No new hex values are introduced — only the existing palette is reused.
+    """
+    if scheme_name in _BIN_SCHEME_COLORS:
+        return _BIN_SCHEME_COLORS[scheme_name]
+    i = int(index) if index is not None else 0
+    color = _CMP_COLORS[i % len(_CMP_COLORS)]
+    dash = _CMP_DASHES[i % len(_CMP_DASHES)]
+    return (color, dash)
+
 # ── Scoring method registry ──────────────────────────────────────────────────
 # (key, display_name, p_key, D_key, color)
 SCORING_METHODS = [
