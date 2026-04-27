@@ -6,6 +6,33 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-04-23 — Three sprints landed; validation tab held back (six symptoms remain)
+
+**Tag:** `v260423-partial-working` *("partial" because Sprint 4 — validation-tab consistency overhaul — is held back in the working tree pending fixes for six remaining symptoms.)*
+
+| Hash | Summary |
+|------|---------|
+| `4699bc4` | End-of-day 2026-04-23: docs, error catalog (E049-E050), TODO entries 187-190 |
+| `c7534ef` | Add standalone RV modeling webapp + today's parametric error-model port |
+| `a57c56d` | Fix To-Do webapp render bugs: green code-spans + table pipe corruption |
+| `cc6f753` | Add Bin Sensitivity sub-tab to bias correction page |
+
+**Major changes (committed):**
+- **Docs:** TODO #187 moved to `to-test` with detailed sign-off notes; new entries #188 (RV modeling), #189 (To-Do app), #190 (Bin Sensitivity). DOCUMENTATION.md §7 entry covering all four sprints. COMMON_ERRORS.md gets E049 (Plotly subplot scoped axis update inconsistency) and E050 (silent deadlock when `@st.cache_data` is invoked from a `threading.Thread`). learnings.md gets three new User Interaction rules; plot_preferences.md gets readable-text size minimums; plots agent CRITICAL RULES rewritten (A&A always; never auto-zoom; always high-contrast).
+- **Sprint 1 — RV modeling app:** new standalone Streamlit app at `rv_modeling_app/` (4025 lines: `app.py`, `page.py`, three tabs Simulate/Fitting/Playground, `compute.py`, `helpers.py`, `tabs.py`, `shared_lite.py`). Today's diff: orbital-parameter histogram fix in tab_simulation (n_sets_hist now matches main n_sim); Parametric mode best-fit Parameter Summary; six-kwarg measurement-error model port to `compute_model_fraction_curve` with per-class intrinsic + per-epoch noise via `_draw_measurement_noise`, full 2-test detection. Caveat: σ_pair=√2·σ_measure exact for `fixed`/`normal` only (TODO #188).
+- **Sprint 2 — To-Do app:** `app/todo_core.py` HTML-escapes + backtick-strips descriptions (no more bright green code-spans), pipe-aware regex parser `re.compile(r'(?<!\\)\|')` + `_escape_cell` writer (no more column-shift on descriptions containing `|`).
+- **Sprint 3 — Bin Sensitivity sub-tab:** five new files in `app/bc/` (~4750 lines total): `bin_schemes.py` (8 scheme builders), `bin_sensitivity_scorer.py` (SchemeResult dataclass + MP-pool re-simulation + P1-P6 pitfall detector + E050-bypass on bg-thread path), `bin_sensitivity_plots.py` (6 A&A-ready plot builders + readable-text bumps + `_apply_aa_axes()` for E049), `bin_sensitivity_storage.py` (autosave + promote_partial + list_bs_partials), `bin_sensitivity.py` (tab renderer with manual scheme rows + mock-data mode + saved-runs panel rendered unconditionally at top of tab + bulletproof unconditional schemes-persist). Surgical edits: `app/bc/__init__.py` (register tab), `app/bc/helpers.py` (`_BIN_SCHEME_COLORS` + `get_scheme_color`), `app/pages/05_bias_correction.py` (tab type registration), `settings/user_settings.json` (persisted schemes + mock_params under `bin_sensitivity.*`). New memory file: `memory/likelihood_bin_sensitivity.md` (8-paper lit review + 12 scheme builders + P1-P6 + AIC vs logL_max derivation).
+
+**Uncommitted on `main` (Sprint 4 — validation-tab overhaul, TODO #187):**
+- 15 modified files in `app/bc/`: `validation.py`, `render_validation.py`, `render_lk_explorer.py`, `render_lk_explorer_langer.py`, `runners_cadence.py`, `cadence.py`, `corner_plots.py`, `analysis.py`, `render_shared.py`, `render_shared_langer.py`, `sim_plots.py`, `helpers.py` (Sprint 4 portion only — `_obs_label` + sanity-check delegator; Sprint 3 portion already committed), `file_ops.py`, `extras.py`, `likelihood_viz.py`, `render_lk_fit.py`, `render_lk_fit_langer.py`.
+- 1 new file in `app/bc/`: `validation_io.py` (mock_results/ persistence layer).
+- 3 new test files in `scripts/`: `test_explorer_mock_equal.py`, `test_explorer_mock_equal_langer.py`, `test_grid_vs_explorer_score.py`.
+- 1 new directory: `mock_results/` (validation run outputs).
+
+**Pending visual verification (user — Sprint 4 hand-off):** Six symptoms reported after end-of-day testing of TODO #187 stages A–D. (1) Need ΔRV error bars on mock CDF + binary-fraction graphs. (1a) About half the validation plots are still not A&A white-bg — sweep again with two parallel agents. (1b) Best f_bin matches heatmap argmax but the 68% HDI value does NOT match the maximum of the marginalised f_bin (or the interpolated one); same for π; logP_max still NaN despite Stage B fix attempt. (1c) Symptom 2 from original TODO #187 still broken — flat CDF at 0.12. (1d) Blocked by 1c. (1e) The 5 Draws CDFs in the Sanity Check feel "way off" relative to the best-fit CDF — likely calculated by a different code path. Sprint 4 must be re-attempted with these explicit symptoms in a new chat. Hand-off summary written separately; see TODO #187 notes.
+
+---
+
 ## 2026-04-20 — Docs-only end-of-day (two code sprints UNCOMMITTED pending 2026-04-22 sign-off)
 
 **Tag:** *(none — code sprints awaiting visual sign-off; no working-version tag today.)*
