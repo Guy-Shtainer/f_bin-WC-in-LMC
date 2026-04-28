@@ -1,34 +1,82 @@
 \section{Conclusions}
 \label{sec:conclusions}
 
-We have conducted a spectroscopic multiplicity survey of \Nstars
-apparently single WC/WO stars in the Large Magellanic Cloud using
-multi-epoch VLT/X-SHOOTER spectroscopy. Our main findings are:
+We have presented a multi-epoch VLT/X-Shooter spectroscopic multiplicity
+survey of \Nstars apparently single carbon-rich Wolf--Rayet stars in the
+Large Magellanic Cloud, combined with the \Nknown previously known
+WC/WO binaries from \citet{Bartzakos2001}, for a total sample of
+\Ntotal stars. Our main findings are:
 
 \begin{enumerate}
-\item We detect \Ndetected new spectroscopic binaries based on
-  radial-velocity variability of the \primaryline emission line, bringing
-  the total number of confirmed WC/WO binaries in the LMC to \Nbin out of
-  \Ntotal ($\fbinobs$).
 
-\item Through Monte-Carlo bias-correction simulations following the
-  methodology of \citet{Dsilva2023}, we constrain the intrinsic binary
-  fraction to $f_\mathrm{bin} =
-  \fbincorr^{+\fbinerrup}_{-\fbinerrdn}$ and the period-distribution
-  exponent to $\pi = \pibestfit^{+\pierrup}_{-\pierrdn}$.
+\item \textbf{Sample and observed binary fraction.} Multi-epoch
+  X-Shooter spectroscopy of \Nstars apparently single LMC WC/WO stars
+  (plus \Nknown previously known binaries from
+  \citealt{Bartzakos2001}) yields an observed binary fraction of
+  \fbinobs ($\Nbin/\Ntotal$). The detection criterion is anchored on
+  the \primaryline emission line, the strongest and least variable WC
+  wind feature; an independent line-agreement cross-check
+  (Sect.~\ref{sec:line_agreement}) confirms its primacy by showing
+  that per-line RV self-consistency across the sample correlates
+  positively with emission-line strength.
 
-\item The corrected fraction \fbincorr provides the empirical handle on
-  the metallicity dependence of WC/WO formation: comparison with the
-  Galactic value of \citet{Dsilva2023} tests the prediction that the
-  binary channel becomes more important at sub-solar metallicity
-  \citep{Shenar2020,Marchant2023}, with the period-distribution exponent
-  $\pi$ adding an orthogonal diagnostic of the dominant interaction mode.
+\item \textbf{Bias-corrected intrinsic fraction (Dsilva power-law
+  model).} Following the cadence-aware Monte-Carlo bias-correction
+  methodology of \citet{Dsilva2023} and using a multinomial-likelihood
+  comparison on $\Delta\mathrm{RV}_{\max}$ bins
+  (Eq.~\ref{eq:multinomial}), we will constrain the intrinsic binary
+  fraction to $f_\mathrm{bin} = \fbincorr^{+\fbinerrup}_{-\fbinerrdn}$
+  and the orbital-period-distribution exponent to
+  $\pi = \pibestfit^{+\pierrup}_{-\pierrdn}$ (Sect.~\ref{sec:bias}).
+  Reported uncertainties are 68\% highest-density intervals from the
+  marginalised log-likelihood.
+
+\item \textbf{Cross-checks.} A second period model based on the
+  two-component binary-evolution channels of \citet{Langer2020}
+  (Sect.~\ref{sec:langer_model}), a non-parametric threshold-curve fit
+  using a simulation-derived binary $\Delta\mathrm{RV}_{\max}$
+  distribution (Sect.~\ref{sec:threshold_fit}), and a bin-choice
+  sensitivity envelope across multiple $\Delta\mathrm{RV}$-binning
+  schemes will all be tested for consistency with the headline values
+  within the 68\% HDI. To our knowledge, the bin-sensitivity analysis
+  is the first quantitative validation of binning robustness in a WR
+  multiplicity survey.
+
+\item \textbf{Methodological caveats.} The small sample size
+  ($N = \Ntotal$) places the multinomial likelihood in the
+  Poisson-noise-limited regime, so reported uncertainties are 68\% HDIs
+  from the joint posterior rather than Gaussian standard errors. The
+  $\sim$3-semester observing baseline limits sensitivity to orbital
+  periods longer than $\sim 10$\,yr, leaving wide-orbit binaries as a
+  known incompleteness gap. The single-star RV scatter is poorly
+  constrained by the binned likelihood and is held fixed at a
+  representative value; the parametric Gaussian threshold derivation
+  of Sect.~\ref{sec:threshold_derivation} captures the bulk
+  $\Delta\mathrm{RV}_{\max}$ distribution but is approximate in the
+  wings, motivating the simulation-derived refinement of
+  Sect.~\ref{sec:threshold_fit}.
+
+\item \textbf{Implications for WC/WO formation channels.} The
+  bias-corrected fraction \fbincorr provides a direct empirical test of
+  the metallicity-dependent binary-channel hypothesis: a value above
+  the corresponding Galactic estimate of \citet{Dsilva2023} would
+  support the prediction that line-driven mass loss is too weak at LMC
+  metallicity for the single-star channel to dominate
+  \citep{Shenar2020,Marchant2023}, while a value comparable to or below
+  the Galactic value would constrain it. A definitive verdict awaits
+  finalisation of the bias-correction grid (Sect.~\ref{sec:bias}).
 
 \end{enumerate}
 
-Future work will extend the present sample with phase-resolved
-spectroscopic monitoring of the \NcandidateBH WC + compact-object
-candidates (Sect.~\ref{sec:compact_objects}), full orbital solutions
-for the newly detected SB1 systems, and atmospheric analysis of the
-WC/WO targets to test for metallicity-dependent wind diagnostics
-alongside the binary-fraction measurement reported here.
+Three planned extensions of the present analysis will be reported in
+companion papers: (i) a refined threshold-curve fit using a
+non-Gaussian, simulation-derived parametric form for the binary
+$\Delta\mathrm{RV}_{\max}$ distribution
+(Sect.~\ref{sec:threshold_fit}), enabled by the converged
+bias-correction parameters; (ii) photospheric-absorption confirmation
+of all \Ndetected newly classified binaries together with a search for
+hidden binaries among the apparently single stars
+(Sect.~\ref{sec:spec_morphology}); and (iii) phase-resolved
+spectroscopic monitoring of the \NcandidateBH candidate WC + compact-object
+systems (Sect.~\ref{sec:compact_objects}) to constrain the black-hole
+mass distribution from stripped-helium-star progenitors.

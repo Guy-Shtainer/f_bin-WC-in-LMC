@@ -266,40 +266,108 @@ strongest and most isolated WC spectral feature
 \subsection{Threshold-curve fit}
 \label{sec:threshold_fit}
 
-As a complementary check to the grid-based likelihood analysis described in
-Sect.~\ref{sec:bias}, the cumulative observed binary fraction is fitted as
-a function of the detection threshold $T$ on $\Delta\mathrm{RV}_\mathrm{max}$.
-We adopt the Physics-based simulation: orbital parameters (period,
-eccentricity, mass ratio, inclination) are drawn from the same priors
-as in Sect.~\ref{sec:bias}, and the radial-velocity curve of each
-synthetic binary is computed via Kepler's third law (Eq.~\ref{eq:K1})
-and sampled at the observed cadence of each target. The free parameters
-are the intrinsic binary fraction $f_\mathrm{bin}$, the single-star
-scatter $\sigma_\mathrm{intrinsic}$, and the per-epoch measurement
-uncertainty $\sigma_\mathrm{meas}$. Single stars are assigned intrinsic scatter at scale
-$\sigma_\mathrm{intrinsic}$ and per-epoch noise at scale
-$\sigma_\mathrm{meas}$, and the same two-criterion detection of
-Sect.~\ref{sec:criteria} is applied. The cumulative binary fraction
-$N_\mathrm{bin}(>T)/\Ntotal$ is computed across a grid of thresholds $T$
-and compared to the observed cumulative curve to extract the best-fit
-parameters.
+The threshold derivation of Sect.~\ref{sec:threshold_derivation} adopted
+a parametric Gaussian survival-function model for the peak-to-peak
+$\Delta\mathrm{RV}_{\max}$ distributions of single stars and binaries.
+The present subsection describes a refinement that drops the Gaussian
+assumption for the binary population by replacing it with an empirical,
+simulation-derived distribution, while retaining the Gaussian
+description of the single-star scatter.
+
+\paragraph{Empirical binary RV distribution from physical Monte-Carlo.}
+Following the bias-correction grid search of Sect.~\ref{sec:bias}, which
+yields the best-fit intrinsic binary fraction $f_\mathrm{bin}$ and
+orbital-period exponent $\pi$, we simulate \Nsim synthetic binaries at
+the converged $(f_\mathrm{bin}, \pi)$ point. Each synthetic binary
+draws its orbital parameters (period, eccentricity, mass ratio,
+inclination, longitude of periastron, time of periastron passage) from
+the same priors as in Sect.~\ref{sec:bias}; its full radial-velocity
+curve is computed from the Keplerian solution of Eq.~\ref{eq:K1}; and
+the curve is sampled at the observed cadence of the corresponding
+target so that the cadence-dependent detection bias is preserved
+star-by-star. The resulting peak-to-peak $\Delta\mathrm{RV}_{\max}$
+distribution is then fitted with a parametric form selected from a
+candidate set comprising Gaussian, log-normal, gamma, Weibull and
+exponential distributions. The best-fitting form is chosen by the
+Akaike (AIC) and Bayesian (BIC) information criteria and validated by
+a quantile--quantile (Q--Q) comparison against the simulation. This
+procedure yields an empirical, in general non-Gaussian description of
+the binary $\Delta\mathrm{RV}_{\max}$ distribution.
+
+\paragraph{Threshold-curve fit with the empirical distribution.}
+The fitted distribution is substituted into the survival-function model
+of Eq.~\ref{eq:gauss_threshold}, replacing $\Phi(T/\sigma_b)$ with the
+empirical survival function $1 - F_\mathrm{sim}(T)$, and the cumulative
+observed binary fraction $f_\mathrm{bin}(>T)$ is re-fitted to extract
+the intrinsic binary fraction and the binary detection threshold $T$.
+The single-star scatter $\sigma_s$ is retained in its Gaussian
+parametrisation: the empirical determination of the single-star
+$\Delta\mathrm{RV}_{\max}$ distribution is constrained by the small
+number of confirmed singles in the present sample and is the subject
+of a follow-up paper. The refined estimate of the binary fraction
+obtained in this way is reported as
+$\fbinThresh^{+\fbinThreshErrUp}_{-\fbinThreshErrDn}$.
+
+\paragraph{Sequencing and consistency.}
+Because the empirical binary $\Delta\mathrm{RV}_{\max}$ distribution is
+constructed at the best-fit $(f_\mathrm{bin}, \pi)$ point of
+Sect.~\ref{sec:bias}, this analysis is performed only after the
+bias-correction grid has converged. The two estimates of the binary
+fraction --- the multinomial-likelihood grid search of
+Sect.~\ref{sec:bias} and the threshold-curve fit described here ---
+are mutually consistent if and only if the underlying simulation
+captures the relevant orbital phase space; agreement therefore serves
+as an internal self-consistency check on the broader bias-correction
+pipeline.
 
 \subsection{Spectroscopic morphology investigation}
 \label{sec:spec_morphology}
 
-In addition to the RV-based classification of Sect.~\ref{sec:methods}, each
-star is visually inspected through a diagnostic-line viewer that groups the
-spectrum into curated zoom panels covering interstellar features, telluric
-bands, hydrogen Balmer and \ion{He}{i}/\ion{He}{ii} OB-type photospheric
-absorption, the WR \ion{He}{ii}\,$\lambda 4686$ emission, the
-\primaryline emission complex, and the
-\ion{O}{v}/\ion{O}{vi} lines that distinguish WC from WO subtypes. Stars
-showing morphological signatures inconsistent with a single WC/WO spectrum
--- for example, weak photospheric absorption components attributable to an
-OB companion, or anomalous emission-line profiles -- are flagged as
-candidate binaries. If any additional binaries are flagged through this
-morphological inspection, the binary count is updated and the Monte-Carlo
-bias correction is re-run with the revised \Nbin and \Ntotal. This
-inspection adds \NbinSpec spectroscopically flagged binaries to the
-RV-based count, raising the total to \NbinFinal/\Ntotal and the observed
-binary fraction to $\fbinFinal$.
+In addition to the RV-based classification of Sect.~\ref{sec:criteria},
+every spectrum is visually inspected through a custom diagnostic-line
+viewer that groups the spectrum into curated zoom panels organised by
+physical origin: hydrogen Balmer and \ion{He}{i}/\ion{He}{ii}
+photospheric absorption from a putative OB companion, WC/WO wind
+emission features, interstellar absorption, and telluric bands. The
+inspection is performed in two complementary directions, designed to
+verify the RV-based classification on both sides of the threshold.
+
+\paragraph{Confirmation of classified binaries.}
+For each star flagged as a binary by the RV criterion of
+Sect.~\ref{sec:criteria}, the spectrum is searched for photospheric
+absorption lines characteristic of an OB-type companion: the hydrogen
+Balmer series (\ion{H}{i}, $n \rightarrow 2$), \ion{He}{i} singlet and
+triplet transitions, and the \ion{He}{ii} Pickering and Fowler series.
+Companions of spectral type O, B or early A produce detectable
+absorption components against the WR continuum, whereas later-type
+(F, G, K, M) companions are too faint relative to the WR luminosity to
+be seen and therefore cannot be confirmed by this method. Where
+absorption is detected, its radial-velocity excursions are tracked
+across the available epochs and compared with those of the WR emission
+lines. In a genuine WR\,+\,OB binary the two RV curves phase-lock with
+opposing signs about the systemic velocity, i.e.\ the absorption- and
+emission-line motions are in \emph{anti-phase}. A phase-aligned
+(in-phase) variation, or absent absorption-line variability, is
+instead consistent with an unrelated line-of-sight contaminant or
+with a compact-object companion that contributes no photospheric lines.
+
+\paragraph{Search for hidden binaries among the apparently single stars.}
+Each star not flagged by the RV criterion is independently searched for
+the same OB-type absorption signatures (Balmer, \ion{He}{i},
+\ion{He}{ii}). Detection of stable photospheric absorption in such a
+star is interpreted as evidence for a luminous OB companion that
+escaped the $\Delta\mathrm{RV}$ threshold either because of an
+unfavourable orbital inclination ($\sin i \rightarrow 0$), a long
+orbital period ($P \gtrsim$ the survey baseline), or both. These
+stars become candidates for follow-up monitoring in conjunction with
+the WC + compact-object follow-up programme described in
+Sect.~\ref{sec:compact_objects}. We report their identification but,
+in the absence of a confirmed RV signature, do not promote them to
+confirmed binaries in the sample of the present paper.
+
+The full diagnostic-line categorisation --- OB-type photospheric
+absorption, WR wind emission, telluric bands, and interstellar
+features --- together with the companion-spectral-type detectability
+table that maps OB/A/F/G/K/M companions to their visibility against
+the WR continuum, will be released as part of the open-source
+spectrum-inspection tool that accompanies this paper.
