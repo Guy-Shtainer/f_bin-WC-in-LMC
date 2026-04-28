@@ -5,21 +5,56 @@
 \label{sec:ccf}
 
 Radial velocities were measured using the one-dimensional
-cross-correlation function (CCF) technique of \citet{Zucker1994}. For each
-star, a high signal-to-noise template spectrum was constructed by first
+cross-correlation function (CCF) technique of \citet{Zucker1994}, in the
+same form as adopted for the parallel Galactic WC survey of
+\citet{Dsilva2020}. For two flux arrays $f_1$ and $f_2$ defined on a
+common logarithmic wavelength grid of length $N$, the CCF is the
+normalised dot product
+\begin{equation}
+\rho(s) \;=\; \frac{1}{N\,\sigma_{f_1}\,\sigma_{f_2}}
+              \sum_{i=1}^{N} f_1(\lambda_i)\,f_2(\lambda_i + s),
+\end{equation}
+where $s$ is the velocity shift, and the velocity shift of $f_2$ relative
+to $f_1$ is recovered from the position of the CCF maximum. For each star,
+a high signal-to-noise template spectrum was constructed by first
 computing the CCF of all epochs against an arbitrary reference epoch to
 determine relative velocity shifts, correcting each epoch to a common rest
 frame, and then co-adding the corrected spectra with signal-to-noise
 squared weighting. This iterative procedure removes the dependence on the
 choice of reference epoch.
 
-The CCF was computed separately for each of the 11 emission lines listed
-in Table~\ref{tab:emission_lines}, spanning the full X-SHOOTER wavelength
-range from the ultraviolet (\ion{O}{v}\,$\lambda\lambda 3100$--$3175$) to
-the near-infrared (\ion{C}{iv}\,$\lambda 20842$). The radial velocity for
-each epoch was determined from the position of the CCF peak, and its
-formal uncertainty $\sigma_\mathrm{RV}$ from the curvature of the peak
-\citep{Zucker2003}.
+The CCF was computed independently for each of the \NlinesAll emission
+lines listed in Table~\ref{tab:emission_lines}, spanning the full
+X-SHOOTER wavelength range from the ultraviolet
+(\ion{O}{v}\,$\lambda\lambda 3100$--$3175$) to the near-infrared
+(\ion{C}{iv}\,$\lambda 20842$). Each line is associated with a default
+integration window in wavelength (Table~\ref{tab:emission_lines}) and a
+default CCF fit fraction $f_\mathrm{fit} = \fitFracDefault$, which
+controls the fraction of the CCF peak used for parabolic fitting: the
+fit region extends to the wavelengths at which
+$\rho(s) = f_\mathrm{fit}\,\rho_{\max}$, and a parabola of the form
+$\rho(s) \simeq a s^2 + b s + c$ is fitted to the points above this
+threshold. The radial velocity is then recovered from the parabola apex,
+$v = -b/(2a)$, and the formal per-epoch uncertainty
+$\sigma_\mathrm{RV}$ is derived from the curvature of the CCF peak
+following \citet{Zucker2003},
+\begin{equation}
+\sigma_\mathrm{RV}
+   \;=\; \left[\,
+     -\,N \,\frac{\rho''(\hat s)\,\rho(\hat s)}{1 - \rho(\hat s)^2}
+   \,\right]^{-1/2},
+\end{equation}
+where $\hat s$ is the position of the CCF maximum and $\rho''$ is the
+second derivative of the CCF at the peak.
+
+For a small fraction of star--line combinations the default settings
+yielded a poorly converged parabolic fit -- typically because of edge
+effects from the chosen wavelength range, or a noise spike close to the
+peak -- and the wavelength range and/or fit fraction were adjusted on a
+per-star, per-line basis. All such overrides are documented in the public
+CCF settings file released alongside this paper, and their net effect on
+the RV measurements is negligible compared to the per-epoch
+$\sigma_\mathrm{RV}$.
 
 % Emission line table
 \begin{table}
@@ -45,6 +80,166 @@ Line ID & $\lambda_\mathrm{min}$ [nm] & $\lambda_\mathrm{max}$ [nm] \\
 \end{tabular}
 \end{table}
 
+\subsection{Choice of primary RV line}
+\label{sec:primary_line}
+
+At the outset of the analysis we made no \emph{a priori} commitment to
+which of the \NlinesAll emission lines would yield the most reliable
+radial velocity. We therefore measured the CCF for all of them, and
+selected the primary RV line based on the physical and empirical
+considerations set out below.
+
+\paragraph{NIR lines and telluric H$_2$O contamination.}
+The two near-infrared carbon features in our line list,
+\ion{C}{iv}\,$\lambda 17396$ and \ion{C}{iv}\,$\lambda 20842$, fall on
+the red wing of the strong $2\nu_2 + \nu_3$ / $\nu_1 + \nu_3$ H$_2$O
+combination band system between 1.75 and 2.00\,$\mu$m and on the blue
+edge of the 2.0\,$\mu$m H$_2$O band, respectively. Atmospheric
+transmission at Cerro Paranal in these regions drops below 70--80\%
+even at moderate precipitable water vapour
+($\mathrm{PWV} \simeq 2.5$\,mm), and telluric correction with
+\texttt{molecfit} \citep{Smette2015,Kausch2015} leaves residuals at the
+few-percent level. On the broad ($\Delta v \sim 10^3$\,\kms) WC
+emission profiles such residuals deform the line shape and bias the
+CCF centroid by velocities comparable to or larger than the binary
+detection threshold $\drvthresh$\,\kms. Spectroscopic monitoring of
+WC9 stars by \citet{Williams2000} corroborates the unreliability of
+NIR CCF centroids in this regime, and we therefore exclude the two NIR
+lines from the primary classification.
+
+\paragraph{\ion{He}{ii} variability and blending.}
+The \ion{He}{ii}\,$\lambda 4686$ line forms higher in the accelerating
+WC wind than the deeper \primaryline doublet
+\citep{Hillier1989,Crowther2007}, making its profile more sensitive to
+wind clumping, co-rotating interaction regions, and excess emission
+from wind--wind collision in binaries. Stochastic profile variability
+at the few-percent level on hour-to-day timescales is well documented
+\citep{LepineMoffat1999}, and \citet{Shenar2019} explicitly recommend
+avoiding \ion{He}{ii}\,$\lambda 4686$ for radial-velocity measurements
+when alternatives exist. The \ion{He}{ii}\,$\lambda 5412$ line is in
+addition blended with the \ion{C}{iv}\,$\lambda 5471$ feature in WC
+spectra (Table~\ref{tab:emission_lines}), so that wind variability and
+line confusion both contribute to a less stable centroid.
+
+\paragraph{The \primaryline doublet -- primary RV line.}
+The \primaryline doublet is the strongest and deepest-formed optical
+emission feature in the WC spectrum and yields the most stable line
+centroid in WC atmosphere modelling. We therefore adopt \primaryline
+as the primary RV diagnostic for the binary classification of
+Sect.~\ref{sec:criteria}. This choice also provides direct
+methodological continuity with the precursor LMC WC binary survey of
+\citet{Bartzakos2001}, which used the same line, and with the Galactic
+WC survey of \citet{Dsilva2020,Dsilva2023}.
+
+The remaining lines in Table~\ref{tab:emission_lines} -- the
+\ion{O}{v}, \ion{O}{iv}, \ion{O}{vi}, \ion{C}{iv}\,$\lambda 3650$,
+\ion{C}{iii}\,$\lambda 6700$ and \ion{C}{iv}\,$\lambda 7063$ features
+-- are retained as cross-checks of the per-star RV time series
+(Sect.~\ref{sec:line_agreement}), but are not used to flag binaries.
+
+\subsection{Signal-to-noise requirements}
+\label{sec:snr}
+
+To ensure reliable radial-velocity measurements, we established minimum
+signal-to-noise requirements per emission line through simulations. We
+generated 30 synthetic single-lined binary (SB1) spectra using a WC4
+template with varying S/N levels, measured the radial-velocity scatter for
+each line, and required $\sigma_\mathrm{RV} < 3$\,\kms as the acceptance
+threshold.
+
+\subsection{Line-agreement cross-check}
+\label{sec:line_agreement}
+
+The choice of \primaryline as the primary RV line is supported by an
+independent, data-driven cross-check across all \NlinesAll lines.
+
+For each pair of emission lines $(\ell, \ell')$ we computed the Pearson
+correlation coefficient $r_{\ell\ell'}$ of the per-star peak-to-peak
+$\Delta\mathrm{RV}_{\max}$ values, restricted to the stars in which both
+lines yielded valid measurements. To weight the correlation by sample
+size, we define the agreement score per line $\ell$ as
+\begin{equation}
+S_\ell \;=\; \frac{\sum_{\ell' \neq \ell}
+                    w_{\ell\ell'}\,r_{\ell\ell'}}
+                  {\sum_{\ell' \neq \ell} 1},
+\qquad
+w_{\ell\ell'} \;=\; \frac{n_{\ell\ell'}}{\Nstars},
+\label{eq:agreement_score}
+\end{equation}
+where $n_{\ell\ell'}$ is the number of stars with valid
+$\Delta\mathrm{RV}_{\max}$ from both lines; we require
+$n_{\ell\ell'} \geq \Nstarsmincorr$ for a pair to enter the average.
+The line that is most ``agreeable'' with the rest of the sample has
+the highest $S_\ell$.
+
+The \primaryline doublet emerges as the highest-scoring line. As an
+independent check, we computed the per-line equivalent width on the
+same dataset and found a positive correlation between $S_\ell$ and the
+mean per-epoch line strength: the strongest, most isolated WC emission
+feature is therefore also the most kinematically self-consistent
+across the sample. This is an empirical confirmation of the
+depth-of-formation argument set out in Sect.~\ref{sec:primary_line}.
+The agreement-score ranking and the score-vs-strength relation are
+shown in Sect.~\ref{sec:results} (Fig.~\ref{fig:agreement}).
+
+\subsection{$\Delta\mathrm{RV}$ threshold derivation}
+\label{sec:threshold_derivation}
+
+The binary detection threshold $\drvthresh$\,\kms used in
+Sect.~\ref{sec:criteria} was derived empirically from the cumulative
+observed binary fraction as a function of threshold.
+
+\paragraph{Parametric Gaussian model.}
+We model the cumulative binary fraction above threshold $T$ as the
+survival function of a two-component Gaussian mixture, in which the
+peak-to-peak $\Delta\mathrm{RV}_{\max}$ distributions of the
+single-star and unresolved-binary populations are both approximated as
+zero-centred normals,
+\begin{equation}
+f_\mathrm{bin}(>T)
+  \;=\; (1 - f_\mathrm{bin})\,\Phi(T/\sigma_s)
+        \;+\; f_\mathrm{bin}\,\Phi(T/\sigma_b),
+\label{eq:gauss_threshold}
+\end{equation}
+where $\Phi$ is the survival function (i.e.\ $1 - \mathrm{CDF}$) of a
+standard normal, $\sigma_s$ is the single-star peak-to-peak RV
+scatter, and $\sigma_b$ is the corresponding scatter of the binary
+population. The free parameters $(\sigma_s, \sigma_b, f_\mathrm{bin})$
+are fitted to the observed $f_\mathrm{bin}(>T)$ vs $T$ curve by
+non-linear least squares. The fitted parameters are
+$\sigma_s = \sigmaSingleFit$\,\kms,
+$\sigma_b = \sigmaBinaryFit$\,\kms, and
+$f_\mathrm{bin} = \fbinAnalytic$, and the derived binary-detection
+threshold is $T = \drvthresh$\,\kms, the value adopted throughout this
+work.
+
+\paragraph{Threshold value.}
+The adopted threshold is the inflection of the modelled
+$f_\mathrm{bin}(>T)$ curve: below it, the cumulative detection rate is
+dominated by single-star wind variability, while above it, it is
+dominated by genuine binaries. We adopt $\drvthresh$\,\kms as the
+canonical binary-detection threshold (Sect.~\ref{sec:criteria}),
+subject to the caveat below.
+
+\paragraph{Caveat: the Gaussian assumption is approximate.}
+Equation~\eqref{eq:gauss_threshold} assumes that both the single-star
+and the unresolved-binary $\Delta\mathrm{RV}_{\max}$ distributions are
+Gaussian. WR wind variability is, however, intrinsically stochastic
+and asymmetric: clumping events, co-rotating interaction regions, and
+line-profile excursions all produce non-Gaussian wings that the
+analytic model of Eq.~\eqref{eq:gauss_threshold} cannot capture. We
+have constructed a diagnostic tool that compares the observed
+single-star $\Delta\mathrm{RV}_{\max}$ distribution to the best-fit
+Gaussian via residual and second-derivative tests, and the diagnostic
+confirms that the Gaussian is a useful first approximation but is not
+exact in the wings. The bias-correction analysis described in
+Sect.~\ref{sec:bias} is consequently formulated as a non-parametric
+multinomial likelihood comparison (Eq.~\ref{eq:multinomial}) that does
+not assume Gaussianity, and the threshold-curve cross-check in
+Sect.~\ref{sec:threshold_fit} uses a Physics-based simulation rather
+than an analytic Gaussian. A detailed treatment of the non-Gaussian
+wind-variability distribution is deferred to a companion paper.
+
 \subsection{Binary classification criteria}
 \label{sec:criteria}
 
@@ -65,17 +260,8 @@ The classification is performed in two stages. First, the epoch pair with
 the maximum radial-velocity separation is evaluated. If this pair does not
 satisfy both criteria, all remaining epoch pairs are scanned. The binary
 decision is based exclusively on the \primaryline emission line, the
-strongest and most isolated WC spectral feature.
-
-\subsection{Signal-to-noise requirements}
-\label{sec:snr}
-
-To ensure reliable radial-velocity measurements, we established minimum
-signal-to-noise requirements per emission line through simulations. We
-generated 30 synthetic single-lined binary (SB1) spectra using a WC4
-template with varying S/N levels, measured the radial-velocity scatter for
-each line, and required $\sigma_\mathrm{RV} < 3$\,\kms as the acceptance
-threshold.
+strongest and most isolated WC spectral feature
+(Sect.~\ref{sec:primary_line}).
 
 \subsection{Threshold-curve fit}
 \label{sec:threshold_fit}
