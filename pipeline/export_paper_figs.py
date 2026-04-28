@@ -487,9 +487,15 @@ def fig_threshold_derivation() -> Path:
     function.  Implementation mirrors ``_model_gauss`` from
     ``rv_modeling/compute.py:142–143``.
 
+    σ_s is **fixed at 5 km/s** (instrumental-noise floor — see project
+    notes; ΔRV uncertainties for X-SHOOTER cluster around 3–6 km/s).
+    Only (σ_b, f_bin) are free parameters.  This breaks the σ_s/σ_b
+    degeneracy that drove the unconstrained fit to a boundary.
+
     The empirical curve is built from ``best_dRV`` per star (matching the
-    construction in ``rv_modeling/page.py:39–53``) using the σ-criterion
-    significance mask:  ΔRV − N·σ > 0  with N = NSIGMA_DETECT = 4.
+    construction in ``rv_modeling/page.py:39–53``).  We fit the unfiltered
+    ``raw_frac`` (= N(>T)/N) — the σ-significance criterion is a separate
+    selection effect, not part of the two-Gaussian decomposition.
     """
     from pipeline.load_observations import load_observed_delta_rvs
     from scipy.stats import norm
@@ -505,77 +511,53 @@ def fig_threshold_derivation() -> Path:
     p2p_err = p2p_err[valid_mask]
     n_stars = len(p2p)
 
-    NSIGMA_DETECT = 4.0
     T_MAX         = 301
     t_full = np.arange(0, T_MAX, dtype=float)
-    is_sig    = (p2p - NSIGMA_DETECT * p2p_err) > 0.0
-    f_obs     = np.array([float(np.sum(is_sig & (p2p > t))) / n_stars
-                          for t in t_full])
     raw_frac  = np.array([float(np.sum(p2p > t)) / n_stars for t in t_full])
-    sig_err   = np.sqrt(f_obs * (1.0 - f_obs) / n_stars) + 1e-4
 
-    # Sub-sample for residuals where the curve actually changes (matches
-    # rv_modeling/page.py:55–59)
-    diffs       = np.diff(f_obs, prepend=-999.0)
-    change_mask = diffs != 0.0
-    t_dots      = t_full[change_mask]
-    f_dots      = f_obs[change_mask]
-    e_dots      = sig_err[change_mask]
+    # Two-Gaussian survival model — σ_s FIXED, only (σ_b, f_bin) free
+    SIGMA_S_FIXED = 5.0   # km/s, instrumental noise floor
 
-    # Two-Gaussian survival model
     def _model_gauss(t, sigma_s, sigma_b, f_bin):
         return ((1 - f_bin) * norm.sf(t / sigma_s)
                 + f_bin       * norm.sf(t / sigma_b))
 
-    # Two-stage fit: warm start on raw_frac (no error weighting), then on the
-    # σ-significance curve f_obs with absolute σ.  Bounds match
-    # rv_modeling/compute.py:148–152.
-    sigma_s_fit = sigma_b_fit = f_bin_fit = None
-    sigma_s_err = sigma_b_err = f_bin_err = float('nan')
+    def _model_gauss_fixed_s(t, sigma_b, f_bin):
+        return _model_gauss(t, SIGMA_S_FIXED, sigma_b, f_bin)
+
+    # Constrained fit: σ_b ∈ [σ_s, 300], f_bin ∈ [0, 1]
+    sigma_s_fit = SIGMA_S_FIXED
+    sigma_b_fit = f_bin_fit = None
+    sigma_b_err = f_bin_err = float('nan')
     boundary_flag = ''
     try:
-        # Use the *unfiltered* raw_frac for the analytic two-Gaussian model
-        # (the model decomposes the full population into singles + binaries;
-        # the σ-significance filter is a separate selection effect).
-        p0_raw, _ = curve_fit(_model_gauss, t_full, raw_frac,
-                              p0=[10.0, 60.0, 0.4],
-                              bounds=([0.1, 5.0, 0.0], [100.0, 300.0, 1.0]))
-        popt_g, pcov_g = curve_fit(_model_gauss, t_full, raw_frac, p0=p0_raw,
-                                   bounds=([0.1, 5.0, 0.0],
-                                           [100.0, 300.0, 1.0]))
-        sigma_s_fit, sigma_b_fit, f_bin_fit = (float(popt_g[0]),
-                                               float(popt_g[1]),
-                                               float(popt_g[2]))
-        perr_g = np.sqrt(np.diag(pcov_g))
-        sigma_s_err, sigma_b_err, f_bin_err = (float(perr_g[0]),
-                                               float(perr_g[1]),
-                                               float(perr_g[2]))
-        # Boundary check (curve_fit hits the bound silently — flag here)
+        popt, pcov = curve_fit(
+            _model_gauss_fixed_s, t_full, raw_frac,
+            p0=[60.0, 0.4],
+            bounds=([SIGMA_S_FIXED + 0.1, 0.0],
+                    [300.0,                1.0]))
+        sigma_b_fit = float(popt[0])
+        f_bin_fit   = float(popt[1])
+        perr = np.sqrt(np.diag(pcov))
+        sigma_b_err = float(perr[0])
+        f_bin_err   = float(perr[1])
         flags = []
-        if abs(sigma_s_fit - 100.0) < 1e-3 or abs(sigma_s_fit - 0.1) < 1e-3:
-            flags.append('σ_s at bound')
-        if abs(sigma_b_fit - 300.0) < 1e-3 or abs(sigma_b_fit - 5.0) < 1e-3:
+        if abs(sigma_b_fit - 300.0) < 1e-3 or abs(sigma_b_fit - (SIGMA_S_FIXED + 0.1)) < 1e-3:
             flags.append('σ_b at bound')
         if abs(f_bin_fit - 1.0) < 1e-3 or abs(f_bin_fit - 0.0) < 1e-3:
             flags.append('f_bin at bound')
         boundary_flag = '; '.join(flags) if flags else ''
 
-        print('  ┌── Two-Gaussian fit (raw f_bin(>T) curve) ────────────────────')
-        print(f'  │  σ_single (single-star measurement noise) = '
-              f'{sigma_s_fit:.2f} ± {sigma_s_err:.2f} km/s')
+        print('  ┌── Two-Gaussian fit (σ_s FIXED at 5 km/s) ────────────────────')
+        print(f'  │  σ_single (FIXED — instrumental noise)    = {SIGMA_S_FIXED:.1f} km/s')
         print(f'  │  σ_binary (binary RV-spread scale)        = '
               f'{sigma_b_fit:.2f} ± {sigma_b_err:.2f} km/s')
         print(f'  │  f_bin   (analytic threshold-derivation)  = '
               f'{f_bin_fit:.3f} ± {f_bin_err:.3f}')
         if boundary_flag:
-            print(f'  │  ⚠ DEGENERATE FIT — {boundary_flag}.  Paper Eq. ')
-            print('  │    (gauss_threshold) is not a good descriptor of the ')
-            print('  │    peak-to-peak ΔRV survival function for N=25 stars.')
-            print('  │    Use these numbers with extreme caution; consider ')
-            print('  │    fixing σ_s at the instrumental noise floor and ')
-            print('  │    refitting (σ_b, f_bin) only.')
-        print('  │  → Suggested paper macros (treat as upper bounds):')
-        print(f'  │      \\sigmaSingleFit  = {sigma_s_fit:.1f}')
+            print(f'  │  ⚠ {boundary_flag}.')
+        print('  │  → Suggested paper macros:')
+        print(f'  │      \\sigmaSingleFit  = {SIGMA_S_FIXED:.1f}    (literal, not a fit)')
         print(f'  │      \\sigmaBinaryFit  = {sigma_b_fit:.1f}')
         print(f'  │      \\fbinAnalytic    = {f_bin_fit:.2f}')
         print('  └─────────────────────────────────────────────────────────────')
@@ -622,16 +604,12 @@ def fig_threshold_derivation() -> Path:
     ax.text(THRESH_KMS, 0.96, f' $T = {THRESH_KMS:.1f}$ km s$^{{-1}}$',
             color='#B8860B', fontsize=7, ha='left', va='top')
 
-    # Annotation box with fit results — flag boundary cases honestly
+    # Annotation box with fit results — σ_s shown as fixed
+    txt = (fr'$\sigma_s = {SIGMA_S_FIXED:.1f}$ km s$^{{-1}}$ (fixed)' '\n'
+           fr'$\sigma_b = {sigma_b_fit:.1f} \pm {sigma_b_err:.1f}$ km s$^{{-1}}$' '\n'
+           fr'$f_\mathrm{{bin}} = {f_bin_fit:.2f} \pm {f_bin_err:.2f}$')
     if boundary_flag:
-        txt = (fr'$\sigma_s = {sigma_s_fit:.1f}$ km s$^{{-1}}$ (at bound)' '\n'
-               fr'$\sigma_b = {sigma_b_fit:.1f} \pm {sigma_b_err:.1f}$ km s$^{{-1}}$' '\n'
-               fr'$f_\mathrm{{bin}} = {f_bin_fit:.2f}$ (at bound)' '\n'
-               '(degenerate fit)')
-    else:
-        txt = (fr'$\sigma_s = {sigma_s_fit:.1f} \pm {sigma_s_err:.1f}$ km s$^{{-1}}$' '\n'
-               fr'$\sigma_b = {sigma_b_fit:.1f} \pm {sigma_b_err:.1f}$ km s$^{{-1}}$' '\n'
-               fr'$f_\mathrm{{bin}} = {f_bin_fit:.2f} \pm {f_bin_err:.2f}$')
+        txt += '\n' + fr'($\!$ {boundary_flag} $\!$)'
     ax.text(0.97, 0.62, txt, transform=ax.transAxes,
             ha='right', va='top', fontsize=8,
             bbox=dict(boxstyle='round,pad=0.4', facecolor='white',
@@ -1025,9 +1003,17 @@ def fig_period_models() -> Path:
       • Dsilva power-law:  p(log P) ∝ (log P)^π   on log P ∈ [0.15, 5.0] d
       • Langer mixture:    w_A · N(μ_A, σ_A) + (1-w_A) · LogN(mu=μ_B, σ=σ_B)
         where the second component is a "reflected log-normal" with
-        ln(x) ~ N(ln(μ) + σ², σ).  Parameters per `bias_correction.tex`
-        Eq.~\\ref{eq:langer_period}: μ_A=0.80, σ_A=0.15, μ_B=2.0, σ_B=0.2,
-        w_A=0.2.
+        ln(x) ~ N(ln(μ) + σ², σ).
+
+    NOTE on Langer parameters: the paper text (`bias_correction.tex`,
+    Eq.~\\ref{eq:langer_period}) lists σ_A=0.15, σ_B=0.20, but the bias-
+    correction *simulator* (wr_bias_simulation.py) actually draws periods
+    from σ_A=0.35, σ_B=0.45 — wider components that better match the
+    Sana 2012 / Sana 2013 distributions used to bootstrap the model.
+    Per user direction (2026-04-27), this figure now plots the **simulator
+    values** so the figure reflects what the bias-correction grid actually
+    samples.  The next paper revision should update Eq. (langer_period)
+    to match.
 
     Both PDFs are normalised to integrate to 1 over log P ∈ [0.15, 5.0].
     The cadence-sensitive band log P ∈ [0.5, 3.5] is shaded.
@@ -1036,14 +1022,13 @@ def fig_period_models() -> Path:
     SHADE_MIN, SHADE_MAX = 0.5, 3.5
     PI_DEFAULT = 3.0   # placeholder until \pibestfit converges
 
-    PI_PLACEHOLDER = True
     print('  ┌── Period model parameters used in fig_period_models ──────────')
     print(f'  │  Dsilva power-law slope π = {PI_DEFAULT:.2f}  '
           '(PLACEHOLDER — replace once \\pibestfit converges)')
-    print('  │  Langer params: μ_A=0.80, σ_A=0.15, μ_B=2.0, σ_B=0.2, w_A=0.2')
-    print('  │  Note: this matches paper bias_correction.tex; the simulator')
-    print('  │        defaults in wr_bias_simulation.py are wider')
-    print('  │        (σ_A=0.35, σ_B=0.45) — keep in mind if regenerating.')
+    print('  │  Langer params (simulator values): '
+          'μ_A=0.80, σ_A=0.35, μ_B=2.0, σ_B=0.45, w_A=0.2')
+    print('  │  (paper Eq. langer_period currently shows σ_A=0.15, σ_B=0.20')
+    print('  │   — update paper to match simulator.)')
     print('  └────────────────────────────────────────────────────────────')
 
     # Dsilva power-law PDF: p(x) ∝ x^π on [a, b]
@@ -1056,9 +1041,9 @@ def fig_period_models() -> Path:
     x_grid = np.linspace(a, b, 1200)
     pdf_dsilva = norm_dsilva * x_grid ** pi   # already normalised on [a,b]
 
-    # Langer mixture
-    mu_A, sig_A, w_A = 0.80, 0.15, 0.20
-    mu_B, sig_B      = 2.00, 0.20
+    # Langer mixture — SIMULATOR values (not paper-Eq. values)
+    mu_A, sig_A, w_A = 0.80, 0.35, 0.20
+    mu_B, sig_B      = 2.00, 0.45
 
     # Component A: clipped Gaussian on [a,b] (then renormalise)
     pdf_A = (1.0 / (np.sqrt(2 * np.pi) * sig_A)) * np.exp(
@@ -1111,10 +1096,498 @@ def fig_period_models() -> Path:
     ax.set_xlabel(r'$\log_{10} P$ (d)')
     ax.set_ylabel(r'$p(\log_{10} P)$')
     ax.set_title('Period probability densities')
-    ax.legend(loc='upper right', fontsize=7,
+    # Legend in upper-left — the Dsilva power-law dominates the upper-right
+    # corner with these σ values, so move legend out of the data
+    ax.legend(loc='upper left', fontsize=6.5,
               facecolor='white', edgecolor='black', framealpha=1.0)
     fig.tight_layout()
     return _save(fig, 'period_models.pdf')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Figure E — Worked CCF profile for one (star, epoch, line)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_ccf_profile(
+        obs_wave: np.ndarray, obs_flux: np.ndarray,
+        tpl_wave: np.ndarray, tpl_flux: np.ndarray,
+        line_range_A: tuple,
+        cross_velo_max: float = 2000.0,
+        fit_fraction: float = 0.97,
+) -> dict:
+    """Recompute the CCF for a single (obs, template, line range) and return
+    the velocity-shift array, the CCF function, the parabolic-fit overlay,
+    and the fit-edge metadata.  Mirrors ``CCFclass._crosscorreal`` but
+    without any plotting.
+
+    Inputs are in **Angstroms** (line_range_A is the C-band Å range).
+
+    Returns dict with keys:
+        velo (1D km/s), ccf (1D), fine_velo (1D km/s), parable (1D),
+        rv (float, km/s), sigma (float, km/s), ccf_max1 (float),
+        fit_frac_line (float — y of horizontal dashed line),
+        edge_lo (float, km/s), edge_hi (float, km/s).
+    """
+    from scipy.interpolate import interp1d
+    clight = 2.9979e5
+
+    CrossCorRangeA = np.asarray([line_range_A], dtype=float)
+    CrossVeloMin = -cross_velo_max
+    CrossVeloMax =  cross_velo_max
+
+    LambdaRangeUser = CrossCorRangeA * np.array(
+        [1 - 1.1 * CrossVeloMax / clight, 1 - 1.1 * CrossVeloMin / clight])
+    LamRangeB = LambdaRangeUser[0, 0]
+    LamRangeR = LambdaRangeUser[-1, 1]
+
+    Dlam       = obs_wave[1] - obs_wave[0]
+    Resolution = obs_wave[1] / Dlam
+    vbin       = clight / Resolution
+
+    Nwaves      = int(np.log(LamRangeR / LamRangeB) / np.log(1.0 + vbin / clight))
+    wavegridlog = LamRangeB * (1.0 + vbin / clight) ** np.arange(Nwaves)
+
+    IntIs = np.array([np.argmin(np.abs(wavegridlog - CrossCorRangeA[i][0]))
+                      for i in range(len(CrossCorRangeA))])
+    IntFs = np.array([np.argmin(np.abs(wavegridlog - CrossCorRangeA[i][1]))
+                      for i in range(len(CrossCorRangeA))])
+    Ns = IntFs - IntIs
+    N  = int(np.sum(Ns))
+    CrossCorInds = np.concatenate(
+        [np.arange(IntIs[i], IntFs[i]) for i in range(len(IntFs))])
+    sRange    = np.arange(int(CrossVeloMin / vbin),
+                          int(CrossVeloMax / vbin) + 1, 1)
+    veloRange = vbin * sRange
+
+    # Interpolate template onto log grid
+    Mask = interp1d(tpl_wave, np.nan_to_num(tpl_flux),
+                    bounds_error=False, fill_value=1.0,
+                    kind='cubic')(wavegridlog)
+    # Interpolate observation flux onto log grid (within line range)
+    flux_ccf = interp1d(obs_wave, np.nan_to_num(obs_flux),
+                        bounds_error=False, fill_value=1.0,
+                        kind='cubic')(wavegridlog[CrossCorInds])
+
+    obs_zm  = flux_ccf - np.mean(flux_ccf)
+    mask_zm = Mask     - np.mean(Mask)
+
+    # CCF: roll the mask, dot-product with observation
+    def _CCF(f1, f2, n):
+        return np.sum(f1 * f2) / np.std(f1) / np.std(f2) / n
+
+    CCFarr = np.array([
+        _CCF(obs_zm, (np.roll(mask_zm, s))[CrossCorInds], N)
+        for s in sRange
+    ])
+
+    IndMax  = int(np.argmax(CCFarr))
+    CCFMAX1 = float(np.average(
+        [CCFarr[IndMax - 3: IndMax - 1], CCFarr[IndMax + 2: IndMax + 4]]))
+
+    LeftEdgeArr  = np.abs(fit_fraction * CCFMAX1 - CCFarr[:IndMax])
+    RightEdgeArr = np.abs(fit_fraction * CCFMAX1 - CCFarr[IndMax + 1:])
+    if len(LeftEdgeArr) == 0 or len(RightEdgeArr) == 0:
+        raise RuntimeError('Cannot find CCF local maximum')
+
+    IndFit1 = int(np.argmin(LeftEdgeArr))
+    IndFit2 = int(np.argmin(RightEdgeArr)) + IndMax + 1
+    a, b, c = np.polyfit(
+        np.concatenate((veloRange[IndFit1:IndMax],
+                        veloRange[IndMax + 1: IndFit2 + 1])),
+        np.concatenate((CCFarr[IndFit1:IndMax],
+                        CCFarr[IndMax + 1: IndFit2 + 1])),
+        2,
+    )
+    vmax     = float(-b / (2 * a))
+    CCFAtMax = float(min(1 - 1e-20, c - b ** 2 / 4.0 / a))
+    FineVeloGrid = np.arange(veloRange[IndFit1], veloRange[IndFit2], 0.1)
+    parable      = a * FineVeloGrid ** 2 + b * FineVeloGrid + c
+    sigma = float(np.sqrt(-1.0 / (N * 2 * a * CCFAtMax / (1 - CCFAtMax ** 2))))
+
+    return dict(
+        velo=veloRange, ccf=CCFarr,
+        fine_velo=FineVeloGrid, parable=parable,
+        rv=vmax, sigma=sigma,
+        ccf_max1=CCFMAX1,
+        fit_frac_line=fit_fraction * CCFMAX1,
+        edge_lo=float(veloRange[IndFit1]),
+        edge_hi=float(veloRange[IndFit2]),
+    )
+
+
+def fig_ccf_profile(star_name: str = 'Brey  93',
+                    epoch: int = 1) -> Path:
+    """A worked CCF example for one (star, epoch) tuple on C IV 5808-5812.
+
+    Plots:
+      • CCF ρ(s) vs velocity shift in km/s (full panel)
+      • Horizontal dashed line at fit-fraction · ρ_max
+      • Parabolic fit overlaid on the peak region (red dashed)
+      • Vertical line at centroid (RV); shaded ±1σ band
+
+    Default: ``Brey 93`` epoch 1 (highest-mean-EW star on C IV 5808).
+    """
+    from pipeline.load_observations import _make_obs
+
+    obs = _make_obs()
+    star = obs.load_star_instance(star_name, to_print=False)
+
+    # Template from epoch 1 normalised flux (mirrors ccf_tasks.py)
+    d_tpl = (star.load_property('cleaned_normalized_flux', 1, 'COMBINED')
+             or star.load_property('normalized_flux', 1, 'COMBINED'))
+    if d_tpl is None:
+        raise RuntimeError(f'No template flux for {star_name} epoch 1')
+    tpl_wave_A = np.asarray(d_tpl['wavelengths'], dtype=float)
+    tpl_flux   = np.asarray(d_tpl['normalized_flux'], dtype=float)
+
+    # Observation at chosen epoch
+    d_obs = (star.load_property('cleaned_normalized_flux', epoch, 'COMBINED')
+             or star.load_property('normalized_flux', epoch, 'COMBINED'))
+    if d_obs is None:
+        raise RuntimeError(f'No flux for {star_name} epoch {epoch}')
+    obs_wave_A = np.asarray(d_obs['wavelengths'], dtype=float)
+    obs_flux   = np.asarray(d_obs['normalized_flux'], dtype=float)
+
+    # Sanitize NaNs in the wavelength grid
+    m = np.isfinite(obs_wave_A) & np.isfinite(obs_flux)
+    obs_wave_A = obs_wave_A[m]; obs_flux = obs_flux[m]
+    m = np.isfinite(tpl_wave_A) & np.isfinite(tpl_flux)
+    tpl_wave_A = tpl_wave_A[m]; tpl_flux = tpl_flux[m]
+
+    # Interpolate observation onto template grid (matches ccf_tasks.py)
+    from scipy.interpolate import interp1d
+    if len(obs_wave_A) >= 2 and not np.array_equal(obs_wave_A, tpl_wave_A):
+        obs_flux = interp1d(obs_wave_A, obs_flux, kind='cubic',
+                            bounds_error=False, fill_value=1.0)(tpl_wave_A)
+        obs_wave_A = tpl_wave_A
+
+    # Run CCF on the C IV 5808-5812 line range (570 - 588 nm => 5700 - 5880 Å)
+    line_range_A = (5700.0, 5880.0)
+
+    print(f'  CCF profile: {star_name} epoch {epoch} on C IV 5808-5812')
+    res = _compute_ccf_profile(
+        obs_wave_A, obs_flux, tpl_wave_A, tpl_flux,
+        line_range_A=line_range_A,
+        cross_velo_max=2000.0, fit_fraction=0.97,
+    )
+    print(f'    fitted RV = {res["rv"]:+.2f} ± {res["sigma"]:.2f} km/s   '
+          f'(ρ_max ≈ {res["ccf_max1"]:.3f})')
+
+    # ── Plot ─────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=FS_DC_HALF_HI)
+    ax.plot(res['velo'], res['ccf'],
+            color='#000000', linewidth=1.0,
+            label=fr'CCF $\rho(s)$')
+    # Fit-fraction horizontal line
+    ax.axhline(res['fit_frac_line'],
+               color='#888888', linestyle='--', linewidth=0.9,
+               label=fr'$f_\mathrm{{fit}}\,\rho_\mathrm{{max}}$ '
+                     fr'= ${0.97}\,\rho_\mathrm{{max}}$')
+    # Mark fit edges (left and right) as small grey ticks
+    for x in (res['edge_lo'], res['edge_hi']):
+        ax.plot([x, x], [res['fit_frac_line'] - 0.01,
+                          res['fit_frac_line'] + 0.01],
+                color='#888888', linewidth=0.8)
+    # Parabolic fit overlay (red dashed)
+    ax.plot(res['fine_velo'], res['parable'],
+            color='#D62728', linestyle='--', linewidth=1.4,
+            label='Parabolic fit')
+    # Centroid + 1σ band
+    rv = res['rv']; sg = res['sigma']
+    ax.axvline(rv, color='#DAA520', linewidth=1.0,
+               label=fr'RV $= {rv:+.1f} \pm {sg:.1f}$ km s$^{{-1}}$')
+    ax.axvspan(rv - sg, rv + sg,
+               color='#DAA520', alpha=0.18, linewidth=0)
+
+    # Cosmetics
+    ax.set_xlim(-1500, 1500)
+    y_min = float(min(0.0, res['ccf'].min())) * 1.1
+    y_max = float(res['ccf'].max()) * 1.10
+    ax.set_ylim(y_min, y_max)
+    ax.set_xlabel(r'Velocity shift $s$ (km s$^{-1}$)')
+    ax.set_ylabel(r'Cross-correlation $\rho(s)$')
+    ax.set_title(fr'Worked CCF: {star_name} epoch {epoch} (C\,IV 5808\,\AA)')
+    ax.legend(loc='upper right', fontsize=7,
+              facecolor='white', edgecolor='black', framealpha=1.0)
+    fig.tight_layout()
+    return _save(fig, 'ccf_profile.pdf')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Figure F — Three representative stars: RV vs MJD time series
+#            (top row only; bottom-row line profiles deferred — see notes)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_binary_examples() -> Path:
+    """RV-vs-MJD time series for three representative stars:
+      Panel 1: highest ΔRV_max binary (clearest SB1)
+      Panel 2: marginal case nearest to the threshold (above or below)
+      Panel 3: apparently single star with the lowest ΔRV_max
+
+    The bottom-row line-profile panels are deferred (require a more complex
+    spectrum-loading bootstrap that broke in the previous run).  The
+    figure is currently a 1×3 layout.
+    """
+    from pipeline.load_observations import (
+        load_observed_delta_rvs, _make_obs,
+    )
+
+    drv, detail = load_observed_delta_rvs()
+    rows = []
+    for sn, det in detail.items():
+        d = float(det['best_dRV'])
+        s = float(det['best_sigma']) if np.isfinite(det['best_sigma']) else 0.0
+        ib = bool(det['is_binary']) if det['is_binary'] is not None else False
+        rows.append((sn, d, s, ib, len(det['rv'])))
+    # Drop zero-ΔRV
+    rows = [r for r in rows if r[1] > 0]
+    rows.sort(key=lambda r: -r[1])
+
+    # Selection
+    # Panel 1: highest ΔRV_max binary
+    binaries = [r for r in rows if r[3]]
+    if not binaries:
+        raise RuntimeError('No detected binaries found.')
+    sel_high = binaries[0]
+    # Panel 2: marginal case — closest to THRESH_KMS but still above
+    above_thr = [r for r in rows if r[1] > THRESH_KMS]
+    below_thr = [r for r in rows if r[1] <= THRESH_KMS]
+    if above_thr:
+        sel_mid = min(above_thr, key=lambda r: abs(r[1] - THRESH_KMS))
+    elif below_thr:
+        sel_mid = max(below_thr, key=lambda r: r[1])
+    else:
+        raise RuntimeError('No marginal case')
+    # Panel 3: apparently single (is_binary=False) with lowest ΔRV
+    singles = [r for r in rows if not r[3]]
+    if not singles:
+        raise RuntimeError('No singles found.')
+    sel_low = min(singles, key=lambda r: r[1])
+
+    selections = [
+        ('clear binary',  sel_high),
+        ('marginal',      sel_mid),
+        ('single',        sel_low),
+    ]
+    print('  ┌── binary_examples.pdf — selected stars ──────────────────────')
+    for tag, (sn, d, s, ib, n) in selections:
+        flag = 'BINARY' if ib else 'single'
+        print(f'  │  [{tag:13}]  {sn:<22}  ΔRV = {d:6.1f} ± '
+              f'{s:5.1f} km/s   ({flag}, n_ep = {n})')
+    print('  └──────────────────────────────────────────────────────────────')
+
+    # Build per-star RV(t) from observations (need MJDs + RVs at each epoch)
+    obs = _make_obs()
+    line_key = 'C IV 5808-5812'
+
+    def _star_rv_timeseries(star_name: str) -> tuple:
+        """Returns (mjds, rv, rv_err) for the C IV 5808 line."""
+        star = obs.load_star_instance(star_name, to_print=False)
+        epochs = star.get_all_epoch_numbers()
+        mjds, rvs, errs = [], [], []
+        for ep in epochs:
+            try:
+                rv_prop = star.load_property('RVs', ep, 'COMBINED')
+            except Exception:
+                continue
+            if rv_prop is None or line_key not in rv_prop:
+                continue
+            entry = rv_prop[line_key]
+            try:
+                entry = entry.item()
+            except Exception:
+                pass
+            if not isinstance(entry, dict):
+                continue
+            rv  = entry.get('full_RV')
+            err = entry.get('full_RV_err')
+            if rv is None or err is None:
+                continue
+            try:
+                rv  = float(rv); err = float(err)
+            except Exception:
+                continue
+            if not np.isfinite(rv) or rv == 0.0:
+                continue
+
+            mjd = None
+            for band in ('NIR', 'VIS', 'UVB', 'COMBINED'):
+                try:
+                    fit = star.load_observation(ep, band=band)
+                    if fit is not None:
+                        mjd = float(fit.header['MJD-OBS'])
+                        break
+                except Exception:
+                    continue
+            if mjd is None:
+                continue
+            mjds.append(mjd); rvs.append(rv); errs.append(err)
+        order = np.argsort(mjds)
+        return (np.asarray(mjds)[order],
+                np.asarray(rvs)[order],
+                np.asarray(errs)[order])
+
+    series = {}
+    for tag, (sn, *_) in selections:
+        mjds, rvs, errs = _star_rv_timeseries(sn)
+        series[sn] = (mjds, rvs, errs)
+        print(f'    {sn}: {len(mjds)} epochs')
+
+    # ── Plot 1×3 ─────────────────────────────────────────────────────────
+    fig, axs = plt.subplots(1, 3, figsize=(7.0, 2.6), sharey=False)
+    for ax, (tag, sel) in zip(axs, selections):
+        sn, dval, serr, ib, n = sel
+        mjds, rvs, errs = series[sn]
+        # Reference each panel's RV centred on the sample mean (for clarity)
+        # but display the absolute MJD on x-axis
+        ax.errorbar(mjds, rvs, yerr=errs, fmt='o',
+                    color=('#D62728' if ib else '#4A90D9'),
+                    ecolor='black', elinewidth=0.6, capsize=2.0,
+                    markersize=4, markeredgecolor='black',
+                    markeredgewidth=0.4, zorder=3,
+                    label=f'C\\,IV 5808')
+        # Reference line at the ΔRV mean
+        rv_mean = float(np.mean(rvs)) if len(rvs) else 0.0
+        ax.axhline(rv_mean, color='#888888', linestyle='--', linewidth=0.8)
+        # Threshold zone: ±THRESH_KMS / 2 around the mean — visualises the
+        # peak-to-peak that would trigger detection
+        half_thr = THRESH_KMS / 2.0
+        ax.axhspan(rv_mean - half_thr, rv_mean + half_thr,
+                   color='#DAA520', alpha=0.15, linewidth=0,
+                   label=fr'$\pm T/2 = \pm {half_thr:.1f}$ km/s')
+        # Title with star + ΔRV
+        cls_txt = 'binary' if ib else 'single'
+        ax.set_title(f'{tag}: {sn}\n$\\Delta$RV $= {dval:.1f}$ km/s  ({cls_txt})',
+                     fontsize=8.5)
+        ax.set_xlabel('MJD (d)')
+        if ax is axs[0]:
+            ax.set_ylabel(r'RV (km s$^{-1}$)')
+        # Legend only on first panel
+        if ax is axs[0]:
+            ax.legend(loc='upper right', fontsize=6,
+                      facecolor='white', edgecolor='black', framealpha=1.0)
+
+    fig.tight_layout()
+    return _save(fig, 'binary_examples.pdf')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Figure G — LMC sample sky map (RA / Dec scatter, no Hα background)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_sample_map() -> Path:
+    """Sky positions of the 25 WC LMC targets in our sample, colour-coded
+    by C IV 5808 binary classification.  RA/Dec are read from FITS headers
+    of each star's first available epoch (any band).
+
+    No background image — the caption notes that the LMC body would
+    normally be shown via an Hα cutout (DSS / Magellanic Cloud Emission-
+    Line Survey).  This plain scatter is suitable for the methods section
+    and avoids a network/external-image dependency.
+    """
+    from pipeline.load_observations import (
+        load_observed_delta_rvs, _make_obs,
+    )
+
+    drv, detail = load_observed_delta_rvs()
+    obs = _make_obs()
+
+    # Gather (RA, Dec, is_binary, drv) for each of the 25 stars
+    rows = []
+    import specs
+    for sn in specs.star_names:
+        try:
+            star = obs.load_star_instance(sn, to_print=False)
+        except Exception:
+            continue
+        epochs = star.get_all_epoch_numbers()
+        ra = dec = None
+        for ep in epochs:
+            for band in ('NIR', 'VIS', 'UVB', 'COMBINED'):
+                try:
+                    fit = star.load_observation(ep, band=band)
+                except Exception:
+                    fit = None
+                if fit is None:
+                    continue
+                try:
+                    ra  = float(fit.header.get('RA',  np.nan))
+                    dec = float(fit.header.get('DEC', np.nan))
+                except Exception:
+                    ra = dec = None
+                if ra is not None and dec is not None and np.isfinite(ra) and np.isfinite(dec):
+                    break
+            if ra is not None and np.isfinite(ra):
+                break
+        if ra is None or not np.isfinite(ra):
+            print(f'    [sample_map] WARN no RA for {sn}')
+            continue
+        det = detail.get(sn, {})
+        is_bin = bool(det.get('is_binary')) if det.get('is_binary') is not None else False
+        d = float(det.get('best_dRV', 0.0))
+        rows.append((sn, ra, dec, is_bin, d))
+
+    if len(rows) < 5:
+        raise RuntimeError(f'Only {len(rows)} stars have RA/Dec — too few.')
+
+    print(f'  ┌── sample_map.pdf — {len(rows)} targets with RA/Dec ───────────')
+    n_bin = sum(1 for r in rows if r[3])
+    print(f'  │  Binary (red):   {n_bin}')
+    print(f'  │  Single (blue): {len(rows) - n_bin}')
+    print('  └──────────────────────────────────────────────────────────────')
+
+    # ── Plot ─────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=FS_SC_SQUARE)
+    # Background — faint LMC body as a guideline ellipse (centred at LMC
+    # centroid: RA = 80.89, Dec = -69.76; semi-major ~ 5.3°, semi-minor ~ 3.5°)
+    # ref: van der Marel & Kallivayalil 2014.
+    from matplotlib.patches import Ellipse
+    lmc_centre = (80.89, -69.76)
+    lmc_a = 5.3   # semi-major (deg)
+    lmc_b = 3.5   # semi-minor (deg)
+    lmc_pa = 31.0 # position angle (deg, E of N)
+    el = Ellipse(lmc_centre, 2 * lmc_a, 2 * lmc_b, angle=lmc_pa,
+                 fc='#EEEEEE', ec='#AAAAAA', linewidth=0.6, alpha=0.6,
+                 zorder=0)
+    ax.add_patch(el)
+    ax.text(lmc_centre[0], lmc_centre[1] + lmc_b + 0.3, 'LMC body (guide)',
+            ha='center', va='bottom', fontsize=6, color='#666666',
+            zorder=1)
+
+    # Scatter targets
+    for sn, ra, dec, is_bin, d in rows:
+        col = '#D62728' if is_bin else '#4A90D9'
+        marker = 's' if is_bin else 'o'
+        ax.scatter(ra, dec, color=col, marker=marker, s=22,
+                   edgecolor='black', linewidth=0.4, zorder=4)
+
+    # Legend
+    from matplotlib.lines import Line2D
+    leg = [
+        Line2D([0], [0], marker='s', color='#D62728', linestyle='',
+               markersize=6, markeredgecolor='black', markeredgewidth=0.4,
+               label=f'Binary  (n = {n_bin})'),
+        Line2D([0], [0], marker='o', color='#4A90D9', linestyle='',
+               markersize=6, markeredgecolor='black', markeredgewidth=0.4,
+               label=f'Single  (n = {len(rows) - n_bin})'),
+    ]
+    ax.legend(handles=leg, loc='upper right', fontsize=7,
+              facecolor='white', edgecolor='black', framealpha=1.0)
+
+    # Astronomical convention: RA increases to the LEFT (eastward)
+    ax.invert_xaxis()
+    # Tight bounds around the data with some padding
+    ras  = np.array([r[1] for r in rows])
+    decs = np.array([r[2] for r in rows])
+    ax.set_xlim(float(np.max(ras))  + 1.5,
+                float(np.min(ras))  - 1.5)   # inverted
+    ax.set_ylim(float(np.min(decs)) - 1.0,
+                float(np.max(decs)) + 1.0)
+    ax.set_xlabel(r'Right ascension $\alpha$ (deg, J2000)')
+    ax.set_ylabel(r'Declination $\delta$ (deg, J2000)')
+    ax.set_title('LMC WC/WO sample — sky positions')
+    fig.tight_layout()
+    return _save(fig, 'sample_map.pdf')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
