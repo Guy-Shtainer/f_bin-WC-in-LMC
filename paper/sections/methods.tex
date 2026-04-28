@@ -47,6 +47,19 @@ following \citet{Zucker2003},
 where $\hat s$ is the position of the CCF maximum and $\rho''$ is the
 second derivative of the CCF at the peak.
 
+\begin{figure}
+\centering
+% \includegraphics[width=\columnwidth]{plots/ccf_profile.pdf}
+\caption{Worked example of the cross-correlation function for the
+  \primaryline emission line on a representative epoch. The CCF profile
+  (black) is shown together with the parabolic fit (red dashed) over the
+  peak region above $f_\mathrm{fit} = \fitFracDefault$ of the maximum.
+  The centroid of the parabola yields the radial velocity, and its
+  $1\sigma$ uncertainty is derived from the curvature of the peak
+  following \citet{Zucker2003}.}
+\label{fig:ccf_profile}
+\end{figure}
+
 For a small fraction of star--line combinations the default settings
 yielded a poorly converged parabolic fit -- typically because of edge
 effects from the chosen wavelength range, or a noise spike close to the
@@ -182,6 +195,23 @@ depth-of-formation argument set out in Sect.~\ref{sec:primary_line}.
 The agreement-score ranking and the score-vs-strength relation are
 shown in Sect.~\ref{sec:results} (Fig.~\ref{fig:agreement}).
 
+\begin{figure*}
+\centering
+% \includegraphics[width=\textwidth]{plots/agreement.pdf}
+\caption{Line-agreement cross-check across the \NlinesAll candidate
+  emission lines. \textit{Left:} per-line agreement score $S_\ell$
+  (Eq.~\ref{eq:agreement_score}) ranked from highest to lowest, computed
+  from the Pearson correlation of per-star $\Delta\mathrm{RV}_{\max}$
+  values across line pairs, weighted by sample overlap with a minimum of
+  \Nstarsmincorr common stars. \textit{Right:} agreement score versus
+  mean per-epoch equivalent width of the line. The positive correlation
+  supports the depth-of-formation argument: the strongest, deepest-formed
+  lines are also the most kinematically self-consistent across the
+  sample. The \primaryline doublet emerges as both the strongest and the
+  most agreeable line.}
+\label{fig:agreement}
+\end{figure*}
+
 \subsection{$\Delta\mathrm{RV}$ threshold derivation}
 \label{sec:threshold_derivation}
 
@@ -212,6 +242,19 @@ $\sigma_b = \sigmaBinaryFit$\,\kms, and
 $f_\mathrm{bin} = \fbinAnalytic$, and the derived binary-detection
 threshold is $T = \drvthresh$\,\kms, the value adopted throughout this
 work.
+
+\begin{figure}
+\centering
+\includegraphics[width=\columnwidth]{plots/threshold_derivation.pdf}
+\caption{Determination of the binary detection threshold from the
+  cumulative observed binary fraction. The step curve shows the fraction
+  of stars with $\Delta\mathrm{RV}_{\max} > T$ as a function of threshold
+  $T$; the dashed curves show the two Gaussian components of the
+  parametric mixture model (Eq.~\ref{eq:gauss_threshold}); the solid red
+  curve is the joint best fit. The vertical line marks the adopted
+  threshold $T = \drvthresh$\,\kms.}
+\label{fig:threshold_derivation}
+\end{figure}
 
 \paragraph{Threshold value.}
 The adopted threshold is the inflection of the modelled

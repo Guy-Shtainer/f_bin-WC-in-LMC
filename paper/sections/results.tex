@@ -12,6 +12,19 @@ targets. Combined with the \Nknown previously known binaries from
 binaries in the LMC WC/WO sample is \Nbin out of \Ntotal, yielding an
 observed binary fraction of $\fbinobs$.
 
+\begin{figure}
+\centering
+\includegraphics[width=\columnwidth]{plots/peak_drv_per_star.pdf}
+\caption{Peak-to-peak radial-velocity excursion $\Delta\mathrm{RV}_{\max}$
+  for each apparently single target, sorted in decreasing order. Error
+  bars represent the $\sigthresh\sigma$ combined uncertainty
+  (Sect.~\ref{sec:criteria}). The vertical line marks the
+  binary-detection threshold $T = \drvthresh$\,\kms; stars satisfying
+  both criteria (the threshold cut and the $\sigthresh\sigma$
+  significance) are highlighted in red.}
+\label{fig:peak_drv_per_star}
+\end{figure}
+
 Table~\ref{tab:classification} lists the binary classification for each
 star, including the maximum $\Delta\mathrm{RV}$, the associated
 significance, and the epoch pair that triggered the detection.
@@ -19,11 +32,36 @@ significance, and the epoch pair that triggered the detection.
 \subsection{Radial-velocity measurements}
 \label{sec:rv_results}
 
-Per-star radial-velocity measurements, representative RV curves, and
-example spectra spanning a clear SB1 detection, a marginal case at the
-detection threshold, and an apparently single star are presented in
-Sect.~\ref{sec:detections} and tabulated in
+Figure~\ref{fig:binary_examples} illustrates the classification by way of
+three representative cases drawn from the sample: (a) a clearly detected
+SB1, (b) a marginal case lying near the detection threshold, and (c) an
+apparently single star. The SB1 panel shows an unambiguous red/blue shift
+of the \primaryline emission profile across epochs, with a peak-to-peak
+RV excursion comfortably exceeding both the $\drvthresh$\,\kms threshold
+and the $\sigthresh\sigma$ significance requirement. The marginal case
+exhibits a shift that is comparable in magnitude to the per-epoch
+combined uncertainty, illustrating why the joint threshold-plus-significance
+criterion of Sect.~\ref{sec:criteria} is needed: without the
+$\sigthresh\sigma$ cut, such borderline candidates would inflate the
+detected binary fraction with statistically marginal claims. The
+apparently single star shows no measurable variation between epochs, with
+the line profile reproducing to within the noise. Per-star
+radial-velocity time series for the full sample are tabulated in
 Appendix~\ref{app:rv_tables}.
+
+\begin{figure*}
+\centering
+% \includegraphics[width=\textwidth]{plots/binary_examples.pdf}
+\caption{Three representative cases drawn from the sample. \textit{Top
+  row:} radial-velocity time series for (a) a clearly detected SB1, (b) a
+  marginal case near the detection threshold, and (c) an apparently
+  single star. \textit{Bottom row:} corresponding \primaryline
+  emission-line profiles at the two epochs of maximum and minimum radial
+  velocity, illustrating the red/blue shift signature in panel (a), the
+  marginal shift in panel (b), and the absence of measurable variation
+  in panel (c).}
+\label{fig:binary_examples}
+\end{figure*}
 
 \subsection{Observed binary fraction}
 \label{sec:obs_fbin}

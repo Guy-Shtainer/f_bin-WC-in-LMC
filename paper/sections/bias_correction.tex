@@ -98,6 +98,20 @@ simulated model is
 with $N = \Ntotal$. The best-fit model is the grid point that maximises
 $\ln\mathcal{L}$.
 
+\begin{figure}
+\centering
+\includegraphics[width=\columnwidth]{plots/cdf_obs_vs_sim.pdf}
+\caption{Cumulative $\Delta\mathrm{RV}_{\max}$ distribution: observations
+  (black solid step) vs.\ Monte-Carlo simulation at the best-fit grid
+  point (red dashed; the 16--84\% percentile band of the simulation is
+  shaded). The vertical dashed lines mark the multinomial bin edges
+  (Eq.~\ref{eq:multinomial}). \emph{Preliminary snapshot}: the
+  bias-correction grid is still being tuned and the values shown
+  correspond to a representative grid configuration with
+  $N_\mathrm{sim} = 1000$ realisations.}
+\label{fig:cdf_obs_vs_sim}
+\end{figure}
+
 \subsection{Grid search and results}
 \label{sec:grid_results}
 
@@ -110,6 +124,43 @@ The best-fit parameters are $f_\mathrm{bin} =
 \pibestfit^{+\pierrup}_{-\pierrdn}$, where the uncertainties represent
 68\% highest-density intervals (HDI68) from the marginalised
 log-likelihood.
+
+\begin{figure}
+\centering
+\includegraphics[width=\columnwidth]{plots/fbin_pi_heatmap.pdf}
+\caption{Marginalised log-likelihood over $(f_\mathrm{bin}, \pi)$ for the
+  Dsilva power-law period model. The cross marks the joint argmax; the
+  white contour encloses the 68\% highest-density interval (HDI68). The
+  likelihood is marginalised over the nuisance parameters
+  $\sigma_\mathrm{single}$ and $\log P_\mathrm{max}$. \emph{Preliminary
+  snapshot}: bias-correction grid not yet converged.}
+\label{fig:fbin_pi_heatmap}
+\end{figure}
+
+\begin{figure}
+\centering
+\includegraphics[width=\columnwidth]{plots/fbin_pi_marginals.pdf}
+\caption{One-dimensional marginal posteriors of (\textit{left}) the
+  binary fraction $f_\mathrm{bin}$ and (\textit{right}) the
+  period-distribution exponent $\pi$, derived from the Dsilva grid of
+  Fig.~\ref{fig:fbin_pi_heatmap}. The solid vertical lines mark the
+  joint argmax; the dashed lines and shaded regions mark the 68\% HDI
+  bounds. \emph{Preliminary snapshot}.}
+\label{fig:fbin_pi_marginals}
+\end{figure}
+
+\begin{figure}
+\centering
+% \includegraphics[width=\columnwidth]{plots/bin_sensitivity.pdf}
+\caption{Bin-choice sensitivity of the inferred binary fraction. For each
+  multinomial-bin scheme tested, the marker is the argmax $f_\mathrm{bin}$
+  and the horizontal bar covers the 68\% HDI. The default scheme of
+  \citet{Dsilva2023} ($\{0,\drvthresh,250,650,\infty\}$\,\kms) is
+  highlighted in red; alternative schemes vary in number of bins, edge
+  placement, and edge spacing. The envelope across schemes is reported
+  as a methodological-robustness statement alongside the headline value.}
+\label{fig:bin_sensitivity}
+\end{figure}
 
 \subsection{Alternative period distribution: Langer+2020}
 \label{sec:langer_model}
@@ -155,3 +206,25 @@ a two-dimensional scan over $(f_\mathrm{bin},\,\sigma_\mathrm{single})$,
 where $\sigma_\mathrm{single}$ is the intrinsic single-star RV scatter
 (treated as a nuisance parameter). The same multinomial likelihood
 comparison methodology (Sect.~\ref{sec:likelihood_test}) is applied.
+
+\begin{figure}
+\centering
+\includegraphics[width=\columnwidth]{plots/langer_heatmap.pdf}
+\caption{Marginalised log-likelihood for the \citet{Langer2020}
+  two-component (Case A + Case B) period model, projected onto
+  $(f_\mathrm{bin}, \sigma_\mathrm{single})$. Contour and argmax
+  conventions as in Fig.~\ref{fig:fbin_pi_heatmap}.}
+\label{fig:langer_heatmap}
+\end{figure}
+
+\begin{figure}
+\centering
+% \includegraphics[width=\columnwidth]{plots/period_models.pdf}
+\caption{Period probability density used by the two bias-correction
+  models. \textit{Solid black:} Dsilva power-law $p(\log P) \propto
+  (\log P)^{\pibestfit}$; \textit{dashed red:} the \citet{Langer2020}
+  two-component Case A + Case B mixture (Eq.~\ref{eq:langer_period}).
+  The shaded region marks the orbital periods to which the survey cadence
+  is sensitive.}
+\label{fig:period_models}
+\end{figure}
