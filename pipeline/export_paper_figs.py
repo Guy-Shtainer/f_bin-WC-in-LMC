@@ -474,68 +474,647 @@ def fig_peak_drv_per_star() -> Path:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Figure 3 — Threshold derivation: empirical f_bin(>T) step
+# Figure 3 — Threshold derivation: empirical f_bin(>T) + two-Gaussian fit
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fig_threshold_derivation(npz: dict) -> Path:
-    """Empirical cumulative f_bin(>T) vs T from the observed ΔRV array.
+def fig_threshold_derivation() -> Path:
+    """Cumulative f_bin(>T) vs T from observed peak-to-peak ΔRV, with the
+    two-Gaussian survival-function fit per `methods.tex` Eq.~\\ref{eq:gauss_threshold}:
 
-    NOTE: The "two-Gaussian-component" parametric overlay referenced in the
-    paper text is NOT implemented in this codebase — only the
-    `_fit_two_segment_linear_weighted` elbow fit is present
-    (Plots.ipynb cell 47).  The notebook fit also depends on
-    `_is_significant_binary` (sigma criterion), `ew_fail_stats`, and
-    `clean_map`, none of which are reproducible without ObservationManager
-    and the per-line CCF cache.  This figure therefore shows the empirical
-    step + threshold marker only; the parametric overlay is DEFERRED.
+        f_bin(>T) = (1 - f_bin) Φ(T/σ_s) + f_bin Φ(T/σ_b)
+
+    where Φ = ``scipy.stats.norm.sf`` is the standard-normal survival
+    function.  Implementation mirrors ``_model_gauss`` from
+    ``rv_modeling/compute.py:142–143``.
+
+    The empirical curve is built from ``best_dRV`` per star (matching the
+    construction in ``rv_modeling/page.py:39–53``) using the σ-criterion
+    significance mask:  ΔRV − N·σ > 0  with N = NSIGMA_DETECT = 4.
     """
-    obs = np.asarray(npz['obs_delta_rv'], dtype=float)
-    obs = obs[obs > 0]
-    n = len(obs)
+    from pipeline.load_observations import load_observed_delta_rvs
+    from scipy.stats import norm
+    from scipy.optimize import curve_fit
 
-    t_max = max(float(obs.max()), THRESH_KMS) * 1.05
-    t_grid = np.linspace(0, t_max, 600)
-    fbin_curve = np.array([float(np.sum(obs > t)) / n for t in t_grid])
+    drv, detail = load_observed_delta_rvs()
+    names = sorted(detail.keys())
+    p2p     = np.array([detail[n]['best_dRV']  for n in names], dtype=float)
+    p2p_err = np.array([detail[n]['best_sigma'] for n in names], dtype=float)
+    # Drop stars with no measurable ΔRV (zero-pair); they do not contribute
+    valid_mask = p2p > 0
+    p2p     = p2p[valid_mask]
+    p2p_err = p2p_err[valid_mask]
+    n_stars = len(p2p)
 
-    # Wilson-1σ band on the cumulative count
-    def wilson(k: int, n_total: int, z: float = 1.0) -> tuple[float, float]:
-        if n_total == 0:
-            return 0.0, 0.0
-        p = k / n_total
-        denom = 1 + z * z / n_total
-        centre = (p + z * z / (2 * n_total)) / denom
-        half = (z * np.sqrt(p * (1 - p) / n_total + z * z /
-                             (4 * n_total * n_total))) / denom
-        return centre - half, centre + half
+    NSIGMA_DETECT = 4.0
+    T_MAX         = 301
+    t_full = np.arange(0, T_MAX, dtype=float)
+    is_sig    = (p2p - NSIGMA_DETECT * p2p_err) > 0.0
+    f_obs     = np.array([float(np.sum(is_sig & (p2p > t))) / n_stars
+                          for t in t_full])
+    raw_frac  = np.array([float(np.sum(p2p > t)) / n_stars for t in t_full])
+    sig_err   = np.sqrt(f_obs * (1.0 - f_obs) / n_stars) + 1e-4
 
-    counts = np.array([int(np.sum(obs > t)) for t in t_grid])
-    lo_arr = np.array([wilson(c, n)[0] for c in counts])
-    hi_arr = np.array([wilson(c, n)[1] for c in counts])
+    # Sub-sample for residuals where the curve actually changes (matches
+    # rv_modeling/page.py:55–59)
+    diffs       = np.diff(f_obs, prepend=-999.0)
+    change_mask = diffs != 0.0
+    t_dots      = t_full[change_mask]
+    f_dots      = f_obs[change_mask]
+    e_dots      = sig_err[change_mask]
 
-    fig, ax = plt.subplots(figsize=FS_SC_WIDE)
-    # Wilson band
-    ax.fill_between(t_grid, lo_arr, hi_arr,
-                    color='#888888', alpha=0.20, linewidth=0,
-                    label=r'1$\sigma$ Wilson interval')
-    # Empirical curve (since it's piecewise constant from a 25-star sample,
-    # show as a step)
-    ax.step(t_grid, fbin_curve, where='post',
+    # Two-Gaussian survival model
+    def _model_gauss(t, sigma_s, sigma_b, f_bin):
+        return ((1 - f_bin) * norm.sf(t / sigma_s)
+                + f_bin       * norm.sf(t / sigma_b))
+
+    # Two-stage fit: warm start on raw_frac (no error weighting), then on the
+    # σ-significance curve f_obs with absolute σ.  Bounds match
+    # rv_modeling/compute.py:148–152.
+    sigma_s_fit = sigma_b_fit = f_bin_fit = None
+    sigma_s_err = sigma_b_err = f_bin_err = float('nan')
+    boundary_flag = ''
+    try:
+        # Use the *unfiltered* raw_frac for the analytic two-Gaussian model
+        # (the model decomposes the full population into singles + binaries;
+        # the σ-significance filter is a separate selection effect).
+        p0_raw, _ = curve_fit(_model_gauss, t_full, raw_frac,
+                              p0=[10.0, 60.0, 0.4],
+                              bounds=([0.1, 5.0, 0.0], [100.0, 300.0, 1.0]))
+        popt_g, pcov_g = curve_fit(_model_gauss, t_full, raw_frac, p0=p0_raw,
+                                   bounds=([0.1, 5.0, 0.0],
+                                           [100.0, 300.0, 1.0]))
+        sigma_s_fit, sigma_b_fit, f_bin_fit = (float(popt_g[0]),
+                                               float(popt_g[1]),
+                                               float(popt_g[2]))
+        perr_g = np.sqrt(np.diag(pcov_g))
+        sigma_s_err, sigma_b_err, f_bin_err = (float(perr_g[0]),
+                                               float(perr_g[1]),
+                                               float(perr_g[2]))
+        # Boundary check (curve_fit hits the bound silently — flag here)
+        flags = []
+        if abs(sigma_s_fit - 100.0) < 1e-3 or abs(sigma_s_fit - 0.1) < 1e-3:
+            flags.append('σ_s at bound')
+        if abs(sigma_b_fit - 300.0) < 1e-3 or abs(sigma_b_fit - 5.0) < 1e-3:
+            flags.append('σ_b at bound')
+        if abs(f_bin_fit - 1.0) < 1e-3 or abs(f_bin_fit - 0.0) < 1e-3:
+            flags.append('f_bin at bound')
+        boundary_flag = '; '.join(flags) if flags else ''
+
+        print('  ┌── Two-Gaussian fit (raw f_bin(>T) curve) ────────────────────')
+        print(f'  │  σ_single (single-star measurement noise) = '
+              f'{sigma_s_fit:.2f} ± {sigma_s_err:.2f} km/s')
+        print(f'  │  σ_binary (binary RV-spread scale)        = '
+              f'{sigma_b_fit:.2f} ± {sigma_b_err:.2f} km/s')
+        print(f'  │  f_bin   (analytic threshold-derivation)  = '
+              f'{f_bin_fit:.3f} ± {f_bin_err:.3f}')
+        if boundary_flag:
+            print(f'  │  ⚠ DEGENERATE FIT — {boundary_flag}.  Paper Eq. ')
+            print('  │    (gauss_threshold) is not a good descriptor of the ')
+            print('  │    peak-to-peak ΔRV survival function for N=25 stars.')
+            print('  │    Use these numbers with extreme caution; consider ')
+            print('  │    fixing σ_s at the instrumental noise floor and ')
+            print('  │    refitting (σ_b, f_bin) only.')
+        print('  │  → Suggested paper macros (treat as upper bounds):')
+        print(f'  │      \\sigmaSingleFit  = {sigma_s_fit:.1f}')
+        print(f'  │      \\sigmaBinaryFit  = {sigma_b_fit:.1f}')
+        print(f'  │      \\fbinAnalytic    = {f_bin_fit:.2f}')
+        print('  └─────────────────────────────────────────────────────────────')
+    except Exception as exc:
+        print(f'  ✗ two-Gaussian fit failed: {exc}')
+        return Path('')
+
+    # Build component curves on the dense t grid (use t_full directly — the
+    # ΔRV axis spans 0..300 km/s)
+    surv_s = norm.sf(t_full / sigma_s_fit)
+    surv_b = norm.sf(t_full / sigma_b_fit)
+    single_comp  = (1.0 - f_bin_fit) * surv_s
+    binary_comp  =        f_bin_fit  * surv_b
+    summed       = _model_gauss(t_full, sigma_s_fit, sigma_b_fit, f_bin_fit)
+
+    # Wilson 1σ band on raw_frac (binomial counting)
+    raw_err = np.sqrt(raw_frac * (1.0 - raw_frac) / n_stars)
+
+    # ── Plot ─────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=FS_DC_HALF_HI)
+    # Empirical step (raw, all-stars survival function)
+    ax.step(t_full, raw_frac, where='post',
             color='#000000', linewidth=1.4,
-            label=r'$f_\mathrm{bin}(>T)$')
-    # 45.5 km/s threshold
-    ax.axvline(THRESH_KMS, color='#D62728', linestyle='--', linewidth=1.1)
-    ax.text(THRESH_KMS, 0.95, f' $T = {THRESH_KMS:.1f}$ km s$^{{-1}}$',
-            color='#D62728', fontsize=7, ha='left', va='top')
+            label=fr'Observed $f(>T) = N(>T)/N$  ($N = {n_stars}$)')
+    # 1σ binomial error band
+    ax.fill_between(t_full, np.maximum(0, raw_frac - raw_err),
+                    np.minimum(1, raw_frac + raw_err),
+                    color='#888888', alpha=0.20, linewidth=0,
+                    label=r'1$\sigma$ binomial band')
+    # Single-component contribution (dashed grey)
+    ax.plot(t_full, single_comp,
+            color='#888888', linestyle='--', linewidth=1.0,
+            label=fr'Single component  $(1-f_\mathrm{{bin}})\,\Phi(T/\sigma_s)$')
+    # Binary-component contribution (dashed red)
+    ax.plot(t_full, binary_comp,
+            color='#E25A53', linestyle='--', linewidth=1.0,
+            label=fr'Binary component   $f_\mathrm{{bin}}\,\Phi(T/\sigma_b)$')
+    # Summed two-Gaussian model (solid red)
+    ax.plot(t_full, summed,
+            color='#D62728', linestyle='-', linewidth=1.4,
+            label=fr'Two-Gaussian fit')
+    # Threshold marker
+    ax.axvline(THRESH_KMS, color='#DAA520', linestyle='--', linewidth=1.0)
+    ax.text(THRESH_KMS, 0.96, f' $T = {THRESH_KMS:.1f}$ km s$^{{-1}}$',
+            color='#B8860B', fontsize=7, ha='left', va='top')
 
-    ax.set_xlim(0, t_max)
+    # Annotation box with fit results — flag boundary cases honestly
+    if boundary_flag:
+        txt = (fr'$\sigma_s = {sigma_s_fit:.1f}$ km s$^{{-1}}$ (at bound)' '\n'
+               fr'$\sigma_b = {sigma_b_fit:.1f} \pm {sigma_b_err:.1f}$ km s$^{{-1}}$' '\n'
+               fr'$f_\mathrm{{bin}} = {f_bin_fit:.2f}$ (at bound)' '\n'
+               '(degenerate fit)')
+    else:
+        txt = (fr'$\sigma_s = {sigma_s_fit:.1f} \pm {sigma_s_err:.1f}$ km s$^{{-1}}$' '\n'
+               fr'$\sigma_b = {sigma_b_fit:.1f} \pm {sigma_b_err:.1f}$ km s$^{{-1}}$' '\n'
+               fr'$f_\mathrm{{bin}} = {f_bin_fit:.2f} \pm {f_bin_err:.2f}$')
+    ax.text(0.97, 0.62, txt, transform=ax.transAxes,
+            ha='right', va='top', fontsize=8,
+            bbox=dict(boxstyle='round,pad=0.4', facecolor='white',
+                      edgecolor='black', linewidth=0.6))
+
+    ax.set_xlim(0, T_MAX - 1)
     ax.set_ylim(0, 1.02)
     ax.set_xlabel(r'$T$ (km s$^{-1}$)')
-    ax.set_ylabel(r'$f_\mathrm{bin}(>T)$')
-    ax.set_title(r'Empirical binary fraction vs $\Delta$RV threshold')
+    ax.set_ylabel(r'$f(>T)$')
+    ax.set_title(r'Cumulative $\Delta$RV distribution and two-Gaussian fit')
     ax.legend(loc='upper right', fontsize=7,
               facecolor='white', edgecolor='black', framealpha=1.0)
     fig.tight_layout()
     return _save(fig, 'threshold_derivation.pdf')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Figure A — Per-line agreement ranking + S_ℓ vs equivalent width
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_per_line_drv_table() -> tuple:
+    """Return (df, ew_stats, ordered_lines) by walking ObservationManager
+    over all 25 stars × 11 emission lines.
+
+    df : pd.DataFrame with one row per star and one column per line, holding
+         the per-star peak-to-peak ΔRV computed from the (full_RV, full_RV_err)
+         pairs stored in the ``RVs`` property.  Stars with <2 valid epochs for
+         a line have NaN in that cell.
+    ew_stats : dict[line] = (success_rate, mean_EW, sem_EW)  — built from the
+         ``EWs`` property (per-epoch (EW, sigma_EW) records).
+    ordered_lines : list[str]  — the 11-line canonical order from
+         ``ccf_settings_with_global_lines.json``.
+    """
+    import json
+    import math
+    import pandas as pd
+    from pipeline.load_observations import _make_obs
+
+    settings_path = _ROOT / 'ccf_settings_with_global_lines.json'
+    if not settings_path.is_file():
+        raise FileNotFoundError(f'CCF settings JSON not found: {settings_path}')
+    with open(settings_path) as fh:
+        cfg = json.load(fh)
+    lines_default = cfg.get('emission_lines_default', {})
+    ordered_lines = list(lines_default.keys())
+    star_cfg = {s['star_name']: s for s in cfg.get('stars', [])}
+
+    import specs
+    obs = _make_obs()
+
+    # Helpers (mirror Plots.ipynb cell 36)
+    def _is_skipped(star_name: str, line_key: str, ep: int) -> bool:
+        sc = star_cfg.get(star_name, {})
+        if ep in set(sc.get('skip_epochs', [])):
+            return True
+        sl = sc.get('skip_emission_lines', {})
+        if line_key in sl:
+            skip_eps = sl[line_key]
+            if isinstance(skip_eps, (int, np.integer)):
+                skip_eps = [skip_eps]
+            if 0 in skip_eps or ep in skip_eps:
+                return True
+        return False
+
+    def _extract_full_rv(cell):
+        try:
+            if isinstance(cell, dict):
+                return cell.get('full_RV')
+            if hasattr(cell, 'item'):
+                v = cell.item()
+                if isinstance(v, dict):
+                    return v.get('full_RV')
+        except Exception:
+            return None
+        return None
+
+    def _extract_full_rv_err(cell):
+        keys = ('full_RV_err', 'full_err', 'sigma', 'err',
+                'RV_err', 'RV_sigma')
+        try:
+            if isinstance(cell, dict):
+                for k in keys:
+                    if k in cell and cell[k] is not None:
+                        return float(cell[k])
+            if hasattr(cell, 'item'):
+                v = cell.item()
+                if isinstance(v, dict):
+                    for k in keys:
+                        if k in v and v[k] is not None:
+                            return float(v[k])
+        except Exception:
+            return float('nan')
+        return float('nan')
+
+    # Storage
+    drv_table:    dict = {ln: {} for ln in ordered_lines}    # line -> star -> ΔRV
+    ew_records:   dict = {ln: [] for ln in ordered_lines}    # line -> [EW values]
+    ew_attempts:  dict = {ln: 0  for ln in ordered_lines}
+    ew_failures:  dict = {ln: 0  for ln in ordered_lines}
+
+    for star_name in specs.star_names:
+        try:
+            star = obs.load_star_instance(star_name, to_print=False)
+        except Exception as exc:
+            print(f'    [agreement] WARN load {star_name}: {exc}')
+            continue
+        epochs = star.get_all_epoch_numbers()
+        for line_key in ordered_lines:
+            rv_vals: list = []
+            err_vals: list = []
+            for ep in epochs:
+                if _is_skipped(star_name, line_key, ep):
+                    continue
+                # EW (independent of RV success)
+                try:
+                    EWs = star.load_property('EWs', ep, 'COMBINED')
+                except Exception:
+                    EWs = None
+                rec = None
+                if EWs is not None:
+                    try:
+                        rec_raw = EWs.get(line_key)
+                        if rec_raw is not None:
+                            try:
+                                rec = rec_raw.item()
+                            except Exception:
+                                rec = rec_raw if isinstance(rec_raw, dict) else None
+                    except Exception:
+                        rec = None
+                ew_attempts[line_key] += 1
+                if rec is not None and isinstance(rec, dict):
+                    val = rec.get('EW')
+                    try:
+                        v = float(val) if val is not None else float('nan')
+                    except Exception:
+                        v = float('nan')
+                    if np.isfinite(v):
+                        ew_records[line_key].append(v)
+                    else:
+                        ew_failures[line_key] += 1
+                else:
+                    ew_failures[line_key] += 1
+
+                # RV
+                try:
+                    RVs = star.load_property('RVs', ep, 'COMBINED')
+                except Exception:
+                    RVs = None
+                if RVs is None or line_key not in RVs:
+                    continue
+                cell = RVs[line_key]
+                rv = _extract_full_rv(cell)
+                if rv is None:
+                    continue
+                try:
+                    rv_f = float(rv)
+                except Exception:
+                    continue
+                if not np.isfinite(rv_f) or rv_f == 0.0:
+                    continue
+                err_f = _extract_full_rv_err(cell)
+                rv_vals.append(rv_f)
+                err_vals.append(err_f if np.isfinite(err_f) else 0.0)
+
+            if len(rv_vals) >= 2:
+                rv_arr = np.asarray(rv_vals, dtype=float)
+                drv_table[line_key][star_name] = float(rv_arr.max() - rv_arr.min())
+
+    # Convert to DataFrame: rows = stars (specs order), cols = lines (canonical)
+    rows = []
+    for sn in specs.star_names:
+        row = {ln: drv_table[ln].get(sn, np.nan) for ln in ordered_lines}
+        rows.append(row)
+    df = pd.DataFrame(rows, index=list(specs.star_names), columns=ordered_lines)
+
+    # EW per-line stats
+    ew_stats: dict = {}
+    for ln in ordered_lines:
+        n_att = ew_attempts[ln]
+        n_fail = ew_failures[ln]
+        succ = (1.0 - n_fail / n_att) if n_att > 0 else 0.0
+        vals = np.asarray(ew_records[ln], dtype=float)
+        if vals.size > 0:
+            mean = float(np.nanmean(vals))
+            sem  = float(np.nanstd(vals) / np.sqrt(len(vals)))
+        else:
+            mean = float('nan')
+            sem  = float('nan')
+        ew_stats[ln] = (succ, mean, sem)
+
+    return df, ew_stats, ordered_lines
+
+
+def fig_agreement() -> Path:
+    """Fig 1: Per-line agreement-score ranking and S_ℓ vs equivalent width.
+
+    For each emission line ℓ, define
+        S_ℓ = Σ_{m≠ℓ} w_{ℓm} r_{ℓm}  /  Σ_{m≠ℓ} 1
+    with w_{ℓm} = n_{ℓm} / N_stars and r_{ℓm} = Pearson correlation between
+    the per-star ΔRV columns for lines ℓ and m on the n_{ℓm} stars where
+    both are measured (valid pairwise mask).  Pairs with n_{ℓm} <
+    MIN_STARS_FOR_CORR (= 8) are dropped from the sum.
+
+    Implementation mirrors Plots.ipynb cell 53.
+
+    Two panels (DC, ~7×3):
+      Left  — bar ranking of S_ℓ for the 11 lines, sorted descending.
+              C IV 5808 (the binary-classifier line) highlighted in red.
+      Right — S_ℓ vs equivalent width with error bars on EW (SEM).
+    """
+    import pandas as pd
+    from scipy.stats import pearsonr
+    df, ew_stats, ordered_lines = _build_per_line_drv_table()
+
+    # Filter to lines with ≥ MIN_STARS detections (otherwise correlations
+    # are undefined). Use the same threshold as the notebook.
+    MIN_STARS_FOR_CORR = 8
+    MAX_POSSIBLE_STARS = 25
+
+    cols = [ln for ln in ordered_lines if df[ln].notna().sum() >= 2]
+    n_lines = len(cols)
+    if n_lines < 2:
+        raise RuntimeError('Need at least 2 lines with ≥2 stars for agreement.')
+
+    corr_mat = pd.DataFrame(np.nan, index=cols, columns=cols)
+    n_mat    = pd.DataFrame(0,       index=cols, columns=cols)
+    for i, c1 in enumerate(cols):
+        for j, c2 in enumerate(cols):
+            if i == j:
+                continue
+            mask = df[c1].notna() & df[c2].notna()
+            n_pair = int(mask.sum())
+            if n_pair < MIN_STARS_FOR_CORR:
+                continue
+            r, _ = pearsonr(df[c1][mask], df[c2][mask])
+            corr_mat.at[c1, c2] = float(r)
+            n_mat.at[c1, c2]    = n_pair
+
+    weights = n_mat.astype(float) / MAX_POSSIBLE_STARS
+    weighted = corr_mat * weights
+    # Average over the surviving pairs (count of non-NaN entries per row)
+    counts = corr_mat.count(axis=1).replace(0, np.nan)
+    scores = (weighted.sum(axis=1) / counts)
+    scores = scores.dropna().sort_values(ascending=False)
+    if scores.empty:
+        raise RuntimeError('No line pairs survived MIN_STARS_FOR_CORR filter.')
+
+    # Console summary
+    print('  ┌── Per-line agreement scores S_ℓ (descending) ──────────────')
+    for ln, s in scores.items():
+        succ, mean_ew, sem_ew = ew_stats.get(ln, (np.nan, np.nan, np.nan))
+        n_det = int(df[ln].notna().sum())
+        print(f'  │  {ln:<24s}  S = {s:+.3f}  '
+              f'(n={n_det:2d}, EW = {mean_ew:+.2f} ± {sem_ew:.2f})')
+    print('  └────────────────────────────────────────────────────────────')
+
+    # Highlight the C IV line (binary classifier)
+    HILITE = 'C IV 5808-5812'
+
+    fig, axs = plt.subplots(1, 2, figsize=FS_DC_HALF_HI)
+    ax_bar, ax_sc = axs
+
+    # ── Panel A: bar ranking ─────────────────────────────────────────────
+    y = np.arange(len(scores))
+    colors = ['#D62728' if ln == HILITE else '#4A90D9' for ln in scores.index]
+    ax_bar.barh(y, scores.values,
+                color=colors, edgecolor='black', linewidth=0.4, height=0.7)
+    ax_bar.set_yticks(y)
+    ax_bar.set_yticklabels([s.replace('-', r'$-$') for s in scores.index],
+                           fontsize=7)
+    ax_bar.invert_yaxis()
+    ax_bar.axvline(0, color='black', linewidth=0.6)
+    ax_bar.set_xlabel(r'Agreement score $S_\ell$')
+    ax_bar.set_title('Per-line agreement ranking')
+    # Set xlim with some padding
+    s_min = float(scores.min())
+    s_max = float(scores.max())
+    pad = 0.05 * max(abs(s_min), abs(s_max), 1e-3)
+    ax_bar.set_xlim(min(s_min - pad, 0.0), s_max + pad)
+
+    # ── Panel B: S_ℓ vs EW ───────────────────────────────────────────────
+    ews   = np.array([ew_stats[ln][1] for ln in scores.index], dtype=float)
+    ews_e = np.array([ew_stats[ln][2] for ln in scores.index], dtype=float)
+    sc    = scores.values
+
+    finite = np.isfinite(ews) & np.isfinite(sc)
+    if finite.any():
+        # Plot each point in the highlight color where applicable
+        for i, ln in enumerate(scores.index):
+            if not finite[i]:
+                continue
+            c = '#D62728' if ln == HILITE else '#4A90D9'
+            ax_sc.errorbar(ews[i], sc[i],
+                           xerr=(ews_e[i] if np.isfinite(ews_e[i]) else 0.0),
+                           fmt='o', color=c, ecolor='black', elinewidth=0.6,
+                           capsize=2.0, markersize=5,
+                           markeredgecolor='black', markeredgewidth=0.4,
+                           zorder=3)
+            # Annotate point
+            ax_sc.text(ews[i], sc[i] + 0.018, ln.split()[0] + ' ' +
+                       (ln.split()[1] if len(ln.split()) > 1 else ''),
+                       fontsize=6, ha='center', va='bottom',
+                       color='#333333')
+    ax_sc.axhline(0, color='black', linewidth=0.6)
+    ax_sc.set_xlabel(r'Equivalent width (Å)')
+    ax_sc.set_ylabel(r'Agreement score $S_\ell$')
+    ax_sc.set_title(r'$S_\ell$ vs equivalent width')
+
+    fig.tight_layout()
+    return _save(fig, 'agreement.pdf')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Figure C — Bin-sensitivity forest plot
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_bin_sensitivity() -> Path:
+    """Forest plot of (f_bin argmax + HDI68) across the 6 binning schemes
+    in ``results/bin_sensitivity_260423-1841.json``.  ``dsilva_default``
+    highlighted in red (the published choice)."""
+    import json as _json
+    src = _ROOT / 'results' / 'bin_sensitivity_260423-1841.json'
+    if not src.is_file():
+        raise FileNotFoundError(f'Bin-sensitivity JSON not found: {src}')
+    with open(src) as fh:
+        data = _json.load(fh)
+
+    schemes = data['schemes']
+    selected = data.get('selected_scheme', 'dsilva_default')
+
+    # Preserve insertion order
+    rows: list = []
+    for name, blk in schemes.items():
+        rows.append((
+            name,
+            float(blk['best_fbin']),
+            float(blk['hdi68_fbin'][0]),
+            float(blk['hdi68_fbin'][1]),
+            int(blk.get('n_eff_bins', blk.get('n_bins', -1))),
+        ))
+
+    n = len(rows)
+    fig, ax = plt.subplots(figsize=(3.5, max(2.6, 0.45 * n + 0.8)))
+    y = np.arange(n)
+    for i, (name, fb, lo, hi, neff) in enumerate(rows):
+        is_sel = (name == selected)
+        col = '#D62728' if is_sel else '#4A90D9'
+        # HDI bar
+        ax.plot([lo, hi], [i, i], color=col, linewidth=2.0, solid_capstyle='butt')
+        # End caps
+        ax.plot([lo, lo], [i - 0.18, i + 0.18], color=col, linewidth=1.2)
+        ax.plot([hi, hi], [i - 0.18, i + 0.18], color=col, linewidth=1.2)
+        # argmax marker
+        ax.plot(fb, i, marker='o', color=col, markersize=6,
+                markeredgecolor='black', markeredgewidth=0.4, zorder=4)
+
+    # Threshold marker at our headline value (Bartzakos+detected) is implicit;
+    # instead, mark fb of selected scheme as a vertical line for reference.
+    sel_fb = next(fb for nm, fb, *_ in rows if nm == selected)
+    ax.axvline(sel_fb, color='#D62728', linestyle=':', linewidth=0.8,
+               zorder=0, alpha=0.6)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels([nm + (r'$^*$' if nm == selected else '')
+                        for nm, *_ in rows], fontsize=7)
+    ax.invert_yaxis()
+    ax.set_xlim(0, 1)
+    ax.set_xlabel(r'$f_\mathrm{bin}$')
+    ax.set_title('Binning-scheme sensitivity (argmax + 68% HDI)')
+
+    # Legend
+    from matplotlib.lines import Line2D
+    leg = [Line2D([0], [0], color='#D62728', marker='o', linewidth=2.0,
+                  markeredgecolor='black', label='dsilva (selected)'),
+           Line2D([0], [0], color='#4A90D9', marker='o', linewidth=2.0,
+                  markeredgecolor='black', label='alternative scheme')]
+    ax.legend(handles=leg, loc='lower right', fontsize=7,
+              facecolor='white', edgecolor='black', framealpha=1.0)
+
+    fig.tight_layout()
+    return _save(fig, 'bin_sensitivity.pdf')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Figure D — Period probability density: Dsilva power-law vs Langer mixture
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_period_models() -> Path:
+    """Two period probability densities used in the bias-correction simulator:
+
+      • Dsilva power-law:  p(log P) ∝ (log P)^π   on log P ∈ [0.15, 5.0] d
+      • Langer mixture:    w_A · N(μ_A, σ_A) + (1-w_A) · LogN(mu=μ_B, σ=σ_B)
+        where the second component is a "reflected log-normal" with
+        ln(x) ~ N(ln(μ) + σ², σ).  Parameters per `bias_correction.tex`
+        Eq.~\\ref{eq:langer_period}: μ_A=0.80, σ_A=0.15, μ_B=2.0, σ_B=0.2,
+        w_A=0.2.
+
+    Both PDFs are normalised to integrate to 1 over log P ∈ [0.15, 5.0].
+    The cadence-sensitive band log P ∈ [0.5, 3.5] is shaded.
+    """
+    LOGP_MIN, LOGP_MAX = 0.15, 5.0
+    SHADE_MIN, SHADE_MAX = 0.5, 3.5
+    PI_DEFAULT = 3.0   # placeholder until \pibestfit converges
+
+    PI_PLACEHOLDER = True
+    print('  ┌── Period model parameters used in fig_period_models ──────────')
+    print(f'  │  Dsilva power-law slope π = {PI_DEFAULT:.2f}  '
+          '(PLACEHOLDER — replace once \\pibestfit converges)')
+    print('  │  Langer params: μ_A=0.80, σ_A=0.15, μ_B=2.0, σ_B=0.2, w_A=0.2')
+    print('  │  Note: this matches paper bias_correction.tex; the simulator')
+    print('  │        defaults in wr_bias_simulation.py are wider')
+    print('  │        (σ_A=0.35, σ_B=0.45) — keep in mind if regenerating.')
+    print('  └────────────────────────────────────────────────────────────')
+
+    # Dsilva power-law PDF: p(x) ∝ x^π on [a, b]
+    pi = PI_DEFAULT
+    a, b = LOGP_MIN, LOGP_MAX
+    if abs(pi + 1.0) < 1e-8:
+        norm_dsilva = 1.0 / np.log(b / a)
+    else:
+        norm_dsilva = (pi + 1.0) / (b ** (pi + 1.0) - a ** (pi + 1.0))
+    x_grid = np.linspace(a, b, 1200)
+    pdf_dsilva = norm_dsilva * x_grid ** pi   # already normalised on [a,b]
+
+    # Langer mixture
+    mu_A, sig_A, w_A = 0.80, 0.15, 0.20
+    mu_B, sig_B      = 2.00, 0.20
+
+    # Component A: clipped Gaussian on [a,b] (then renormalise)
+    pdf_A = (1.0 / (np.sqrt(2 * np.pi) * sig_A)) * np.exp(
+        -0.5 * ((x_grid - mu_A) / sig_A) ** 2)
+    # Component B: reflected log-normal (mode = mu_B). The simulator uses
+    # x = 2*mu_B - rng.lognormal(mean=ln(mu_B)+σ², sigma).  The PDF of the
+    # transformed variable y = 2*mu_B - x is f_Y(y) = f_X(2*mu_B - y).
+    mu_ln = np.log(mu_B) + sig_B ** 2
+    z = 2 * mu_B - x_grid                             # reflect about mu_B
+    pos = z > 0
+    pdf_B = np.zeros_like(x_grid)
+    pdf_B[pos] = (1.0 / (z[pos] * sig_B * np.sqrt(2 * np.pi))) * np.exp(
+        -0.5 * ((np.log(z[pos]) - mu_ln) / sig_B) ** 2)
+
+    mix_unscaled = w_A * pdf_A + (1.0 - w_A) * pdf_B
+    # Renormalise on [a,b]
+    Z = np.trapezoid(mix_unscaled, x_grid)
+    pdf_langer = mix_unscaled / Z if Z > 0 else mix_unscaled
+
+    # ── Plot ─────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=FS_SC_WIDE)
+    # Shade cadence-sensitive band
+    ax.axvspan(SHADE_MIN, SHADE_MAX,
+               color='#888888', alpha=0.10, linewidth=0,
+               label='Cadence-sensitive band')
+
+    ax.plot(x_grid, pdf_dsilva,
+            color='#000000', linestyle='-', linewidth=1.4,
+            label=fr'Dsilva power-law  ($\pi = {pi:.1f}$, placeholder)')
+    ax.plot(x_grid, pdf_langer,
+            color='#D62728', linestyle='--', linewidth=1.4,
+            label=r'Langer two-component mixture')
+
+    # Sub-component preview (faint) for diagnostic clarity
+    a_part = w_A * pdf_A
+    b_part = (1.0 - w_A) * pdf_B
+    # renormalise the components to the same Z for plotting consistency
+    if Z > 0:
+        a_part = a_part / Z
+        b_part = b_part / Z
+    ax.plot(x_grid, a_part,
+            color='#E25A53', linestyle=':', linewidth=0.8, alpha=0.7,
+            label=fr'  Case A (Gaussian, $w_A = {w_A:.1f}$)')
+    ax.plot(x_grid, b_part,
+            color='#9467bd', linestyle=':', linewidth=0.8, alpha=0.7,
+            label=fr'  Case B (reflected log-normal)')
+
+    ax.set_xlim(a, b)
+    ax.set_ylim(0, None)
+    ax.set_xlabel(r'$\log_{10} P$ (d)')
+    ax.set_ylabel(r'$p(\log_{10} P)$')
+    ax.set_title('Period probability densities')
+    ax.legend(loc='upper right', fontsize=7,
+              facecolor='white', edgecolor='black', framealpha=1.0)
+    fig.tight_layout()
+    return _save(fig, 'period_models.pdf')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -580,8 +1159,14 @@ def main() -> int:
     _try('langer_heatmap',     lambda: fig_langer_heatmap(langer))
     print('[Fig 2] Per-star peak ΔRV bar chart …')
     _try('peak_drv_per_star',  lambda: fig_peak_drv_per_star())
-    print('[Fig 3] Threshold derivation (empirical) …')
-    _try('threshold_derivation', lambda: fig_threshold_derivation(dsilva))
+    print('[Fig 3] Threshold derivation (two-Gaussian fit) …')
+    _try('threshold_derivation', lambda: fig_threshold_derivation())
+    print('[Fig A] Per-line agreement ranking …')
+    _try('agreement',          lambda: fig_agreement())
+    print('[Fig C] Bin-sensitivity forest …')
+    _try('bin_sensitivity',    lambda: fig_bin_sensitivity())
+    print('[Fig D] Period models (Dsilva vs Langer) …')
+    _try('period_models',      lambda: fig_period_models())
 
     print()
     print('=' * 70)
@@ -594,11 +1179,11 @@ def main() -> int:
         for name, msg in failures:
             print(f'  ✗ {name}: {msg}')
     print()
-    print('DEFERRED:')
-    print('  • agreement.pdf       — Plots.ipynb cell 53 needs `df`, '
-          '`build_masked_df`, per-line CCF cache, and `pearsonr` over 11 '
-          'lines × 25 stars. Render manually by running Plots.ipynb cells '
-          '0–53 in order.')
+    print('DEFERRED (need user input or external assets):')
+    print('  • ccf_profile.pdf      — pick one (star, epoch) to feature')
+    print('  • binary_examples.pdf  — pick 3 example stars')
+    print('  • sample_map.pdf       — needs an LMC Hα image')
+    print('  • lmc_vs_mw.pdf        — needs Dsilva 2023 numerical values')
     return 0 if not failures else 2
 
 
