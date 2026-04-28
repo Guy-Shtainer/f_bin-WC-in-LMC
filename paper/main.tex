@@ -16,6 +16,17 @@
 % ============================================================
 % Key number macros — single source of truth
 % ============================================================
+% Observation programme
+\newcommand{\esoProgrammes}{105.205Y, 106.213X, 107.22A1\xspace}  % ESO programme IDs (P105--P107)
+\newcommand{\Ttotalhrs}{45\xspace}                          % total awarded VLT time [hours]
+\newcommand{\Nbright}{20\xspace}                            % bright (V<15) targets
+\newcommand{\Nfaint}{5\xspace}                              % faint (V>15) targets
+\newcommand{\snrTarget}{70\xspace}                          % S/N target at 450 nm
+\newcommand{\Rxshooter}{5\,000\text{--}10\,000\xspace}      % X-SHOOTER resolving power
+\newcommand{\slitUVB}{0.8\arcsec\xspace}
+\newcommand{\slitVIS}{0.9\arcsec\xspace}
+\newcommand{\slitNIR}{0.9\arcsec\xspace}
+
 % Sample
 \newcommand{\Nstars}{25\xspace}          % apparently single stars analyzed
 \newcommand{\Nknown}{3\xspace}           % known binaries from Bartzakos (2001)
@@ -42,6 +53,19 @@
 \newcommand{\Nsim}{10\,000\xspace}       % Monte-Carlo draws per grid point
 \newcommand{\sigmasingle}{15\xspace}     % intrinsic RV scatter [km/s]
 \newcommand{\sigmameas}{5\xspace}        % measurement uncertainty [km/s]
+
+% Threshold-curve fit (placeholders — update when fit is run)
+\newcommand{\fbinThresh}{TBD\xspace}        % best-fit binary fraction from threshold-curve method
+\newcommand{\fbinThreshErrUp}{TBD\xspace}   % +error
+\newcommand{\fbinThreshErrDn}{TBD\xspace}   % -error
+\newcommand{\sigmaIntrinsic}{TBD\xspace}    % fitted intrinsic single-star scatter [km/s]
+\newcommand{\sigmaMeasFit}{TBD\xspace}      % fitted per-epoch measurement uncertainty [km/s]
+
+% Spectroscopic morphology investigation (placeholders)
+\newcommand{\NbinSpec}{TBD\xspace}          % additional binaries flagged by morphology
+\newcommand{\NbinFinal}{TBD\xspace}         % \Nbin + \NbinSpec, total binaries after spectrum pass
+\newcommand{\fbinFinal}{TBD\xspace}         % final observed binary fraction (post-spectrum)
+\newcommand{\NcandidateBH}{2\xspace}        % WC + compact-object follow-up candidates
 
 % Physical
 \newcommand{\kms}{km\,s$^{-1}$\xspace}
@@ -89,7 +113,7 @@ classification requires $\Delta\mathrm{RV} > \drvthresh$\,\kms and a
 $\sigthresh\sigma$ significance threshold. The intrinsic binary fraction and
 period-distribution exponent are constrained by comparing the observed
 $\Delta\mathrm{RV}$ distribution to Monte-Carlo simulations via a
-Kolmogorov--Smirnov test.}
+multinomial likelihood comparison (Dsilva et al. 2023).}
 %
 {We detect \Ndetected new spectroscopic binaries, yielding a total of
 \Nbin/\Ntotal ($\fbinobs$) when combined with \Nknown previously known
@@ -97,7 +121,7 @@ binaries. The bias-corrected intrinsic binary fraction is
 $f_\mathrm{bin} = \fbincorr^{+\fbinerrup}_{-\fbinerrdn}$, with a
 period-distribution exponent $\pi = \pibestfit^{+\pierrup}_{-\pierrdn}$.}
 %
-{} % Conclusions — TODO: fill in after bias correction errors are finalized
+{} % Conclusions — to be finalised once bias-correction errors are settled
 
 \keywords{stars: Wolf-Rayet -- binaries: spectroscopic -- stars: massive -- Magellanic Clouds}
 

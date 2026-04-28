@@ -64,7 +64,7 @@ generate \Nsim synthetic stellar systems as follows:
 \end{enumerate}
 
 \subsection{Comparison to observations}
-\label{sec:ks_test}
+\label{sec:likelihood_test}
 
 For each grid point, we compute the peak-to-peak
 $\Delta\mathrm{RV}_\mathrm{max}$ of each simulated star. A simulated star
@@ -80,30 +80,23 @@ between the simulated and observed binary fraction curves. The three known
 Bartzakos binaries are added to the observed count at all thresholds
 (denominator $N = 28$).
 
-We then construct the CDF of $\Delta\mathrm{RV}$ values and
-employ two complementary scoring methods to compare the simulated and
-observed distributions:
-
-\begin{enumerate}
-\item \textbf{Two-sample K-S test:} The simulated CDF is compared to the
-  observed CDF using the Kolmogorov--Smirnov statistic $D$, the maximum
-  absolute difference between the two CDFs. The best-fit model maximises
-  the K-S $p$-value. This test is distribution-free and sensitive to the
-  overall shape of the CDF.
-
-\item \textbf{Multinomial likelihood:} Following \citet{Dsilva2023}
-  Sect.~4.2, the $\Delta\mathrm{RV}$ distribution is binned into coarse
-  intervals (default bin edges: 0, 45.5, 250, 650, and $\infty$\,\kms,
-  with the first edge matching $\drvthresh$). The likelihood of the
-  observed bin counts given the simulated bin fractions is computed as a
-  multinomial probability. This method is sensitive to the population
-  fractions in each $\Delta\mathrm{RV}$ regime and complements the K-S
-  test's sensitivity to the continuous CDF shape.
-\end{enumerate}
-
-The best-fit model is identified separately for each scoring method. Both
-methods are applied to the same grid and the results are compared for
-consistency.
+To compare the simulated and observed $\Delta\mathrm{RV}$ distributions,
+we adopt the multinomial likelihood scheme of \citet{Dsilva2023}
+(Sect.~4.2). The $\Delta\mathrm{RV}$ axis is partitioned into coarse
+intervals with default edges $\{0,\,\drvthresh,\,250,\,650,\,\infty\}$\,\kms,
+where the lowest edge coincides with the binary detection threshold so that
+the first bin isolates non-detections and the remaining bins resolve the
+high-amplitude tail. Let $n_i$ denote the observed count in bin $i$ and
+$p_i$ the corresponding fraction predicted by the Monte-Carlo simulation
+at a given grid point; the likelihood of the observed counts under the
+simulated model is
+\begin{equation}
+\mathcal{L}(\mathbf{n}\,|\,\mathbf{p}) =
+\frac{N!}{\prod_i n_i!}\,\prod_i p_i^{\,n_i},
+\label{eq:multinomial}
+\end{equation}
+with $N = \Ntotal$. The best-fit model is the grid point that maximises
+$\ln\mathcal{L}$.
 
 \subsection{Grid search and results}
 \label{sec:grid_results}
@@ -112,15 +105,11 @@ The grid spans $f_\mathrm{bin} \in [0.3, 1.0]$ with step 0.005--0.01, and
 $\pi \in [-3, +1]$. The search is parallelised across
 $N_\mathrm{cores} - 1$ CPU cores.
 
-% TODO: Insert heatmap figure showing K-S D statistic over (f_bin, pi).
-% TODO: Insert CDF comparison at best-fit point.
-% TODO: Report best-fit values with errors from marginalized posteriors.
-
 The best-fit parameters are $f_\mathrm{bin} =
 \fbincorr^{+\fbinerrup}_{-\fbinerrdn}$ and $\pi =
 \pibestfit^{+\pierrup}_{-\pierrdn}$, where the uncertainties represent
-68\% highest-density intervals from the marginalised K-S $p$-value
-distribution.
+68\% highest-density intervals (HDI68) from the marginalised
+log-likelihood.
 
 \subsection{Alternative period distribution: Langer+2020}
 \label{sec:langer_model}
@@ -164,9 +153,5 @@ $M_\mathrm{BH}/M_\mathrm{OB}$ peaks at ${\sim}\,0.5$--$0.7$.
 With the period distribution fixed by theory, the grid search reduces to
 a two-dimensional scan over $(f_\mathrm{bin},\,\sigma_\mathrm{single})$,
 where $\sigma_\mathrm{single}$ is the intrinsic single-star RV scatter
-(treated as a nuisance parameter). The same K-S comparison methodology
-(Sect.~\ref{sec:ks_test}) is applied.
-
-% TODO: Report best-fit f_bin from Langer model with HDI68 errors.
-% TODO: Compare Langer vs Dsilva corrected binary fractions.
-% TODO: Insert figure showing Langer K-S heatmap over (f_bin, sigma_single).
+(treated as a nuisance parameter). The same multinomial likelihood
+comparison methodology (Sect.~\ref{sec:likelihood_test}) is applied.

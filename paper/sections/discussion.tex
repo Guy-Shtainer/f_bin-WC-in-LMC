@@ -4,41 +4,100 @@
 \subsection{Comparison with Galactic WC stars}
 \label{sec:comparison_mw}
 
-\citet{Dsilva2023} measured the observed binary fraction of Galactic WC/WO
-stars to be $\sim 40\%$, applying the same cross-correlation methodology.
-Our LMC result of $\fbinobs$ (observed) is broadly consistent, though a
-direct comparison requires accounting for differences in detection
-sensitivity, sample size, and the underlying orbital-parameter
-distributions.
-
-% TODO: Quantitative comparison of corrected binary fractions.
+\citet{Dsilva2023} measured the observed spectroscopic binary fraction of
+Galactic WC/WO stars using VLT/X-shooter spectroscopy and the same
+cross-correlation framework adopted here, providing the natural
+methodological twin of the present LMC measurement. Both surveys derive
+radial velocities from the \primaryline emission line, classify a star as
+a binary when $\Delta\mathrm{RV} > \drvthresh$\,\kms is recorded at
+$\sigthresh\sigma$ significance, and apply Monte-Carlo bias correction to
+recover the intrinsic binary fraction (Sect.~\ref{sec:bias}). The
+methodological alignment removes the principal systematic differences
+between published WR binary fractions, so the residual offset can be
+attributed to the underlying stellar populations rather than to detection
+choices. The cadence-dependent bias differs between the two samples: the
+LMC targets were observed across \Nepochs epochs per star, whereas the
+Galactic survey adopted per-target cadences tailored to expected orbital
+periods. The corrected fraction \fbincorr, rather than \fbinobs (or
+\fbinFinal), therefore provides the apples-to-apples comparison: a value
+of \fbincorr above the Galactic estimate of \citet{Dsilva2023} would
+indicate a stronger binary contribution at LMC metallicity, while a
+comparable or lower value would constrain that prediction.
 
 \subsection{Metallicity dependence}
 \label{sec:metallicity}
 
-At the sub-solar metallicity of the LMC ($Z \approx 0.3$--$0.5$\,\Zsun;
-\citealt{Russell1992}), line-driven mass loss is weaker, raising the
-minimum initial mass for single-star WR formation. This should increase
-the relative contribution of the binary channel and, consequently, the
-binary fraction \citep{Shenar2020}. Our measured intrinsic binary fraction
-of $\fbincorr$ can be compared to the Galactic value from
-\citet{Dsilva2023} to test this prediction.
-
-% TODO: Discuss whether the data support a metallicity trend.
+At the sub-solar metallicity of the LMC ($Z \approx 0.3$--$0.5\,\Zsun$;
+\citealt{Russell1992}), line-driven mass loss is weaker than at solar
+metallicity, raising the minimum initial mass at which a single star can
+shed its hydrogen envelope and reach the WR stage \citep{Shenar2020}. A
+generic prediction follows: as the single-star channel becomes
+progressively inefficient, the binary channel must contribute a larger
+fraction of the WC/WO population at LMC metallicity than at Milky Way
+metallicity. Operationally, this expectation should manifest as
+$f_\mathrm{bin,LMC} > f_\mathrm{bin,MW}$ once both samples are corrected
+for observational bias. The relevant test is therefore a comparison of
+the corrected LMC fraction \fbincorr with the corrected Galactic fraction
+of \citet{Dsilva2023}, both of which marginalise over the assumed
+orbital-parameter distributions. The corrected \fbincorr provides the
+test: a value above the corresponding Galactic estimate would support
+the metallicity-dependent binary-channel prediction, while a value
+below or comparable to the Galactic estimate would constrain it.
+A second observable carries complementary information about formation
+channels: the orbital-period exponent \pibestfit recovered from the
+bias-correction grid (Sect.~\ref{sec:bias}). A bottom-heavy period
+distribution (more long-period systems) is expected when wide-orbit mass
+transfer dominates the production of stripped helium stars, whereas a
+top-heavy distribution (more short-period systems) points to
+Roche-lobe-overflow stripping in close binaries. The two observables
+together --- $f_\mathrm{bin}$ and the period-distribution shape --- are
+therefore the primary handles on the metallicity dependence accessible
+from this work.
 
 \subsection{Formation channels}
 \label{sec:formation}
 
-The measured binary fraction places direct constraints on the relative
-importance of single-star mass loss versus binary stripping in producing
-WC/WO stars at LMC metallicity. A binary fraction significantly above
-$50\%$ would support the hypothesis that binary interactions dominate WR
-formation at sub-solar metallicity \citep{Marchant2023}.
+Two competing channels are typically invoked to produce WC/WO stars: (a)
+single-star evolution in which strong line-driven winds strip the
+hydrogen and helium envelopes of an initially very massive star
+\citep[the Conti scenario;][]{Conti1976}, and (b) binary mass transfer in
+which Roche-lobe overflow strips the envelope onto a companion, exposing
+the carbon-rich core at lower initial masses than the single-star
+pathway requires \citep{Paczynski1967}.
+Population-synthesis calculations predict that the binary stripping
+channel becomes increasingly dominant as metallicity decreases, because
+the single-star channel is throttled by the metallicity dependence of
+line-driven mass loss \citep{Marchant2023}. The corrected binary fraction
+\fbincorr is the principal observable that discriminates between the two
+channels. A value $\gtrsim 50\%$ favours a binary-dominated origin for
+the LMC WC/WO population, a value $\lesssim 30\%$ favours single-star
+evolution, and intermediate values imply that both channels contribute
+non-negligibly. The orbital-period exponent \pibestfit, together with
+its Langer-model alternative (Sect.~\ref{sec:langer_model}), provides an
+orthogonal test by tracing the imprint of the dominant interaction mode
+on the surviving orbital architecture.
+The mass-ratio distribution, which is in principle a third diagnostic,
+is not constrained by this work: the survey is RV-only with limited
+orbital-phase coverage per star (Sect.~\ref{sec:threshold_results}), so
+the discussion here stops at the binary fraction and the
+period-distribution shape.
 
-% TODO: Quantitative discussion with population synthesis comparison.
-
-\subsection{WC + compact object candidates}
+\subsection{WC + compact-object candidates}
 \label{sec:compact_objects}
 
-% TODO: Discuss any candidate WC+BH systems (no absorption lines,
-% lack of FWHM-RV correlation).
+As a follow-up to the RV-based binary classification, \NcandidateBH
+stars in the sample have been flagged as candidate WC + compact-object
+(WC+BH) systems and are being targeted for phase-resolved spectroscopic
+monitoring (proposal in preparation; results will be appended to a
+future companion paper). The initial selection was guided by the
+orbital phase relationship between absorption and emission lines: in a
+genuine WR+OB binary, photospheric absorption from the OB companion is
+expected to phase-lock with opposing radial-velocity signatures
+relative to the WR wind emission lines, while WR + compact-object
+systems show either no or anomalous absorption-line phase behaviour.
+The final candidate selection further refined this signature using a
+complementary diagnostic that will be described in the companion paper.
+WC+BH systems at LMC metallicity directly probe the black-hole mass
+distribution from stripped helium-star progenitors, complementing
+population-synthesis predictions of compact-object merger rates
+\citep{vandenHeuvel2017}.

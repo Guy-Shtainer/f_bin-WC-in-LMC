@@ -76,3 +76,44 @@ generated 30 synthetic single-lined binary (SB1) spectra using a WC4
 template with varying S/N levels, measured the radial-velocity scatter for
 each line, and required $\sigma_\mathrm{RV} < 3$\,\kms as the acceptance
 threshold.
+
+\subsection{Threshold-curve fit}
+\label{sec:threshold_fit}
+
+As a complementary check to the grid-based likelihood analysis described in
+Sect.~\ref{sec:bias}, the cumulative observed binary fraction is fitted as
+a function of the detection threshold $T$ on $\Delta\mathrm{RV}_\mathrm{max}$.
+We adopt the Physics-based simulation: orbital parameters (period,
+eccentricity, mass ratio, inclination) are drawn from the same priors
+as in Sect.~\ref{sec:bias}, and the radial-velocity curve of each
+synthetic binary is computed via Kepler's third law (Eq.~\ref{eq:K1})
+and sampled at the observed cadence of each target. The free parameters
+are the intrinsic binary fraction $f_\mathrm{bin}$, the single-star
+scatter $\sigma_\mathrm{intrinsic}$, and the per-epoch measurement
+uncertainty $\sigma_\mathrm{meas}$. Single stars are assigned intrinsic scatter at scale
+$\sigma_\mathrm{intrinsic}$ and per-epoch noise at scale
+$\sigma_\mathrm{meas}$, and the same two-criterion detection of
+Sect.~\ref{sec:criteria} is applied. The cumulative binary fraction
+$N_\mathrm{bin}(>T)/\Ntotal$ is computed across a grid of thresholds $T$
+and compared to the observed cumulative curve to extract the best-fit
+parameters.
+
+\subsection{Spectroscopic morphology investigation}
+\label{sec:spec_morphology}
+
+In addition to the RV-based classification of Sect.~\ref{sec:methods}, each
+star is visually inspected through a diagnostic-line viewer that groups the
+spectrum into curated zoom panels covering interstellar features, telluric
+bands, hydrogen Balmer and \ion{He}{i}/\ion{He}{ii} OB-type photospheric
+absorption, the WR \ion{He}{ii}\,$\lambda 4686$ emission, the
+\primaryline emission complex, and the
+\ion{O}{v}/\ion{O}{vi} lines that distinguish WC from WO subtypes. Stars
+showing morphological signatures inconsistent with a single WC/WO spectrum
+-- for example, weak photospheric absorption components attributable to an
+OB companion, or anomalous emission-line profiles -- are flagged as
+candidate binaries. If any additional binaries are flagged through this
+morphological inspection, the binary count is updated and the Monte-Carlo
+bias correction is re-run with the revised \Nbin and \Ntotal. This
+inspection adds \NbinSpec spectroscopically flagged binaries to the
+RV-based count, raising the total to \NbinFinal/\Ntotal and the observed
+binary fraction to $\fbinFinal$.
