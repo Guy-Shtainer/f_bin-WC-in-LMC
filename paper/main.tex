@@ -22,7 +22,7 @@
 \newcommand{\Nbright}{20\xspace}                            % bright (V<15) targets
 \newcommand{\Nfaint}{5\xspace}                              % faint (V>15) targets
 \newcommand{\snrTarget}{70\xspace}                          % S/N target at 450 nm
-\newcommand{\Rxshooter}{5\,000\text{--}10\,000\xspace}      % X-SHOOTER resolving power
+\newcommand{\Rxshooter}{5\,000--10\,000\xspace}             % X-SHOOTER resolving power
 \newcommand{\slitUVB}{0.8\arcsec\xspace}
 \newcommand{\slitVIS}{0.9\arcsec\xspace}
 \newcommand{\slitNIR}{0.9\arcsec\xspace}
@@ -36,10 +36,12 @@
 % Binary detection
 \newcommand{\Ndetected}{10\xspace}       % newly detected binaries
 \newcommand{\Nbin}{13\xspace}            % total binaries (detected + known)
-\newcommand{\fbinobs}{46\%\xspace}       % observed binary fraction
+\newcommand{\fbinobs}{46\%\xspace}       % observed binary fraction (text-mode only -- never wrap in $...$)
 \newcommand{\drvthresh}{45.5\xspace}     % delta-RV threshold [km/s]
 \newcommand{\sigthresh}{4\xspace}        % significance threshold [sigma]
-\newcommand{\primaryline}{C\,{\sc iv}\,$\lambda\lambda$5808--5812\xspace}
+% Use aa.cls's \ion{}{} macro and \ensuremath for the lambdas so the macro is
+% safe to use in text mode, math mode, and section/paragraph titles.
+\newcommand{\primaryline}{\ion{C}{iv}\,\ensuremath{\lambda\lambda 5808\text{--}5812}\xspace}
 
 % Bias correction (placeholders — update when errors computed)
 \newcommand{\fbincorr}{TBD\xspace}       % corrected binary fraction
@@ -76,11 +78,13 @@
 \newcommand{\fbinAnalytic}{TBD\xspace}              % f_bin from parametric Gaussian fit (not the MC-corrected fbincorr)
 
 % Physical
-\newcommand{\kms}{km\,s$^{-1}$\xspace}
-\newcommand{\Msun}{M$_\odot$\xspace}
-\newcommand{\Lsun}{L$_\odot$\xspace}
-\newcommand{\Zsun}{Z$_\odot$\xspace}
-\newcommand{\Mdot}{\dot{M}\xspace}
+% Using \ensuremath so these work correctly in both text and math mode
+% without nested $...$ toggles that can cause "small + glued" rendering bugs.
+\newcommand{\kms}{\ensuremath{\mathrm{km\,s^{-1}}}\xspace}
+\newcommand{\Msun}{\ensuremath{M_\odot}\xspace}
+\newcommand{\Lsun}{\ensuremath{L_\odot}\xspace}
+\newcommand{\Zsun}{\ensuremath{Z_\odot}\xspace}
+\newcommand{\Mdot}{\ensuremath{\dot{M}}\xspace}
 
 % ============================================================
 % Title and authors
@@ -124,10 +128,10 @@ $\Delta\mathrm{RV}$ distribution to Monte-Carlo simulations via a
 multinomial likelihood comparison (Dsilva et al. 2023).}
 %
 {We detect \Ndetected new spectroscopic binaries, yielding a total of
-\Nbin/\Ntotal ($\fbinobs$) when combined with \Nknown previously known
+\Nbin/\Ntotal (\fbinobs) when combined with \Nknown previously known
 binaries. The bias-corrected intrinsic binary fraction is
-$f_\mathrm{bin} = \fbincorr^{+\fbinerrup}_{-\fbinerrdn}$, with a
-period-distribution exponent $\pi = \pibestfit^{+\pierrup}_{-\pierrdn}$.}
+$f_\mathrm{bin} = {\fbincorr}^{+\fbinerrup}_{-\fbinerrdn}$, with a
+period-distribution exponent $\pi = {\pibestfit}^{+\pierrup}_{-\pierrdn}$.}
 %
 {} % Conclusions — to be finalised once bias-correction errors are settled
 
