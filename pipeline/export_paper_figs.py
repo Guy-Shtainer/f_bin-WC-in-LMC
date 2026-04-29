@@ -1216,7 +1216,7 @@ def _compute_ccf_profile(
 
 
 def fig_ccf_profile(star_name: str = 'Brey  93',
-                    epoch: int = 1) -> Path:
+                    epoch: int = 2) -> Path:
     """A worked CCF example for one (star, epoch) tuple on C IV 5808-5812.
 
     Plots:
@@ -1237,7 +1237,9 @@ def fig_ccf_profile(star_name: str = 'Brey  93',
              or star.load_property('normalized_flux', 1, 'COMBINED'))
     if d_tpl is None:
         raise RuntimeError(f'No template flux for {star_name} epoch 1')
-    tpl_wave_A = np.asarray(d_tpl['wavelengths'], dtype=float)
+    # Storage convention: FITS data stores wavelengths in NANOMETERS;
+    # convert to Angstroms for the CCF (CrossCorRangeA = 5700-5880 Å).
+    tpl_wave_A = np.asarray(d_tpl['wavelengths'], dtype=float) * 10.0
     tpl_flux   = np.asarray(d_tpl['normalized_flux'], dtype=float)
 
     # Observation at chosen epoch
@@ -1245,7 +1247,7 @@ def fig_ccf_profile(star_name: str = 'Brey  93',
              or star.load_property('normalized_flux', epoch, 'COMBINED'))
     if d_obs is None:
         raise RuntimeError(f'No flux for {star_name} epoch {epoch}')
-    obs_wave_A = np.asarray(d_obs['wavelengths'], dtype=float)
+    obs_wave_A = np.asarray(d_obs['wavelengths'], dtype=float) * 10.0
     obs_flux   = np.asarray(d_obs['normalized_flux'], dtype=float)
 
     # Sanitize NaNs in the wavelength grid
@@ -1306,7 +1308,10 @@ def fig_ccf_profile(star_name: str = 'Brey  93',
     ax.set_ylim(y_min, y_max)
     ax.set_xlabel(r'Velocity shift $s$ (km s$^{-1}$)')
     ax.set_ylabel(r'Cross-correlation $\rho(s)$')
-    ax.set_title(fr'Worked CCF: {star_name} epoch {epoch} (C\,IV 5808\,\AA)')
+    # Strip the awkward "Brey  93" double-space and produce a clean title
+    sn_clean = ' '.join(star_name.split())
+    ax.set_title(f'Worked CCF: {sn_clean} epoch {epoch} '
+                 f'(C IV 5808 Å)')
     ax.legend(loc='upper right', fontsize=7,
               facecolor='white', edgecolor='black', framealpha=1.0)
     fig.tight_layout()
@@ -1445,7 +1450,7 @@ def fig_binary_examples() -> Path:
                     ecolor='black', elinewidth=0.6, capsize=2.0,
                     markersize=4, markeredgecolor='black',
                     markeredgewidth=0.4, zorder=3,
-                    label=f'C\\,IV 5808')
+                    label=r'C IV 5808')
         # Reference line at the ΔRV mean
         rv_mean = float(np.mean(rvs)) if len(rvs) else 0.0
         ax.axhline(rv_mean, color='#888888', linestyle='--', linewidth=0.8)
@@ -1455,9 +1460,11 @@ def fig_binary_examples() -> Path:
         ax.axhspan(rv_mean - half_thr, rv_mean + half_thr,
                    color='#DAA520', alpha=0.15, linewidth=0,
                    label=fr'$\pm T/2 = \pm {half_thr:.1f}$ km/s')
-        # Title with star + ΔRV
+        # Title with star + ΔRV (collapse the double-space inside Brey names)
         cls_txt = 'binary' if ib else 'single'
-        ax.set_title(f'{tag}: {sn}\n$\\Delta$RV $= {dval:.1f}$ km/s  ({cls_txt})',
+        sn_clean = ' '.join(sn.split())
+        ax.set_title(f'{tag}: {sn_clean}\n'
+                     fr'$\Delta\mathrm{{RV}} = {dval:.1f}$ km s$^{{-1}}$  ({cls_txt})',
                      fontsize=8.5)
         ax.set_xlabel('MJD (d)')
         if ax is axs[0]:
@@ -1640,6 +1647,12 @@ def main() -> int:
     _try('bin_sensitivity',    lambda: fig_bin_sensitivity())
     print('[Fig D] Period models (Dsilva vs Langer) …')
     _try('period_models',      lambda: fig_period_models())
+    print('[Fig G] LMC sample sky map …')
+    _try('sample_map',         lambda: fig_sample_map())
+    print('[Fig F] Binary examples (RV time series) …')
+    _try('binary_examples',    lambda: fig_binary_examples())
+    print('[Fig E] CCF profile (worked example) …')
+    _try('ccf_profile',        lambda: fig_ccf_profile())
 
     print()
     print('=' * 70)
@@ -1653,9 +1666,6 @@ def main() -> int:
             print(f'  ✗ {name}: {msg}')
     print()
     print('DEFERRED (need user input or external assets):')
-    print('  • ccf_profile.pdf      — pick one (star, epoch) to feature')
-    print('  • binary_examples.pdf  — pick 3 example stars')
-    print('  • sample_map.pdf       — needs an LMC Hα image')
     print('  • lmc_vs_mw.pdf        — needs Dsilva 2023 numerical values')
     return 0 if not failures else 2
 
