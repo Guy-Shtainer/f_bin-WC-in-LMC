@@ -6,6 +6,38 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-04-30 — Docs end-of-day; three sprints (validation Sprint 4, mock-data overhaul, Explorer parity) UNCOMMITTED awaiting overnight-runs sign-off
+
+**Tag:** `v260430-partial-working` *("partial" because the validation-tab Sprint 4, the mock-data overhaul, and the Explorer↔grid parity sprint are all held back in the working tree pending the five overnight validation runs that landed evening 2026-04-30 — check 2026-05-01.)*
+
+| Hash | Summary |
+|------|---------|
+| `4c868eb` | End-of-day 2026-04-30: docs, TODO entries 191-195, learnings, daily logs |
+| `4f779b4` | A&A / Shenar-style polish (7 fixes) — 2026-04-29 paper session |
+| `e8d2e44` | Fix 8 LaTeX bugs causing 'small text glued together' rendering — 2026-04-29 |
+| `191ed50` | Populate star_sample table with BAT99 IDs + WC/WO subtypes — 2026-04-29 |
+| `7ce5437` | Fix star_sample table: H2013 LMCe 584 = L72 LH 41-1042 substitution + actual epoch counts — 2026-04-29 |
+| `982cf91` | Render 3 deferred figures + populate star_sample table from ESO proposal — 2026-04-29 |
+
+**Major changes (committed):**
+- **Docs end-of-day (2026-04-30):** TODO.md entries #191–#195 cover the validation-tab Sprint 4 phases (#191), mock-data overhaul (#192), paper writing session (#193 — already committed), three-stage binarity strategy memo (#194), and Likelihood Model Explorer ↔ grid score parity (#195). DOCUMENTATION.md §7 gets three new entries (2026-04-28, 2026-04-29, 2026-04-30) covering all sprints. COMMON_ERRORS.md gains E051 (runner-mode tag passed as `period_model` value — three callers of `_render_lk_cdf_sanity_check` passed `'dsilva'` where `sample_logP` expects `'powerlaw'`; translate at the data-source boundary). `.claude/references/learnings.md` gains four Plot Rendering rules (never blindly drop a leading axis, two-namespace string bugs, don't trust an agent's "all sites updated" claim, step line + step band must match) plus four Paper / LaTeX rules (math-mode contamination cluster, `\tablefoot{}` `\par` separators, `\input{tables/X}` silently optional, two-stage figure rendering coordination). Daily conversation logs added for 2026-04-28, 2026-04-29, 2026-04-30.
+- **Paper writing session (2026-04-29 — already committed in 5 separate commits + 7 Overleaf pushes; latest Overleaf master `0a5a359`):** 13 figure environments inserted across 5 section files; 11 PDFs rendered to `plots/` from real data via the new 1664-line `pipeline/export_paper_figs.py` driver; `paper/tables/star_sample.tex` populated with 25 stars × (Name, BAT99, RA, Dec, Group, Subtype, N_epochs, Source) + 4 footnotes; H2013 LMCe 584 ≡ L72 LH 41-1042 substitution resolved; 8 LaTeX bugs fixed (math-mode contamination in unit macros, `\fbincorr^{...}_{...}` atom-binding malformations, `\tablefoot{}` without `\par` separators, silent missing `\input{tables/star_sample}`); 7 Shenar-style fixes (deleted dead `abstract.tex`, populated Conclusions narrative paragraphs, `\tablefoot{}` on `tab:emission_lines`, populated appendix placeholder, `\esoProgrammes` macro). Methods grew from ~150 to ~310 lines.
+
+**Uncommitted on `main` (Sprint 4 + mock-data overhaul + Explorer parity, awaiting visual sign-off after overnight validation runs):**
+- **Sprint 4 — validation-tab consistency overhaul (TODO #191).** 16 modified files in `app/bc/`: `analysis.py`, `cadence.py`, `corner_plots.py`, `extras.py`, `file_ops.py`, `helpers.py`, `likelihood_viz.py`, `render_lk.py`, `render_lk_explorer.py`, `render_lk_explorer_langer.py`, `render_lk_fit.py`, `render_lk_fit_langer.py`, `render_shared.py`, `render_shared_langer.py`, `render_validation.py`, `runners_cadence.py`, `validation.py`, `validation_io.py` (new); `app/shared.py` (`make_heatmap_fig` A&A pass + colorbar font + `gold→#DAA520`).
+- **Mock-data overhaul (TODO #192).** `app/bc/validation.py` (function signatures + deterministic binary count); `app/bc/render_validation.py` (two error-model selectors, error bars, 2-criteria curves, removed all realised f_bin references, persistence wiring).
+- **Likelihood Model Explorer ↔ grid score parity (TODO #195).** `wr_bias_simulation.py` (deterministic n_bin in `simulate_delta_rv_sample:715` and `simulate_delta_rv_cadence_aware:930`); `app/bc/render_lk_explorer.py` (cached wrapper `_explorer_run_grid_pipeline_cached`, n_sets `number_input`, CDF extension to `(pooled_max, 1.0)`, removed hardcoded x-range); `app/bc/render_lk_explorer_langer.py` (Langer twin).
+- **Three-stage binarity strategy (TODO #194).** Memory-only artifact: `memory/project_three_stage_binarity_strategy.md` and `memory/pending_validation_runs_2026_04_30.md`; both indexed in `MEMORY.md` Live State.
+- **Skill / agent system reorg.** `.claude/agents/*-skills/` deleted (14+ skill subdirectories); `.claude/skills/{coder,designer,meta-tools,plots,qa,scientist,writer}/` untracked. The reorg moves from per-agent skill dirs to a single shared dir. Held back as a separate logical unit pending an explicit user decision on the migration path.
+- **Background data.** `mock_results/`, `bin_sensitivity_results/`, several `results/cadence_*.npz` files from overnight runs, and `scripts/.agent_work/` are untracked but are run outputs, not source — not committed.
+
+**Pending visual verification (user — multi-sprint hand-off):**
+- Five overnight validation runs queued evening 2026-04-30: Tabs 1–2 (low/high f_bin extremes with σ_single pinned), Tabs 3–4 (sensitivity to an extra histogram bin near the steep CDF slope), Tab 5 on `:8502` (σ_single included as a free search dimension). Check 2026-05-01. The Tab 5 result decides whether σ_single can live in Stage 1 or must be deferred to Stage 3.
+- Once results are reviewed, three commit-blocks expected: (1) Sprint 4 validation-tab consistency overhaul + mock-data overhaul as one or two commits; (2) Explorer ↔ grid parity (`wr_bias_simulation.py` deterministic-n_bin + Explorer cached wrapper) as one commit; (3) skill / agent system reorg as a separate, explicitly-discussed commit.
+- Tag at that point: `v260501-working` (or whichever date the sign-off lands).
+
+---
+
 ## 2026-04-23 — Three sprints landed; validation tab held back (six symptoms remain)
 
 **Tag:** `v260423-partial-working` *("partial" because Sprint 4 — validation-tab consistency overhaul — is held back in the working tree pending fixes for six remaining symptoms.)*
