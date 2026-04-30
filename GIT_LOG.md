@@ -6,6 +6,29 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-04-30 (evening) — logP_max fixed-value input + corner staircase diagnosis + single-star RV inspection plot
+
+**Tag:** `v260430-evening-working` *(same caveat as `v260430-partial-working` — Sprint 4 / mock-data overhaul / Explorer parity / logP_max code change all still UNCOMMITTED on `main` awaiting visual sign-off after the five overnight validation runs.)*
+
+| Hash | Summary |
+|------|---------|
+| `89ae134` | Add single-star RV / σ / ΔRV peak-to-peak inspection plot (`scripts/plot_single_star_rvs.py` + `plots/single_star_rvs.html`) |
+| `3657a7d` | End-of-day 2026-04-30 (afternoon): docs, TODO entries 196-197, daily log |
+
+**Major changes (committed):**
+- **Afternoon docs (2026-04-30):** TODO.md entries #196 (logP_max scan fixed-value input — coder-agent edit, /error-check PASS, user "nice.") and #197 (single-star RV inspection plot — interactive HTML, σ_weighted = 4.49 ± 0.17 km/s, σ_population_scatter = 2.67 km/s). DOCUMENTATION.md §7 gets a new "(afternoon)" subsection within the existing 2026-04-30 entry covering: closed-form Gaussian propagation of sample-σ uncertainty (`err(s) = √(Σ d_i² σ_i²) / (s (N − 1))`), the f_bin grid 1/N bias as the inherent precision of a 25-star sample (corner-plot staircase artefact accepted as statistically defensible), and the σ_intrinsic vs σ_measured open question for the bias-correction prior. Daily log gained 4 conversation entries at 16:31–16:32.
+- **Single-star RV inspection plot (`scripts/plot_single_star_rvs.py`):** loads observed RVs via `pipeline.load_observations.load_observed_delta_rvs`, filters `is_binary is False & N≥2`, sorts by σ ascending, plots per-epoch RV scatter with error bars + ⟨RV⟩ tick + σ-diamonds blended onto the *left* RV axis (same units), with ΔRV peak-to-peak triangles on the *right* axis. Output: `plots/single_star_rvs.html` (interactive).
+
+**Uncommitted on `main` (still awaiting visual sign-off — same as `v260430-partial-working` plus logP_max code change):**
+- **logP_max scan fixed-value input (TODO #196).** `app/bc/params.py` (`_render_logPmax_scan` now seeds + renders the fixed-value `st.number_input` + caption + new return when scan OFF) and `app/bc/cadence.py` (added `import dataclasses`; two `dataclasses.replace(_bin_cfg, logP_max=float(_*_logPmax_vals[0]))` calls — one per tab — to override `_bin_cfg.logP_max` after the scan expander returns). Did NOT touch `runners_cadence.py` (still `# WORKING`). /error-check PASS in all 5 phases.
+- All previously listed sprints (Sprint 4, mock-data overhaul, Explorer parity, three-stage memo, skill / agent reorg) still UNCOMMITTED on `main` — see the `v260430-partial-working` entry below for full file list.
+
+**Pending visual verification:**
+- Same five overnight validation runs as before (Tabs 1–2 f_bin extremes, Tabs 3–4 bin-at-slope, Tab 5 :8502 σ_single search ON). Check 2026-05-01.
+- After sign-off, the logP_max fix can either roll into the Sprint 4 commit-block or be its own small commit before the larger sprint commits.
+
+---
+
 ## 2026-04-30 — Docs end-of-day; three sprints (validation Sprint 4, mock-data overhaul, Explorer parity) UNCOMMITTED awaiting overnight-runs sign-off
 
 **Tag:** `v260430-partial-working` *("partial" because the validation-tab Sprint 4, the mock-data overhaul, and the Explorer↔grid parity sprint are all held back in the working tree pending the five overnight validation runs that landed evening 2026-04-30 — check 2026-05-01.)*
