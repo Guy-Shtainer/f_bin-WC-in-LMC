@@ -497,6 +497,16 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 | **Why** | `dict.get(key, default)` only uses `default` when the key is ABSENT. If the key exists with value `None`, `get()` returns `None`. `float(None)` → `TypeError`. |
 | **Found in** | `app/bc/render_shared.py` — CDF model trace silently crashed inside `try/except: pass` because `sigma_meas` was `None` in result dict |
 
+### E045 — `st.slider` with float bounds quantises value to implicit step `(max-min)/100`
+
+| | |
+|---|---|
+| **Bad** | `col.slider(label, min_val, max_val, key=k)` with float min/max and no explicit `step` — Streamlit defaults to `step = (max-min)/100`, so any value written to `st.session_state[k]` gets rounded to the nearest tick on render and overwrites the session_state with the rounded value |
+| **Fix** | Either: (a) pass `step=<small_value>` explicitly to `st.slider(...)` matching the grid spacing, OR (b) when precision matters (e.g. seed-reuse simulation), keep an off-widget reference to the exact float and use that for downstream computation, treating the slider as display-only |
+| **Grep** | `st\.slider\(` (then verify `step=` appears in the call OR a downstream override exists) |
+| **Why** | For float types `st.slider(label, mn, mx, key=k)` without `step` defaults `step = (max - min) / 100`. The widget reads `st.session_state[k]` as its initial value, snaps to the nearest tick, and writes back. So even if you set `session_state[k] = 0.151428` as the default, the function returns `0.15`. The number_input widget below has independent `step` and may NOT round, so `slider` and `number_input` can disagree on the same logical control. Especially dangerous when the slider value is fed into a deterministic-seeded simulation: tiny float differences amplify into noticeable score divergence. |
+| **Found in** | `app/bc/render_lk_explorer.py` — Reset-to-best button set sliders to joint-argmax grid coordinates, but slider quantised them, so Explorer's recomputed logL diverged from stored Global best by ~0.04 even at the "same" cell. Workaround: detect first render after Reset via `_last_rc` tracker, then override `me_*` with exact `_bf_*` floats post-widget-render, before passing to the simulation |
+
 ---
 
 ## Adding New Errors

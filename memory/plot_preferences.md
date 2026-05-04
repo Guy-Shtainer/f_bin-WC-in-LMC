@@ -69,3 +69,47 @@ All text in charts must be large enough to read without zooming in.
 **How to apply:** after `fig.update_layout(**_ACADEMIC_THEME)` (or equivalent), set font-size overrides on `xaxis.tickfont.size`, `xaxis.title.font.size`, `yaxis.tickfont.size`, `yaxis.title.font.size`, `legend.font.size`, and on every `fig.add_annotation(..., font=dict(size=...))`. For subplot grids, loop `update_xaxes`/`update_yaxes` unscoped (no `row=`/`col=`) to set every subplot's tick font at once.
 
 This rule applies to every plot in the app, not just Bin Sensitivity. The `plots` agent must enforce it on every future plot handoff.
+
+## 2026-05-04 — CDF Comparison panel (bias-correction page)
+
+Decisions and conventions established for the "CDF Comparison: Observed vs Best-Fit Models" panel rendered by `_render_all_methods_cdf` in [app/bc/render_shared.py:267](app/bc/render_shared.py#L267) and [app/bc/render_shared_langer.py:269](app/bc/render_shared_langer.py#L269) (the LIVE renderers — note `app/bc/analysis.py:325-580` is dead code; do not edit it).
+
+### What each visual element really represents
+- **Black observed line** — raw empirical ECDF at the observed ΔRV values themselves (NOT at any bins). Sorted ascending; step at each value.
+- **Dashed best-fit line per method** — MEDIAN of CDFs across ~1000 simulated draws at the best-fit parameter point.
+- **Shaded band** — 16-84 PERCENTILE across draws (NOT std).
+- **Bin resolution for the dashed line and band** — uses the LEFT-side cadence-aware `bin_edges` (not the likelihood-bin edges).
+- **Resolution semantics on the bias-correction page** — LEFT bin control (`bin_edges`) drives only the CDF visualization. RIGHT bin control (`likelihood_bin_edges`) drives only the multinomial likelihood score. They are independent (clarified in caption added at [app/bc/params.py:446](app/bc/params.py#L446)).
+
+### Per-star markers on the OBSERVED CDF
+- **Source of binary labels** — already-computed per-star `is_binary` from `obs_detail` (the second return of `cached_load_observed_delta_rvs(settings_hash(settings))`). Do NOT re-derive the detection criterion in plot code; reuse the loader's classification (criterion: `ΔRV > thresh AND ΔRV - 4σ > 0` is applied inside the loader).
+- **Colors** — `_CLR_BINARY = '#52B788'` (green) for binaries, `_CLR_SINGLE = '#E25A53'` (red) for singles. Sole source of truth: imported from `bc/render_validation`. Never redefine.
+- **Marker style** — small filled circle (~6 px), no border. Hover: `"ΔRV = {:.1f} km/s, σ = {:.1f}, {label}"`.
+- **Y-position** — `(i+1)/N` at sorted rank `i` (matches the observed step's rise points).
+- **Fallback** — silent skip if `obs_detail` unavailable for any reason.
+
+### Per-rank markers on each simulated best-fit line (median + mean)
+- For each best-fit method: sort each draw's 25 simulated stars by ΔRV, then per rank position k=0..24:
+  - `marker_x_median[k] = median across draws of sorted_drv[:, k]`
+  - `marker_x_mean[k]   = mean across draws of sorted_drv[:, k]`
+  - `binary_fraction[k] = mean across draws of is_binary_sorted[:, k]`
+- Plot 25 markers at `(marker_x, (k+1)/25)` on each line (median dashed; mean dotted).
+- **Color: continuous gradient** from `_CLR_SINGLE` (red, fraction=0) → `_CLR_BINARY` (green, fraction=1) via linear RGB interpolation. Use `'rgb(r,g,b)'` strings.
+- Hover: `"rank {k+1}/25 · binary fraction = {pct:.0%}"`.
+
+**Why:** A single per-marker color per simulated star is impossible because each rank position has a *distribution* of binary fractions across draws. Encoding the fraction as a continuous color preserves the information without picking a single representative draw.
+
+### Mean CDF line (alongside the existing median)
+- Show the mean CDF too: `np.mean(all_cdfs, axis=0)`.
+- **Style:** dotted (`dash='dot'`), same color as the method's dashed median (red for grid, purple for marginal). Width matches the median.
+- Legend: `"{method} mean"` next to `"{method} median"`. Both share the same parameter point, so they share the same logL value.
+
+### Unnormalized log-likelihood in the legend
+- Append ` · logL = {value:.1f}` to each line's legend label.
+- **Grid-argmax line:** stored exact value from `result['logL_raw']` at the best-fit cell.
+- **Marginal-peak line:** computed exactly via `multinomial_log_likelihood(obs_drv, pooled, likelihood_bin_edges)` against the pooled draws returned by `_me_cdf_band`. Marginal peaks usually don't sit on a grid cell, so the nearest-cell stored value would be biased — always recompute exact for marginal.
+- Median and mean share the same logL (same parameter point) — display the same value on both.
+
+### Architecture note for future edits to this panel
+- The LIVE renderer reads CDF data from `_me_cdf_band` (powerlaw) / `_me_cdf_band_langer` (Langer) — both `@st.cache_data`-cached re-simulators in `app/bc/render_lk_explorer.py` / `_langer.py`. To add new per-best-fit data to this panel, extend the return type of those helpers (a `CDFBandResult` NamedTuple is preferred over growing tuples). Plumbing through `runners_cadence.py` only feeds the dead `analysis.py` copy — don't bother unless that copy is being revived.
+- Always patch BOTH powerlaw and Langer mirrors symmetrically — the user actively uses both period models.
