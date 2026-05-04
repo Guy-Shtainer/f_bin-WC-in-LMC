@@ -6,6 +6,30 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-05-04 — End-of-day docs only: CDF panel enrichment + Reset-to-best fix UNCOMMITTED awaiting visual sign-off
+
+**Tag:** *(no tag — code work uncommitted; user explicitly said "we will continue tomorrow" on the CDF panel and "i think its still the same" on Reset-to-best, both pending visual confirmation. Two prior tags `v260430-partial-working` and `v260430-evening-working` remain the latest "working" markers.)*
+
+| Hash | Summary |
+|------|---------|
+| `203a4f4` | End-of-day 2026-05-04 docs: TODO entries 198-199, DOCUMENTATION §7, daily log, COMMON_ERRORS E045, learnings + plot prefs |
+
+**Major changes (committed):**
+- **Docs end-of-day (2026-05-04):** TODO.md entries #198 (bias-correction CDF Comparison panel enrichment — per-star truth dots, per-rank gradient markers, mean line, marker-shape legend) and #199 (Likelihood Model Explorer Reset-to-best fix — joint argmax + slider quantisation bypass). DOCUMENTATION.md §7 gets a new 2026-05-04 entry with methodology notes for the paper (per-rank decomposition of the model CDF, Streamlit float-slider quantisation as a silent precision trap). COMMON_ERRORS.md gains **E045** (`st.slider` with float bounds quantises value to implicit step `(max-min)/100` — Bad/Fix/Why/Found-in/Prevention with the Reset-to-best workaround documented). `.claude/references/learnings.md` extends two existing rules: "Silent `except: pass` is a trap" (any new fallback path needs `st.warning(traceback)` during dev; revert to silent only after fixture verification) and "`result['settings']` is JSON string OR 0-d ndarray" (the `np.savez` round-trip can return either form; fix detects `isinstance(_settings_raw, np.ndarray)` first, calls `.item()` to unwrap, then guards with `isinstance(_, dict)` before falling back). `memory/plot_preferences.md` gets a new 2026-05-04 section documenting the CDF Comparison panel conventions (data semantics, marker conventions, colorbar scheme, mean-vs-median style, logL display, LIVE renderer architecture). `.claude/agents/coder.md` gains a "Plan-mode policy" exception clause (skip plan mode when invoked with an approved plan reference) — workaround for an unresolved harness-level plan-mode auto-injection issue. Daily log gained 4 conversation entries (16:04, 19:09, 23:38, 23:41).
+
+**Uncommitted on `main` (today's code work + 4-day backlog from `v260430-*`, all pending visual sign-off):**
+- **TODAY — Bias-correction CDF Comparison panel enrichment (TODO #198, 5 chunks across 6 files).** `wr_bias_simulation.py` (4 new arrays in `simulate_delta_rv_cadence_aware` return; 11-tuple in `_single_grid_task_cadence_aware`; `_process_result` and `run_bias_grid_cadence_aware` mirror); `app/bc/runners_cadence.py` (4 new `best_*` keys threaded through); `app/bc/render_lk_explorer.py` and `_langer.py` (`CDFBandResult` NamedTuple + `_me_cdf_band` returns); `app/bc/render_shared.py` and `_langer.py` (per-star truth dots, per-rank median squares, per-rank mean triangles, native Plotly colorbar, phantom legend traces, surface-except diagnostics). User explicitly said "its not perfect, we will continue tomorrow" — visual approval pending on 5 features (truth dots on observed CDF, squares riding median lines, triangles riding mean lines, "MC binary fraction" colorbar, phantom legend entries). After visual approval: revert `st.error`/`st.warning` diagnostics back to silent `pass`.
+- **TODAY — Likelihood Model Explorer Reset-to-best fix (TODO #199, 2 rounds in 1 file).** `app/bc/render_lk_explorer.py` only. Round 1: moved joint-argmax decomposition above slider rendering, replaced slider defaults with `_bf_*` values, fixed σ/lp non-scanned-axis fallbacks (use `sigma_grid[0]` / `bin_cfg.logP_max` instead of `sigma_meas`), rewrote caption with joint-argmax + `(fixed)` annotations. Round 2: added `_just_reset` detection via `_last_rc` tracker, override `me_*` and `_eff_logPmax` with exact `_bf_*` floats post-widget-render (only on first render after Reset; subsequent slider movements pass through untouched). User reported Round 2 may not have closed the gap entirely ("i think its still the same") but ended conversation before screenshot — pending next-session visual confirmation. Backup: `Backups/render_lk_explorer.py.bak`.
+- **All `v260430-*` backlog still uncommitted on `main`** — Sprint 4 validation-tab overhaul (TODO #191), mock-data overhaul (TODO #192), Explorer ↔ grid parity (TODO #195), three-stage binarity memo (TODO #194), logP_max scan fixed-value input (TODO #196), skill/agent system reorg, all carrying forward unchanged. See `v260430-partial-working` entry below for full file list.
+
+**Pending visual verification (next session — multi-sprint hand-off, growing list):**
+- **(today)** CDF panel enrichment 5-feature checklist (per above).
+- **(today)** Reset-to-best Current Explorer logL == Global best logL after click. If still mismatched after Round 2 fix, next theories: cadence library precision through save/load round-trip, or `seed_base` actually persisted in user's grid `.npz` (Explorer falls back to 1234 if absent).
+- **(rolling forward from 2026-04-30)** Five overnight validation runs (Tabs 1–2 f_bin extremes, Tabs 3–4 bin-at-slope, Tab 5 :8502 σ_single search ON).
+- **(rolling forward from 2026-04-30)** Sprint 4 / mock-data overhaul / Explorer parity / logP_max sign-off and commit-block split.
+
+---
+
 ## 2026-04-30 (evening) — logP_max fixed-value input + corner staircase diagnosis + single-star RV inspection plot
 
 **Tag:** `v260430-evening-working` *(same caveat as `v260430-partial-working` — Sprint 4 / mock-data overhaul / Explorer parity / logP_max code change all still UNCOMMITTED on `main` awaiting visual sign-off after the five overnight validation runs.)*
