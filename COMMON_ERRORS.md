@@ -8,7 +8,7 @@ This file documents recurring bugs and deprecated patterns found in this project
 Combined grep pattern for all known bad patterns (copy-paste ready):
 
 ```bash
-grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.complex_\b|\.object_\b|\.str_\b|CLAUDECODE|allow_dangerously_skip_permissions|\.replace\(second=.*\.second\s*\+|nanargmax|nanargmin' --include='*.py' .
+grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.complex_\b|\.object_\b|\.str_\b|CLAUDECODE|allow_dangerously_skip_permissions|\.replace\(second=.*\.second\s*\+|nanargmax|nanargmin|\\big[lr]?\b|\\Big[lr]?\b|ax\.text\(.*wrap=True|fig\.text\(.*wrap=True' --include='*.py' .
 ```
 
 ---
@@ -617,3 +617,28 @@ When you encounter a new recurring error, add it here with:
 | **Why** | The codebase has TWO namespaces with similar-looking strings: (a) runner-mode tags (`'dsilva'`, `'langer'`, `'cadence_dsilva'`, `'cadence_langer'`) used as `result['type']` and `ndim_mode`; (b) period-distribution model names (`'powerlaw'`, `'langer2020'`) used in `BinaryParameterConfig.period_model` and consumed by `sample_logP`. The two namespaces overlap in surface form but not in accepted values. Type checking can't catch this — both are `str`. The bug only surfaces when the sampler is reached with the wrong tag. |
 | **Found in** | `app/bc/render_lk_explorer.py:1357`, `app/bc/render_lk.py:549`, `app/bc/render_lk_explorer_langer.py:1062` — all three callers of `_render_lk_cdf_sanity_check` after Sprint 4's switch from `simulate_delta_rv_sample` (which accepted both forms via different dispatch) to the canonical `_sample_delta_rv_mock`. Fixed 2026-04-28. |
 | **Prevention** | When threading a string through a chain of helpers, write down which namespace each function expects in its docstring. If a function accepts `period_model` as a parameter, its docstring should say "must be one of `'powerlaw'`, `'langer2020'`". Translate at the data-source boundary (where the runner-mode tag is decided), not at every consumer. The `_result_period_model(result, default='powerlaw')` helper in `render_lk_explorer.py:205` is the correct centralised translator — extend it to handle the runner-mode tag form too, so callers don't have to translate manually. |
+
+### E052 — `\bigl` / `\bigr` (and other `\big` family) crash matplotlib mathtext
+
+| | |
+|---|---|
+| **Bad** | `r"$x = \bigl[\,u\,(b^{\pi+1}-a^{\pi+1}) + a^{\pi+1}\,\bigr]^{1/(\pi+1)}$"` — raises `ParseFatalException: Unknown symbol: \bigl, found '\'` on `pdf.savefig` / draw |
+| **Fix** | Use plain `[`, `]` (mathtext auto-sizes nothing, but the rendered text still reads cleanly). For genuine bracket scaling use `\left[ \ldots \right]` which mathtext does support. |
+| **Grep** | `\\\\big[lr]?\b\|\\\\Big[lr]?\b\|\\\\bigg[lr]?\b\|\\\\Bigg[lr]?\b` |
+| **Why** | matplotlib's mathtext parser implements a subset of LaTeX. The `\big`/`\Big`/`\bigg`/`\Bigg` and `\bigl`/`\bigr`/etc. delimiter-sizing macros are NOT in that subset. They fail with a `ParseFatalException` at draw time, not at parse time, so the error only surfaces when the figure is actually rendered (e.g. inside a `PdfPages` writeout). The `pdftoppm`-style preview happens to work too late to help. Fallback options that DO work: bare `[`, `]`, `\left[ … \right]`, or pre-rendered TeX via `text.usetex=True` (heavyweight). |
+| **Found in** | `scripts/make_powerlaw_explainer.py:152` (initial draft, fixed 2026-05-07). Crash was: `ValueError: \nx \;=\; \bigl[\,u\,(b^{\pi+1}-a^{\pi+1}) + a^{\pi+1}\,\bigr]^{1/(\pi+1)}\n        ^\nParseFatalException: Unknown symbol: \bigl`. |
+| **Prevention** | When writing matplotlib `$...$` mathtext, treat the LaTeX subset as: greek, sub/super, fractions, roots, `\sum`/`\int`/`\prod`, accents, `\mathrm`/`\mathbf`/`\mathtt`/`\mathcal`, `\cdot`, `\propto`, `\sim`, `\to`, `\Longrightarrow`, `\bullet`, spacing (`\,`, `\;`, `\quad`). Anything more exotic (`\bigl`, `\boldsymbol`, `\substack`, `\overset`, `\xrightarrow`, …) is likely unsupported. Test by rendering one figure to PDF + `pdftoppm` BEFORE building all six pages. |
+
+---
+
+### E053 — `ax.text(..., wrap=True)` corrupts `$math$` segments
+
+| | |
+|---|---|
+| **Bad** | `ax.text(0.0, 0.85, "Right: $\\pi=-1$ — $p(\\log P)\\propto 1/\\log P$, so the histogram …", ha="left", va="top", fontsize=11, wrap=True)` — renders the math segments as literal `$\pi=-1$` / `$p(\log P)\propto 1/\log P$` characters in the PDF |
+| **Fix** | Pre-wrap the string at safe word boundaries (treating each `$...$` as one atomic unit), join with `\n`, and pass to `ax.text` with `linespacing=1.5` instead of `wrap=True`. Helper that splits while preserving math: `_wrap_preserving_math(s, width)` in `scripts/make_powerlaw_explainer.py`. |
+| **Grep** | `ax\.text\(.*wrap=True\|fig\.text\(.*wrap=True` |
+| **Why** | matplotlib's `wrap=True` post-processes the text by re-flowing on whitespace at draw time. It does NOT understand `$...$` as atomic — if a `$math$` span happens to span a wrap point, the wrapper inserts a newline mid-formula and mathtext silently fails on each fragment, falling back to literal `$…$` rendering. The bug is layout-dependent: short text with one inline `$x$` works fine, longer captions with multiple math segments break unpredictably. Visual inspection is the only way to catch it. |
+| **Found in** | `scripts/make_powerlaw_explainer.py` page-6 caption (initial draft, fixed 2026-05-07). All math in the caption rendered as literal `$\pi=-1$ — $p(\log P)\propto 1/\log P$, …`. |
+| **Prevention** | Avoid `wrap=True` for any caption that mixes prose with math. Pre-wrap into lines yourself, or use `fig.text()` inside a known-width axes and let the line-by-line layout do the wrapping. When in doubt, always rasterise the PDF with `pdftoppm` and visually inspect each page before declaring success — multipage PDFs with captions are the highest-risk case. |
+
