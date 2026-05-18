@@ -98,6 +98,7 @@ def _render_validation_results_table(p: str, is_dsilva: bool) -> None:
                 st.error(f'Failed to load validation result: {exc}')
             else:
                 st.session_state[f'{p}_result'] = result
+                st.session_state[f'{p}_is_loaded_result'] = True
                 st.session_state[f'{p}_loaded_path'] = _path
                 if mock_detail is not None:
                     st.session_state[f'{p}_val_mock_detail'] = mock_detail
@@ -336,8 +337,19 @@ def _render_single_point(
     mock_detail_key = f'{p}_val_mock_detail'
     mock_params_key = f'{p}_val_mock_params'
 
-    gen_btn = st.button('Generate Mock Observations', type='primary',
-                        key=f'{p}_val_gen')
+    _gen_c1, _gen_c2 = st.columns([0.78, 0.22])
+    gen_btn = _gen_c1.button('Generate Mock Observations', type='primary',
+                             key=f'{p}_val_gen')
+    _stack_key = f'{p}_val_mock_stack'
+    st.session_state.setdefault(_stack_key, [])
+    clear_btn = _gen_c2.button(
+        f'🧹 Clear stack ({len(st.session_state[_stack_key])})',
+        key=f'{p}_val_mock_clear',
+        disabled=(len(st.session_state[_stack_key]) == 0),
+    )
+    if clear_btn:
+        st.session_state[_stack_key] = []
+        st.rerun()
 
     current_params = (true_fbin, true_pi, true_sigma, true_logPmax,
                       int(seed), period_model, error_model, error_params,
@@ -422,6 +434,25 @@ def _render_single_point(
         st.session_state[mock_key] = mock_detail['delta_rv']
         st.session_state[mock_detail_key] = mock_detail
         st.session_state[mock_params_key] = current_params
+        # Append to visual stack — distribution-inspection only.
+        # Store ONLY what the CDF render needs (no rvs_per_star / errs_per_star
+        # arrays — keeps session state small even after dozens of stacked mocks).
+        from bc.helpers import _SNAPSHOT_PALETTE
+        _existing = st.session_state[_stack_key]
+        _id = (max((s['id'] for s in _existing), default=0) + 1)
+        _color = _SNAPSHOT_PALETTE[(_id - 1) % len(_SNAPSHOT_PALETTE)]
+        _snap = {
+            'id': int(_id),
+            'color': _color,
+            'delta_rv': np.asarray(mock_detail['delta_rv'], dtype=float).copy(),
+            'is_binary': np.asarray(mock_detail['is_binary'], dtype=bool).copy(),
+            'seed': int(seed),
+            'true_fbin': float(true_fbin),
+            'true_pi': float(true_pi),
+            'true_sigma': float(true_sigma),
+            'true_logPmax': float(true_logPmax),
+        }
+        st.session_state[_stack_key].append(_snap)
         # Clear any previous cadence run state for this prefix
         st.session_state.pop(f'{p}_result', None)
         st.session_state.pop(f'{p}_job', None)
@@ -462,6 +493,7 @@ def _render_single_point(
             thresh_dRV=float(settings.get('classification', {})
                              .get('threshold_dRV', 45.5)),
             input_fbin=_input_fbin,
+            mock_stack=st.session_state.get(_stack_key, []),
         )
 
     st.markdown('---')
@@ -500,6 +532,13 @@ def _render_single_point(
         _render_validation_diagnostics(
             p, st.session_state[mock_detail_key], settings,
         )
+
+    # Clear the one-shot "freshly loaded" flag after both bin-config
+    # widgets (global via cadence delegation above, explorer via
+    # diagnostics) have had a chance to re-seed.  Subsequent user
+    # edits to either widget are preserved normally until the next
+    # Load click re-arms the flag.
+    st.session_state.pop(f'{p}_is_loaded_result', None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -559,7 +598,8 @@ _CDF_OBS_MARKER = dict(
 
 
 def _render_mock_preview(p: str, detail: dict, thresh_dRV: float,
-                         input_fbin: float | None = None) -> None:
+                         input_fbin: float | None = None,
+                         mock_stack: list | None = None) -> None:
     """Render CDF, binary-fraction-vs-threshold and star table for the mock.
 
     The mock is a single deterministic draw at a fixed seed, so no
@@ -608,6 +648,12 @@ def _render_mock_preview(p: str, detail: dict, thresh_dRV: float,
     n_detected_binary = int(np.sum(detected & is_bin))
     n_detected_total = int(np.sum(detected))
 
+    if mock_stack is not None and len(mock_stack) > 1:
+        st.caption(
+            f'📚 **{len(mock_stack)} mocks stacked** — prior generations '
+            f'shown as dotted colored lines for distribution inspection. '
+            f'The active (most recent) mock drives the recovery run below.'
+        )
     st.markdown('#### Mock Observations Preview')
     _input_str = (f'Input f_bin = {input_fbin:.1%}.  '
                   if input_fbin is not None else '')
@@ -670,6 +716,27 @@ def _render_mock_preview(p: str, detail: dict, thresh_dRV: float,
             hovertemplate=('binary · ΔRV=%{x:.1f} ± '
                            '%{error_x.array:.1f} km/s<extra></extra>'),
         ))
+    # Prior mocks in the stack — visual stack for distribution inspection.
+    # Skip the last entry (it's the current mock, already drawn above).
+    if mock_stack and len(mock_stack) > 1:
+        for _prior in mock_stack[:-1]:
+            _pdrv = np.asarray(_prior['delta_rv'], dtype=float)
+            if _pdrv.size == 0:
+                continue
+            _pidx = np.argsort(_pdrv)
+            _pds = _pdrv[_pidx]
+            _pcdf = (np.arange(_pdrv.size) + 1) / float(_pdrv.size)
+            fig_cdf.add_trace(go.Scatter(
+                x=_pds, y=_pcdf, mode='lines',
+                line=dict(color=_prior['color'], width=1.4,
+                          shape='hv', dash='dot'),
+                opacity=0.7,
+                name=(f"#{_prior['id']} · seed={_prior['seed']} · "
+                      f"f_bin={_prior['true_fbin']:.2f}"),
+                hovertemplate=(f"#{_prior['id']} · ΔRV=%{{x:.1f}} "
+                               "km/s<br>CDF=%{y:.3f}<extra></extra>"),
+                legendgroup=f"stack_{_prior['id']}",
+            ))
     fig_cdf.add_vline(
         x=thresh_dRV, line_dash='dash', line_color='#F5A623', line_width=1.5,
         annotation_text=f'{thresh_dRV:.1f} km/s',

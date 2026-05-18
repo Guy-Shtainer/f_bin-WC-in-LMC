@@ -1083,8 +1083,16 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
     # Workers
     _n_proc = os.cpu_count() - 1
 
-    # Likelihood bin edges
-    _lk_bin_edges = _render_likelihood_bin_config(p, sm=sm)
+    # Likelihood bin edges.  If a saved result is currently loaded (e.g.
+    # on the validation tab after a Load click), pass its likelihood
+    # bin edges through so the widget can re-seed when the one-shot
+    # `f'{p}_is_loaded_result'` flag is set.
+    _default_lk_be = None
+    _loaded_result = st.session_state.get(f'{p}_result')
+    if _loaded_result is not None:
+        _default_lk_be = _loaded_result.get('likelihood_bin_edges')
+    _lk_bin_edges = _render_likelihood_bin_config(
+        p, sm=sm, default_bin_edges=_default_lk_be)
 
     # Action buttons
     _a1, _a2, _a3, _a4 = st.columns(4)

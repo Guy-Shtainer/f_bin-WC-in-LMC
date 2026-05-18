@@ -497,13 +497,52 @@ def _render_cadence_adaptive_bins(
         return False, None, drv_bin_width, drv_max
 
 
-def _render_likelihood_bin_config(p: str, prefix: str = '', sm=None) -> np.ndarray:
+def _infer_lk_bin_mode(bin_edges) -> tuple[str, float | None, str]:
+    """Map a likelihood_bin_edges array to (mode, threshold, manual_text).
+
+    Recognises the canonical dsilva_likelihood_bins schema
+    [0, T, 250, 650, inf] as Threshold-based; everything else
+    is Manual with the comma-joined finite edges.
+    """
+    be = np.asarray(bin_edges, dtype=float)
+    finite = be[np.isfinite(be)]
+    if (finite.size == 4
+            and float(finite[0]) == 0.0
+            and float(finite[2]) == 250.0
+            and float(finite[3]) == 650.0):
+        T = float(finite[1])
+        return 'Threshold-based', T, f'0, {T:g}, 250, 650'
+    return 'Manual', None, ', '.join(f'{e:g}' for e in finite)
+
+
+def _render_likelihood_bin_config(
+    p: str, prefix: str = '', sm=None,
+    default_bin_edges: np.ndarray | None = None,
+) -> np.ndarray:
     """Render likelihood bin edges configuration. Returns bin_edges array.
 
     Provides two modes: Threshold-based (auto-generate from detection threshold)
     and Manual (user edits comma-separated bin edges).
+
+    When ``default_bin_edges`` is provided and the session-state flag
+    ``f'{p}_is_loaded_result'`` is True, the widget seeds its mode /
+    threshold / manual-edges keys from those edges for one render
+    (one-shot override of any current state).  The flag is cleared by
+    the caller at the end of the page render.
     """
     from wr_bias_simulation import dsilva_likelihood_bins
+
+    # One-shot seeding from a freshly-loaded saved result.  The Load
+    # handler sets f'{p}_is_loaded_result' = True; the page clears it
+    # after widgets render, so this block fires for exactly one rerun.
+    if (st.session_state.get(f'{p}_is_loaded_result', False)
+            and default_bin_edges is not None):
+        _mode, _thresh, _manual_text = _infer_lk_bin_mode(default_bin_edges)
+        st.session_state[f'{p}{prefix}_lk_bin_mode'] = _mode
+        if _thresh is not None:
+            st.session_state[f'{p}{prefix}_lk_threshold'] = float(_thresh)
+        st.session_state[f'{p}{prefix}_manual_edges'] = _manual_text
+        st.session_state[f'{p}{prefix}_lk_edges_text'] = _manual_text
 
     # Pre-populate session_state from saved settings
     if sm is not None:
@@ -582,6 +621,18 @@ def _render_explorer_lk_bin_config(
         _seed_text = ', '.join(f'{e:g}' for e in _seed_finite)
     else:
         _seed_text = '0, 45.5, 250, 650'
+
+    # One-shot seeding from a freshly-loaded saved result.  Uses the
+    # same flag as the global widget (f'{p}_is_loaded_result') so both
+    # widgets re-seed atomically on a single Load click.
+    if (st.session_state.get(f'{p}_is_loaded_result', False)
+            and default_bin_edges is not None):
+        _mode, _thresh, _manual_text = _infer_lk_bin_mode(default_bin_edges)
+        st.session_state[f'{p}{prefix}_explorer_lk_bin_mode'] = _mode
+        if _thresh is not None:
+            st.session_state[f'{p}{prefix}_explorer_lk_threshold'] = float(_thresh)
+        st.session_state[f'{p}{prefix}_explorer_manual_edges'] = _manual_text
+        st.session_state[f'{p}{prefix}_explorer_lk_edges_text'] = _manual_text
 
     # Pre-populate session_state from saved settings (Explorer namespace).
     if sm is not None:
