@@ -26,3 +26,23 @@ Thumbs.db
 
 # Backups (local only)
 Backups/
+
+# Large local-only simulation outputs (GBs of .npz files)
+results/
+mock_results/
+bin_sensitivity_results/
+
+# Local caches and per-session state
+bias_app/.cache/
+bias_app/.obs_delta_rv_cache.npy
+bias_app/__pycache__/
+mock_inspector_app/__pycache__/
+settings/states/
+
+# Background agent runtime artifacts
+scripts/.agent_live_output.txt
+scripts/.agent_work/
+
+# Reference papers (track separately if needed)
+papers/*.pdf
+
