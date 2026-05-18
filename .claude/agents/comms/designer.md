@@ -1,378 +1,334 @@
 ## Status: READY
-
-## Layout Spec: Bin Sensitivity sub-tab (app/bc/)
+## Layout Spec: Mock Inspector — standalone pipeline comparison webapp
 
 ---
 
 ## Structure
 
-The new sub-tab is a **standalone tab** registered as type `'bin_sensitivity'` in
-`05_bias_correction.py`'s `bc_tabs` session-state list. It lives between "Cadence (Langer)"
-and "RV Errors" in the default tab list — immediately after the two simulation tabs so the user
-sees it right after running a grid, and before the diagnostic/utility tabs.
-
-Default entry in `bc_tabs` init block (add at index 2, shifting RV Errors and Compare):
+Single-page Streamlit app (`mock_inspector_app/app.py`).
+No sidebar — all controls live in the main area, top-to-bottom:
 
 ```
-{'type': 'bin_sensitivity', 'name': 'Bin Sensitivity', 'prefix': 'bsn'},
+┌────────────────────────────────────────────────────────────────────────┐
+│  st.title("Mock Pipeline Inspector")                                   │
+│  st.caption("Side-by-side comparison: Mock Data vs Model Explorer…")  │
+├────────────────────────────────────────────────────────────────────────┤
+│  CONTROL REGION  (st.container, full width)                            │
+│                                                                        │
+│  Row A  [σ_single] [σ_meas] [f_bin] [π (logP exp)] [True logP_max]   │
+│  Row B  [error_model selectbox ──────────] [N_iter] [seed_base]       │
+│                                                                        │
+│                           [  Run ▶  ]  (right-aligned)                │
+│  st.divider()                                                          │
+├────────────────────────────────────────────────────────────────────────┤
+│  COMPARISON REGION  st.columns([1, 1])                                 │
+│                                                                        │
+│  ┌── Mock Data (bc.validation) ──┐  ┌── Model Explorer (render_lk_exp)┐│
+│  │ st.markdown("**Mock Data**")  │  │ st.markdown("**Model Explorer**")││
+│  │                               │  │                                  ││
+│  │  ΔRV CDF (h=300)              │  │  ΔRV CDF (h=300)                ││
+│  │  st.caption(...)              │  │  st.caption(...)                 ││
+│  │                               │  │                                  ││
+│  │  Binary frac vs thresh(h=280) │  │  Binary frac vs thresh (h=280)  ││
+│  │  st.caption(...)              │  │  st.caption(...)                 ││
+│  │                               │  │                                  ││
+│  │  logP histogram  (h=220)      │  │  logP histogram   (h=220)       ││
+│  │  e histogram     (h=220)      │  │  e histogram      (h=220)       ││
+│  │  q histogram     (h=220)      │  │  q histogram      (h=220)       ││
+│  │  cos i histogram (h=220)      │  │  cos i histogram  (h=220)       ││
+│  │  ω histogram     (h=220)      │  │  ω histogram      (h=220)       ││
+│  │  phase histogram (h=220)      │  │  phase histogram  (h=220)       ││
+│  │                               │  │                                  ││
+│  │  st.dataframe(summary stats)  │  │  st.dataframe(summary stats)    ││
+│  └───────────────────────────────┘  └──────────────────────────────────┘│
+└────────────────────────────────────────────────────────────────────────┘
 ```
-
-"Bin Sensitivity" is 13 characters — well under the 20-char Streamlit tab render limit.
-
-Tab registration in `05_bias_correction.py`:
-- Import: `from bc.bin_sensitivity import _render_bin_sensitivity_tab`
-- Dispatch: `elif _ti['type'] == 'bin_sensitivity': _render_bin_sensitivity_tab(_ti['prefix'], settings, sm)`
-
-Tab registration in `app/bc/__init__.py`:
-- Add: `from bc.bin_sensitivity import _render_bin_sensitivity_tab`
-
-The tab's content divides into three vertical sections rendered top-to-bottom:
-1. Controls section — source selector + scheme controls (always visible, no expanders)
-2. Progress section — progress bar + status text (only shown when running)
-3. Results section — summary table + sub-tabs for plots + export button
 
 ---
 
 ## Control Placement
 
-All controls in this section MUST be visible inline without any st.expander. This follows
-feedback_no_collapsing_controls.md: controls are never hidden; everything defaults ON.
+All controls live in the main area. No sidebar (single-page standalone app;
+no global/page-local split is needed). No expanders — all controls visible
+inline by default (project rule: feedback_no_collapsing_controls.md).
 
-### Row 1 — Source selector (full width)
+### Row A — five number_inputs in st.columns([1, 1, 1, 1, 1])
 
+| Label | Key | Default | Step | Affects |
+|-------|-----|---------|------|---------|
+| σ_single (km/s) | insp_sigma_single | 15.0 | 0.1 | both |
+| σ_meas (km/s) | insp_sigma_meas | 5.0 | 0.1 | both |
+| f_bin | insp_f_bin | 0.46 | 0.01 | both |
+| π (logP exponent) | insp_pi | 0.0 | 0.1 | both |
+| True logP_max | insp_logPmax | 5.0 | 0.5 | both |
+
+No min/max constraints on any number_input (project rule).
+Defaults sourced from render_validation.py:93-105 (same as Validation tab).
+
+### Row B — three controls in st.columns([2, 1, 1])
+
+| Label | Type | Key | Default | Affects |
+|-------|------|-----|---------|---------|
+| Error model | selectbox | insp_error_model | "gaussian" | both |
+| N_iterations | number_input | insp_n_iter | 500 | both |
+| Seed base | number_input | insp_seed_base | 42 | both |
+
+Error model options: ["gaussian", "asymmetric", "none"].
+number_input step = 50 for N_iterations; step = 1 for seed_base.
+
+### Run button
+
+Right-aligned via spacer:
 ```
-st.markdown("#### Source")
-col_src_a, col_src_b = st.columns([0.35, 0.65])
+_, _, btn_col = st.columns([4, 1, 1])
 ```
+Button in btn_col: `st.button("Run ▶", type="primary", key="insp_run",
+use_container_width=True)`.
 
-- col_src_a: st.radio("Simulation source", ["Reuse existing .npz", "Run fresh simulation"],
-  horizontal=True, key=f'{p}_bsn_source')
-  - Default: "Reuse existing .npz"
-- col_src_b (shown only when "Reuse existing .npz" is selected):
-  st.selectbox("Result file", options=<list of cadence_*.npz sorted by mtime desc>,
-  key=f'{p}_bsn_npz_path')
-  - List built by scanning results/ for cadence_*.npz files, sorted newest-first.
-  - Display: filename only (not full path). Tooltip shows full path via help= parameter.
-  - When "Run fresh simulation" is selected, col_src_b is hidden (use if branch, not expander).
+Clicking Run checks if `params_hash` changed since last run:
+- unchanged → display cached session_state results immediately (no recompute)
+- changed → run both pipelines, show st.progress() during computation
 
-### Row 2 — Scheme family multi-select (full width)
+### Persistence rule
 
-```
-st.markdown("#### Bin schemes to compare")
-```
-
-Use st.multiselect with all families listed. Default ON for all except "custom".
-
-```python
-scheme_families = st.multiselect(
-    "Active schemes",
-    options=["dsilva_default", "equal_width", "log_spaced", "quantile",
-             "anchored", "freedman_diaconis", "custom"],
-    default=["dsilva_default", "equal_width", "log_spaced", "quantile",
-             "anchored", "freedman_diaconis"],
-    key=f'{p}_bsn_schemes',
-)
-```
-
-### Row 3 — Parametric scheme controls (4 columns, no expanders)
-
-```
-col_nbin1, col_nbin2, col_nbin3, col_nbin4 = st.columns([0.22, 0.22, 0.22, 0.34])
-```
-
-- col_nbin1: st.number_input("n_bins (equal-width)", value=10, step=1, key=f'{p}_bsn_n_ew')
-  - Applies to "equal_width". No min/max constraint per feedback_no_hard_limits.
-- col_nbin2: st.number_input("n_bins (log-spaced)", value=10, step=1, key=f'{p}_bsn_n_ls')
-  - Applies to "log_spaced".
-- col_nbin3: st.number_input("n_bins (quantile)", value=5, step=1, key=f'{p}_bsn_n_qt')
-  - Applies to "quantile".
-- col_nbin4: st.number_input("n_anchors (anchored)", value=5, step=1, key=f'{p}_bsn_n_an')
-  - Applies to "anchored". Controls how many intermediate anchor points are placed between
-    the threshold and max_obs.
-
-No min/max constraints on any number_input per feedback_no_hard_limits.md.
-
-### Row 4 — Threshold and max-delta-RV controls (3 columns)
-
-```
-col_thr, col_max, col_fd = st.columns([0.3, 0.3, 0.4])
-```
-
-- col_thr: st.number_input("Detection threshold (km/s)", value=45.5, step=0.5,
-  format="%.1f", key=f'{p}_bsn_threshold')
-  - Used as anchor edge for dsilva-style and anchored schemes.
-- col_max: st.number_input("Max delta-RV (km/s, 0=auto)", value=0.0, step=10.0,
-  format="%.1f", key=f'{p}_bsn_max_drv')
-  - When value is 0.0 (default), the renderer auto-fills from max(obs_delta_rv) at run time.
-  - Non-zero value overrides auto-fill. No min/max constraint.
-- col_fd: st.caption("Freedman-Diaconis edges are computed automatically from the observed
-  distribution. No parameters needed.")
-  - Informational only; no widget.
-
-### Row 5 — Custom edges (only when "custom" is in active schemes)
-
-```python
-if "custom" in scheme_families:
-    custom_edges_str = st.text_input(
-        "Custom bin edges (comma-separated km/s, e.g. 0,45.5,100,250,650)",
-        value="0,45.5,100,250,650",
-        key=f'{p}_bsn_custom_edges',
-    )
-    st.caption("Parsed as np.array(sorted(floats)). First value should be 0; last may be 'inf'.")
-```
-
-### Row 6 — Run button (right-aligned)
-
-```python
-_, col_run = st.columns([0.75, 0.25])
-with col_run:
-    run_clicked = st.button("Run comparison", type="primary",
-                            key=f'{p}_bsn_run', use_container_width=True)
-```
+Every control must have an `on_change` callback calling
+`sm.save(["inspector", key])` where `sm` is a SettingsManager reading/writing
+`mock_inspector_app/settings.json`. Defaults are read from saved config at
+startup; fall back to the defaults in the table above if key is absent.
 
 ---
 
-## Progress Feedback
-
-Shown only while the comparison is running (use a boolean in session state,
-e.g. f'{p}_bsn_running').
+## Two-Column Comparison Region
 
 ```python
-if st.session_state.get(f'{p}_bsn_running'):
-    bsn_prog = st.progress(0.0, text="Initializing...")
-    bsn_status = st.empty()
+left_col, right_col = st.columns([1, 1])
 ```
 
-- bsn_prog.progress(fraction, text=f"Re-scoring scheme {i}/{total}: {scheme_label}")
-  — fraction in [0, 1].
-- After the first scheme completes, show ETA:
-  bsn_status.markdown(f"ETA: ~{eta_seconds:.0f}s remaining")
-- On completion: bsn_prog.progress(1.0, text="Complete.") then st.rerun() to enter results view.
+Each column renders independently. The coder builds one helper function
+`render_column(col, results, pipeline_label, color)` called twice — once for
+each pipeline — with different `results` and `color` arguments.
 
-The progress callback is a plain Python callable (not Streamlit-specific) so it can be passed to
-the backend scorer without tying it to Streamlit's thread. The coder should buffer progress
-updates in st.session_state and read them in a @st.fragment(run_every=1) poller rather than
-calling Streamlit from a background thread directly.
+### Progress feedback (shown during computation only)
+
+```python
+prog = st.progress(0.0, text="Initializing Mock Data pipeline...")
+# after mock_data completes:
+prog.progress(0.5, text="Running Model Explorer pipeline...")
+# after model_explorer completes:
+prog.progress(1.0, text="Done.")
+```
+
+Both pipelines run sequentially in the main thread (not background threads)
+because they are fast Monte-Carlo functions; blocking the UI briefly is
+acceptable. If either pipeline takes >10 s, the coder may add a threading
+layer, but that is an implementation decision outside this spec.
 
 ---
 
-## Result Presentation
+## Plot Details
 
-Results are shown only when st.session_state.get(f'{p}_bsn_result') is not None.
+All figures use `_academic_fig()` from `app/plots/theme.py` for white
+background, Times New Roman serif, black mirrored axes, no gridlines.
+Every plot rendered with `st.plotly_chart(fig, use_container_width=True)`.
+Eight separate `st.plotly_chart` calls per column (not `make_subplots`) —
+see Rationale for why.
 
-### Summary table (top of results)
+### Plot 1 — ΔRV CDF (height=300)
 
-Full-width st.dataframe with the following columns:
+- X axis: "ΔRV (km/s)"; Y axis: "Cumulative fraction"
+- Observed empirical step-ECDF: color `#2E2E2E`, solid, width 2 px
+- Simulated 16–84 percentile band: `#4A90D9` fill, opacity 0.25;
+  `legendgroup="sim"` on both fill trace and its median line so toggling
+  the legend entry hides both (CDF legend-toggle rule from plot_preferences.md)
+- Simulated median: `#4A90D9` solid, width 1.5 px
+- Mock Data column color: `#4A90D9` (steel blue)
+- Model Explorer column color: `#E25A53` (tomato red) — use the column's
+  assigned color for the simulated traces; the observed step is always `#2E2E2E`
+- st.caption below: "Pooled empirical ECDF across 25 stars (black step) vs
+  simulated 16–84 percentile band from N_iterations Monte-Carlo draws. Smooth
+  pooled CDF uses bc.helpers.smooth_pooled_cdf."
 
-| Column | Description |
-|---|---|
-| scheme | Scheme name string (e.g., "dsilva_default", "equal_width_10") |
-| n_bins | Integer count of bins (edges - 1) |
-| f_bin* | Best-fit f_bin at grid maximum |
-| f_bin_HDI68 | HDI 68% width for f_bin (dimensionless, 0-1 range) |
-| pi* | Best-fit pi at grid maximum |
-| pi_HDI68 | HDI 68% width for pi |
-| logL_max | Raw log-likelihood at best cell (shown as-is, not negated; label "logL" per feedback_logL_convention.md) |
-| KS_at_best | K-S statistic between obs CDF and sim median CDF at best-fit cell |
-| n_empty_bins | Count of bins with zero observed counts |
+### Plot 2 — Binary fraction vs threshold (height=280)
 
-The row corresponding to "dsilva_default" is displayed first (sort so dsilva_default is always
-row 0, then alphabetical for remaining schemes). This ensures the reference row is always
-visually prominent without requiring Pandas Styler complexity.
+- X axis: "ΔRV threshold (km/s)", range [0, 150]; Y axis: "Detected binary fraction"
+- One curve per column, column's assigned color
+- Vertical dashed line at x=45.5 in `#2E2E2E`, annotated "threshold"
+- st.caption: "Fraction of 25 stars classified as binary as a function of ΔRV
+  threshold. Vertical dashed line at the project binary-detection threshold (45.5 km/s)."
 
-Below the table: st.caption("logL shown as raw value; higher (less negative) is better.")
+### Plots 3–8 — Orbital parameter histograms (height=220 each)
 
-A st.radio immediately below the table lets the user select a single scheme to inspect in the
-plots below:
+Order within each column: logP, e, q, cos i, ω, phase.
+Bar color = column's assigned color (blue for Mock Data, red for Model Explorer).
+30 bins. No gap between bars (`bargap=0`).
+Full physical x-range for each parameter (logP: auto from data; e: [0,1];
+q: [0,1]; cos i: [0,1]; ω: [0, 360] degrees; phase: [0,1]).
 
-```python
-selected_scheme = st.radio(
-    "Inspect scheme in plots",
-    options=[r['scheme'] for r in result_rows],
-    horizontal=True,
-    key=f'{p}_bsn_selected_scheme',
-)
-```
+st.caption below each histogram (verbatim text for coder):
+- logP: "Orbital period distribution (log days). Power-law exponent π controls the slope."
+- e: "Orbital eccentricity (0 = circular). Drawn from the configured distribution."
+- q: "Mass ratio M2/M1 (0–1). Assumed uniform unless overridden."
+- cos i: "Cosine of orbital inclination. Uniform in cos i implies random 3-D orientation."
+- ω: "Argument of periastron (degrees, 0–360). Drawn uniformly."
+- phase: "Orbital phase at first observation epoch (0–1). Drawn uniformly."
 
-### Plots (middle of results)
+Font sizes (project rule, 2026-04-23):
+- Axis titles: 14 pt minimum
+- Tick labels: 12 pt minimum
+- Legend text: 12 pt minimum
+- In-plot annotations: 12 pt minimum
 
-Use st.tabs(["Sensitivity", "CDF Overlay", "Posterior Shapes", "Bin Diagnostics"]) —
-four sub-tabs, one plot per sub-tab. Each sub-tab contains a single @st.fragment render.
+### Summary stats table (bottom of each column)
 
-Tab 1 — "Sensitivity": HDI-width vs. scheme/n_bins sensitivity chart.
-Shows f_bin_HDI68 and pi_HDI68 as separate markers/lines across all active schemes on the X-axis
-(categorical). Two marker shapes (circle for f_bin, diamond for pi) on a single Y-axis labeled
-"HDI 68% width". Fragment key: f'{p}_bsn_plot_sens'.
-Caption: "Smaller HDI width = tighter posterior. Compare across schemes to assess sensitivity."
-
-Tab 2 — "CDF Overlay": Observed delta-RV empirical CDF (step line, dark) overlaid with the
-simulated median CDF for the scheme selected in the radio button above (step line, colored).
-Bin edges for the selected scheme drawn as vertical dashed lines annotated with edge values.
-Fragment key: f'{p}_bsn_plot_cdf'.
-Caption: "Vertical dashed lines show bin edges for the selected scheme. Observe how CDF is partitioned."
-
-Tab 3 — "Posterior Shapes": Two 2D heatmaps side by side (st.columns([0.5, 0.5])) —
-left: normalized likelihood surface (f_bin vs pi) for the currently selected scheme;
-right: dsilva_default surface for comparison. Use make_heatmap_fig from shared.py for consistency.
-Fragment key: f'{p}_bsn_plot_post'.
-Caption: "Left: selected scheme likelihood surface. Right: dsilva_default reference. Compare peak location and breadth."
-
-Tab 4 — "Bin Diagnostics": Grouped bar chart (side by side, not stacked) showing observed count
-and simulated expected count per bin for the selected scheme at the best-fit grid cell.
-Color: observed = dark (first palette color), expected = lighter variant. Bins with zero observed
-count get a red annotation "empty". Fragment key: f'{p}_bsn_plot_diag'.
-Caption: "Empty bins (n_obs=0) contribute 0 to logL regardless of simulated density and are wasted degrees of freedom."
-
-Each plot gets a st.caption immediately below it describing axes and interpretation.
-
-### Export button (bottom of results)
-
-```python
-col_exp, _ = st.columns([0.25, 0.75])
-with col_exp:
-    if st.button("Export results", key=f'{p}_bsn_export'):
-        # write results/bin_sensitivity_YYMMDD-HHMM.csv and .json
-        ...
-```
-
-On click: write results/bin_sensitivity_{timestamp}.csv (one row per scheme, all table columns)
-and results/bin_sensitivity_{timestamp}.json (full result dict including bin edges per scheme).
-Show st.success(f"Exported to results/bin_sensitivity_{timestamp}.csv / .json").
+`st.dataframe` with `hide_index=True`. Six rows (one per orbital parameter),
+three stat columns: mean, median, std. Column header: "Parameter | Mean | Median | Std".
+White background, no metric cards.
 
 ---
 
 ## Styling Rules
 
-All plots use PLOTLY_THEME from app/shared.py — never hardcode colors.
-White background, serif font, black axes, no gridlines per feedback_matplotlib_style.md.
-WCAG AA contrast for all text labels and annotations per feedback_aa_journal_style.md.
-Scheme color palette: use get_palette() cycling through the returned list, one color per scheme.
-The dsilva_default scheme always uses index 0 of the palette (consistent with existing charts).
-
-Axis labels:
-- Delta-RV axis label: "Delta-RV (km/s)"
-- f_bin axis: "f<sub>bin</sub>" (HTML subscript via Plotly)
-- logL axis: "logL" (no negation, no dash, no "-logL")
-- HDI width axis: "HDI 68% width"
-
-No emojis anywhere in the tab (interface text, captions, labels, or button labels).
+- A&A journal style on every plot: white background, black text, Times New Roman
+  serif, black mirrored axes, no gridlines, outside ticks. Use `_academic_fig()`
+  from `app/plots/theme.py`.
+- WCAG 4.5:1 contrast: all text `#2E2E2E` or darker on white.
+- Ban list (no exceptions on white-background plots): `'white'`, `'#FFFFFF'`
+  as trace colors; `'gold'`, `'#FFD700'`; any grey ≤ `#555555` for primary
+  data. (Source: plot_preferences.md 2026-04-23 ban list.)
+- Approved column-accent colors: Mock Data `#4A90D9`; Model Explorer `#E25A53`.
+  These pass WCAG 4.5:1 on white background.
+- Page config: `st.set_page_config(layout="wide", page_title="Mock Inspector")`.
+- No emojis in any interface text, labels, captions, or button labels.
 
 ---
 
-## File Plan for the Coder
+## Cache + Run State
 
-Four new files (all under app/bc/):
+Results live in `st.session_state` keyed by `(params_hash, pipeline_id)`:
+- `st.session_state[("mock_data", params_hash)]` → dict with arrays
+- `st.session_state[("model_explorer", params_hash)]` → dict with arrays
 
-| File | Purpose | Target lines |
-|---|---|---|
-| app/bc/bin_sensitivity.py | Tab renderer: controls, progress, results layout, export | max 380 lines |
-| app/bc/bin_schemes.py | Scheme library: pure functions returning np.ndarray of edges | max 200 lines |
-| app/bc/bin_sensitivity_plots.py | Plot builders: one function per plot (4 total) | max 300 lines |
-| app/bc/bin_sensitivity_scorer.py | Re-scoring engine: takes npz + edge arrays, returns result rows; houses @st.cache_data decorators | max 250 lines |
+`params_hash = hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()`
+where `params` is a plain dict of all 8 control values.
 
-Rationale for 4 files (not 3 as the briefing proposed): the re-scoring logic is substantial and
-import-sensitive enough that mixing it with layout code would push bin_sensitivity.py above 400
-lines and complicate the @st.cache_data key design. Splitting scorer from renderer keeps each file
-to its single responsibility and under 400 lines, consistent with feedback_file_size.md.
+On "Run ▶":
+1. Compute new hash.
+2. If both keys exist in session_state → skip recomputation, display immediately.
+3. If either key is missing → run that pipeline, store result under new hash.
+4. Prune stale session_state keys: keep only the two most recent hashes to
+   avoid unbounded growth.
 
-Files NOT modified in Round 2:
-- app/bc/subtabs.py — the new tab lives at the page level, not inside render_model_subtabs().
-- Any render_lk*.py, render_shared*.py, runners_cadence*.py — no changes.
-- wr_bias_simulation.py — read-only from the scorer.
-
-Files modified in Round 2:
-- app/bc/__init__.py — add one import line.
-- app/pages/05_bias_correction.py — add default tab entry, one elif dispatch, one radio option,
-  one _type_map entry.
+No `@st.cache_data` on run functions — the user controls reproducibility via
+seed_base; session_state with a hash key is sufficient and avoids Streamlit's
+function-signature hash issues with numpy arrays.
 
 ---
 
-## State Persistence
+## Standalone Webapp Scaffolding
 
-On every render, the following bin-sensitivity-specific keys should be persistable via the
-sidebar "Save state" button to settings/states/{timestamp}_bin_sensitivity.json:
-
-```python
-{
-    "source": st.session_state.get(f'{p}_bsn_source'),
-    "npz_path": st.session_state.get(f'{p}_bsn_npz_path'),
-    "schemes": st.session_state.get(f'{p}_bsn_schemes'),
-    "n_ew": st.session_state.get(f'{p}_bsn_n_ew'),
-    "n_ls": st.session_state.get(f'{p}_bsn_n_ls'),
-    "n_qt": st.session_state.get(f'{p}_bsn_n_qt'),
-    "n_an": st.session_state.get(f'{p}_bsn_n_an'),
-    "threshold": st.session_state.get(f'{p}_bsn_threshold'),
-    "max_drv": st.session_state.get(f'{p}_bsn_max_drv'),
-    "custom_edges": st.session_state.get(f'{p}_bsn_custom_edges'),
-    "last_result_path": <path of last .csv export, if any>,
-}
+```
+mock_inspector_app/
+    __init__.py         # empty — marks package for sibling imports
+    app.py              # st.set_page_config + top-level render entry point
+    inspector.py        # pure rendering helpers: build_cdf_fig, build_hist_fig,
+                        #   build_binary_frac_fig, build_summary_table.
+                        #   Accepts numpy arrays; returns Plotly figures.
+                        #   No Streamlit imports.
+    runner.py           # thin wrappers around bc.validation and
+                        #   bc.render_lk_explorer that call the Monte-Carlo
+                        #   and return plain dicts of numpy arrays.
+                        #   No Streamlit imports.
+    settings.py         # minimal SettingsManager: load/save settings.json
+    settings.json       # persisted control defaults (add to .gitignore)
 ```
 
-Save via sm.save(['bin_sensitivity', p], {...}) if sm supports nested paths, or write directly
-to settings/states/ via file_ops helpers — whichever pattern the coder finds in existing tabs.
+Launch command:
+```
+streamlit run mock_inspector_app/app.py --server.port 8503
+```
 
----
+Sibling import path setup at top of `app.py` (same pattern as `app/bc/*.py`):
+```python
+import os, sys
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)            # project root
+_APP  = os.path.join(_ROOT, "app")        # app/ directory
+for _p in [_ROOT, _APP]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+# Enables:
+#   from bc import validation, helpers, render_lk_explorer
+#   from shared import cached_load_cadence, PLOTLY_THEME
+#   from plots.theme import _academic_fig
+```
 
-## Fragments and Caching
-
-Caching (@st.cache_data): key on (npz_path, scheme_key, scheme_params_tuple) where
-scheme_params_tuple is a hashable tuple of sorted edge floats.
-Cache lives in bin_sensitivity_scorer.py. Each scheme's re-score is independently cached so
-toggling one scheme ON/OFF only recomputes that scheme, not the entire batch.
-
-Fragments (@st.fragment): each of the four plot functions in bin_sensitivity_plots.py is
-decorated with @st.fragment. Fragment keys use the f'{p}_bsn_plot_{name}' pattern.
-The summary table and export button are NOT fragments (fast and stateless).
-
-Important implementation note for the coder: the scorer must use the SAME seeds as the original
-grid run. Grid seeds are a pure function of cell index (i_sig, i_fb, i_pi) as verified in
-runners_cadence.py:82-92 and are stable across resume. The scorer can reconstruct seeds
-deterministically. If the original simulated pools are not stored in the .npz (they are not today
-— only logL_raw is), the scorer must re-simulate at each grid cell using
-simulate_delta_rv_cadence_aware with the same seed formula. The briefing flags this as the key
-design decision for Round 2 — the layout does not depend on which path is chosen, but the coder
-must preserve result-dict completeness (learnings.md: "Result-dict completeness contract").
-The scorer must pass the FULL bin_cfg, period_model, cadence_weights, sigma_meas from the .npz
-result dict to every re-simulation helper — never reconstruct BinaryParameterConfig from scratch
-(learnings.md: "A re-simulated plot MUST use the SAME bin_cfg / period_model / cadence_weights").
+`runner.py` imports from `bc.validation` and `bc.render_lk_explorer`.
+`inspector.py` imports from `plots.theme` only. Neither file imports Streamlit.
+`app.py` owns all Streamlit calls and passes results to `inspector.py` helpers.
 
 ---
 
 ## Acceptance Criteria (QA checks against these)
 
-- [ ] Tab loads without error when no .npz file is selected (or results directory is empty);
-      shows informational st.info() rather than a traceback.
-- [ ] "Run comparison" with default schemes (dsilva_default, equal_width, log_spaced) completes
-      on any small .npz in results/ without error; the summary table appears with all rows
-      populated (no NaN, no None, no "--" in numeric columns).
-- [ ] All table columns are populated with real computed values: f_bin*, f_bin_HDI68, pi*,
-      pi_HDI68, logL_max, KS_at_best, n_empty_bins. Spot-check: dsilva_default row logL_max
-      must match the logL shown in the Cadence (Dsilva) tab for the same .npz.
-- [ ] All four plot sub-tabs render without error; axis labels match the spec (delta-RV in km/s,
-      logL not negated, f_bin with HTML subscript where Plotly is used).
-- [ ] Toggling a scheme off in the multi-select (without clicking Run again) removes its row
-      from the displayed table; other scheme rows do not trigger a cache miss (no re-computation).
-- [ ] Export button writes both results/bin_sensitivity_*.csv and results/bin_sensitivity_*.json
-      and the st.success message appears with the file paths.
-- [ ] "custom" edges text input is hidden when "custom" is not in the active schemes multi-select,
-      and appears immediately when "custom" is added to the selection.
-- [ ] No controls are hidden inside st.expander widgets; all scheme controls are visible inline.
-- [ ] dsilva_default row appears first in the summary table.
+- [ ] `streamlit run mock_inspector_app/app.py --server.port 8503` starts
+      without any ImportError or AttributeError.
+- [ ] All 8 controls (σ_single, σ_meas, f_bin, π, logP_max, error_model,
+      N_iterations, seed_base) are visible inline; none hidden inside st.expander.
+- [ ] Each number_input has no `min_value` or `max_value` argument; step values
+      match the table in this spec.
+- [ ] "Run ▶" button triggers both pipelines and shows st.progress() during computation.
+- [ ] Two equal-width columns render side by side, each containing 8 plots
+      in the specified order: CDF, binary-frac curve, logP, e, q, cos i, ω, phase.
+- [ ] All plots use white background (A&A style). No dark background on any chart.
+- [ ] CDF observed step trace color is `#2E2E2E`. Not any variant of white.
+- [ ] CDF simulated band and its median line share the same `legendgroup`;
+      toggling via the Plotly legend hides both traces simultaneously.
+- [ ] Mock Data column histograms use `#4A90D9`; Model Explorer histograms use `#E25A53`.
+- [ ] All axis title font sizes are ≥ 14 pt; tick labels ≥ 12 pt.
+- [ ] `grep -nE "'white'|'#FFFFFF'|'gold'|'#FFD700'|showgrid=True"` returns
+      zero hits in mock_inspector_app/inspector.py and mock_inspector_app/runner.py.
+- [ ] Summary stats dataframe appears below each column's histograms with
+      `hide_index=True`, six rows (one per parameter), three stat columns.
+- [ ] Every control has an `on_change` callback that calls sm.save([...]);
+      defaults are read from settings.json at startup.
+- [ ] Re-clicking "Run ▶" with unchanged controls skips recomputation and
+      displays results from session_state immediately (no progress bar shown).
+- [ ] st.caption appears immediately below every plot (all 8 per column).
+- [ ] Page uses `layout="wide"`.
+- [ ] ω histograms display x-axis range [0, 360] in degrees, not radians.
 
 ---
 
 ## Rationale
 
-Placing "Bin Sensitivity" at position 2 (after the two cadence simulation tabs) gives the user
-immediate access after running a grid. The primary workflow is: run grid in Cadence Dsilva ->
-switch to Bin Sensitivity -> load the just-completed .npz -> compare schemes. Placing it last
-would require scrolling past utility tabs.
+**Eight separate figures per column vs make_subplots.**
+The col=/row= scoping bug (diagnosed 2026-04-23, documented in plot_preferences.md)
+causes inconsistent axis styling when `update_xaxes`/`update_yaxes` is called
+with only `row=` or only `col=`. With 8 rows in a single subplot grid the risk
+of a style inconsistency escaping QA is high. Eight independent `st.plotly_chart`
+calls with `use_container_width=True` are immune to this bug and match the
+pattern used in existing pages.
 
-The three-section layout (controls, progress, results) matches the existing Cadence tabs pattern
-for visual consistency. All controls inline (no expanders) is a hard rule from user feedback.
-Four result plots in sub-tabs avoids CSS hacks and gives each plot full container width for
-legibility of fine-grained bin-edge annotations.
+**Equal [1,1] columns.**
+The two pipelines are being compared as equals. Asymmetric widths would imply
+one is the reference and the other is secondary, which is not the case here.
 
-Separating scorer and plot builders into their own files keeps bin_sensitivity.py under 400 lines
-and makes future changes surgical: a new scheme family means editing only bin_schemes.py and
-adding one row to the scorer loop, with zero risk of touching the plot or layout code.
+**Distinct histogram colors per column.**
+With 16 plots on screen simultaneously, the user's eye easily loses track of
+which column it is reading. Persistent color coding (blue-left / red-right)
+removes the need to re-read column headers for orientation.
+
+**ω in degrees (0–360), not radians.**
+Degrees are immediately readable by an astronomer. Radian values (0–2π) require
+mental conversion and offer no scientific advantage for a distribution check.
+
+**No sidebar.**
+This is a standalone, single-purpose comparison tool. There are no global
+settings to persist across pages. Putting controls in the main area keeps the
+full horizontal width available for the two-column comparison.
+
+**runner.py separate from inspector.py.**
+`inspector.py` is pure: arrays in, Plotly figures out. `runner.py` is the
+Monte-Carlo adapter. This split makes both unit-testable without a running
+Streamlit server, and makes it trivial to add a third pipeline in the future
+by adding one function to `runner.py` and one column to `app.py`.
