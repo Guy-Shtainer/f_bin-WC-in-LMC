@@ -116,7 +116,7 @@
     "pi_min": -3.0,
     "pi_max": 3.0,
     "pi_steps": 100,
-    "n_sets": 3000,
+    "n_sets": 500,
     "scan_sigma": true,
     "sigma_single": 5.0,
     "sigma_min": 1.0,
@@ -173,7 +173,7 @@
     "val_true_pi": 3.0,
     "val_true_sigma": 10.0,
     "adaptive_bins": false,
-    "val_seed": 46,
+    "val_seed": 81,
     "val_true_logPmax": 3.5,
     "logPmax_fixed": 3.5,
     "error_model_type_single": "Weibull",
@@ -248,7 +248,7 @@
   },
   "likelihood_bin_config": {
     "mode": "Manual",
-    "manual_edges": "0, 30,45,80,120"
+    "manual_edges": "0, 20,40,100,200"
   },
   "rv_modeling": {
     "simulation": {
@@ -325,11 +325,11 @@
     ]
   },
   "lk_explorer": {
-    "n_sets": 10000
+    "n_sets": 3000
   },
   "explorer_likelihood_bin_config": {
     "mode": "Manual",
     "threshold": 45.5,
-    "manual_edges": "0, 30,45,80,120"
+    "manual_edges": "0, 20,35,125,270"
   }
 }
