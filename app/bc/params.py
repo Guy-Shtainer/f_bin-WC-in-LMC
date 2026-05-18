@@ -439,17 +439,31 @@ def _render_cadence_sigma_scan(
         return [_single_sig]
 
 
+def _auto_drv_max(obs_drv, bin_width: float, headroom_bins: int = 5) -> float:
+    """Round observed max up to a multiple of bin_width, plus headroom bins.
+
+    Auto-derives the upper edge of the non-adaptive ΔRV bin grid from the
+    observed ΔRVs, so the Mock Observation CDF always reaches the full
+    data range. Mirrors how adaptive mode self-sizes.
+    """
+    if obs_drv is None or len(obs_drv) == 0:
+        return 500.0  # safe fallback when observations not yet loaded
+    _m = float(np.nanmax(obs_drv))
+    return float(np.ceil(_m / bin_width) * bin_width + headroom_bins * bin_width)
+
+
 def _render_cadence_adaptive_bins(
     p: str, sec: str, sm, gcfg: dict, settings: dict,
 ):
     """Render cadence-aware bin settings. Returns (use_adaptive, bin_edges, drv_bin_width, drv_max)."""
+    st.caption('Bins for CDF visualization only \u2014 likelihood score uses the separate "Likelihood bin mode" control above the Run button.')
     _use_adaptive = st.checkbox(
         'Adaptive bins (recommended)', value=bool(gcfg.get('adaptive_bins', True)),
         key=f'{p}_adaptive_bins',
         on_change=lambda: sm.save(
             [sec, 'adaptive_bins'],
             value=st.session_state[f'{p}_adaptive_bins']),
-        help='Use observed \u0394RV values as CDF evaluation points \u2014 eliminates bin-width parameter.')
+        help='Use observed \u0394RV values as CDF evaluation points \u2014 eliminates bin-width parameter. (Affects CDF visual only, not likelihood score.)')
     if _use_adaptive:
         from wr_bias_simulation import adaptive_bin_edges as _abe
         try:
@@ -465,23 +479,21 @@ def _render_cadence_adaptive_bins(
             st.caption('Observed \u0394RVs not loaded yet \u2014 will compute on run')
         return True, _cad_bin_edges, None, None
     else:
-        _bin_c1, _bin_c2 = st.columns(2)
-        drv_bin_width = _bin_c1.number_input(
+        drv_bin_width = st.number_input(
             '\u0394RV bin width (km/s)', 0.1, 50.0,
             float(gcfg.get('drv_bin_width', 5.0)), 0.1,
             key=f'{p}_drv_bin_width',
             on_change=lambda: sm.save(
                 [sec, 'drv_bin_width'],
                 value=st.session_state[f'{p}_drv_bin_width']))
-        drv_max = _bin_c2.number_input(
-            'Max \u0394RV (km/s)', 50.0, 1000.0,
-            float(gcfg.get('drv_max', 360.0)), 10.0,
-            key=f'{p}_drv_max',
-            on_change=lambda: sm.save(
-                [sec, 'drv_max'],
-                value=st.session_state[f'{p}_drv_max']))
+        try:
+            _sh = settings_hash(settings)
+            _obs_drv, _ = cached_load_observed_delta_rvs(_sh)
+        except Exception:
+            _obs_drv = None
+        drv_max = _auto_drv_max(_obs_drv, drv_bin_width)
         _n_bins = int(drv_max / drv_bin_width)
-        st.caption(f'{_n_bins} bins')
+        st.caption(f'{_n_bins} bins \u00b7 max \u0394RV = {drv_max:.0f} km/s (auto)')
         return False, None, drv_bin_width, drv_max
 
 
@@ -547,6 +559,94 @@ def _render_likelihood_bin_config(p: str, prefix: str = '', sm=None) -> np.ndarr
     return _lk_bin_edges
 
 
+def _render_explorer_lk_bin_config(
+    p: str, prefix: str, sm, default_bin_edges: np.ndarray,
+) -> np.ndarray:
+    """Explorer-only likelihood-bin editor.
+
+    Mirrors `_render_likelihood_bin_config` (Threshold-based + Manual modes)
+    but writes/reads under the SEPARATE settings namespace
+    ``'explorer_likelihood_bin_config'`` so the simulation's saved
+    ``'likelihood_bin_config'`` is NEVER touched.
+
+    On first render (no Explorer-specific saved config), Manual-mode default
+    text is seeded from ``default_bin_edges`` (drop trailing ``inf``, comma-
+    joined).  Always visible — no expander.
+    """
+    from wr_bias_simulation import dsilva_likelihood_bins
+
+    # Seed manual default text from the simulation's bin edges.
+    _seed_edges = np.asarray(default_bin_edges, dtype=float)
+    _seed_finite = _seed_edges[np.isfinite(_seed_edges)]
+    if _seed_finite.size >= 2:
+        _seed_text = ', '.join(f'{e:g}' for e in _seed_finite)
+    else:
+        _seed_text = '0, 45.5, 250, 650'
+
+    # Pre-populate session_state from saved settings (Explorer namespace).
+    if sm is not None:
+        _lk_cfg = sm.load().get('explorer_likelihood_bin_config', {})
+        _sk = f'{p}{prefix}_explorer_lk_bin_mode'
+        if _sk not in st.session_state and 'mode' in _lk_cfg:
+            st.session_state[_sk] = _lk_cfg['mode']
+        _tk = f'{p}{prefix}_explorer_lk_threshold'
+        if _tk not in st.session_state and 'threshold' in _lk_cfg:
+            st.session_state[_tk] = float(_lk_cfg['threshold'])
+        _mk = f'{p}{prefix}_explorer_manual_edges'
+        if _mk not in st.session_state:
+            if 'manual_edges' in _lk_cfg:
+                st.session_state[_mk] = str(_lk_cfg['manual_edges'])
+            else:
+                st.session_state[_mk] = _seed_text
+
+    def _lk_save(key, val):
+        if sm is not None:
+            sm.save(['explorer_likelihood_bin_config', key], value=val)
+
+    _mode = st.radio(
+        'Likelihood bin mode', ['Threshold-based', 'Manual'],
+        horizontal=True, key=f'{p}{prefix}_explorer_lk_bin_mode',
+        on_change=lambda: _lk_save(
+            'mode',
+            st.session_state[f'{p}{prefix}_explorer_lk_bin_mode']))
+
+    if _mode == 'Threshold-based':
+        _lk_threshold = st.number_input(
+            'Detection threshold (km/s)', value=45.5,
+            min_value=1.0, max_value=200.0, step=0.5,
+            key=f'{p}{prefix}_explorer_lk_threshold',
+            on_change=lambda: _lk_save(
+                'threshold',
+                st.session_state[f'{p}{prefix}_explorer_lk_threshold']))
+        _lk_bin_edges = dsilva_likelihood_bins(_lk_threshold)
+    else:
+        _default = st.session_state.get(
+            f'{p}{prefix}_explorer_manual_edges', _seed_text)
+        _edges_text = st.text_input(
+            'Bin edges (comma-separated, ∞ added automatically)',
+            value=_default,
+            key=f'{p}{prefix}_explorer_lk_edges_text',
+            on_change=lambda: _lk_save(
+                'manual_edges',
+                st.session_state[
+                    f'{p}{prefix}_explorer_lk_edges_text']))
+        try:
+            _parsed = sorted([float(x.strip()) for x in _edges_text.split(',')
+                              if x.strip()])
+            if len(_parsed) < 2:
+                st.error('Need at least 2 bin edges.')
+                _parsed = [0, 45.5, 250, 650]
+            _lk_bin_edges = np.array(_parsed + [np.inf])
+            st.session_state[f'{p}{prefix}_explorer_manual_edges'] = _edges_text
+        except ValueError:
+            st.error('Invalid format. Use comma-separated numbers.')
+            _lk_bin_edges = dsilva_likelihood_bins(45.5)
+
+    _labels = [f'{e:.0f}' if np.isfinite(e) else '∞' for e in _lk_bin_edges]
+    st.caption(f'Likelihood bins (Explorer): [{", ".join(_labels)}]')
+    return _lk_bin_edges
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # logP_max scan expander (shared by cadence tabs)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -557,6 +657,11 @@ def _render_logPmax_scan(p: str, sec: str, sm, default_logP_max: float = 5.0,
 
     Returns an ndarray of logPmax values to scan (length 1 if scan is off).
     """
+    # Seed the fixed-value default if not yet in session_state.
+    if f'{p}_logPmax_fixed' not in st.session_state:
+        st.session_state[f'{p}_logPmax_fixed'] = float(
+            st.session_state.get(f'{p}_logP_max', default_logP_max))
+
     _scan_lp = st.toggle(
         'Scan logP_max over a range',
         key=f'{p}_scan_logPmax',
@@ -590,5 +695,14 @@ def _render_logPmax_scan(p: str, sec: str, sm, default_logP_max: float = 5.0,
             float(_lp_min),
             max(float(_lp_min) + 0.1, float(_lp_max)),
             int(_lp_steps))
-    return np.array([float(
-        st.session_state.get(f'{p}_logP_max', default_logP_max))])
+    st.number_input(
+        'logP_max (fixed)', 0.5, 10.0,
+        float(st.session_state[f'{p}_logPmax_fixed']), 0.1,
+        key=f'{p}_logPmax_fixed',
+        on_change=lambda: sm.save(
+            [sec, 'logPmax_fixed'],
+            value=st.session_state[f'{p}_logPmax_fixed']))
+    st.caption(
+        'Overrides the orbital logP_max when the scan is off; this is the '
+        'value used for simulating binary stars.')
+    return np.array([float(st.session_state[f'{p}_logPmax_fixed'])])

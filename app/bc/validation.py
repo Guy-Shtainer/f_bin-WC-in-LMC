@@ -30,6 +30,7 @@ from wr_bias_simulation import (
     _single_grid_task_cadence_aware,
     _init_worker,
     DEFAULT_DRV_BIN_EDGES,
+    _draw_measurement_noise,
 )
 
 
@@ -124,6 +125,373 @@ def generate_mock_observations(
     if all_drv.ndim == 2:
         return all_drv[0]
     return all_drv.ravel()[:len(cadence_library)]
+
+
+def _sample_delta_rv_mock(
+    f_bin: float,
+    pi: float,
+    sigma_single: float,
+    logP_max: float,
+    cadence_library: list,
+    sigma_meas: float,
+    bin_cfg: BinaryParameterConfig,
+    period_model: str,
+    seed: int,
+    *,
+    error_model: str = 'fixed',
+    error_params: tuple = (),
+    sigma_meas_binary: Optional[float] = None,
+    error_model_binary: Optional[str] = None,
+    error_params_binary: Optional[tuple] = None,
+    collect_detail: bool = False,
+):
+    """Core mock sampler — used by BOTH the mock generator and the Explorer's
+    validation-mode CDF overlay, so the two produce byte-identical ΔRV draws
+    when handed the same parameters and seed.
+
+    *** Semantic model (2026-04-23 revision) ***: this sampler produces
+    OBSERVATIONAL RVs, exactly like the Dsilva/Langer cadence grids:
+
+        v_obs = v_signal + noise_from_chosen_distribution
+
+    ``v_signal`` is the clean physics RV (Kepler orbit for binaries,
+    ``N(0, σ_single)`` for singles — the intrinsic stellar-variability
+    scatter).  The measurement noise is drawn via
+    :func:`wr_bias_simulation._draw_measurement_noise` — the SAME helper
+    used by the grid — so the chosen error distribution shapes the mock's
+    ΔRV CDF in the same way it shapes the grid simulation CDF.
+
+    The per-epoch error array stored alongside each mock star's RVs is the
+    distribution's MEAN (``sigma_meas``) broadcast to shape ``(n_ep,)`` —
+    NOT the noise realisation.  That mean is what gets saved into
+    ``mock_stars.npz`` via ``validation_io._build_mock_stars_payload`` and
+    consumed by downstream classification significance tests (ΔRV − 4σ > 0).
+
+    RNG draw order MUST stay identical to ``generate_mock_observations_detail``
+    because that function delegates here with ``collect_detail=True``.  The
+    Explorer's validation-mode path (``_me_cdf_band`` / ``_me_cdf_band_langer``)
+    calls this same function with the same args + seed, so byte-identical
+    invariant with the mock holds automatically (checked by
+    ``scripts/test_explorer_mock_equal.py``).
+
+    Parameters
+    ----------
+    error_model : str
+        ``'fixed'`` or a distribution name from
+        ``wr_bias_simulation._ERR_DIST_MAP`` (case-insensitive, also accepts
+        the capitalised forms the selector UI returns, e.g. ``'Log-normal'``).
+    error_params : tuple
+        Scipy distribution parameters (ignored when ``error_model='fixed'``).
+
+    Returns:
+        drv  : (N,) float ΔRV per star [km/s] — peak-to-peak of NOISY RVs.
+        When collect_detail=True, also returns:
+            is_binary     : (N,) bool
+            rvs_per_star  : list[np.ndarray] — noisy per-epoch RVs
+            errs_per_star : list[np.ndarray] — per-epoch σ (broadcast
+                            ``sigma_meas``), same shape as rvs_per_star[k].
+    """
+    from wr_bias_simulation import (
+        sample_logP, sample_eccentricity, sample_primary_mass,
+        sample_mass_ratio, sample_inclination, compute_K1, solve_kepler,
+    )
+
+    # Binary-side error model overrides (None → fall back to single's value,
+    # preserving byte-identical RNG draws for callers that pass a single
+    # error model — e.g. the Explorer's validation-mode CDF overlay).
+    if sigma_meas_binary is None:
+        sigma_meas_binary = sigma_meas
+    if error_model_binary is None:
+        error_model_binary = error_model
+    if error_params_binary is None:
+        error_params_binary = error_params
+
+    rng = np.random.default_rng(seed)
+
+    mock_cfg = BinaryParameterConfig(**vars(bin_cfg))
+    mock_cfg.logP_max = float(logP_max)
+    mock_cfg.period_model = period_model
+
+    v_sys = 0.0
+    cadences = [np.asarray(c, dtype=float) for c in cadence_library]
+    N = len(cadences)
+
+    # Deterministic binary count (user feedback 2026-04-29): the realised
+    # count must match the input f_bin exactly, not fluctuate around it.
+    # n_bin = round(N · f_bin) — only WHICH stars are binary is random.
+    n_bin = int(round(N * float(f_bin)))
+    n_bin = max(0, min(N, n_bin))
+    is_binary = np.zeros(N, dtype=bool)
+    if n_bin > 0:
+        _bin_idx = rng.choice(N, size=n_bin, replace=False)
+        is_binary[_bin_idx] = True
+    idx_bin = np.where(is_binary)[0]
+    idx_single = np.where(~is_binary)[0]
+
+    rvs_per_star: list = [np.array([], dtype=float)] * N if collect_detail \
+        else None
+    errs_per_star: list = [np.array([], dtype=float)] * N if collect_detail \
+        else None
+    delta_all = np.zeros(N, dtype=float)
+
+    # Singles — intrinsic scatter N(0, σ_single) + measurement noise drawn
+    # from the chosen distribution (Dsilva-style observational model).
+    for k in idx_single:
+        t_ep = cadences[k]
+        n_ep = int(t_ep.size)
+        if n_ep <= 0:
+            continue
+        v = rng.normal(loc=v_sys, scale=sigma_single, size=n_ep)
+        # Add per-epoch measurement noise from the chosen distribution —
+        # SAME helper the Dsilva/Langer grids use, so the mock CDF responds
+        # to sigma_meas / distribution choice identically to the grid.
+        noise = _draw_measurement_noise(
+            error_model, error_params, sigma_meas, size=n_ep, rng=rng)
+        v = v + noise
+        if collect_detail:
+            rvs_per_star[k] = v
+            errs_per_star[k] = np.full(n_ep, sigma_meas, dtype=float)
+        delta_all[k] = float(v.max() - v.min()) if n_ep >= 2 else 0.0
+
+    # Binaries — Kepler physics + measurement noise from chosen distribution.
+    if n_bin > 0:
+        logP = sample_logP(size=n_bin, rng=rng, pi=pi, cfg=mock_cfg)
+        if isinstance(logP, tuple):
+            logP = logP[0]
+        P_days = 10.0 ** logP
+        e_arr = sample_eccentricity(mock_cfg, n_bin, rng)
+        M1 = sample_primary_mass(mock_cfg, n_bin, rng)
+        q = sample_mass_ratio(mock_cfg, n_bin, rng)
+        M2 = M1 / q if mock_cfg.q_flipped else M1 * q
+        i_inc = sample_inclination(n_bin, rng)
+        omega = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
+        T0 = rng.uniform(0.0, 2.0 * np.pi, size=n_bin)
+        K1 = compute_K1(P_days=P_days, e=e_arr, M1=M1, M2=M2, i_rad=i_inc)
+
+        for j, k in enumerate(idx_bin):
+            t_ep = cadences[k]
+            n_ep = int(t_ep.size)
+            if n_ep <= 0:
+                continue
+            M_mean = T0[j] + 2.0 * np.pi * (t_ep / P_days[j])
+            E = solve_kepler(M_mean, e_arr[j])
+            sqrt_fac = np.sqrt((1.0 + e_arr[j]) / (1.0 - e_arr[j]))
+            nu = 2.0 * np.arctan2(sqrt_fac * np.tan(E / 2.0), 1.0)
+            v = v_sys + K1[j] * (
+                np.cos(omega[j] + nu) + e_arr[j] * np.cos(omega[j])
+            )
+            # Add per-epoch measurement noise — binary-side distribution.
+            noise = _draw_measurement_noise(
+                error_model_binary, error_params_binary, sigma_meas_binary,
+                size=n_ep, rng=rng)
+            v = v + noise
+            if collect_detail:
+                rvs_per_star[k] = v
+                errs_per_star[k] = np.full(n_ep, sigma_meas_binary, dtype=float)
+            delta_all[k] = float(v.max() - v.min()) if n_ep >= 2 else 0.0
+
+    if collect_detail:
+        return delta_all, is_binary, rvs_per_star, errs_per_star
+    return delta_all
+
+
+def generate_mock_observations_detail(
+    true_fbin: float,
+    true_pi: float,
+    true_sigma: float,
+    true_logPmax: float,
+    cadence_library: list,
+    cadence_weights: Optional[np.ndarray],
+    sigma_meas: float,
+    bin_cfg: BinaryParameterConfig,
+    period_model: str,
+    seed: int = 42,
+    *,
+    error_model: str = 'fixed',
+    error_params: tuple = (),
+    sigma_meas_binary: Optional[float] = None,
+    error_model_binary: Optional[str] = None,
+    error_params_binary: Optional[tuple] = None,
+) -> dict:
+    """Cadence-aware mock generation returning per-star detail.
+
+    Produces one set (n_sets=1) and exposes the ground-truth binarity
+    flag plus per-epoch (noisy) RVs AND per-epoch error σ for every mock
+    star, so the validation UI can show a labelled CDF / binary-fraction
+    plot and a star table, and classification significance tests can
+    consume the errors.
+
+    The RVs include measurement noise drawn from the chosen error
+    distribution — identical observational model to the Dsilva/Langer
+    cadence grids.  See docstring of :func:`_sample_delta_rv_mock`.
+
+    Parameters
+    ----------
+    error_model : str
+        Distribution type for the per-epoch measurement-noise draw.
+        ``'fixed'`` → ``N(0, sigma_meas)``.  Otherwise a scipy distribution
+        name (e.g. ``'Log-normal'``) consumed by
+        :func:`wr_bias_simulation._draw_measurement_noise`.
+    error_params : tuple
+        Scipy distribution parameters (ignored for ``'fixed'``).
+
+    Returns a dict with keys:
+      delta_rv       : (N,)  peak-to-peak ΔRV of noisy RVs [km/s]
+      is_binary      : (N,)  bool ground-truth binarity
+      rvs_per_star   : list of ndarray — per-epoch NOISY RV per star [km/s]
+      errs_per_star  : list of ndarray — per-epoch σ (broadcast
+                       ``sigma_meas``) per star [km/s], same shape as
+                       rvs_per_star[k].
+      n_epochs       : (N,)  int number of epochs per star
+      rv_min, rv_max : (N,)  min/max (noisy) RV per star [km/s]
+      seed           : int   random seed used
+
+    Note: cadence_weights is accepted for signature compatibility with
+    generate_mock_observations but is NOT used — the mock uses the full
+    cadence_library one-star-per-cadence by construction.
+    """
+    delta_all, is_binary, rvs_per_star, errs_per_star = _sample_delta_rv_mock(
+        f_bin=true_fbin,
+        pi=true_pi,
+        sigma_single=true_sigma,
+        logP_max=true_logPmax,
+        cadence_library=cadence_library,
+        sigma_meas=sigma_meas,
+        bin_cfg=bin_cfg,
+        period_model=period_model,
+        seed=int(seed),
+        error_model=error_model,
+        error_params=tuple(error_params),
+        sigma_meas_binary=sigma_meas_binary,
+        error_model_binary=error_model_binary,
+        error_params_binary=(tuple(error_params_binary)
+                             if error_params_binary is not None else None),
+        collect_detail=True,
+    )
+
+    n_epochs = np.array([r.size for r in rvs_per_star], dtype=int)
+    rv_min = np.array(
+        [float(r.min()) if r.size > 0 else np.nan for r in rvs_per_star])
+    rv_max = np.array(
+        [float(r.max()) if r.size > 0 else np.nan for r in rvs_per_star])
+
+    return {
+        'delta_rv': delta_all,
+        'is_binary': is_binary,
+        'rvs_per_star': rvs_per_star,
+        'errs_per_star': errs_per_star,
+        'n_epochs': n_epochs,
+        'rv_min': rv_min,
+        'rv_max': rv_max,
+        'seed': int(seed),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bootstrap uncertainty band for the mock preview
+# ─────────────────────────────────────────────────────────────────────────────
+
+def bootstrap_mock_cdf_band(
+    *,
+    f_bin: float,
+    pi: float,
+    sigma_single: float,
+    logP_max: float,
+    cadence_library: list,
+    sigma_meas: float,
+    bin_cfg: BinaryParameterConfig,
+    period_model: str,
+    error_model: str = 'fixed',
+    error_params: tuple = (),
+    n_boot: int = 50,
+    seed_base: int = 1000,
+    cdf_x_grid: Optional[np.ndarray] = None,
+    threshold_grid: Optional[np.ndarray] = None,
+) -> Dict[str, np.ndarray]:
+    """Bootstrap a 16/84 uncertainty band for the mock-preview CDF and
+    binary-fraction-vs-threshold curves.
+
+    Runs ``n_boot`` independent draws of :func:`_sample_delta_rv_mock` with
+    seeds ``seed_base + 1, seed_base + 2, …, seed_base + n_boot`` — same
+    physics parameters as the deterministic mock, only the seed varies.
+    The deterministic mock realisation itself is produced by the caller
+    (with the user-set seed) and is NOT recomputed here.
+
+    Returned percentiles per x grid:
+
+    - ``cdf_16``, ``cdf_84`` — only present when ``cdf_x_grid`` is provided.
+      Empirical CDF ``mean(drv <= x)`` evaluated at each x in the grid, then
+      16/84-th percentile across bootstraps.
+    - ``fbin_16``, ``fbin_84`` — only present when ``threshold_grid`` is
+      provided.  ``mean(drv > t)`` evaluated at each t, 16/84-th percentile.
+
+    Parameters mirror :func:`_sample_delta_rv_mock` so the bootstrap shares
+    the EXACT same sampler used by both the mock generator and the Explorer's
+    validation-mode CDF overlay (cross-figure consistency, see
+    ``render_lk_explorer._render_lk_cdf_sanity_check``).
+    """
+    cdf_lo = cdf_hi = None
+    fbin_lo = fbin_hi = None
+
+    if cdf_x_grid is None and threshold_grid is None:
+        return {}
+
+    cdf_xg = (np.asarray(cdf_x_grid, dtype=float)
+              if cdf_x_grid is not None else None)
+    th_g = (np.asarray(threshold_grid, dtype=float)
+            if threshold_grid is not None else None)
+
+    cdfs = []
+    fbins = []
+    for i in range(int(n_boot)):
+        try:
+            drv_b = _sample_delta_rv_mock(
+                f_bin=float(f_bin),
+                pi=float(pi),
+                sigma_single=float(sigma_single),
+                logP_max=float(logP_max),
+                cadence_library=cadence_library,
+                sigma_meas=float(sigma_meas),
+                bin_cfg=bin_cfg,
+                period_model=str(period_model),
+                seed=int(seed_base) + 1 + i,
+                error_model=str(error_model),
+                error_params=tuple(error_params),
+                collect_detail=False,
+            )
+        except Exception:
+            continue
+        drv_b = np.asarray(drv_b, dtype=float)
+        if drv_b.size == 0:
+            continue
+        if cdf_xg is not None:
+            # Empirical CDF at each x grid point: mean(drv <= x).
+            # searchsorted on a sorted array gives the same answer in O(log N).
+            srt = np.sort(drv_b)
+            cdfs.append(
+                np.searchsorted(srt, cdf_xg, side='right') / float(srt.size)
+            )
+        if th_g is not None:
+            # Survival fraction at each threshold: mean(drv > t).
+            srt = np.sort(drv_b) if cdf_xg is None else srt
+            n = float(srt.size)
+            # mean(drv > t) = 1 - mean(drv <= t)
+            fbins.append(
+                1.0 - np.searchsorted(srt, th_g, side='right') / n
+            )
+
+    out: Dict[str, np.ndarray] = {}
+    if cdf_xg is not None and len(cdfs) >= 2:
+        arr = np.asarray(cdfs)
+        out['cdf_16'] = np.percentile(arr, 16, axis=0)
+        out['cdf_84'] = np.percentile(arr, 84, axis=0)
+    if th_g is not None and len(fbins) >= 2:
+        arr = np.asarray(fbins)
+        out['fbin_16'] = np.percentile(arr, 16, axis=0)
+        out['fbin_84'] = np.percentile(arr, 84, axis=0)
+    out['n_boot_used'] = np.array(
+        [len(cdfs) if cdf_xg is not None else len(fbins)], dtype=int)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────

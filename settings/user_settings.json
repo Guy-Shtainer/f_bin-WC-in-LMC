@@ -116,16 +116,16 @@
     "pi_min": -3.0,
     "pi_max": 3.0,
     "pi_steps": 100,
-    "n_sets": 1000,
-    "scan_sigma": false,
+    "n_sets": 3000,
+    "scan_sigma": true,
     "sigma_single": 5.0,
     "sigma_min": 1.0,
-    "sigma_max": 7.0,
-    "sigma_steps": 7,
+    "sigma_max": 11.0,
+    "sigma_steps": 11,
     "sigma_meas": 1.622,
     "orbital": {
       "logP_min": 0.15,
-      "logP_max": 4.0,
+      "logP_max": 3.5,
       "e_model": "flat",
       "e_max": 0.9,
       "mass_primary_model": "fixed",
@@ -142,8 +142,8 @@
       "langer_q_mu": 0.7,
       "langer_q_sigma": 0.2
     },
-    "drv_bin_width": 30.0,
-    "drv_max": 370.0,
+    "drv_bin_width": 1.0,
+    "drv_max": 460.0,
     "error_model_type": "Weibull",
     "errp_2": 0.8982,
     "errp_1": 0.7935,
@@ -155,10 +155,31 @@
     "errp_single_0": 1.2412,
     "errp_single_1": 0.7986,
     "errp_single_2": 0.7744,
-    "scan_logPmax": true,
-    "logPmax_scan_steps": 15,
+    "scan_logPmax": false,
+    "logPmax_scan_steps": 25,
     "logPmax_scan_min": 4.0,
-    "logPmax_scan_max": 6.0
+    "logPmax_scan_max": 6.0,
+    "errp_val_0": 0.7957,
+    "errp_val_1": 0.9617,
+    "errp_val_2": 1.8592,
+    "error_model_type_val": "Weibull",
+    "errp_val_single_0": 1.2412,
+    "errp_val_single_1": 0.7986,
+    "errp_val_single_2": 0.7744,
+    "errp_val_binary_0": 0.7957,
+    "errp_val_binary_1": 0.9617,
+    "errp_val_binary_2": 1.8592,
+    "val_true_fbin": 0.7,
+    "val_true_pi": 3.0,
+    "val_true_sigma": 10.0,
+    "adaptive_bins": false,
+    "val_seed": 46,
+    "val_true_logPmax": 3.5,
+    "logPmax_fixed": 3.5,
+    "error_model_type_single": "Weibull",
+    "error_model_type_binary": "Weibull",
+    "error_model_type_val_single": "Weibull",
+    "error_model_type_val_binary": "Weibull"
   },
   "grid_cadence_langer": {
     "fbin_min": 0.01,
@@ -227,7 +248,7 @@
   },
   "likelihood_bin_config": {
     "mode": "Manual",
-    "manual_edges": "0,6, 10, 45.5 ,100 ,150"
+    "manual_edges": "0, 30,45,80,120"
   },
   "rv_modeling": {
     "simulation": {
@@ -302,5 +323,13 @@
         "locked": true
       }
     ]
+  },
+  "lk_explorer": {
+    "n_sets": 10000
+  },
+  "explorer_likelihood_bin_config": {
+    "mode": "Manual",
+    "threshold": 45.5,
+    "manual_edges": "0, 30,45,80,120"
   }
 }

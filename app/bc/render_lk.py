@@ -546,7 +546,13 @@ def _render_lk_expander(
         _osc = result.get('obs_delta_rv')
         if _osc is not None:
             _bv = _info['best_vals']
-            _pm = 'dsilva' if ndim_mode == 'cadence_dsilva' else 'langer'
+            # Bug 1e fix (2026-04-28): pass the actual period_model
+            # string ('powerlaw' / 'langer2020'), NOT the runner-mode tag
+            # ('dsilva' / 'langer').  sample_logP raises ValueError on
+            # the latter.  See render_validation.py:57 for the canonical
+            # translation.
+            _pm = ('powerlaw' if ndim_mode == 'cadence_dsilva'
+                   else 'langer2020')
             try:
                 from bc.render_lk_explorer import _render_lk_cdf_sanity_check
                 _render_lk_cdf_sanity_check(

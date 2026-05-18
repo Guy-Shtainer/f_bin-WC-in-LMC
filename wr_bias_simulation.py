@@ -711,8 +711,12 @@ def simulate_delta_rv_sample(
     """
     N = sim_cfg.n_stars
 
-    # Decide which systems are binaries
-    is_binary = rng.random(N) < f_bin
+    # Decide which systems are binaries — DETERMINISTIC: exactly
+    # round(N * f_bin) binaries per call.  See feedback_mock_deterministic.md.
+    n_bin_target = int(round(N * float(f_bin)))
+    perm = rng.permutation(N)
+    is_binary = np.zeros(N, dtype=bool)
+    is_binary[perm[:n_bin_target]] = True
     idx_bin = np.where(is_binary)[0]
     idx_single = np.where(~is_binary)[0]
     n_bin = idx_bin.size
@@ -926,8 +930,16 @@ def simulate_delta_rv_cadence_aware(
     n_stars_per_set = len(cadences)
     N_total = n_sets * n_stars_per_set
 
-    # Binary / single decision for every system
-    is_binary = rng.random(N_total) < f_bin
+    # Binary / single decision: PER-SET DETERMINISTIC — each set of
+    # n_stars_per_set has exactly round(n_stars_per_set * f_bin) binaries.
+    # The rng still drives WHICH stars in each set are flagged as binaries,
+    # so seed reproducibility is preserved across runs.
+    n_bin_per_set = int(round(n_stars_per_set * float(f_bin)))
+    is_binary_2d = np.zeros((n_sets, n_stars_per_set), dtype=bool)
+    for _s in range(n_sets):
+        _perm = rng.permutation(n_stars_per_set)
+        is_binary_2d[_s, _perm[:n_bin_per_set]] = True
+    is_binary = is_binary_2d.ravel()
     idx_bin = np.where(is_binary)[0]
     idx_single = np.where(~is_binary)[0]
     n_bin = idx_bin.size
@@ -1009,12 +1021,26 @@ def simulate_delta_rv_cadence_aware(
     hi_cdf = np.percentile(all_cdfs, 84, axis=0)
     cdf_var = np.var(all_cdfs, axis=0)
 
+    # Per-rank summaries — sort each row's N ΔRVs ascending, carry binary
+    # flag along.  Used by the CDF panel's per-rank gradient markers.
+    order = np.argsort(all_drv, axis=1)                              # (n_sets, n_stars)
+    sorted_drv   = np.take_along_axis(all_drv,      order, axis=1)
+    sorted_isbin = np.take_along_axis(is_binary_2d, order, axis=1)
+    per_rank_median_drv      = np.median(sorted_drv, axis=0)              # (n_stars,)
+    per_rank_mean_drv        = np.mean(sorted_drv, axis=0)                # (n_stars,)
+    per_rank_binary_fraction = np.mean(sorted_isbin.astype(float), axis=0) # (n_stars,)
+    mean_cdf = np.mean(all_cdfs, axis=0)                                  # (n_bins,)
+
     return {
         'median_cdf': median_cdf,
         'lo_cdf': lo_cdf,
         'hi_cdf': hi_cdf,
         'cdf_var': cdf_var,
         'all_delta_rv': all_drv,
+        'mean_cdf': mean_cdf,
+        'per_rank_median_drv': per_rank_median_drv,
+        'per_rank_mean_drv': per_rank_mean_drv,
+        'per_rank_binary_fraction': per_rank_binary_fraction,
     }
 
 
@@ -1584,7 +1610,11 @@ def _single_grid_task_cadence_aware(args):
 
     Returns
     -------
-    (f_bin, pi, sigma_single, logL, median_cdf, lo_cdf, hi_cdf)
+    11-tuple:
+        (f_bin, pi, sigma_single, logL,
+         median_cdf, lo_cdf, hi_cdf,
+         mean_cdf,
+         per_rank_median_drv, per_rank_mean_drv, per_rank_binary_fraction)
     """
     f_bin, pi, sigma_single, bin_cfg, period_model, seed, n_sets = args
     g = _WORKER_GLOBALS
@@ -1626,7 +1656,11 @@ def _single_grid_task_cadence_aware(args):
         g['obs_delta_rv'], result['all_delta_rv'].ravel(), _lbe)
 
     return (f_bin, pi, sigma_single, logL,
-            result['median_cdf'], result['lo_cdf'], result['hi_cdf'])
+            result['median_cdf'], result['lo_cdf'], result['hi_cdf'],
+            result['mean_cdf'],
+            result['per_rank_median_drv'],
+            result['per_rank_mean_drv'],
+            result['per_rank_binary_fraction'])
 
 
 def run_bias_grid_cadence_aware(
@@ -1709,6 +1743,10 @@ def run_bias_grid_cadence_aware(
     best_median_cdf = None
     best_lo_cdf = None
     best_hi_cdf = None
+    best_mean_cdf = None
+    best_per_rank_median_drv = None
+    best_per_rank_mean_drv = None
+    best_per_rank_binary_fraction = None
 
     n_sig = sigma_grid.size
     n_fb  = fbin_grid.size
@@ -1717,8 +1755,11 @@ def run_bias_grid_cadence_aware(
 
     def _process_result(res_tuple, completed):
         nonlocal best_logL, best_median_cdf, best_lo_cdf, best_hi_cdf
+        nonlocal best_mean_cdf, best_per_rank_median_drv
+        nonlocal best_per_rank_mean_drv, best_per_rank_binary_fraction
         (fb, pi_val, sigma, _logL,
-         med_cdf, lo_cdf, hi_cdf) = res_tuple
+         med_cdf, lo_cdf, hi_cdf,
+         mean_cdf, prm_drv, prmean_drv, prbf) = res_tuple
         i_sig = np.searchsorted(sigma_grid, sigma)
         i_fb  = np.searchsorted(fbin_grid, fb)
         i_pi  = np.searchsorted(pi_grid, pi_val)
@@ -1729,6 +1770,10 @@ def run_bias_grid_cadence_aware(
             best_median_cdf = med_cdf
             best_lo_cdf = lo_cdf
             best_hi_cdf = hi_cdf
+            best_mean_cdf = mean_cdf
+            best_per_rank_median_drv = prm_drv
+            best_per_rank_mean_drv = prmean_drv
+            best_per_rank_binary_fraction = prbf
         if callback is not None:
             callback(completed, n_tasks, res_tuple)
 
@@ -1761,6 +1806,10 @@ def run_bias_grid_cadence_aware(
         "best_median_cdf": best_median_cdf,
         "best_lo_cdf":     best_lo_cdf,
         "best_hi_cdf":     best_hi_cdf,
+        "best_mean_cdf":   best_mean_cdf,
+        "best_per_rank_median_drv":      best_per_rank_median_drv,
+        "best_per_rank_mean_drv":        best_per_rank_mean_drv,
+        "best_per_rank_binary_fraction": best_per_rank_binary_fraction,
         "n_sets":          n_sets,
     }
 

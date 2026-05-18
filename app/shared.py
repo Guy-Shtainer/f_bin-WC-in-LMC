@@ -499,14 +499,20 @@ def make_heatmap_fig(
             colorscale='RdBu_r',
             zmin=z_min, zmax=z_max,
             zsmooth='best',
-            colorbar=dict(title=colorbar_title, thickness=14, len=0.9),
+            colorbar=dict(
+                title=dict(text=colorbar_title,
+                           font=dict(color='#000000',
+                                     family='Times New Roman, serif')),
+                tickfont=dict(color='#000000',
+                              family='Times New Roman, serif'),
+                thickness=14, len=0.9,
+            ),
             hovertemplate=f'{x_name}=%{{x:.3f}}<br>{y_name}=%{{y:.4f}}<br>' + colorbar_title +
                           '=%{z:.4f}<extra></extra>',
         ),
     ]
 
     if not live:
-        pal = get_palette()
         traces.append(go.Contour(
             z=ks_p_2d, x=x_vals, y=fbin_vals,
             contours=dict(
@@ -522,12 +528,15 @@ def make_heatmap_fig(
         traces.append(go.Scatter(
             x=[best_x], y=[best_fbin],
             mode='markers+text',
-            marker=dict(symbol='star', size=18, color='gold',
-                        line=dict(color=pal['plot_bg'], width=1)),
+            # User authorised 2026-04-28: A&A theme override —
+            # 'gold' is too pale on white; #DAA520 (goldenrod) passes WCAG.
+            marker=dict(symbol='star', size=18, color='#DAA520',
+                        line=dict(color='#000000', width=1)),
             text=[best_label_fmt.format(fbin=best_fbin, x_name=x_name,
                                         y_name=y_name, x=best_x, p=best_pval)],
             textposition='middle right',
-            textfont=dict(color='#DAA520', size=11),
+            textfont=dict(color='#DAA520', size=11,
+                          family='Times New Roman, serif'),
             name='Best fit',
             showlegend=False,
         ))
@@ -540,13 +549,25 @@ def make_heatmap_fig(
         'height': height,
         'margin': dict(l=60, r=20, t=50, b=50),
         'legend': dict(x=0.01, y=0.99, xanchor='left', yanchor='top',
-                       bgcolor='rgba(0,0,0,0.5)', borderwidth=0),
+                       bgcolor='rgba(255,255,255,0.85)', borderwidth=0,
+                       font=dict(color='#000000',
+                                 family='Times New Roman, serif')),
     }
     if width is not None:
         layout_kw['width'] = width
 
     fig = go.Figure(traces)
     fig.update_layout(**layout_kw)
+    # User authorised 2026-04-28: A&A theme override applied inside WORKING block
+    # — white bg, black serif text, mirrored axes, no gridlines.  Reusing the
+    # canonical _AA_OVERRIDES from render_validation so all heatmaps match.
+    try:
+        from bc.render_validation import _AA_OVERRIDES
+        fig.update_layout(**_AA_OVERRIDES)
+        fig.update_xaxes(**_AA_OVERRIDES['xaxis'])
+        fig.update_yaxes(**_AA_OVERRIDES['yaxis'])
+    except Exception:
+        pass
     return fig
 
 

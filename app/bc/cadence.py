@@ -1,6 +1,7 @@
 """bc.cadence — Cadence-aware simulation tabs (Dsilva + Langer variants)."""
 from __future__ import annotations
 
+import dataclasses
 import datetime as _dt
 import os
 import sys
@@ -1012,9 +1013,18 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
         else:
             _cad_bin_edges = DEFAULT_DRV_BIN_EDGES
     else:
+        from bc.params import _auto_drv_max
         _drv_bin_width = float(
             st.session_state.get(f'{p}_drv_bin_width', 5.0))
-        _drv_max = float(st.session_state.get(f'{p}_drv_max', 360.0))
+        if obs_override is not None:
+            _obs_drv_bins = obs_override
+        else:
+            try:
+                _sh_bins = settings_hash(settings)
+                _obs_drv_bins, _ = cached_load_observed_delta_rvs(_sh_bins)
+            except Exception:
+                _obs_drv_bins = None
+        _drv_max = _auto_drv_max(_obs_drv_bins, _drv_bin_width)
         _cad_bin_edges = np.arange(0.0, _drv_max, _drv_bin_width)
 
     # ── Load saved results ────────────────────────────────────────────────
@@ -1221,6 +1231,19 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
             },
         }
 
+        # ── Validation-lane injection (added 2026-04-23) ──
+        # render_validation.py stashes per-prefix validation context in
+        # session_state before delegating here so cadence-run params
+        # get routed to mock_results/ instead of results/. No-op for
+        # non-validation runs. See app/bc/validation_io.py.
+        if st.session_state.get(f'{p}_val_save_backend') == 'mock_results':
+            params['save_backend'] = 'mock_results'
+            params['is_validation'] = True
+            params['validation_truth'] = st.session_state.get(
+                f'{p}_val_truth_dict')
+            params['validation_mock_detail'] = st.session_state.get(
+                f'{p}_val_mock_detail')
+
         # ── WORKING — do not change this code · cancel-save-resume ──
         # Check for partial resume
         _cad_resume_path = st.session_state.pop(
@@ -1389,7 +1412,8 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_cadence_dsilva_tab(p: str, settings: dict, sm,
-                               obs_override: 'np.ndarray | None' = None) -> None:
+                               obs_override: 'np.ndarray | None' = None,
+                               n_sets_override: 'int | None' = None) -> None:
     """Render Cadence-Aware simulation tab (Dsilva / power-law)."""
     _is_dsilva = True
     _period_model = 'powerlaw'
@@ -1430,6 +1454,8 @@ def _render_cadence_dsilva_tab(p: str, settings: dict, sm,
         f'{p}_drv_max':       float(gcfg.get('drv_max', 360.0)),
         f'{p}_adaptive_bins': bool(gcfg.get('adaptive_bins', True)),
     }
+    if n_sets_override is not None and f'{p}_n_sets' not in st.session_state:
+        _defaults[f'{p}_n_sets'] = int(n_sets_override)
     for _k, _v in _defaults.items():
         if _k not in st.session_state:
             st.session_state[_k] = _v
@@ -1509,6 +1535,12 @@ def _render_cadence_dsilva_tab(p: str, settings: dict, sm,
             _cd_logPmax_vals = _render_logPmax_scan(
                 p, 'grid_cadence_dsilva', sm, default_logP_max=5.0)
 
+        # Apply fixed-value (or first scan value) override to bin_cfg so the
+        # logP_max actually used for simulating binary stars matches the
+        # value typed in the scan expander when the scan is OFF.
+        _bin_cfg = dataclasses.replace(
+            _bin_cfg, logP_max=float(_cd_logPmax_vals[0]))
+
         _cadence_run_and_results(
             p, _is_dsilva, _period_model,
             fb_min, fb_max, fb_steps,
@@ -1527,7 +1559,8 @@ def _render_cadence_dsilva_tab(p: str, settings: dict, sm,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_cadence_langer_tab(p: str, settings: dict, sm,
-                               obs_override: 'np.ndarray | None' = None) -> None:
+                               obs_override: 'np.ndarray | None' = None,
+                               n_sets_override: 'int | None' = None) -> None:
     """Render Cadence-Aware simulation tab (Langer 2020)."""
     _is_dsilva = False
     _period_model = 'langer2020'
@@ -1579,6 +1612,8 @@ def _render_cadence_langer_tab(p: str, settings: dict, sm,
         f'{p}_drv_max':       float(lg_cfg.get('drv_max', 360.0)),
         f'{p}_adaptive_bins': bool(lg_cfg.get('adaptive_bins', True)),
     }
+    if n_sets_override is not None and f'{p}_n_sets' not in st.session_state:
+        _defaults[f'{p}_n_sets'] = int(n_sets_override)
     for _k, _v in _defaults.items():
         if _k not in st.session_state:
             st.session_state[_k] = _v
@@ -1660,6 +1695,12 @@ def _render_cadence_langer_tab(p: str, settings: dict, sm,
                 '\U0001f39a\ufe0f logP_max scan', expanded=False):
             _cl_logPmax_vals = _render_logPmax_scan(
                 p, 'grid_cadence_langer', sm, default_logP_max=3.5)
+
+        # Apply fixed-value (or first scan value) override to bin_cfg so the
+        # logP_max actually used for simulating binary stars matches the
+        # value typed in the scan expander when the scan is OFF.
+        _bin_cfg = dataclasses.replace(
+            _bin_cfg, logP_max=float(_cl_logPmax_vals[0]))
 
         pi_min, pi_max, pi_steps = 0.0, 0.0, 1
         _cadence_run_and_results(

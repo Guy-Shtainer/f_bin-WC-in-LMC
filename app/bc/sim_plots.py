@@ -113,6 +113,14 @@ def render_period_distribution(p, gap_sim, bin_detected_mask, bin_missed_mask,
                 'height': 400, 'margin': dict(l=60, r=20, t=50, b=50),
                 'legend': dict(x=0.60, y=0.95),
             })
+            # A&A override: white bg + serif.
+            try:
+                from bc.render_validation import _AA_OVERRIDES
+                fig.update_layout(**_AA_OVERRIDES)
+                fig.update_xaxes(**_AA_OVERRIDES['xaxis'])
+                fig.update_yaxes(**_AA_OVERRIDES['yaxis'])
+            except Exception:
+                pass
             st.plotly_chart(fig, use_container_width=True, key=f'{p}{key_sfx}')
             st.caption(cap)
     else:
@@ -133,6 +141,14 @@ def render_period_distribution(p, gap_sim, bin_detected_mask, bin_missed_mask,
             'height': 400, 'margin': dict(l=60, r=20, t=50, b=50),
             'legend': dict(x=0.65, y=0.95),
         })
+        # A&A override: white bg + serif.
+        try:
+            from bc.render_validation import _AA_OVERRIDES
+            fig_logP.update_layout(**_AA_OVERRIDES)
+            fig_logP.update_xaxes(**_AA_OVERRIDES['xaxis'])
+            fig_logP.update_yaxes(**_AA_OVERRIDES['yaxis'])
+        except Exception:
+            pass
         st.plotly_chart(fig_logP, use_container_width=True, key=f'{p}_logP_hist')
         st.caption(
             'Period distribution of simulated binaries at the best-fit model. '
@@ -155,7 +171,11 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
     st.markdown('### Simulated Binary Fraction vs Threshold')
 
     n_sim = len(gap_drv)
-    thresh_arr = np.linspace(0, float(np.max(gap_drv) * 1.05), 200)
+    # X-axis max: full data range so the home button zooms all the way out.
+    # Include obs_delta_rv so the observed step curve never clips.
+    _obs_max = float(np.max(obs_delta_rv)) if (obs_delta_rv is not None and len(obs_delta_rv) > 0) else 0.0
+    x_max = max(float(np.max(gap_drv)) * 1.05, _obs_max * 1.15)
+    thresh_arr = np.linspace(0, x_max, 200)
     # Significance mask: ΔRV - nsigma * σ_p2p > 0
     if sigma_p2p is not None:
         sig_mask = (gap_drv - nsigma * sigma_p2p) > 0
@@ -201,7 +221,7 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
         fig.add_trace(go.Scatter(
             x=_obs_drv, y=_obs_fbin_curve, mode='lines',
             name='Observed f_bin(threshold)',
-            line=dict(color='white', width=2.5, shape='hv')))
+            line=dict(color='#000000', width=2.5, shape='hv')))
     fig.add_hline(y=intrinsic_fbin, line_dash='dot', line_color=_CLR_DETECTED,
                   line_width=2,
                   annotation_text=f'Intrinsic f_bin = {intrinsic_fbin:.1%}',
@@ -214,10 +234,10 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
                   annotation_font=dict(size=11, color=_CLR_MISSED))
     fig.add_trace(go.Scatter(
         x=[thresh_dRV], y=[observed_fbin], mode='markers+text',
-        marker=dict(size=14, color='white', symbol='diamond',
+        marker=dict(size=14, color='#DAA520', symbol='diamond',
                     line=dict(width=2, color='black')),
         text=[f'{observed_fbin:.1%}'], textposition='top left',
-        textfont=dict(size=12, color='#333333'),
+        textfont=dict(size=12, color='#000000'),
         name=f'Simulated @ {thresh_dRV} km/s', showlegend=True))
 
     gap_pct = intrinsic_fbin - observed_fbin
@@ -225,7 +245,7 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
         x=thresh_dRV + 15, y=(intrinsic_fbin + observed_fbin) / 2,
         text=f'Gap: {gap_pct:.1%}<br>({missed_count} missed / {total_bin} binaries)',
         showarrow=False, font=dict(size=11, color=_CLR_MISSED),
-        bgcolor=pal['annotation_bg'], bordercolor=_CLR_MISSED,
+        bgcolor='rgba(255,255,255,0.9)', bordercolor=_CLR_MISSED,
         borderwidth=1, borderpad=4)
     fig.add_annotation(
         x=thresh_dRV, y=intrinsic_fbin, ax=thresh_dRV, ay=observed_fbin,
@@ -240,8 +260,18 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
         'height': 400, 'margin': dict(l=60, r=80, t=50, b=50),
         'showlegend': True,
         'legend': dict(x=0.55, y=0.95, font=dict(size=10)),
-        'yaxis': dict(range=[0, min(1.0, intrinsic_fbin * 1.5)]),
+        'xaxis': dict(range=[0.0, float(x_max)]),
+        'yaxis': dict(range=[0.0, 1.0]),
     })
+    # A&A override: force white bg + serif on paper-worthy plots.
+    # Deferred import avoids circular risk; see render_validation.py:353.
+    try:
+        from bc.render_validation import _AA_OVERRIDES
+        fig.update_layout(**_AA_OVERRIDES)
+        fig.update_xaxes(range=[0.0, float(x_max)], **_AA_OVERRIDES['xaxis'])
+        fig.update_yaxes(range=[0.0, 1.0], **_AA_OVERRIDES['yaxis'])
+    except Exception:
+        pass
     st.plotly_chart(fig, use_container_width=True, key=f'{p}_gap_chart')
     sfx = f' ({model_label})' if model_label else ''
     st.caption(
@@ -378,6 +408,21 @@ def render_orbital_histograms(p, gap_sim, bin_detected_mask, bin_missed_mask,
         fig_mb.update_yaxes(showgrid=False, row=r, col=c)
     for ri in range(1, NR + 1):
         fig_mb.update_yaxes(title_text='Prob. density', row=ri, col=1)
+
+    # A&A override: white bg + serif across every subplot.
+    try:
+        from bc.render_validation import _AA_OVERRIDES
+        fig_mb.update_layout(
+            plot_bgcolor=_AA_OVERRIDES['plot_bgcolor'],
+            paper_bgcolor=_AA_OVERRIDES['paper_bgcolor'],
+            font=_AA_OVERRIDES['font'],
+            legend=_AA_OVERRIDES['legend'],
+            hoverlabel=_AA_OVERRIDES['hoverlabel'],
+        )
+        fig_mb.update_xaxes(**_AA_OVERRIDES['xaxis'])
+        fig_mb.update_yaxes(**_AA_OVERRIDES['yaxis'])
+    except Exception:
+        pass
 
     st.plotly_chart(fig_mb, use_container_width=True, key=f'{p}_missed_binaries')
     st.caption(

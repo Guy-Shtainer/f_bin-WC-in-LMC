@@ -841,12 +841,24 @@ def _render_compare_tab(p: str) -> None:
                 info['best_lk'] = float(lk[idx])
                 _finalize_aicbic(info, idx)
 
-        for _hk in ('mode_fbin', 'lo_fbin', 'hi_fbin',
-                     'mode_pi', 'lo_pi', 'hi_pi',
-                     'mode_sigma', 'lo_sigma', 'hi_sigma',
-                     'mode_logPmax', 'lo_logPmax', 'hi_logPmax'):
+        # B3 (2026-04-23): marginal mode_* keys removed per
+        # memory/feedback_honest_labels.md.  Prefer joint argmax + HDI
+        # bounds only.  We expose argmax_* as the canonical "best" value
+        # and lo_*/hi_* for the 68% HDI.
+        for _hk in ('argmax_fbin', 'argmax_pi', 'argmax_sigma',
+                    'argmax_logPmax',
+                    'lo_fbin', 'hi_fbin',
+                    'lo_pi', 'hi_pi',
+                    'lo_sigma', 'hi_sigma',
+                    'lo_fbin_L', 'hi_fbin_L',
+                    'lo_pi_L', 'hi_pi_L',
+                    'lo_sigma_L', 'hi_sigma_L',
+                    'lo_logPmax', 'hi_logPmax'):
             if _hk in res:
-                info[_hk] = float(res[_hk])
+                try:
+                    info[_hk] = float(res[_hk])
+                except (TypeError, ValueError):
+                    pass
 
         if 'settings' in res:
             try:
@@ -1277,13 +1289,23 @@ def _render_compare_tab(p: str) -> None:
         st.plotly_chart(fig_Lfb, use_container_width=True, key=f'{p}_Lpost_fbin')
 
     # ── Observed ΔRV CDF comparison ──────────────────────────────────────
-    st.markdown('### Observed ΔRV CDF')
-    st.caption('The observed ΔRV distribution is the same for all results (same dataset).')
+    # Conditional "Mock Observation" label when the sourced result is
+    # a validation run. We pull both obs AND is_validation from the SAME
+    # result so the label honestly describes the plotted data.
+    from bc.helpers import _obs_label as _obs_label_cmp
     _obs = None
+    _obs_src_res = None
     for _r in results:
         _obs = _r['res'].get('obs_delta_rv', None)
         if _obs is not None:
+            _obs_src_res = _r['res']
             break
+    _obs_name_cmp = _obs_label_cmp(_obs_src_res)
+    st.markdown(f'### {_obs_name_cmp} ΔRV CDF')
+    st.caption(
+        f'The {_obs_name_cmp.lower()} ΔRV distribution is the same for all '
+        'results (same dataset).'
+    )
     if _obs is not None:
         obs_sorted = np.sort(_obs)
         obs_cdf_y = np.arange(1, len(obs_sorted) + 1) / len(obs_sorted)
@@ -1292,7 +1314,7 @@ def _render_compare_tab(p: str) -> None:
             x=obs_sorted, y=obs_cdf_y,
             mode='lines+markers', line=dict(color='black', width=2),
             marker=dict(size=5),
-            name='Observed ΔRV',
+            name=f'{_obs_name_cmp} ΔRV',
         ))
         # Overlay best-fit simulated CDFs if available (cadence-aware results)
         for _r in results:
@@ -1306,7 +1328,7 @@ def _render_compare_tab(p: str) -> None:
                 ))
         fig_cdf.update_layout(**{
             **PLOTLY_THEME,
-            'title': dict(text='Observed ΔRV CDF'),
+            'title': dict(text=f'{_obs_name_cmp} ΔRV CDF'),
             'xaxis_title': 'ΔRV (km/s)',
             'yaxis_title': 'Cumulative fraction',
             'height': 400,

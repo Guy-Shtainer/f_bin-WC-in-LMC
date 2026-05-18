@@ -427,9 +427,14 @@ def _scan_result_metadata(model: str | None = None) -> pd.DataFrame:
                 n_stars = str(sett.get('n_stars_sim', '—'))
 
                 # Best-fit
+                # B3 (2026-04-23): marginal-mode keys removed per
+                # memory/feedback_honest_labels.md.  "best_fb" now reflects
+                # the joint argmax (same physical meaning we want to show),
+                # not a marginal mode.  Kept the same column name to avoid
+                # touching the callers' display layout.
                 ks_p = d.get('ks_p', np.array([0]))
                 best_p = float(np.nanmax(ks_p))
-                best_fb = f'{float(d["mode_fbin"]):.3f}' if 'mode_fbin' in d else '—'
+                best_fb = f'{float(d["argmax_fbin"]):.3f}' if 'argmax_fbin' in d else '—'
                 argmax_fb = f'{float(d["argmax_fbin"]):.3f}' if 'argmax_fbin' in d else '—'
 
                 # Runtime

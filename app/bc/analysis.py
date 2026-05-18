@@ -331,7 +331,15 @@ def _render_all_methods_cdf(
     x_name: str = 'pi',
     x_label: str = 'pi',
 ) -> None:
-    """CDF comparison: observed vs best-fit model from each scoring method."""
+    """CDF comparison: observed vs best-fit model from each scoring method.
+
+    NOTE (2026-04-28): this function is currently DEAD code — `subtabs.py`
+    line ~90 has the call commented out as redundant with E5.  It is
+    maintained here for parity with the active `render_shared.py` /
+    `render_shared_langer.py` panels in case it gets re-enabled.  The
+    Round-5 dual-overlay convention (BLACK obs + RED grid + PURPLE
+    marginal) is mirrored below.
+    """
     obs_drv = result.get('obs_delta_rv')
     if obs_drv is None or len(method_results) < 1:
         return
@@ -350,85 +358,225 @@ def _render_all_methods_cdf(
         _be = np.asarray(_be)
     obs_drv = np.asarray(obs_drv)
     _n_obs_stars = len(obs_drv)
-    obs_cdf = _binned_cdf(obs_drv, _be)
-    _obs_x = np.concatenate([[0.0], _be])
-    _obs_y = np.concatenate([[0.0], obs_cdf])
 
+    # Conditional label for Validation flow (mock observations vs real obs).
+    from bc.helpers import _obs_label
+    _obs_name = _obs_label(result)
+
+    # CDF style constants — single source of truth in render_validation.
+    # Observation = BLACK step (NO markers on the line itself — coloured
+    # truth-coded dots overlay separately when validation truth is
+    # available).  Grid best-fit = dashed RED step; marginal best-fit =
+    # dashed PURPLE step.  Round-5 user-locked global convention.
+    from bc.render_validation import (
+        _CDF_OBS_COLOR, _CDF_FIT_COLOR, _CDF_FIT_MARG_COLOR,
+        _CLR_SINGLE, _CLR_BINARY,
+    )
+
+    # Round-5: observation curve uses the SORTED-RAW empirical step (NOT
+    # the binned CDF) so per-star truth dots align exactly with the line.
+    _obs_finite = obs_drv[np.isfinite(obs_drv) & (obs_drv > 0)]
+    _n_obs_finite = int(_obs_finite.size)
     fig_cdf = go.Figure()
-    fig_cdf.add_trace(go.Scatter(
-        x=_obs_x, y=_obs_y,
-        mode='lines', name='Observed',
-        line=dict(color='black', width=2.5),
-    ))
+    if _n_obs_finite > 0:
+        _sort_idx = np.argsort(_obs_finite)
+        _drv_sorted = _obs_finite[_sort_idx]
+        _cdf_vals = (np.arange(_n_obs_finite) + 1) / _n_obs_finite
+        fig_cdf.add_trace(go.Scatter(
+            x=_drv_sorted, y=_cdf_vals,
+            mode='lines', name=_obs_name,
+            line=dict(color=_CDF_OBS_COLOR, width=2.5, shape='hv'),
+        ))
+    else:
+        _drv_sorted = np.array([])
+        _cdf_vals = np.array([])
+
+    # Per-star truth-coded markers (validation flow only).  Each star sits
+    # at its own ΔRV on the empirical CDF (rank+1)/N — same source array
+    # as the line above, so dot positions match the step exactly.
+    # Outside the validation flow `_is_bin` is None and the dots are
+    # silently omitted so this code path stays a no-op for real obs.
+    from bc.validation_io import load_per_star_truth
+    _is_bin = load_per_star_truth(result)
+    if (_is_bin is not None and len(_is_bin) == len(obs_drv)
+            and _n_obs_finite > 0):
+        _is_bin_full = np.asarray(_is_bin, dtype=bool)
+        _finite_mask = np.isfinite(obs_drv) & (obs_drv > 0)
+        _is_bin_finite = _is_bin_full[_finite_mask]
+        if _is_bin_finite.size == _n_obs_finite:
+            _is_bin_sorted = _is_bin_finite[_sort_idx]
+        else:
+            _is_bin_sorted = np.zeros(_n_obs_finite, dtype=bool)
+        _single_mask = ~_is_bin_sorted
+        if np.any(_single_mask):
+            fig_cdf.add_trace(go.Scatter(
+                x=_drv_sorted[_single_mask], y=_cdf_vals[_single_mask],
+                mode='markers',
+                marker=dict(color=_CLR_SINGLE, size=8,
+                            line=dict(color='black', width=0.6)),
+                name=f'Single ({int(_single_mask.sum())})',
+                hovertemplate='single · ΔRV=%{x:.1f} km/s<extra></extra>',
+            ))
+        if np.any(_is_bin_sorted):
+            fig_cdf.add_trace(go.Scatter(
+                x=_drv_sorted[_is_bin_sorted], y=_cdf_vals[_is_bin_sorted],
+                mode='markers',
+                marker=dict(color=_CLR_BINARY, size=8,
+                            line=dict(color='black', width=0.6)),
+                name=f'Binary ({int(_is_bin_sorted.sum())})',
+                hovertemplate='binary · ΔRV=%{x:.1f} km/s<extra></extra>',
+            ))
+
+    # Bug 1 fix: prefer the stored best-fit CDF band (populated during the
+    # grid run at runners_cadence.py:550) over re-simulating from scratch.
+    # The stored arrays correspond to the global likelihood argmax — i.e.
+    # the single method we have in SCORING_METHODS.
+    _stored_med = result.get('best_median_cdf')
+    _stored_lo = result.get('best_lo_cdf')
+    _stored_hi = result.get('best_hi_cdf')
+    _have_stored = (
+        _stored_med is not None and _stored_lo is not None
+        and _stored_hi is not None
+        and np.asarray(_stored_med).size == len(_be)
+    )
 
     _n_cdf_sets = 100
-    for mk, info in method_results.items():
+
+    # Round-5: per-method visual separation via decreasing band opacity;
+    # line colors stay globally red (grid) / purple (marginal).
+    _band_alphas_a = [0.18, 0.12, 0.08]
+
+    def _resim_cdf_a(fb_, pi_, sig_):
+        """Back-compat re-sim using the simple sampler (not cadence-aware).
+
+        Mirrors the original loop body and is kept inside this dead-code
+        function so behaviour at the grid argmax stays identical.
+        """
+        _all_cdfs = []
+        for _seed_i in range(_n_cdf_sets):
+            sim_cfg = SimulationConfig(
+                n_stars=_n_obs_stars,
+                sigma_single=float(sig_),
+                sigma_measure=float(result.get('sigma_meas', 3.0)),
+            )
+            bin_cfg = BinaryParameterConfig()
+            rng = np.random.default_rng(42 + _seed_i)
+            sim_drv = simulate_delta_rv_sample(
+                f_bin=float(fb_), pi=float(pi_),
+                sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
+            _all_cdfs.append(_binned_cdf(sim_drv, _be))
+        _all_cdfs = np.array(_all_cdfs)
+        return (np.median(_all_cdfs, axis=0),
+                np.percentile(_all_cdfs, 16, axis=0),
+                np.percentile(_all_cdfs, 84, axis=0))
+
+    def _add_overlay_a(_median_cdf, _lo_cdf, _hi_cdf, color, alpha,
+                       lgroup, label):
+        _med_x = np.concatenate([[0.0], _be])
+        _med_y = np.concatenate([[0.0], _median_cdf])
+        _lo_y = np.concatenate([[0.0], _lo_cdf])
+        _hi_y = np.concatenate([[0.0], _hi_cdf])
+        _fill_color = _hex_to_rgba(color, alpha)
+        fig_cdf.add_trace(go.Scatter(
+            x=np.concatenate([_med_x, _med_x[::-1]]),
+            y=np.concatenate([_hi_y, _lo_y[::-1]]),
+            fill='toself', fillcolor=_fill_color,
+            line=dict(color='rgba(0,0,0,0)', shape='hv'),
+            legendgroup=lgroup, showlegend=False, hoverinfo='skip',
+        ))
+        fig_cdf.add_trace(go.Scatter(
+            x=_med_x, y=_med_y,
+            mode='lines', name=label, legendgroup=lgroup,
+            line=dict(color=color, width=2, dash='dash', shape='hv'),
+        ))
+
+    for _mi_a, (mk, info) in enumerate(method_results.items()):
         bv = info['best_vals']
-        fb = bv.get('fbin', 0.5)
-        pi_v = bv.get(x_name, 0.0)
-        sig_v = bv.get('sigma', 5.0)
-        _mcolor = next((c for k, _, _, _, c in SCORING_METHODS if k == mk), '#888888')
+        hdi = info.get('hdi', {})
         _mname = next((n for k, n, _, _, _ in SCORING_METHODS if k == mk), mk)
+        _alpha_a = _band_alphas_a[_mi_a % len(_band_alphas_a)]
+
+        # ── GRID best-fit (joint argmax) ─────────────────────────────────
+        fb_g = float(bv.get('fbin', 0.5))
+        pi_g = float(bv.get(x_name, 0.0))
+        sig_g = float(bv.get('sigma', 5.0))
         try:
-            _all_cdfs = []
-            for _seed_i in range(_n_cdf_sets):
-                sim_cfg = SimulationConfig(
-                    n_stars=_n_obs_stars,
-                    sigma_single=float(sig_v),
-                    sigma_measure=float(result.get('sigma_meas', 3.0)),
-                )
-                bin_cfg = BinaryParameterConfig()
-                rng = np.random.default_rng(42 + _seed_i)
-                sim_drv = simulate_delta_rv_sample(
-                    f_bin=float(fb), pi=float(pi_v),
-                    sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
-                _all_cdfs.append(_binned_cdf(sim_drv, _be))
-            _all_cdfs = np.array(_all_cdfs)
-            _median_cdf = np.median(_all_cdfs, axis=0)
-            _lo_cdf = np.percentile(_all_cdfs, 16, axis=0)
-            _hi_cdf = np.percentile(_all_cdfs, 84, axis=0)
+            if _have_stored and mk == 'likelihood':
+                _median_cdf = np.asarray(_stored_med, dtype=float)
+                _lo_cdf = np.asarray(_stored_lo, dtype=float)
+                _hi_cdf = np.asarray(_stored_hi, dtype=float)
+            else:
+                _median_cdf, _lo_cdf, _hi_cdf = _resim_cdf_a(fb_g, pi_g, sig_g)
 
-            _med_x = np.concatenate([[0.0], _be])
-            _med_y = np.concatenate([[0.0], _median_cdf])
-            _lo_y = np.concatenate([[0.0], _lo_cdf])
-            _hi_y = np.concatenate([[0.0], _hi_cdf])
-
-            _lbl = f'{_mname} (f_bin={fb:.3f}'
+            _lbl_g = f'{_mname} grid (f_bin={fb_g:.3f}'
             if x_name in bv:
-                _lbl += f', {x_label}={bv[x_name]:.2f}'
-            _lbl += ')'
-
-            _fill_color = _hex_to_rgba(_mcolor, 0.2)
-            fig_cdf.add_trace(go.Scatter(
-                x=np.concatenate([_med_x, _med_x[::-1]]),
-                y=np.concatenate([_hi_y, _lo_y[::-1]]),
-                fill='toself', fillcolor=_fill_color,
-                line=dict(color='rgba(0,0,0,0)'),
-                legendgroup=mk, showlegend=False, hoverinfo='skip',
-            ))
-            fig_cdf.add_trace(go.Scatter(
-                x=_med_x, y=_med_y,
-                mode='lines', name=_lbl,
-                legendgroup=mk,
-                line=dict(color=_mcolor, width=2, dash='dash'),
-            ))
+                _lbl_g += f', {x_label}={bv[x_name]:.2f}'
+            _lbl_g += ')'
+            _sat = float(_median_cdf[-1]) if len(_median_cdf) else 1.0
+            if _sat < 0.98:
+                _lbl_g += f' [≤{_be[-1]:.0f} km/s: {_sat:.0%}]'
+            _add_overlay_a(_median_cdf, _lo_cdf, _hi_cdf,
+                           _CDF_FIT_COLOR, _alpha_a,
+                           f'{mk}_grid', _lbl_g)
         except Exception:
             pass
 
+        # ── MARGINAL best-fit (1-D posterior modes) ──────────────────────
+        # hdi[name][0] = mode of the 1-D marginal posterior — same
+        # canonical _method_best_and_hdi path Round-5 used for honest
+        # joint-argmax + marginal-peak reporting.
+        def _marg_or_grid_a(name: str, fallback):
+            t = hdi.get(name)
+            if t is None or not np.isfinite(t[0]):
+                return fallback
+            return float(t[0])
+
+        fb_m = _marg_or_grid_a('fbin', fb_g)
+        pi_m = _marg_or_grid_a(x_name, pi_g)
+        sig_m = _marg_or_grid_a('sigma', sig_g)
+        if (fb_m != fb_g) or (pi_m != pi_g) or (sig_m != sig_g):
+            try:
+                _med_m, _lo_m, _hi_m = _resim_cdf_a(fb_m, pi_m, sig_m)
+                _lbl_m = f'{_mname} marginal (f_bin={fb_m:.3f}'
+                if x_name in bv:
+                    _lbl_m += f', {x_label}={pi_m:.2f}'
+                _lbl_m += ')'
+                _sat_m = float(_med_m[-1]) if len(_med_m) else 1.0
+                if _sat_m < 0.98:
+                    _lbl_m += f' [≤{_be[-1]:.0f} km/s: {_sat_m:.0%}]'
+                _add_overlay_a(_med_m, _lo_m, _hi_m,
+                               _CDF_FIT_MARG_COLOR, _alpha_a,
+                               f'{mk}_marg', _lbl_m)
+            except Exception:
+                pass
+
     fig_cdf.update_layout(**{
         **PLOTLY_THEME,
-        'title': dict(text='CDF Comparison: Observed vs Best-Fit Models', font=dict(size=14)),
+        'title': dict(text=f'CDF Comparison: {_obs_name} vs Best-Fit Models',
+                      font=dict(size=14)),
         'xaxis_title': 'ΔRV (km/s)',
         'yaxis_title': 'Cumulative Fraction',
         'height': 400,
         'legend': dict(x=0.55, y=0.05),
     })
+    # A&A journal theme (white bg, black serif text) — see feedback_aa_journal_style
+    from bc.render_validation import _AA_OVERRIDES
+    fig_cdf.update_layout(**_AA_OVERRIDES)
+    fig_cdf.update_xaxes(**_AA_OVERRIDES['xaxis'])
+    fig_cdf.update_yaxes(**_AA_OVERRIDES['yaxis'])
     st.plotly_chart(fig_cdf, use_container_width=True,
                     key=f'{prefix}_cdf_comparison')
+    _src_desc = ('stored best-fit CDF band from the grid run'
+                 if _have_stored else
+                 f'median of {_n_cdf_sets} fresh draws')
     st.caption(
-        f'Observed ΔRV CDF (solid black) vs simulated CDFs at each '
-        f'method\'s best-fit parameters (dashed, median of {_n_cdf_sets} draws). '
-        f'Shaded bands show 16th-84th percentile range. N_stars={_n_obs_stars}.'
+        f'{_obs_name} ΔRV CDF (black) vs simulated CDFs at each method\'s '
+        f'grid-argmax (red dashed) and marginal-posterior peak '
+        f'(purple dashed) best-fit parameters ({_src_desc}). '
+        f'Bands = 16-84 percentile range. N_stars={_n_obs_stars}.  When '
+        f'the simulated CDF saturates below 1 at the rightmost bin '
+        f'(≤{float(_be[-1]):.0f} km/s), the remaining probability mass '
+        f'lies at higher ΔRV — see the percentage shown in the legend label.'
     )
 
 
@@ -441,6 +589,8 @@ def _render_resim_interp(interp, result, mk, score_label, x_label, pfx, sm):
         return
     try:
         from wr_bias_simulation import DEFAULT_DRV_BIN_EDGES
+        # CDF style constants — single source of truth in render_validation.
+        from bc.render_validation import _CDF_OBS_COLOR
         fb = float(interp.get('f_bin', 0.5))
         xv = float(interp.get('pi', interp.get('sigma', interp.get('y_val', 0.0))))
         sig = float(interp.get('sigma', result.get('sigma_meas', 5.0)))
@@ -453,7 +603,7 @@ def _render_resim_interp(interp, result, mk, score_label, x_label, pfx, sm):
         mc = next((c for k, _, _, _, c in sm if k == mk), '#E25A53')
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=be, y=_binned_cdf(obs, be), mode='lines',
-            name='Observed', line=dict(color='#4A90D9', width=2.5, shape='hv')))
+            name='Observed', line=dict(color=_CDF_OBS_COLOR, width=2.5, shape='hv')))
         _hi_y = np.concatenate([[0.0], hi_c])
         _lo_y = np.concatenate([[0.0], lo_c])
         fig.add_trace(go.Scatter(x=np.concatenate([rx, rx[::-1]]),
@@ -1089,10 +1239,17 @@ def _render_model_explorer(
 
     mcolor = next((c for k, _, _, _, c in SCORING_METHODS if k == method_key), '#E25A53')
 
+    # Conditional "Mock Observation" label in validation flow
+    from bc.helpers import _obs_label as _obs_label_me
+    _obs_name_me = _obs_label_me(result)
+
+    # CDF style constants — single source of truth (Phase 6 finishing pass)
+    from bc.render_validation import _CDF_OBS_COLOR, _CDF_FIT_COLOR
+
     fig_cdf = go.Figure()
     fig_cdf.add_trace(go.Scatter(
-        x=be, y=obs_cdf, mode='lines', name='Observed',
-        line=dict(color='#4A90D9', width=2.5, shape='hv'),
+        x=be, y=obs_cdf, mode='lines', name=_obs_name_me,
+        line=dict(color=_CDF_OBS_COLOR, width=2.5, shape='hv'),
     ))
     # Error band (legendgroup links shadow to line for toggle)
     fig_cdf.add_trace(go.Scatter(
@@ -1142,11 +1299,11 @@ def _render_model_explorer(
     fig_hist = go.Figure()
     fig_hist.add_trace(go.Histogram(
         x=obs_drv, nbinsx=30, histnorm='probability density',
-        name='Observed', marker_color='#4A90D9', opacity=0.6,
+        name=_obs_name_me, marker_color=_CDF_OBS_COLOR, opacity=0.6,
     ))
     fig_hist.add_trace(go.Histogram(
         x=sim_drv_single, nbinsx=30, histnorm='probability density',
-        name='Simulated', marker_color='#E25A53', opacity=0.5,
+        name='Simulated', marker_color=_CDF_FIT_COLOR, opacity=0.5,
     ))
     fig_hist.update_layout(**{
         **PLOTLY_THEME,
@@ -1168,12 +1325,12 @@ def _render_model_explorer(
 
     fig_det = go.Figure()
     fig_det.add_trace(go.Scatter(
-        x=thresholds, y=frac_obs, mode='lines', name='Observed',
-        line=dict(color='#4A90D9', width=2.5),
+        x=thresholds, y=frac_obs, mode='lines', name=_obs_name_me,
+        line=dict(color=_CDF_OBS_COLOR, width=2.5),
     ))
     fig_det.add_trace(go.Scatter(
         x=thresholds, y=frac_sim, mode='lines', name='Simulated',
-        line=dict(color='#E25A53', width=2.5, dash='dash'),
+        line=dict(color=_CDF_FIT_COLOR, width=2.5, dash='dash'),
     ))
     thresh_dRV = float(result.get('thresh_dRV', 45.5))
     fig_det.add_vline(

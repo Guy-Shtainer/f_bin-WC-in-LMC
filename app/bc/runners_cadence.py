@@ -54,6 +54,19 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             params.get('logPmax_scan_vals', [bin_cfg.logP_max]))
         _scan_logPmax = len(logPmax_scan_vals) > 1
 
+        # ── Validation-lane routing (mock_results/) ───────────────────────
+        # When save_backend == 'mock_results', results persist to the
+        # validation tree instead of results/. Truth params + mock detail
+        # are forwarded by render_validation.py via cadence.py's param
+        # builder. See app/bc/validation_io.py for the save schema.
+        _save_backend       = params.get('save_backend', 'results')
+        _is_validation      = bool(params.get('is_validation', False))
+        _validation_truth   = params.get('validation_truth')
+        _validation_mock    = params.get('validation_mock_detail')
+        _use_mock_backend   = (_save_backend == 'mock_results'
+                               and _is_validation
+                               and _validation_truth is not None)
+
         fbin_grid = np.array(fbin_vals, dtype=float)
         pi_grid   = np.array(pi_vals, dtype=float)
         sigma_grid = np.array(sigma_vals, dtype=float)
@@ -151,6 +164,10 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
         best_median_cdf = None
         best_lo_cdf = None
         best_hi_cdf = None
+        best_mean_cdf = None
+        best_per_rank_median_drv = None
+        best_per_rank_mean_drv = None
+        best_per_rank_binary_fraction = None
         completed = 0
 
         # Store grid arrays in job dict for live rendering (Langer H1-H4)
@@ -164,6 +181,47 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
 
         # ── WORKING — do not change this code · cancel-save-resume ──
         def _save_partial_cadence():
+            # ── Validation lane (mock_results/) — added 2026-04-23 ──
+            # New branch ONLY: routes partial saves of validation runs to
+            # mock_results/ via validation_io. The legacy results/ path
+            # below is unchanged for the normal cadence flow.
+            if _use_mock_backend:
+                from bc import validation_io as _vio
+                _partial_result = {
+                    'fbin_grid': fbin_grid,
+                    'pi_grid': pi_grid,
+                    'sigma_grid': sigma_grid,
+                    'logPmax_grid': logPmax_scan_vals,
+                    'logL_raw': logL_raw,
+                    'scoring_version': np.array(3),
+                    'timestamp': _dt.datetime.now().isoformat(),
+                    'progress_pct': (_pre_done + completed) / _total_original,
+                    'rows_done': _pre_done + completed,
+                    'total_rows': _total_original,
+                    'period_model': period_model,
+                    'drv_bin_width': float(params.get('drv_bin_width', 10.0)),
+                    'drv_max': float(params.get('drv_max', 360.0)),
+                    'adaptive_bins': bool(params.get('adaptive_bins', False)),
+                    'settings': json.dumps(stable_cfg, default=str),
+                    'n_sets': n_sets,
+                    'sim_context': json.dumps(_sim_context, default=str),
+                    'sim_context_hash': _sim_context_hash,
+                    'sigma_meas': float(sigma_meas),
+                }
+                # First partial: mint a new filename and write mock_stars.
+                # Subsequent partials: reuse resume_from_path; skip mock_stars.
+                _partial_path, _ = _vio.save_validation_result(
+                    _partial_result,
+                    _validation_mock,
+                    _validation_truth,
+                    cadence_library=cadence_list,
+                    sigma_meas=float(sigma_meas),
+                    partial=True,
+                    existing_path=resume_from_path,
+                )
+                job['partial_saved'] = True
+                return _partial_path
+
             _partial_path = resume_from_path
             if not _partial_path:
                 _p_tag = ('cadence_dsilva'
@@ -247,7 +305,8 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                     job['status'] = 'cancelled'
                     return
                 (fb, pi_val, sigma, _logL,
-                 med_cdf, lo_cdf, hi_cdf) = res
+                 med_cdf, lo_cdf, hi_cdf,
+                 mean_cdf, prm_drv, prmean_drv, prbf) = res
                 i_sig = int(np.searchsorted(sigma_grid, sigma))
                 i_fb  = int(np.searchsorted(fbin_grid, fb))
                 i_pi  = int(np.searchsorted(pi_grid, pi_val))
@@ -263,6 +322,10 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                     best_median_cdf = med_cdf
                     best_lo_cdf = lo_cdf
                     best_hi_cdf = hi_cdf
+                    best_mean_cdf = mean_cdf
+                    best_per_rank_median_drv = prm_drv
+                    best_per_rank_mean_drv = prmean_drv
+                    best_per_rank_binary_fraction = prbf
                 completed += 1
 
                 # ETA + percentage (overall, including pre-completed cells)
@@ -496,6 +559,10 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             'best_median_cdf': best_median_cdf,
             'best_lo_cdf': best_lo_cdf,
             'best_hi_cdf': best_hi_cdf,
+            'best_mean_cdf': best_mean_cdf,
+            'best_per_rank_median_drv': best_per_rank_median_drv,
+            'best_per_rank_mean_drv': best_per_rank_mean_drv,
+            'best_per_rank_binary_fraction': best_per_rank_binary_fraction,
             'n_sets': n_sets,
             'mode': 'cadence_aware',
             'bin_edges': _cad_bin_edges,
@@ -511,49 +578,52 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             'cadence_library': (np.array(cadence_list, dtype=object)
                                 if cadence_list is not None else None),
             'sigma_meas': float(sigma_meas),
+            # Bug-4 fix (Stage C1): record the worker's sample count AND
+            # seed strategy so the Explorer can reproduce the grid's logL.
+            # The worker seeds each task deterministically from _idx
+            # (see _build_tasks_for_slice above) — there's no single RNG
+            # seed; the per-cell seed is derived from that _idx. We flag
+            # this explicitly to callers with grid_seed='per_task_idx'.
+            'grid_n_sets': n_sets,
+            'grid_seed': 'per_task_idx',
         }
 
-        # Argmax best-fit (raw grid maximum)
+        # Argmax best-fit (raw grid maximum) — store ALL four params so the
+        # Validation summary table (and other readers) can look them up
+        # without re-argmaxing. Degenerate dims (length 1) store the sole
+        # grid value; truly absent axes are left as NaN.
+        def _sole_or_nan(g):
+            g = np.asarray(g)
+            if g.size >= 1:
+                return float(g[0])
+            return float('nan')
+
         if np.any(np.isfinite(likelihood)):
             _flat_best = int(np.nanargmax(likelihood))
             _best_idx = np.unravel_index(_flat_best, likelihood.shape)
             if likelihood.ndim == 4:
+                # [logPmax, sigma, fbin, pi]
+                result['argmax_logPmax'] = float(logPmax_scan_vals[_best_idx[0]])
+                result['argmax_sigma'] = float(sigma_grid[_best_idx[1]])
                 result['argmax_fbin'] = float(fbin_grid[_best_idx[2]])
+                result['argmax_pi'] = float(pi_grid[_best_idx[3]])
             elif likelihood.ndim == 3:
+                # [sigma, fbin, pi] — logPmax axis degenerate
+                result['argmax_logPmax'] = _sole_or_nan(logPmax_scan_vals)
+                result['argmax_sigma'] = float(sigma_grid[_best_idx[0]])
                 result['argmax_fbin'] = float(fbin_grid[_best_idx[1]])
+                result['argmax_pi'] = float(pi_grid[_best_idx[2]])
             elif likelihood.ndim == 2:
+                # [fbin, pi] — logPmax and sigma degenerate
+                result['argmax_logPmax'] = _sole_or_nan(logPmax_scan_vals)
+                result['argmax_sigma'] = _sole_or_nan(sigma_grid)
                 result['argmax_fbin'] = float(fbin_grid[_best_idx[0]])
+                result['argmax_pi'] = float(pi_grid[_best_idx[1]])
 
-        # HDI68 (likelihood-based) — marginalize over logPmax if 4-D
-        _lk_for_hdi = likelihood
-        if _scan_logPmax:
-            _lk_for_hdi = np.nanmax(likelihood, axis=0)  # → (n_sig, n_fb, n_pi)
-        if _lk_for_hdi.ndim == 2:
-            # 2D: (n_fb, n_pi) — single sigma
-            _post_fb = np.sum(_lk_for_hdi, axis=1)
-            _post_pi = np.sum(_lk_for_hdi, axis=0)
-            if _post_fb.sum() > 0:
-                m_fb, lo_fb, hi_fb = _hdi68(fbin_grid, _post_fb)
-                result.update(mode_fbin=m_fb, lo_fbin=lo_fb, hi_fbin=hi_fb)
-            if _post_pi.sum() > 0:
-                m_pi, lo_pi, hi_pi = _hdi68(pi_grid, _post_pi)
-                result.update(mode_pi=m_pi, lo_pi=lo_pi, hi_pi=hi_pi)
-        elif _lk_for_hdi.ndim == 3:
-            # 3D: (n_sig, n_fb, n_pi)
-            _post_fb = np.sum(_lk_for_hdi, axis=(0, 2))
-            _post_pi = np.sum(_lk_for_hdi, axis=(0, 1))
-            _post_sig = np.sum(_lk_for_hdi, axis=(1, 2))
-            if _post_fb.sum() > 0:
-                m_fb, lo_fb, hi_fb = _hdi68(fbin_grid, _post_fb)
-                result.update(mode_fbin=m_fb, lo_fbin=lo_fb, hi_fbin=hi_fb)
-            if _post_pi.sum() > 0:
-                m_pi, lo_pi, hi_pi = _hdi68(pi_grid, _post_pi)
-                result.update(mode_pi=m_pi, lo_pi=lo_pi, hi_pi=hi_pi)
-            if _post_sig.sum() > 0:
-                m_sig, lo_sig, hi_sig = _hdi68(sigma_grid, _post_sig)
-                result.update(mode_sigma=m_sig, lo_sigma=lo_sig, hi_sigma=hi_sig)
-
-        # HDI68 (likelihood-based — Dsilva+2023 proper posterior)
+        # HDI68 (likelihood-based, Dsilva+2023 proper posterior).
+        # memory/feedback_honest_labels.md: no marginal-mode anywhere —
+        # we keep ONLY the lo/hi bounds of the 68% HDI.  The mode returned
+        # by compute_hdi68 is discarded; all mode_* fields are gone.
         _has_L = np.any(np.isfinite(logL_raw) & (logL_raw > -1e30))
         if _has_L:
             _L_for_hdi = likelihood
@@ -563,24 +633,24 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
                 _Lpost_fb = np.sum(_L_for_hdi, axis=1)
                 _Lpost_pi = np.sum(_L_for_hdi, axis=0)
                 if _Lpost_fb.sum() > 0:
-                    mL_fb, loL_fb, hiL_fb = _hdi68(fbin_grid, _Lpost_fb)
-                    result.update(mode_fbin_L=mL_fb, lo_fbin_L=loL_fb, hi_fbin_L=hiL_fb)
+                    _, loL_fb, hiL_fb = _hdi68(fbin_grid, _Lpost_fb)
+                    result.update(lo_fbin_L=loL_fb, hi_fbin_L=hiL_fb)
                 if _Lpost_pi.sum() > 0:
-                    mL_pi, loL_pi, hiL_pi = _hdi68(pi_grid, _Lpost_pi)
-                    result.update(mode_pi_L=mL_pi, lo_pi_L=loL_pi, hi_pi_L=hiL_pi)
+                    _, loL_pi, hiL_pi = _hdi68(pi_grid, _Lpost_pi)
+                    result.update(lo_pi_L=loL_pi, hi_pi_L=hiL_pi)
             elif _L_for_hdi.ndim == 3:
                 _Lpost_fb = np.sum(_L_for_hdi, axis=(0, 2))
                 _Lpost_pi = np.sum(_L_for_hdi, axis=(0, 1))
                 _Lpost_sig = np.sum(_L_for_hdi, axis=(1, 2))
                 if _Lpost_fb.sum() > 0:
-                    mL_fb, loL_fb, hiL_fb = _hdi68(fbin_grid, _Lpost_fb)
-                    result.update(mode_fbin_L=mL_fb, lo_fbin_L=loL_fb, hi_fbin_L=hiL_fb)
+                    _, loL_fb, hiL_fb = _hdi68(fbin_grid, _Lpost_fb)
+                    result.update(lo_fbin_L=loL_fb, hi_fbin_L=hiL_fb)
                 if _Lpost_pi.sum() > 0:
-                    mL_pi, loL_pi, hiL_pi = _hdi68(pi_grid, _Lpost_pi)
-                    result.update(mode_pi_L=mL_pi, lo_pi_L=loL_pi, hi_pi_L=hiL_pi)
+                    _, loL_pi, hiL_pi = _hdi68(pi_grid, _Lpost_pi)
+                    result.update(lo_pi_L=loL_pi, hi_pi_L=hiL_pi)
                 if _Lpost_sig.sum() > 0:
-                    mL_sig, loL_sig, hiL_sig = _hdi68(sigma_grid, _Lpost_sig)
-                    result.update(mode_sigma_L=mL_sig, lo_sigma_L=loL_sig, hi_sigma_L=hiL_sig)
+                    _, loL_sig, hiL_sig = _hdi68(sigma_grid, _Lpost_sig)
+                    result.update(lo_sigma_L=loL_sig, hi_sigma_L=hiL_sig)
 
         # Total runtime
         _total_elapsed = _time.time() - t_start
@@ -593,36 +663,71 @@ def _run_cadence_bg(job: dict, params: dict) -> None:
             result['settings'] = json.dumps(stable_cfg, default=str)
             result['n_sets'] = n_sets
 
-            _cad_model = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
-            _desc = (f"{_cad_model}_fb{fbin_grid[0]:.1f}-{fbin_grid[-1]:.1f}x{n_fb}"
-                     f"_pi{pi_grid[0]:.1f}-{pi_grid[-1]:.1f}x{n_pi}"
-                     f"_N{n_sets}"
-                     f"_sig{sigma_grid[0]:.1f}")
-            if n_sig > 1:
-                _desc += f"-{sigma_grid[-1]:.1f}x{n_sig}"
-            if _scan_logPmax:
-                _desc += (f"_logP{logPmax_scan_vals[0]:.2f}"
-                          f"-{logPmax_scan_vals[-1]:.2f}x{n_logPmax}")
-            _ts = datetime.datetime.now().strftime('%y%m%d-%H%M')
-            _fname = f"{_desc}_{_ts}.npz"
-            _save_path = os.path.join(_RESULT_DIR, _fname)
-            os.makedirs(_RESULT_DIR, exist_ok=True)
+            if _use_mock_backend:
+                # ── Validation lane: write to mock_results/ ──
+                # Annotate result with validation-specific fields so the
+                # Recovery Diagnostics panel (and future loaders) can
+                # re-render identical content from disk.
+                from bc import validation_io as _vio
+                result['is_validation'] = True
+                # Attach truth to in-memory result so corner_plots._truth_for()
+                # can draw the green dashed line on fresh runs. Disk persistence
+                # handles this via validation_io.save_validation_result; this
+                # mirrors that for the in-memory dict.
+                result['true_fbin']    = float(_validation_truth.get('true_fbin',    np.nan))
+                result['true_pi']      = float(_validation_truth.get('true_pi',      np.nan))
+                result['true_sigma']   = float(_validation_truth.get('true_sigma',   np.nan))
+                result['true_logPmax'] = float(_validation_truth.get('true_logPmax', np.nan))
+                if _validation_mock is not None and 'mock_delta_rv' not in result:
+                    result['mock_delta_rv'] = np.asarray(
+                        _validation_mock.get('delta_rv', []), dtype=float)
+                _save_path, _ = _vio.save_validation_result(
+                    result,
+                    _validation_mock,
+                    _validation_truth,
+                    cadence_library=cadence_list,
+                    sigma_meas=float(sigma_meas),
+                    partial=False,
+                )
+                result['save_path'] = _save_path
 
-            _save_dict = {}
-            for k, v in result.items():
-                if isinstance(v, np.ndarray):
-                    _save_dict[k] = v
-                else:
-                    _save_dict[k] = np.array(v, dtype=object)
-            np.savez_compressed(_save_path, **_save_dict)
-            result['save_path'] = _save_path
-            _scan_result_metadata.clear()
+                # Clean up any partial checkpoint we may have been resuming
+                if resume_from_path and os.path.exists(resume_from_path):
+                    try:
+                        os.remove(resume_from_path)
+                    except OSError:
+                        pass
+            else:
+                _cad_model = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
+                _desc = (f"{_cad_model}_fb{fbin_grid[0]:.1f}-{fbin_grid[-1]:.1f}x{n_fb}"
+                         f"_pi{pi_grid[0]:.1f}-{pi_grid[-1]:.1f}x{n_pi}"
+                         f"_N{n_sets}"
+                         f"_sig{sigma_grid[0]:.1f}")
+                if n_sig > 1:
+                    _desc += f"-{sigma_grid[-1]:.1f}x{n_sig}"
+                if _scan_logPmax:
+                    _desc += (f"_logP{logPmax_scan_vals[0]:.2f}"
+                              f"-{logPmax_scan_vals[-1]:.2f}x{n_logPmax}")
+                _ts = datetime.datetime.now().strftime('%y%m%d-%H%M')
+                _fname = f"{_desc}_{_ts}.npz"
+                _save_path = os.path.join(_RESULT_DIR, _fname)
+                os.makedirs(_RESULT_DIR, exist_ok=True)
 
-            # Clean up partial checkpoint
-            _p_tag = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
-            _partial_cleanup = os.path.join(_RESULT_DIR, f'{_p_tag}_result.npz.partial')
-            if os.path.exists(_partial_cleanup):
-                os.remove(_partial_cleanup)
+                _save_dict = {}
+                for k, v in result.items():
+                    if isinstance(v, np.ndarray):
+                        _save_dict[k] = v
+                    else:
+                        _save_dict[k] = np.array(v, dtype=object)
+                np.savez_compressed(_save_path, **_save_dict)
+                result['save_path'] = _save_path
+                _scan_result_metadata.clear()
+
+                # Clean up partial checkpoint
+                _p_tag = 'cadence_dsilva' if period_model == 'powerlaw' else 'cadence_langer'
+                _partial_cleanup = os.path.join(_RESULT_DIR, f'{_p_tag}_result.npz.partial')
+                if os.path.exists(_partial_cleanup):
+                    os.remove(_partial_cleanup)
 
         job['result'] = result
         job['status'] = 'done'

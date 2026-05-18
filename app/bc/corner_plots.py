@@ -31,9 +31,26 @@ def _squeeze_to_match(arr: np.ndarray, target_ndim: int) -> np.ndarray:
     return arr
 
 
-def _add_1d_posterior(fig, row, col, grid, post_1d, hdi_tuple, color='#4A90D9'):
-    """Add 1D posterior trace with HDI shading + mode line to a subplot cell."""
-    mode_val, lo, hi = hdi_tuple
+def _add_1d_posterior(fig, row, col, grid, post_1d, hdi_tuple,
+                      joint_argmax=None, color='#4A90D9', true_value=None):
+    """Add 1D posterior trace with HDI shading + joint-argmax line.
+
+    Parameters
+    ----------
+    hdi_tuple : tuple of (mode, lo, hi)
+        The ``mode`` element is the MARGINAL mode of the 1D marginalized
+        posterior.  Per ``memory/feedback_honest_labels.md`` we no longer
+        display marginal mode — we only use ``lo, hi`` for the 68% HDI band.
+    joint_argmax : float or None
+        The parameter's value at the N-D joint argmax (global logL
+        maximum).  If provided, this is where the vertical line is drawn.
+        If None (back-compat for old .npz without argmax_* keys), falls
+        back to the marginal mode from ``hdi_tuple`` with a deprecation
+        comment — see call site in _render_corner_plot.
+    true_value : float or None
+        Validation-only injected truth value; if finite, drawn as a green dashed vline.
+    """
+    _marg_mode, lo, hi = hdi_tuple  # _marg_mode kept only for back-compat fallback
     norm = float(np.trapezoid(post_1d, grid))
     pn = post_1d / norm if norm > 0 else post_1d
 
@@ -42,7 +59,7 @@ def _add_1d_posterior(fig, row, col, grid, post_1d, hdi_tuple, color='#4A90D9'):
         line=dict(color=color, width=2), showlegend=False,
     ), row=row, col=col)
 
-    # HDI shading
+    # HDI shading (68% HDI — lo/hi only; no marginal-mode dot)
     mask = (grid >= lo) & (grid <= hi)
     if np.any(mask):
         xh = grid[mask]
@@ -54,12 +71,31 @@ def _add_1d_posterior(fig, row, col, grid, post_1d, hdi_tuple, color='#4A90D9'):
             line=dict(width=0), showlegend=False,
         ), row=row, col=col)
 
-    fig.add_vline(x=mode_val, line_dash='dash',
+    # Best-fit vline: JOINT ARGMAX (global N-D logL maximum).  This
+    # replaces the previous marginal-mode vline per
+    # memory/feedback_honest_labels.md.  Back-compat: if joint_argmax is
+    # None (old .npz missing argmax_* keys) fall back to marginal mode.
+    _vline_x = joint_argmax if joint_argmax is not None else _marg_mode
+    fig.add_vline(x=_vline_x, line_dash='dash',
                   line_color='#E25A53', line_width=1.5,
+                  annotation_text='Joint argmax',
+                  annotation_position='top right',
+                  annotation_font_color='#E25A53',
+                  annotation_font_size=9,
                   row=row, col=col)
 
+    if true_value is not None and np.isfinite(true_value):
+        fig.add_vline(x=float(true_value), line_dash='dash',
+                      line_color='#16A34A', line_width=1.5,
+                      annotation_text='True input',
+                      annotation_position='top left',
+                      annotation_font_color='#16A34A',
+                      annotation_font_size=9,
+                      row=row, col=col)
 
-def _add_2d_heatmap(fig, row, col, x_grid, y_grid, z_2d, best_x, best_y, pal):
+
+def _add_2d_heatmap(fig, row, col, x_grid, y_grid, z_2d, best_x, best_y, pal,
+                    true_x=None, true_y=None):
     """Add 2D marginalized heatmap with contours + best-fit star."""
     z_max = float(np.nanmax(z_2d)) if np.any(np.isfinite(z_2d)) else 1.0
     fig.add_trace(go.Heatmap(
@@ -95,6 +131,16 @@ def _add_2d_heatmap(fig, row, col, x_grid, y_grid, z_2d, best_x, best_y, pal):
                     line=dict(color='black', width=1)),
         showlegend=False,
     ), row=row, col=col)
+
+    if (true_x is not None and true_y is not None
+            and np.isfinite(true_x) and np.isfinite(true_y)):
+        fig.add_trace(go.Scatter(
+            x=[float(true_x)], y=[float(true_y)],
+            mode='markers',
+            marker=dict(symbol='x', size=12, color='#16A34A',
+                        line=dict(color='#16A34A', width=2)),
+            showlegend=False,
+        ), row=row, col=col)
 
 
 def _render_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
@@ -191,14 +237,57 @@ def _render_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
             horizontal_spacing=0.06, vertical_spacing=0.06,
         )
 
+        # Map internal axis name → result['argmax_*'] key.  These keys are
+        # populated by runners_cadence.py after Stage B (see lines 593-608).
+        # Back-compat: if a key is absent (old .npz) we pass None and the
+        # 1D-posterior helper falls back to marginal mode — DEPRECATED
+        # path, kept only so legacy saved runs still render.
+        _argmax_keys = {
+            'fbin': 'argmax_fbin',
+            'pi': 'argmax_pi',
+            'sigma': 'argmax_sigma',
+            'logPmax': 'argmax_logPmax',
+        }
+        _truth_keys = {
+            'fbin': 'true_fbin',
+            'pi': 'true_pi',
+            'sigma': 'true_sigma',
+            'logPmax': 'true_logPmax',
+        }
+        _is_validation = bool(result.get('is_validation', False))
+
+        def _truth_for(axis_name):
+            if not _is_validation:
+                return None
+            key = _truth_keys.get(axis_name)
+            if key is None or key not in result:
+                return None
+            try:
+                v = float(result[key])
+            except (TypeError, ValueError):
+                return None
+            return v if np.isfinite(v) else None
+
         # For each diagonal: 1D posterior
         for i, (name_i, grid_i, label_i) in enumerate(show_axes):
             ax_idx = _all_names.index(name_i)
             sum_axes = tuple(j for j in range(p_nd.ndim) if j != ax_idx)
             post_1d = np.nansum(p_nd, axis=sum_axes) if sum_axes else p_nd.copy()
             hdi_i = _hdi.get(name_i, (0, 0, 0))
+            _ak = _argmax_keys.get(name_i)
+            _joint_argmax_i = None
+            if _ak is not None and _ak in result:
+                try:
+                    _v = float(result[_ak])
+                    if np.isfinite(_v):
+                        _joint_argmax_i = _v
+                except (TypeError, ValueError):
+                    _joint_argmax_i = None
+            _true_i = _truth_for(name_i)
             _add_1d_posterior(fig_c, row=i + 1, col=i + 1,
-                              grid=grid_i, post_1d=post_1d, hdi_tuple=hdi_i)
+                              grid=grid_i, post_1d=post_1d, hdi_tuple=hdi_i,
+                              joint_argmax=_joint_argmax_i,
+                              true_value=_true_i)
 
         # For each lower-triangle cell: 2D marginalized heatmap
         for j in range(n_params):
@@ -220,7 +309,9 @@ def _render_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
                                 z_2d=z_2d,
                                 best_x=_bv.get(name_col, 0),
                                 best_y=_bv.get(name_row, 0),
-                                pal=pal)
+                                pal=pal,
+                                true_x=_truth_for(name_col),
+                                true_y=_truth_for(name_row))
 
         # Hide upper-triangle cells
         for j in range(n_params):
@@ -240,14 +331,41 @@ def _render_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
             'showlegend': False,
             'margin': dict(l=60, r=20, t=30, b=60),
         })
+        # A&A journal theme (white bg, black serif text) — multi-subplot
+        # figures need per-axis updates to reach xaxis2/yaxis2/...; pattern
+        # mirrors render_shared.py:765-774 (Orbital 9-panel).
+        try:
+            from bc.render_validation import _AA_OVERRIDES
+            fig_c.update_layout(
+                plot_bgcolor=_AA_OVERRIDES['plot_bgcolor'],
+                paper_bgcolor=_AA_OVERRIDES['paper_bgcolor'],
+                font=_AA_OVERRIDES['font'],
+                legend=_AA_OVERRIDES['legend'],
+                hoverlabel=_AA_OVERRIDES['hoverlabel'],
+            )
+            fig_c.update_xaxes(**_AA_OVERRIDES['xaxis'])
+            fig_c.update_yaxes(**_AA_OVERRIDES['yaxis'])
+        except Exception:
+            pass
         st.plotly_chart(fig_c, use_container_width=True,
                         key=f'{prefix}_{method_key}_corner')
         _param_list = ' × '.join(lbl for _, _, lbl in show_axes)
+        _truth_caption_extra = ''
+        if _is_validation:
+            _any_truth = any(_truth_for(n) is not None for n in _truth_keys)
+            if _any_truth:
+                _truth_caption_extra = (
+                    ' Green dashed line / green × marker: user-chosen input '
+                    'parameter for this mock run.'
+                )
         st.caption(
             f'{n_params}-parameter corner plot for {display_name} ({_param_list}). '
-            f'Diagonal: 1D posteriors with 68% HDI (blue shading) and mode (red dashed). '
+            f'Diagonal: 1D marginal posteriors with 68% HDI (blue shading) and '
+            f'Joint argmax (red dashed — the parameter value at the N-D global '
+            f'logL maximum, not the marginal mode). '
             f'Off-diagonal: 2D marginalized heatmap{"s" if n_params > 2 else ""} '
-            f'with 68%/95% contours and best fit (gold star).'
+            f'with 68%/95% contours and Joint argmax (gold star).'
+            + _truth_caption_extra
         )
 
     return _info

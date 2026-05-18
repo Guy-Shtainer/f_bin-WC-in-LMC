@@ -37,6 +37,21 @@ from bc.file_ops import (  # noqa: F401
     _result_path,
 )
 
+def _obs_label(result: dict | None = None,
+               is_validation: bool | None = None) -> str:
+    """Return 'Mock Observation' in validation mode, else 'Observed'.
+
+    Either pass a full *result* dict (will read ``is_validation`` key), or an
+    explicit *is_validation* flag for callers that don't hold a result handle.
+    Non-validation callers can just call ``_obs_label()`` and get 'Observed'.
+    """
+    if is_validation is None:
+        if result is None:
+            return 'Observed'
+        is_validation = bool(result.get('is_validation', False))
+    return 'Mock Observation' if is_validation else 'Observed'
+
+
 _CMP_COLORS = [
     '#4A90D9', '#E25A53', '#50C878', '#9B59B6', '#F39C12',
     '#1ABC9C', '#E67E22', '#3498DB', '#E74C3C', '#2ECC71',
@@ -81,6 +96,21 @@ def get_scheme_color(scheme_name: str, index: int = 0) -> tuple[str, str]:
     dash = _CMP_DASHES[i % len(_CMP_DASHES)]
     return (color, dash)
 
+# ── Snapshot palette for Model Explorer "saved attempts" overlays ──────────
+# Cycle modulo len() — each Save click pulls the next color from this list,
+# matching the swatch in the snapshot table to the dashed median + faint
+# band drawn on the CDF and the per-snapshot bin-edge vlines.
+_SNAPSHOT_PALETTE = [
+    '#1F77B4',  # blue
+    '#2CA02C',  # green
+    '#FF7F0E',  # orange
+    '#9467BD',  # purple
+    '#8C564B',  # brown
+    '#E377C2',  # pink
+    '#17BECF',  # cyan
+    '#BCBD22',  # olive
+]
+
 # ── Scoring method registry ──────────────────────────────────────────────────
 # (key, display_name, p_key, D_key, color)
 SCORING_METHODS = [
@@ -98,6 +128,45 @@ _METHOD_SCORING_LABELS = {
 _METHOD_COLORBAR_OVERRIDE = {
     'likelihood': 'Normalized Likelihood',
 }
+
+
+def smooth_pooled_cdf(pooled, n_sets: int, n_fine: int = 500):
+    """Smooth empirical CDF + 16-84 percentile band of pooled simulated ΔRVs.
+
+    Returns (sorted_pool, y_pool, x_fine, lo_fine, hi_fine) for plotting:
+      - sorted_pool, y_pool : sort all ``n_sets * n_stars`` ΔRVs and step
+        through them (y = (k+1)/N) — naturally smooth with thousands of
+        points.  Use these as the dashed median line.
+      - x_fine, lo_fine, hi_fine : 16-84 percentile of per-draw empirical
+        CDFs evaluated at ``n_fine`` linearly-spaced x-points from 0 to
+        max(pooled).  Use as the shaded band.
+
+    Bypasses the simulator's coarse visualization bin grid (e.g.
+    ``DEFAULT_DRV_BIN_EDGES``) — display resolution is unrelated to the
+    multinomial likelihood scoring bins, so changing the visualization
+    does not change logL.
+
+    Returns ``None`` if ``pooled`` is empty or ``n_sets`` is non-positive.
+    """
+    pooled = np.asarray(pooled, dtype=float)
+    n_total = pooled.size
+    if n_total == 0 or n_sets <= 0:
+        return None
+    n_stars = n_total // n_sets
+    if n_stars * n_sets != n_total:
+        return None
+    sorted_pool = np.sort(pooled)
+    y_pool = np.arange(1, n_total + 1, dtype=float) / n_total
+    all_drv = pooled.reshape(n_sets, n_stars)
+    sorted_per_draw = np.sort(all_drv, axis=1)
+    x_max = float(sorted_pool[-1]) if sorted_pool[-1] > 0 else 1.0
+    x_fine = np.linspace(0.0, x_max, n_fine)
+    band_cdfs = np.empty((n_sets, n_fine), dtype=float)
+    for i in range(n_sets):
+        band_cdfs[i] = np.searchsorted(sorted_per_draw[i], x_fine, side='right') / n_stars
+    lo_fine = np.percentile(band_cdfs, 16, axis=0)
+    hi_fine = np.percentile(band_cdfs, 84, axis=0)
+    return sorted_pool, y_pool, x_fine, lo_fine, hi_fine
 
 
 def _hex_to_rgba(hex_color: str, alpha: float) -> str:
@@ -464,84 +533,29 @@ def _make_3d_stacked_fig(
 def _render_cdf_sanity_check(best_fbin, best_x, sigma_single,
                               obs_delta_rv, period_model, result,
                               settings, p_prefix: str) -> None:
-    """Render 5 random CDF draws vs observed for cadence sanity check.
+    """Thin delegator to the canonical CDF Sanity Check implementation.
 
-    Generates 5 independent sets of 25 simulated stars at the best-fit
-    parameters, overlaid on the observed CDF. This verifies the cadence-aware
-    pipeline produces sensible ΔRV distributions.
+    Stage D (2026-04-23): there used to be two parallel implementations
+    — one here with kwargs-style simulate_delta_rv_sample(), one in
+    render_lk_explorer.py with the newer sim_cfg pattern — which caused
+    drift (the sanity check in the Dsilva/Langer Likelihood tab was the
+    newer one; this one, reached only via analysis.py's fallback path,
+    silently failed on every call because simulate_delta_rv_sample() no
+    longer accepts those kwargs).  This wrapper now delegates to the
+    newer version so both call sites render identical figures.
+
+    ``settings`` is accepted but ignored (kept for signature stability
+    with the analysis.py caller).
     """
-    from wr_bias_simulation import (
-        simulate_delta_rv_sample, BinaryParameterConfig,
-        DEFAULT_DRV_BIN_EDGES,
-    )
-
-    def _bcdf(data, edges):
-        s = np.sort(data)
-        return np.searchsorted(s, edges, side='right') / len(s)
-
-    cadence_library = result.get('cadence_library')
-    if cadence_library is None:
-        return
-
-    _bin_edges = DEFAULT_DRV_BIN_EDGES
-    obs_cdf_b = _bcdf(obs_delta_rv, _bin_edges)
-
-    st.markdown('### CDF Sanity Check')
-    st.caption(
-        '5 random draws of 25 simulated stars at the best-fit parameters, '
-        'compared to the observed CDF. Each draw uses different random seeds '
-        'but identical cadence assignments.'
-    )
-
-    # Build BinaryParameterConfig from result metadata
-    _bcfg_dict = result.get('bin_cfg', {})
-    bcfg = BinaryParameterConfig(**_bcfg_dict) if _bcfg_dict else BinaryParameterConfig()
-
-    fig = go.Figure()
-
-    # Observed CDF
-    fig.add_trace(go.Scatter(
-        x=_bin_edges, y=obs_cdf_b,
-        mode='lines', name='Observed',
-        line=dict(color='#4A90D9', width=3, shape='hv'),
-    ))
-
-    # 5 random draws
-    _draw_colors = ['#E25A53', '#50C878', '#9B59B6', '#F39C12', '#1ABC9C']
-    for i, seed in enumerate([42, 43, 44, 45, 46]):
-        try:
-            drv = simulate_delta_rv_sample(
-                n_stars=25,
-                f_bin=best_fbin,
-                sigma_single=sigma_single,
-                sigma_measure=float(result.get('sigma_meas', 1.622)),
-                binary_config=bcfg,
-                rng_seed=seed,
-                period_model=period_model,
-                cadence_library=cadence_library,
-            )
-            sim_cdf = _bcdf(drv, _bin_edges)
-            fig.add_trace(go.Scatter(
-                x=_bin_edges, y=sim_cdf,
-                mode='lines', name=f'Draw {i+1} (seed={seed})',
-                line=dict(color=_draw_colors[i], width=1.5,
-                          dash='dash', shape='hv'),
-                opacity=0.7,
-            ))
-        except Exception:
-            pass
-
-    fig.update_layout(**{
-        **PLOTLY_THEME,
-        'title': dict(
-            text=f'CDF Sanity Check  (f_bin={best_fbin:.3f}, 25 stars × 5 draws)',
-            font=dict(size=14)),
-        'xaxis_title': 'ΔRV (km/s)',
-        'yaxis_title': 'Cumulative fraction',
-        'height': 420,
-        'legend': dict(x=0.55, y=0.35, font=dict(size=10)),
-    })
-    st.plotly_chart(fig, use_container_width=True, key=f'{p_prefix}_cdf_sanity')
+    del settings  # unused — kept for API compatibility
+    from bc.render_lk_explorer import _render_lk_cdf_sanity_check as _canon
+    # Bug 2 fix (2026-04-27): the canonical sanity check now needs the
+    # page-level prefix to look up validation context (error_model /
+    # validation seed) from session_state.  The caller path through
+    # analysis.py only knows the method-suffixed prefix, so we let the
+    # canonical function fall back to suffix stripping (its default).
+    _canon(best_fbin, best_x, sigma_single,
+           obs_delta_rv, period_model, result, p_prefix)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

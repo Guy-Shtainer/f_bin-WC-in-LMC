@@ -17,7 +17,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from shared import make_heatmap_fig, find_best_grid_point, PLOTLY_THEME, get_palette
-from bc.helpers import SCORING_METHODS, _METHOD_COLORS, _RESULT_DIR
+from bc.helpers import SCORING_METHODS, _METHOD_COLORS, _RESULT_DIR, smooth_pooled_cdf
 
 
 def _binned_cdf(data: np.ndarray, bin_edges: np.ndarray) -> np.ndarray:
@@ -57,10 +57,10 @@ def _make_max_pval_fig(
     fig.add_trace(go.Scatter(
         x=[float(sigma_vals[best_idx])], y=[max_pvals[best_idx]],
         mode='markers+text',
-        marker=dict(symbol='star', size=16, color='gold',
+        marker=dict(symbol='star', size=16, color='#DAA520',
                     line=dict(color='black', width=1)),
         text=[f'  {x_label}={float(sigma_vals[best_idx]):.2f}, {stat_label}={max_pvals[best_idx]:.4f}'],
-        textposition='middle right', textfont=dict(color='gold', size=11),
+        textposition='middle right', textfont=dict(color='#DAA520', size=11),
         showlegend=False))
     fig.update_layout(**{
         **PLOTLY_THEME,
@@ -68,6 +68,14 @@ def _make_max_pval_fig(
         'xaxis_title': x_label, 'yaxis_title': f'Max {stat_label}',
         'height': height, 'margin': dict(l=60, r=20, t=50, b=50),
     })
+    # A&A override: white bg + serif.
+    try:
+        from bc.render_validation import _AA_OVERRIDES
+        fig.update_layout(**_AA_OVERRIDES)
+        fig.update_xaxes(**_AA_OVERRIDES['xaxis'])
+        fig.update_yaxes(**_AA_OVERRIDES['yaxis'])
+    except Exception:
+        pass
     return fig
 
 def _safe_mask(arr: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -275,18 +283,144 @@ def _render_all_methods_cdf(
     from bc.render_lk_explorer import (
         _result_bin_cfg_tuple, _result_period_model,
     )
+    # Round-5 CDF style constants (cross-file SSOT in render_validation).
+    from bc.render_validation import (
+        _CDF_OBS_COLOR, _CDF_FIT_COLOR, _CDF_FIT_MARG_COLOR,
+        _CLR_SINGLE, _CLR_BINARY,
+    )
+    from bc.validation_io import load_per_star_truth
+
     _be = result.get('bin_edges')
     _be = DEFAULT_DRV_BIN_EDGES if _be is None else np.asarray(_be)
     obs_drv = np.asarray(obs_drv)
-    _n_obs = len(obs_drv)
-    obs_cdf = _binned_cdf(obs_drv, _be)
-    _obs_x = np.concatenate([[0.0], _be])
-    _obs_y = np.concatenate([[0.0], obs_cdf])
 
+    # Conditional "Mock Observation" label in validation flow.
+    from bc.helpers import _obs_label as _obs_label_sh
+    _obs_name_sh = _obs_label_sh(result)
+
+    # Round-5 CDF: BLACK sorted-raw step (NOT the binned CDF) so per-star
+    # truth dots overlay precisely on the curve.
+    _obs_finite = obs_drv[np.isfinite(obs_drv) & (obs_drv > 0)]
+    _n_obs = int(_obs_finite.size)
     fig_cdf = go.Figure()
-    fig_cdf.add_trace(go.Scatter(
-        x=_obs_x, y=_obs_y, mode='lines', name='Observed',
-        line=dict(color='lightblue', width=2.5, shape='hv')))
+    if _n_obs > 0:
+        _sort_idx = np.argsort(_obs_finite)
+        _drv_sorted = _obs_finite[_sort_idx]
+        _cdf_y = (np.arange(_n_obs) + 1) / _n_obs
+        fig_cdf.add_trace(go.Scatter(
+            x=_drv_sorted, y=_cdf_y, mode='lines', name=_obs_name_sh,
+            line=dict(color=_CDF_OBS_COLOR, width=2.5, shape='hv')))
+
+        # Per-star truth-coded markers (validation flow only).  Outside the
+        # validation flow load_per_star_truth returns None and the dots are
+        # silently omitted.
+        _is_bin = load_per_star_truth(result)
+        if _is_bin is not None:
+            _is_bin_full = np.asarray(_is_bin, dtype=bool)
+            if _is_bin_full.size == obs_drv.size:
+                _finite_mask = np.isfinite(obs_drv) & (obs_drv > 0)
+                _is_bin_finite = _is_bin_full[_finite_mask]
+                if _is_bin_finite.size == _n_obs:
+                    _is_bin_sorted = _is_bin_finite[_sort_idx]
+                    _single_mask = ~_is_bin_sorted
+                    _n_single = int(_single_mask.sum())
+                    _n_binary = int(_is_bin_sorted.sum())
+                    if np.any(_single_mask):
+                        fig_cdf.add_trace(go.Scatter(
+                            x=_drv_sorted[_single_mask],
+                            y=_cdf_y[_single_mask],
+                            mode='markers',
+                            marker=dict(color=_CLR_SINGLE, size=8,
+                                        line=dict(color='black', width=0.6)),
+                            name=f'Single ({_n_single})',
+                            hovertemplate='single · ΔRV=%{x:.1f} km/s<extra></extra>',
+                        ))
+                    if np.any(_is_bin_sorted):
+                        fig_cdf.add_trace(go.Scatter(
+                            x=_drv_sorted[_is_bin_sorted],
+                            y=_cdf_y[_is_bin_sorted],
+                            mode='markers',
+                            marker=dict(color=_CLR_BINARY, size=8,
+                                        line=dict(color='black', width=0.6)),
+                            name=f'Binary ({_n_binary})',
+                            hovertemplate='binary · ΔRV=%{x:.1f} km/s<extra></extra>',
+                        ))
+
+        # Real-obs fallback: when the validation truth helper returned
+        # None, pull binary classification from the observation loader
+        # so dots also work for the real WR sample.  Silent skip on any
+        # failure to avoid breaking the shared panel for legacy results.
+        if _is_bin is None and _n_obs > 0:
+            try:
+                from shared import (
+                    settings_hash,
+                    cached_load_observed_delta_rvs,
+                    get_settings_manager,
+                )
+                _settings_raw = result.get('settings')
+                if isinstance(_settings_raw, np.ndarray):
+                    try:
+                        _settings_raw = _settings_raw.item()
+                    except Exception:
+                        _settings_raw = None
+                if not isinstance(_settings_raw, dict):
+                    _settings_obj = get_settings_manager().load()
+                else:
+                    _settings_obj = _settings_raw
+                _sh = settings_hash(_settings_obj)
+                _obs_drv_full, _obs_detail = cached_load_observed_delta_rvs(_sh)
+                _names_in_order = list(_obs_detail.keys())
+                _isbin_full = np.array([
+                    bool(_obs_detail[n].get('is_binary'))
+                    if _obs_detail[n].get('is_binary') is not None else False
+                    for n in _names_in_order
+                ], dtype=bool)
+                _sigma_full = np.array([
+                    float(_obs_detail[n].get('best_sigma') or 0.0)
+                    for n in _names_in_order
+                ], dtype=float)
+                if _isbin_full.size == obs_drv.size:
+                    _finite_mask_ro = np.isfinite(obs_drv) & (obs_drv > 0)
+                    _isbin_finite = _isbin_full[_finite_mask_ro]
+                    _sigma_finite = _sigma_full[_finite_mask_ro]
+                    if _isbin_finite.size == _n_obs:
+                        _isbin_sorted_ro = _isbin_finite[_sort_idx]
+                        _sigma_sorted_ro = _sigma_finite[_sort_idx]
+                        for _mask, _color, _label in [
+                            (~_isbin_sorted_ro, _CLR_SINGLE, 'single'),
+                            (_isbin_sorted_ro,  _CLR_BINARY, 'binary'),
+                        ]:
+                            if bool(np.any(_mask)):
+                                _hover = [
+                                    f'ΔRV = {d:.1f} km/s, σ = {s:.1f}, {_label}'
+                                    for d, s in zip(_drv_sorted[_mask],
+                                                    _sigma_sorted_ro[_mask])
+                                ]
+                                fig_cdf.add_trace(go.Scatter(
+                                    x=_drv_sorted[_mask],
+                                    y=_cdf_y[_mask],
+                                    mode='markers',
+                                    marker=dict(color=_color, size=8,
+                                                line=dict(color='black',
+                                                          width=0.6)),
+                                    name=f'{_label.title()} ({int(_mask.sum())})',
+                                    hovertext=_hover, hoverinfo='text',
+                                ))
+                    else:
+                        st.warning(
+                            f"Real-obs truth dots (Langer) skipped: "
+                            f"filter mismatch (isbin_finite="
+                            f"{_isbin_finite.size} vs n_obs={_n_obs}).")
+                else:
+                    st.warning(
+                        f"Real-obs truth dots (Langer) skipped: size "
+                        f"mismatch (isbin_full={_isbin_full.size} vs "
+                        f"obs_drv={obs_drv.size}).")
+            except Exception as _ro_exc:
+                import traceback as _tb
+                st.warning(
+                    f"Real-obs truth-dot fallback (Langer) raised:\n"
+                    f"```\n{_tb.format_exc()}\n```")
 
     # E048: thread full physics config.
     _bc_tuple_l = _result_bin_cfg_tuple(result)
@@ -301,48 +435,287 @@ def _render_all_methods_cdf(
             'match with the grid\'s stored logL_raw.')
 
     _n_sets = int(result.get('n_sets', 50))
-    for mk, info in method_results.items():
-        bv = info['best_vals']
-        fb = bv.get('fbin', 0.5)
-        sig_v = bv.get('sigma', 5.0)
-        _mcolor = next((c for k, _, _, _, c in SCORING_METHODS if k == mk), '#888888')
-        _mname = next((n for k, n, _, _, _ in SCORING_METHODS if k == mk), mk)
+
+    # Round-5 dual overlay: GRID best (red dashed) + MARGINAL best (purple
+    # dashed) for every method.  Per-method visual separation via band
+    # opacity (method 1 → 0.18, method 2 → 0.12, method 3 → 0.08); line
+    # colors stay globally red/purple per the user-locked convention.
+    _band_opacities_l = [0.18, 0.12, 0.08]
+
+    def _format_label_l(prefix: str, vals: dict) -> str:
+        _lbl = f'{prefix} (f<sub>bin</sub>={vals.get("fbin", float("nan")):.3f}'
+        if x_name in vals and np.isfinite(vals[x_name]):
+            _lbl += f', π={vals[x_name]:.2f}' if x_name == 'pi' else f', {x_label}={vals[x_name]:.2f}'
+        if 'sigma' in vals and np.isfinite(vals['sigma']) and vals['sigma'] != 0:
+            _lbl += f', σ={vals["sigma"]:.1f}'
+        if ('logPmax' in vals and np.isfinite(vals['logPmax'])
+                and vals['logPmax'] != 0):
+            _lbl += f', logP<sub>max</sub>={vals["logPmax"]:.2f}'
+        _lbl += ')'
+        return _lbl
+
+    # ── Per-rank gradient markers helpers ──────────────────────────────
+    def _gradient_color(frac: float) -> str:
+        """Linear RGB interp from _CLR_SINGLE (red, frac=0) to
+        _CLR_BINARY (green, frac=1).  Used to color per-rank dots by
+        the simulated binary fraction at that rank.
+        """
+        def _hex_to_rgb(h):
+            h = h.lstrip('#')
+            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+        r0, g0, b0 = _hex_to_rgb(_CLR_SINGLE)
+        r1, g1, b1 = _hex_to_rgb(_CLR_BINARY)
+        f = max(0.0, min(1.0, float(frac)))
+        r = int(round(r0 + (r1 - r0) * f))
+        g = int(round(g0 + (g1 - g0) * f))
+        b = int(round(b0 + (b1 - b0) * f))
+        return f'rgb({r},{g},{b})'
+
+    _colorbar_shown_l = {'flag': False}
+
+    def _add_rank_markers(rank_drv, rank_bin_frac, lgroup,
+                          step_x=None, step_y=None,
+                          symbol='circle'):
+        """Per-rank markers colored by simulated binary fraction.
+
+        *symbol* picks the marker shape ('square' for median-line,
+        'triangle-up' for mean-line).
+        """
+        if (rank_drv is None or len(rank_drv) == 0
+                or rank_bin_frac is None or len(rank_bin_frac) == 0):
+            return
+        rank_drv_arr = np.asarray(rank_drv, dtype=float)
+        n = int(rank_drv_arr.size)
+        if step_x is not None and step_y is not None:
+            _sx = np.asarray(step_x)
+            _sy = np.asarray(step_y)
+            _idx = np.searchsorted(_sx, rank_drv_arr, side='right') - 1
+            _idx = np.clip(_idx, 0, _sy.size - 1)
+            y_vals = _sy[_idx]
+        else:
+            y_vals = (np.arange(n) + 1) / n
+        bf_arr = np.asarray(rank_bin_frac, dtype=float)
+        hover = [f'rank {k+1}/{n} · binary fraction = {bf_arr[k]:.0%}'
+                 for k in range(n)]
+        _show_cbar = not _colorbar_shown_l['flag']
+        _marker = dict(
+            symbol=symbol,
+            color=bf_arr, size=8,
+            colorscale=[[0.0, _CLR_SINGLE], [1.0, _CLR_BINARY]],
+            cmin=0.0, cmax=1.0,
+            line=dict(color='black', width=0.4),
+            showscale=_show_cbar,
+        )
+        if _show_cbar:
+            _marker['colorbar'] = dict(
+                title=dict(text='MC binary<br>fraction',
+                           font=dict(size=11)),
+                tickvals=[0.0, 0.5, 1.0],
+                ticktext=['0% single', '50%', '100% binary'],
+                len=0.6, thickness=12, x=1.02, y=0.5,
+            )
+            _colorbar_shown_l['flag'] = True
+        fig_cdf.add_trace(go.Scatter(
+            x=rank_drv_arr, y=y_vals, mode='markers',
+            marker=_marker,
+            legendgroup=lgroup, showlegend=False,
+            hovertext=hover, hoverinfo='text',
+        ))
+
+    def _add_band_l(_mx, _med, _lo, _hi, color, alpha, lgroup, label):
+        _my = np.concatenate([[0.0], _med])
+        _loy = np.concatenate([[0.0], _lo])
+        _hiy = np.concatenate([[0.0], _hi])
+        fig_cdf.add_trace(go.Scatter(
+            x=_mx, y=_loy, mode='lines',
+            line=dict(color='rgba(0,0,0,0)', shape='hv'),
+            legendgroup=lgroup, showlegend=False, hoverinfo='skip'))
+        fig_cdf.add_trace(go.Scatter(
+            x=_mx, y=_hiy, mode='lines',
+            line=dict(color='rgba(0,0,0,0)', shape='hv'),
+            fill='tonexty', fillcolor=_hex_to_rgba(color, alpha),
+            legendgroup=lgroup, showlegend=False, hoverinfo='skip'))
+        fig_cdf.add_trace(go.Scatter(
+            x=_mx, y=_my, mode='lines', name=label, legendgroup=lgroup,
+            line=dict(color=color, width=2, dash='dash', shape='hv')))
+
+    # ── logL helpers for legend suffix ──────────────────────────────────
+    def _logL_at_grid_cell(vals: dict) -> float:
+        """Stored exact logL at the nearest grid cell to *vals*.
+
+        Reads `result['logL_raw']` (3-D or 4-D) and indexes by the
+        nearest sigma/fbin/x_name/logPmax grid cell.
+        """
+        raw = result.get('logL_raw')
+        if raw is None or not np.size(raw):
+            return float('nan')
+        raw = np.asarray(raw)
+        sg = np.asarray(result.get('sigma_grid', []))
+        fg = np.asarray(result.get('fbin_grid', []))
+        pg = np.asarray(result.get('pi_grid', []))
+        lpg = np.asarray(result.get('logPmax_grid', []))
+
+        def _nearest(g, v):
+            if g.size == 0:
+                return None
+            return int(np.argmin(np.abs(g - v)))
+
+        i_sig = _nearest(sg, vals.get('sigma', 0.0))
+        i_fb  = _nearest(fg, vals.get('fbin', 0.0))
+        i_pi  = _nearest(pg, vals.get(x_name, 0.0))
+        i_lp  = _nearest(lpg, vals.get('logPmax', 0.0)) if lpg.size > 0 else None
         try:
-            _med, _lo, _hi, _ = _me_cdf_band_langer(
-                float(fb), float(bv.get('logPmax', 5.0)),
-                float(sig_v), float(result.get('sigma_meas', 3.0)),
+            if raw.ndim == 4 and i_lp is not None:
+                return float(raw[i_lp, i_sig, i_fb, i_pi])
+            if raw.ndim == 3:
+                return float(raw[i_sig, i_fb, i_pi])
+        except Exception:
+            return float('nan')
+        return float('nan')
+
+    def _logL_exact_pooled(pooled) -> float:
+        """Exact logL for a marginal point: re-score pooled draws against
+        the same likelihood bins the grid used."""
+        if pooled is None or len(pooled) == 0:
+            return float('nan')
+        try:
+            from wr_bias_simulation import (
+                multinomial_log_likelihood, DSILVA_LIKELIHOOD_BINS,
+            )
+            _lk_be = result.get('likelihood_bin_edges')
+            if _lk_be is None:
+                _lk_be = DSILVA_LIKELIHOOD_BINS
+            return float(multinomial_log_likelihood(
+                np.asarray(obs_drv), np.asarray(pooled), np.asarray(_lk_be)))
+        except Exception:
+            return float('nan')
+
+    def _logL_suffix(val: float) -> str:
+        return f' · logL = {val:.1f}' if np.isfinite(val) else ''
+
+    for _mi, (mk, info) in enumerate(method_results.items()):
+        bv = info['best_vals']
+        hdi = info.get('hdi', {})
+        _mname = next((n for k, n, _, _, _ in SCORING_METHODS if k == mk), mk)
+        _band_alpha = _band_opacities_l[_mi % len(_band_opacities_l)]
+
+        # Marginal-best params: hdi[name][0] = mode of the 1-D marginal
+        # posterior.  Same canonical _method_best_and_hdi path Round-5 used.
+        def _marg_or_grid_l(name: str, fallback):
+            t = hdi.get(name)
+            if t is None or not np.isfinite(t[0]):
+                return fallback
+            return float(t[0])
+
+        try:
+            sigma_m_l = float(result.get('sigma_meas') or 3.0)
+
+            # ── GRID best-fit (joint argmax) ────────────────────────────
+            fb_g  = float(bv.get('fbin', 0.5))
+            sig_g = float(bv.get('sigma', 5.0))
+            lp_g  = float(bv.get('logPmax', 5.0))
+            _band_g = _me_cdf_band_langer(
+                fb_g, lp_g, sig_g, sigma_m_l,
                 tuple(_be.tolist()), n_sets=_n_sets,
                 _cadence_library=_cad_lib_l, _cadence_weights=_cad_wt_l,
                 _bin_cfg_dict=_bc_tuple_l, period_model=_pm_l,
             )
-            _mx = np.concatenate([[0.0], _be])
-            _my = np.concatenate([[0.0], _med])
-            _loy = np.concatenate([[0.0], _lo])
-            _hiy = np.concatenate([[0.0], _hi])
-            _lbl = f'{_mname} (f<sub>bin</sub>={fb:.3f}'
-            if x_name in bv and np.isfinite(bv[x_name]):
-                _lbl += f', π={bv[x_name]:.2f}' if x_name == 'pi' else f', {x_label}={bv[x_name]:.2f}'
-            if 'sigma' in bv and np.isfinite(bv['sigma']) and bv['sigma'] != 0:
-                _lbl += f', σ={bv["sigma"]:.1f}'
-            if ('logPmax' in bv and np.isfinite(bv['logPmax'])
-                    and bv['logPmax'] != 0):
-                _lbl += f', logP<sub>max</sub>={bv["logPmax"]:.2f}'
-            _lbl += ')'
-            fig_cdf.add_trace(go.Scatter(
-                x=_mx, y=_loy, mode='lines',
-                line=dict(color='rgba(0,0,0,0)', shape='hv'),
-                legendgroup=mk, showlegend=False, hoverinfo='skip'))
-            fig_cdf.add_trace(go.Scatter(
-                x=_mx, y=_hiy, mode='lines',
-                line=dict(color='rgba(0,0,0,0)', shape='hv'),
-                fill='tonexty', fillcolor=_hex_to_rgba(_mcolor, 0.2),
-                legendgroup=mk, showlegend=False, hoverinfo='skip'))
-            fig_cdf.add_trace(go.Scatter(
-                x=_mx, y=_my, mode='lines', name=_lbl,
-                legendgroup=mk, line=dict(color=_mcolor, width=2, dash='dash', shape='hv')))
-        except Exception:
-            pass
+            _grid_vals = {'fbin': fb_g, 'sigma': sig_g, 'logPmax': lp_g}
+            if x_name in bv and np.isfinite(bv.get(x_name, np.nan)):
+                _grid_vals[x_name] = float(bv[x_name])
+            # Smooth empirical CDF + 500-point fine band.  Bypasses the
+            # coarse visualization grid (unrelated to likelihood bins).
+            _scdf_g = smooth_pooled_cdf(_band_g.pooled, _n_sets)
+            if _scdf_g is not None:
+                _sp_g, _yp_g, _xf_g, _lof_g, _hif_g = _scdf_g
+                fig_cdf.add_trace(go.Scatter(
+                    x=_xf_g, y=_lof_g, mode='lines',
+                    line=dict(color='rgba(0,0,0,0)'),
+                    legendgroup=f'{mk}_grid', showlegend=False,
+                    hoverinfo='skip'))
+                fig_cdf.add_trace(go.Scatter(
+                    x=_xf_g, y=_hif_g, mode='lines',
+                    line=dict(color='rgba(0,0,0,0)'),
+                    fill='tonexty',
+                    fillcolor=_hex_to_rgba(_CDF_FIT_COLOR, _band_alpha),
+                    legendgroup=f'{mk}_grid', showlegend=False,
+                    hoverinfo='skip'))
+                fig_cdf.add_trace(go.Scatter(
+                    x=_sp_g, y=_yp_g, mode='lines',
+                    line=dict(color=_CDF_FIT_COLOR, width=2, dash='dash'),
+                    legendgroup=f'{mk}_grid', showlegend=True,
+                    name=_format_label_l(f'{_mname} grid', _grid_vals)
+                         + _logL_suffix(_logL_at_grid_cell(_grid_vals)),
+                    hovertemplate='grid median<extra></extra>',
+                ))
+                _add_rank_markers(_band_g.rank_median,
+                                  _band_g.rank_bin_frac, f'{mk}_grid',
+                                  step_x=_sp_g, step_y=_yp_g,
+                                  symbol='square')
 
+            # ── MARGINAL best-fit (1-D posterior modes) ─────────────────
+            fb_m  = _marg_or_grid_l('fbin', fb_g)
+            sig_m = _marg_or_grid_l('sigma', sig_g)
+            lp_m  = _marg_or_grid_l('logPmax', lp_g)
+            _coords_differ = (
+                fb_m != fb_g or sig_m != sig_g or lp_m != lp_g
+            )
+            if _coords_differ:
+                _band_m = _me_cdf_band_langer(
+                    fb_m, lp_m, sig_m, sigma_m_l,
+                    tuple(_be.tolist()), n_sets=_n_sets,
+                    _cadence_library=_cad_lib_l, _cadence_weights=_cad_wt_l,
+                    _bin_cfg_dict=_bc_tuple_l, period_model=_pm_l,
+                )
+                _marg_vals = {'fbin': fb_m, 'sigma': sig_m, 'logPmax': lp_m}
+                if x_name in bv and np.isfinite(bv.get(x_name, np.nan)):
+                    _marg_vals[x_name] = _marg_or_grid_l(x_name,
+                                                          float(bv[x_name]))
+                _scdf_m = smooth_pooled_cdf(_band_m.pooled, _n_sets)
+                if _scdf_m is not None:
+                    _sp_m, _yp_m, _xf_m, _lof_m, _hif_m = _scdf_m
+                    fig_cdf.add_trace(go.Scatter(
+                        x=_xf_m, y=_lof_m, mode='lines',
+                        line=dict(color='rgba(0,0,0,0)'),
+                        legendgroup=f'{mk}_marg', showlegend=False,
+                        hoverinfo='skip'))
+                    fig_cdf.add_trace(go.Scatter(
+                        x=_xf_m, y=_hif_m, mode='lines',
+                        line=dict(color='rgba(0,0,0,0)'),
+                        fill='tonexty',
+                        fillcolor=_hex_to_rgba(_CDF_FIT_MARG_COLOR, _band_alpha),
+                        legendgroup=f'{mk}_marg', showlegend=False,
+                        hoverinfo='skip'))
+                    fig_cdf.add_trace(go.Scatter(
+                        x=_sp_m, y=_yp_m, mode='lines',
+                        line=dict(color=_CDF_FIT_MARG_COLOR, width=2,
+                                  dash='dash'),
+                        legendgroup=f'{mk}_marg', showlegend=True,
+                        name=_format_label_l(f'{_mname} marginal', _marg_vals)
+                             + _logL_suffix(_logL_exact_pooled(_band_m.pooled)),
+                        hovertemplate='marginal median<extra></extra>',
+                    ))
+                    _add_rank_markers(_band_m.rank_median,
+                                      _band_m.rank_bin_frac, f'{mk}_marg',
+                                      step_x=_sp_m, step_y=_yp_m,
+                                      symbol='square')
+        except Exception as _cdf_exc:
+            import traceback as _tb
+            st.error(f"CDF panel (Langer) exception for method '{mk}':\n```\n{_tb.format_exc()}\n```")
+
+    # Phantom legend entries — make the marker-shape convention explicit.
+    fig_cdf.add_trace(go.Scatter(
+        x=[None], y=[None], mode='markers',
+        marker=dict(symbol='circle', color='black', size=8,
+                    line=dict(color='black', width=0.6)),
+        name='Observation (circle)', showlegend=True, hoverinfo='skip',
+    ))
+    fig_cdf.add_trace(go.Scatter(
+        x=[None], y=[None], mode='markers',
+        marker=dict(symbol='square', color='gray', size=8,
+                    line=dict(color='black', width=0.4)),
+        name='Median rank (square)', showlegend=True, hoverinfo='skip',
+    ))
     # Show likelihood bins toggle
     _show_bins = st.checkbox('Show likelihood bins', value=False,
                              key=f'{prefix}_cdf_show_bins')
@@ -363,16 +736,32 @@ def _render_all_methods_cdf(
 
     fig_cdf.update_layout(**{
         **PLOTLY_THEME,
-        'title': dict(text='CDF Comparison: Observed vs Best-Fit Models', font=dict(size=14)),
+        'title': dict(text=f'CDF Comparison: {_obs_name_sh} vs Best-Fit Models',
+                      font=dict(size=14)),
         'xaxis_title': 'ΔRV (km/s)', 'yaxis_title': 'Cumulative Fraction',
-        'height': 400, 'legend': dict(x=0.55, y=0.05),
+        'height': 600, 'legend': dict(x=0.55, y=0.05),
         'margin': dict(r=40),
     })
+    # A&A override: white bg + serif.
+    try:
+        from bc.render_validation import _AA_OVERRIDES
+        fig_cdf.update_layout(**_AA_OVERRIDES)
+        fig_cdf.update_xaxes(**_AA_OVERRIDES['xaxis'])
+        fig_cdf.update_yaxes(**_AA_OVERRIDES['yaxis'])
+    except Exception:
+        pass
     st.plotly_chart(fig_cdf, use_container_width=True, key=f'{prefix}_cdf_comparison')
     st.caption(
-        f"Observed ΔRV CDF (solid) vs simulated CDFs at each method's "
-        f"best-fit parameters (dashed, median of {_n_sets} draws). "
-        f"Shaded bands = 16-84 percentile. N_stars={_n_obs}.")
+        f"{_obs_name_sh} ΔRV CDF (black) vs simulated best-fit CDFs: "
+        f"red dashed = grid-argmax best-fit (empirical CDF of all pooled "
+        f"simulated ΔRVs across {_n_sets} MC draws); purple dashed = "
+        f"marginal-posterior-peak best-fit (same construction). Per-rank "
+        f"dots ride those lines, colored by the simulated binary fraction "
+        f"at each rank (red = 0% binary, green = 100% binary). "
+        f"Shaded band = 16-84 percentile envelope of per-draw CDFs at a "
+        f"500-point fine x-grid. "
+        f"Cadence-aware when `cadence_library` is available. "
+        f"N_stars={_n_obs}.")
 
 # ── From subtabs.py ──────────────────────────────────────────────────────────
 
@@ -501,7 +890,11 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
     """
     st.markdown('### Binary Fraction vs Threshold')
     n_sim = len(gap_drv)
-    thresh_arr = np.linspace(0, float(np.max(gap_drv) * 1.05), 200)
+    # X-axis max: full data range so the home button zooms all the way out.
+    # Include obs_delta_rv so the observed step curve never clips.
+    _obs_max = float(np.max(obs_delta_rv)) if (obs_delta_rv is not None and len(obs_delta_rv) > 0) else 0.0
+    x_max = max(float(np.max(gap_drv)) * 1.05, _obs_max * 1.15)
+    thresh_arr = np.linspace(0, x_max, 200)
     # Significance mask: ΔRV - nsigma * σ_p2p > 0
     if sigma_p2p is not None:
         sig_mask = (gap_drv - nsigma * sigma_p2p) > 0
@@ -547,7 +940,7 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
         fig.add_trace(go.Scatter(
             x=_obs_drv, y=_obs_fbin_curve, mode='lines',
             name='Observed f_bin(threshold)',
-            line=dict(color='white', width=2.5, shape='hv')))
+            line=dict(color='#000000', width=2.5, shape='hv')))
     fig.add_hline(y=intrinsic_fbin, line_dash='dot', line_color=_CLR_DETECTED,
                   line_width=2, annotation_text=f'Intrinsic f_bin = {intrinsic_fbin:.1%}',
                   annotation_position='top left',
@@ -569,17 +962,17 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
                   annotation_font=dict(size=11, color=_CLR_MISSED))
     fig.add_trace(go.Scatter(
         x=[thresh_dRV], y=[observed_fbin], mode='markers+text',
-        marker=dict(size=14, color='white', symbol='diamond',
+        marker=dict(size=14, color='#DAA520', symbol='diamond',
                     line=dict(width=2, color='black')),
         text=[f'{observed_fbin:.1%}'], textposition='top left',
-        textfont=dict(size=12, color='#333333'),
+        textfont=dict(size=12, color='#000000'),
         name=f'Simulated @ {thresh_dRV} km/s', showlegend=True))
     gap_pct = intrinsic_fbin - observed_fbin
     fig.add_annotation(
         x=thresh_dRV + 15, y=(intrinsic_fbin + observed_fbin) / 2,
         text=f'Gap: {gap_pct:.1%}<br>({missed_count} missed / {total_bin} binaries)',
         showarrow=False, font=dict(size=11, color=_CLR_MISSED),
-        bgcolor=pal['annotation_bg'], bordercolor=_CLR_MISSED,
+        bgcolor='rgba(255,255,255,0.9)', bordercolor=_CLR_MISSED,
         borderwidth=1, borderpad=4)
     fig.add_annotation(
         x=thresh_dRV, y=intrinsic_fbin, ax=thresh_dRV, ay=observed_fbin,
@@ -591,8 +984,18 @@ def render_binary_fraction_vs_threshold(p, gap_drv, gap_is_bin, intrinsic_fbin,
         'xaxis_title': '\u0394RV threshold (km/s)', 'yaxis_title': 'Fraction of sample',
         'height': 400, 'margin': dict(l=60, r=80, t=50, b=50),
         'showlegend': True, 'legend': dict(x=0.55, y=0.95, font=dict(size=10)),
-        'yaxis': dict(range=[0, min(1.0, intrinsic_fbin * 1.5)]),
+        'xaxis': dict(range=[0.0, float(x_max)]),
+        'yaxis': dict(range=[0.0, 1.0]),
     })
+    # A&A override: force white bg + serif on paper-worthy plots.
+    # Deferred import avoids circular risk; see render_validation.py:353.
+    try:
+        from bc.render_validation import _AA_OVERRIDES
+        fig.update_layout(**_AA_OVERRIDES)
+        fig.update_xaxes(range=[0.0, float(x_max)], **_AA_OVERRIDES['xaxis'])
+        fig.update_yaxes(range=[0.0, 1.0], **_AA_OVERRIDES['yaxis'])
+    except Exception:
+        pass
     st.plotly_chart(fig, use_container_width=True, key=f'{p}_gap_chart')
     sfx = f' ({model_label})' if model_label else ''
     st.caption(
@@ -735,6 +1138,20 @@ def render_orbital_histograms(p, gap_sim, bin_detected_mask, bin_missed_mask,
         fig_mb.update_yaxes(showgrid=False, row=r, col=c)
     for ri in range(1, NR + 1):
         fig_mb.update_yaxes(title_text='Prob. density', row=ri, col=1)
+    # A&A override: white bg + serif across every subplot.
+    try:
+        from bc.render_validation import _AA_OVERRIDES
+        fig_mb.update_layout(
+            plot_bgcolor=_AA_OVERRIDES['plot_bgcolor'],
+            paper_bgcolor=_AA_OVERRIDES['paper_bgcolor'],
+            font=_AA_OVERRIDES['font'],
+            legend=_AA_OVERRIDES['legend'],
+            hoverlabel=_AA_OVERRIDES['hoverlabel'],
+        )
+        fig_mb.update_xaxes(**_AA_OVERRIDES['xaxis'])
+        fig_mb.update_yaxes(**_AA_OVERRIDES['yaxis'])
+    except Exception:
+        pass
     st.plotly_chart(fig_mb, use_container_width=True, key=f'{p}_missed_binaries')
     _cap_parts = [f'f_bin={ana_fbin:.3f}' if ana_fbin is not None else 'f_bin=?']
     if ana_x_val is not None:

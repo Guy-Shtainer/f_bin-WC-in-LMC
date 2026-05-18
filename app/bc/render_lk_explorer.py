@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Tuple
+from typing import NamedTuple, Tuple
 
 import numpy as np
 import pandas as pd
@@ -16,10 +16,284 @@ import plotly.graph_objects as go
 import streamlit as st
 
 
+class CDFBandResult(NamedTuple):
+    """Return type for `_me_cdf_band` / `_me_cdf_band_langer`.
+
+    Eight named arrays: the existing (median, lo, hi, pooled) plus the
+    new (mean, rank_median, rank_mean, rank_bin_frac) carried out of the
+    cadence-aware simulator for per-rank CDF panel markers.
+
+    The tuple is also unpackable as a 4-tuple via slicing; call sites
+    that only want the legacy fields use attribute access (`.median`,
+    `.lo`, `.hi`, `.pooled`).
+    """
+    median: np.ndarray
+    lo: np.ndarray
+    hi: np.ndarray
+    pooled: np.ndarray
+    mean: np.ndarray
+    rank_median: np.ndarray
+    rank_mean: np.ndarray
+    rank_bin_frac: np.ndarray
+
+
 def _binned_cdf(data: np.ndarray, bin_edges: np.ndarray) -> np.ndarray:
     """Empirical CDF at bin_edges."""
     s = np.sort(data)
     return np.searchsorted(s, bin_edges, side='right') / len(s)
+
+
+def _explorer_run_grid_pipeline(
+    fb: float, pi_v: float, sigma_s: float, logPmax: float,
+    sigma_m: float, bin_edges: np.ndarray, lk_be: np.ndarray,
+    obs_drv: np.ndarray, cad_lib, cad_wt,
+    bin_cfg_dict, period_model: str,
+    n_sets: int, seed: int, result: dict,
+) -> dict:
+    """Run the EXACT grid worker pipeline (`_single_grid_task_cadence_aware`)
+    at a single (f_bin, pi, sigma, logPmax) point and return the result
+    needed by the Explorer (CDF + logL + pooled drv).
+
+    Mirrors wr_bias_simulation.py:1580-1629.  Same SimulationConfig fields,
+    same BinaryParameterConfig copy, same simulate_delta_rv_cadence_aware
+    call, same multinomial_log_likelihood scoring.
+    """
+    from wr_bias_simulation import (
+        SimulationConfig, BinaryParameterConfig,
+        simulate_delta_rv_cadence_aware, multinomial_log_likelihood,
+    )
+
+    # cadence_library may have been persisted as a numpy object array
+    # (one entry per star, each entry a 1-D MJD array of varying length).
+    # SimulationConfig.assign_times_deterministic requires a Python list
+    # of np.ndarrays — coerce here.
+    if cad_lib is not None and not isinstance(cad_lib, list):
+        try:
+            cad_lib_list = [np.asarray(_c, dtype=float) for _c in cad_lib]
+        except Exception:
+            cad_lib_list = list(cad_lib)
+    else:
+        cad_lib_list = cad_lib
+
+    if cad_wt is not None and hasattr(cad_wt, 'tolist'):
+        cad_wt_list = cad_wt.tolist()
+    else:
+        cad_wt_list = cad_wt
+
+    sim_cfg_local = SimulationConfig(
+        n_stars=len(cad_lib_list) if cad_lib_list is not None else 25,
+        n_epochs=int(result.get('n_epochs', 6)),
+        time_span=float(result.get('time_span', 3650.0)),
+        sigma_single=float(sigma_s),
+        sigma_measure=float(sigma_m),
+        v_sys=float(result.get('v_sys', 0.0)),
+        observation_times=result.get('observation_times'),
+        cadence_library=cad_lib_list,
+        cadence_weights=cad_wt_list,
+        error_model_single=str(result.get('error_model_single', 'fixed')),
+        error_params_single=tuple(result.get('error_params_single', ()) or ()),
+        error_model_binary=str(result.get('error_model_binary', 'fixed')),
+        error_params_binary=tuple(result.get('error_params_binary', ()) or ()),
+    )
+
+    if bin_cfg_dict is not None:
+        try:
+            bin_cfg_local = BinaryParameterConfig(**dict(bin_cfg_dict))
+        except Exception:
+            bin_cfg_local = BinaryParameterConfig()
+    else:
+        bin_cfg_local = BinaryParameterConfig()
+    bin_cfg_local.logP_max = float(logPmax)
+    bin_cfg_local.period_model = str(period_model)
+
+    rng = np.random.default_rng(int(seed))
+    sim_result = simulate_delta_rv_cadence_aware(
+        f_bin=float(fb), pi=float(pi_v),
+        sim_cfg=sim_cfg_local, bin_cfg=bin_cfg_local, rng=rng,
+        n_sets=int(n_sets), bin_edges=bin_edges,
+    )
+    pooled = sim_result['all_delta_rv'].ravel()
+    logL = float(multinomial_log_likelihood(obs_drv, pooled, lk_be))
+    return {
+        'logL': logL,
+        'median_cdf': sim_result['median_cdf'],
+        'lo_cdf': sim_result['lo_cdf'],
+        'hi_cdf': sim_result['hi_cdf'],
+        'pooled': pooled,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Cached wrapper around _explorer_run_grid_pipeline (auto-update Explorer)
+# ---------------------------------------------------------------------------
+# Project rule "All UI inputs persist on change" + the user's request
+# (2026-04-29) to drop the Run-button gate require an inexpensive
+# recompute path so dragging a slider does not trigger a redundant
+# n_sets-shot simulation.  We wrap _explorer_run_grid_pipeline in
+# @st.cache_data so back-and-forth slider motion is instant after the
+# first compute.  The cache key is built from primitive/hashable args
+# only — `result` is decomposed into its scalar/tuple ingredients so
+# the cache key actually changes when (and only when) physics inputs
+# change.
+
+def _hashable_cadence_library(cad_lib):
+    """Convert a cadence library (list/object-array of 1D MJD arrays)
+    into a hashable nested tuple.  Returns None when input is None."""
+    if cad_lib is None:
+        return None
+    try:
+        return tuple(tuple(float(x) for x in np.asarray(arr, dtype=float).ravel())
+                     for arr in cad_lib)
+    except Exception:
+        # Worst-case fallback: hash by repr (still hashable, deterministic
+        # for the lifetime of the result dict).
+        return repr(cad_lib)
+
+
+def _hashable_1d(arr):
+    """Convert a 1D-ish array/list to a tuple of floats.  None → None."""
+    if arr is None:
+        return None
+    try:
+        return tuple(float(x) for x in np.asarray(arr, dtype=float).ravel())
+    except Exception:
+        return None
+
+
+@st.cache_data(show_spinner=False)
+def _explorer_run_grid_pipeline_cached(
+    fb: float, pi_v: float, sigma_s: float, logPmax: float,
+    sigma_m: float, n_sets: int, seed: int,
+    bin_edges_tuple: tuple, lk_be_tuple: tuple, obs_drv_tuple: tuple,
+    cad_lib_tuple, cad_wt_tuple,
+    bin_cfg_dict_tuple, period_model: str,
+    n_stars: int, n_epochs: int, time_span: float, v_sys: float,
+    obs_times_tuple,
+    error_model_single: str, error_params_single: tuple,
+    error_model_binary: str, error_params_binary: tuple,
+) -> dict:
+    """Cached grid-pipeline run keyed on hashable primitives.
+
+    Reconstructs the minimum `result`-like dict that
+    `_explorer_run_grid_pipeline` reads, then delegates.  This keeps the
+    grid-equivalence invariant intact (same SimulationConfig fields,
+    same BinaryParameterConfig copy, same simulate_delta_rv_cadence_aware
+    call, same multinomial_log_likelihood scoring) — the wrapper only
+    serialises arguments for the cache key.
+    """
+    # Reconstruct ndarrays from hashable tuples.
+    bin_edges = np.asarray(bin_edges_tuple, dtype=float)
+    lk_be = np.asarray(lk_be_tuple, dtype=float)
+    obs_drv = np.asarray(obs_drv_tuple, dtype=float)
+    if cad_lib_tuple is None:
+        cad_lib = None
+    elif isinstance(cad_lib_tuple, str):
+        cad_lib = None  # repr fallback — degrade gracefully
+    else:
+        cad_lib = [np.asarray(t, dtype=float) for t in cad_lib_tuple]
+    cad_wt = (list(cad_wt_tuple) if cad_wt_tuple is not None else None)
+
+    # Build a minimal result dict carrying only the fields
+    # _explorer_run_grid_pipeline reads.
+    _obs_times = (None if obs_times_tuple is None
+                  else list(obs_times_tuple))
+    _result_min = {
+        'n_epochs': int(n_epochs),
+        'time_span': float(time_span),
+        'v_sys': float(v_sys),
+        'observation_times': _obs_times,
+        'error_model_single': str(error_model_single),
+        'error_params_single': tuple(error_params_single),
+        'error_model_binary': str(error_model_binary),
+        'error_params_binary': tuple(error_params_binary),
+    }
+    return _explorer_run_grid_pipeline(
+        float(fb), float(pi_v), float(sigma_s), float(logPmax),
+        float(sigma_m), bin_edges, lk_be, obs_drv,
+        cad_lib, cad_wt,
+        bin_cfg_dict_tuple, str(period_model),
+        int(n_sets), int(seed), _result_min,
+    )
+
+
+def _run_grid_pipeline_via_cache(
+    fb: float, pi_v: float, sigma_s: float, logPmax: float,
+    sigma_m: float, bin_edges: np.ndarray, lk_be: np.ndarray,
+    obs_drv: np.ndarray, cad_lib, cad_wt,
+    bin_cfg_dict_tuple, period_model: str,
+    n_sets: int, seed: int, result: dict,
+) -> dict:
+    """Adapter: build hashable args from a `result` dict and call the
+    cached wrapper.  Use this everywhere the Explorer would have called
+    `_explorer_run_grid_pipeline` directly so repeated parameter
+    combinations are served from cache."""
+    return _explorer_run_grid_pipeline_cached(
+        float(fb), float(pi_v), float(sigma_s), float(logPmax),
+        float(sigma_m), int(n_sets), int(seed),
+        tuple(np.asarray(bin_edges, dtype=float).ravel().tolist()),
+        tuple(np.asarray(lk_be, dtype=float).ravel().tolist()),
+        tuple(np.asarray(obs_drv, dtype=float).ravel().tolist()),
+        _hashable_cadence_library(cad_lib),
+        _hashable_1d(cad_wt),
+        bin_cfg_dict_tuple,
+        str(period_model),
+        int(len(cad_lib) if cad_lib is not None else
+            result.get('n_stars', 25)),
+        int(result.get('n_epochs', 6)),
+        float(result.get('time_span', 3650.0)),
+        float(result.get('v_sys', 0.0)),
+        _hashable_1d(result.get('observation_times')),
+        str(result.get('error_model_single', 'fixed')),
+        tuple(result.get('error_params_single', ()) or ()),
+        str(result.get('error_model_binary', 'fixed')),
+        tuple(result.get('error_params_binary', ()) or ()),
+    )
+
+
+def _explorer_seed_for_cell(
+    result: dict, sigma_g: np.ndarray, fbin_g: np.ndarray, pi_g: np.ndarray,
+    logPmax_g: np.ndarray,
+    me_sig: float, me_fb: float, me_pi: float, me_logPmax: float,
+    seed_base: int = 1234,
+) -> int:
+    """Reproduce the grid worker's seed for the cell nearest the slider tuple.
+
+    Mirrors `_build_tasks_for_slice` in app/bc/runners_cadence.py:96-106 for
+    the multi-logPmax case, and `run_bias_grid_cadence_aware` in
+    wr_bias_simulation.py:1672-1683 for the single-logPmax case.
+
+    Loop nesting (outer→inner):  logPmax → sigma → fbin → pi.
+
+    seed = seed_base
+            + i_lp * (n_sig * n_fb * n_pi)
+            + i_sig * (n_fb * n_pi)
+            + i_fb  *  n_pi
+            + i_pi
+    """
+    sigma_g = np.asarray(sigma_g) if sigma_g is not None else np.array([])
+    fbin_g = np.asarray(fbin_g) if fbin_g is not None else np.array([])
+    pi_g = np.asarray(pi_g) if pi_g is not None else np.array([])
+    logPmax_g = (np.asarray(logPmax_g) if logPmax_g is not None
+                 else np.array([]))
+
+    n_sig = max(int(sigma_g.size), 1)
+    n_fb = max(int(fbin_g.size), 1)
+    n_pi = max(int(pi_g.size), 1)
+
+    i_sig = (int(np.argmin(np.abs(sigma_g - me_sig)))
+             if sigma_g.size > 0 else 0)
+    i_fb = (int(np.argmin(np.abs(fbin_g - me_fb)))
+            if fbin_g.size > 0 else 0)
+    i_pi = (int(np.argmin(np.abs(pi_g - me_pi)))
+            if pi_g.size > 0 else 0)
+    i_lp = (int(np.argmin(np.abs(logPmax_g - me_logPmax)))
+            if logPmax_g.size > 1 else 0)
+
+    return int(seed_base
+               + i_lp * (n_sig * n_fb * n_pi)
+               + i_sig * (n_fb * n_pi)
+               + i_fb * n_pi
+               + i_pi)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
@@ -50,8 +324,8 @@ def _me_cdf_band(
     bin_edges_tuple: tuple, logPmax: float = 5.0, n_sets: int = 50,
     _cadence_library=None, _cadence_weights=None,
     _bin_cfg_dict=None, period_model: str = 'powerlaw',
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Run *n_sets* simulations and return (median_cdf, lo_cdf, hi_cdf, pooled_drv).
+) -> CDFBandResult:
+    """Run *n_sets* simulations and return a `CDFBandResult` with 8 fields.
 
     When _cadence_library is provided, uses cadence-aware simulation
     (matching the grid runner). Otherwise falls back to basic simulation.
@@ -67,6 +341,12 @@ def _me_cdf_band(
     period_model : str
         'powerlaw' or 'langer2020'. Explicitly propagated to bin_cfg so the
         period distribution used here matches the one scored by the grid.
+
+    Note (2026-04-29): the previous validation_mode branch (mock-replay
+    sampler with seed reuse) was removed.  The Explorer now drives all
+    scoring through the Run button + `_explorer_run_grid_pipeline`, which
+    matches the grid worker bit-for-bit.  The cached helper here is only
+    consumed by the legacy re-sim and CDF-sanity-check paths.
     """
     from wr_bias_simulation import (
         simulate_delta_rv_sample, simulate_delta_rv_cadence_aware,
@@ -101,6 +381,10 @@ def _me_cdf_band(
         all_cdfs = np.array(
             [_binned_cdf(all_drv[i], _be) for i in range(all_drv.shape[0])])
         pooled = all_drv.ravel()
+        mean_cdf_arr  = res['mean_cdf']
+        rank_median   = res['per_rank_median_drv']
+        rank_mean     = res['per_rank_mean_drv']
+        rank_bin_frac = res['per_rank_binary_fraction']
     else:
         all_cdfs, all_drv = [], []
         for si in range(n_sets):
@@ -112,11 +396,23 @@ def _me_cdf_band(
             all_drv.append(drv)
         all_cdfs = np.array(all_cdfs)
         pooled = np.concatenate(all_drv)
+        # No per-rank info available — pooled across stars.  Empty rank
+        # arrays cause the renderer to skip the per-rank gradient markers.
+        mean_cdf_arr  = np.mean(all_cdfs, axis=0)
+        rank_median   = np.array([], dtype=float)
+        rank_mean     = np.array([], dtype=float)
+        rank_bin_frac = np.array([], dtype=float)
 
-    return (np.median(all_cdfs, axis=0),
-            np.percentile(all_cdfs, 16, axis=0),
-            np.percentile(all_cdfs, 84, axis=0),
-            pooled)
+    return CDFBandResult(
+        median=np.median(all_cdfs, axis=0),
+        lo=np.percentile(all_cdfs, 16, axis=0),
+        hi=np.percentile(all_cdfs, 84, axis=0),
+        pooled=pooled,
+        mean=mean_cdf_arr,
+        rank_median=rank_median,
+        rank_mean=rank_mean,
+        rank_bin_frac=rank_bin_frac,
+    )
 
 
 def _bin_cfg_dict_as_hashable(bc_dict):
@@ -221,7 +517,7 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
         _pm_resim = _result_period_model(result, default='powerlaw')
         _cad_lib_resim = result.get('cadence_library')
         _cad_wt_resim = result.get('cadence_weights')
-        med_c, lo_c, hi_c, pooled = _me_cdf_band(
+        _b = _me_cdf_band(
             fb, xv, sig, float(result.get('sigma_meas', 3.0)),
             tuple(be.tolist()), logPmax=_lpm, n_sets=int(ns),
             _cadence_library=_cad_lib_resim,
@@ -229,17 +525,136 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
             _bin_cfg_dict=_bc_tuple,
             period_model=_pm_resim,
         )
+        med_c, lo_c, hi_c, pooled = _b.median, _b.lo, _b.hi, _b.pooled
         obs = np.asarray(result.get('obs_delta_rv', []))
         rx = np.concatenate([[0.0], be])
 
         # Compute likelihood score
         logL = multinomial_log_likelihood(obs, pooled, lk_be)
 
+        # Round-5 (2026-04-28): also re-simulate at the MARGINAL-best
+        # tuple (read off ``result['analysis_marginal_best']`` if cached
+        # by `_method_best_and_hdi`, else fall back to a quick recomputation
+        # from the likelihood grid).  Plotted in PURPLE.
+        marg_med = marg_lo = marg_hi = None
+        try:
+            from bc.analysis import _method_best_and_hdi
+            _lk_arr = np.asarray(result.get('likelihood', []))
+            _fbg = np.asarray(result.get('fbin_grid', []))
+            _pig = np.asarray(result.get('pi_grid', []))
+            _sgg = np.asarray(result.get('sigma_grid', []))
+            _lpg = np.asarray(result.get('logPmax_grid', []))
+            _grids_m = []
+            _names_m = []
+            if _lpg.size > 1:
+                _grids_m.append(_lpg)
+                _names_m.append('logPmax')
+            if _sgg.size > 1:
+                _grids_m.append(_sgg)
+                _names_m.append('sigma')
+            if _fbg.size > 0:
+                _grids_m.append(_fbg)
+                _names_m.append('fbin')
+            if _pig.size > 0:
+                _grids_m.append(_pig)
+                _names_m.append('pi')
+            # Squeeze lk to match grids
+            _lk_sq = _lk_arr.copy() if _lk_arr is not None else None
+            while (_lk_sq is not None and _lk_sq.ndim > len(_grids_m)
+                   and _lk_sq.shape[0] == 1):
+                _lk_sq = _lk_sq[0]
+            if (_lk_sq is not None and _lk_sq.ndim == len(_grids_m)
+                    and _lk_sq.size > 0):
+                _info_m = _method_best_and_hdi(
+                    _lk_sq, _grids_m, _names_m, is_likelihood=True)
+                if _info_m is not None:
+                    _hdi_m = _info_m.get('hdi', {})
+                    _m_fb = float(_hdi_m.get('fbin', (fb,))[0])
+                    _m_pi = float(_hdi_m.get('pi', (xv,))[0])
+                    _m_sig = float(_hdi_m.get('sigma', (sig,))[0])
+                    _m_lpm = float(_hdi_m.get('logPmax', (_lpm,))[0])
+                    _params_differ_rs = (
+                        (not np.isclose(_m_fb, fb, atol=1e-6))
+                        or (not np.isclose(_m_pi, xv, atol=1e-6))
+                        or (not np.isclose(_m_sig, sig, atol=1e-6))
+                        or (not np.isclose(_m_lpm, _lpm, atol=1e-6))
+                    )
+                    if _params_differ_rs:
+                        _bm = _me_cdf_band(
+                            _m_fb, _m_pi, _m_sig,
+                            float(result.get('sigma_meas', 3.0)),
+                            tuple(be.tolist()), logPmax=_m_lpm,
+                            n_sets=int(ns),
+                            _cadence_library=_cad_lib_resim,
+                            _cadence_weights=_cad_wt_resim,
+                            _bin_cfg_dict=_bc_tuple,
+                            period_model=_pm_resim,
+                        )
+                        marg_med, marg_lo, marg_hi, _marg_pooled = (
+                            _bm.median, _bm.lo, _bm.hi, _bm.pooled)
+        except Exception:
+            marg_med = marg_lo = marg_hi = None
+
+        # CDF style constants — keep all CDF panels consistent.
+        from bc.render_validation import (
+            _CDF_OBS_COLOR, _CDF_FIT_COLOR, _CDF_FIT_MARG_COLOR,
+            _CLR_SINGLE, _CLR_BINARY,
+        )
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=be, y=_binned_cdf(obs, be), mode='lines',
-            name='Observed',
-            line=dict(color='#4A90D9', width=2.5, shape='hv')))
+
+        # Mock observation: TRUE empirical step (sorted ΔRV) so dots align.
+        _obs_arr_rs = np.asarray(obs, dtype=float)
+        _obs_finite_rs = _obs_arr_rs[np.isfinite(_obs_arr_rs)]
+        _n_obs_rs = int(_obs_finite_rs.size)
+        if _n_obs_rs > 0:
+            _obs_sort_rs = np.argsort(_obs_finite_rs)
+            _obs_sorted_rs = _obs_finite_rs[_obs_sort_rs]
+            _obs_cdf_rs = (np.arange(_n_obs_rs) + 1) / _n_obs_rs
+            fig.add_trace(go.Scatter(
+                x=_obs_sorted_rs, y=_obs_cdf_rs, mode='lines',
+                name='Mock observation',
+                line=dict(color=_CDF_OBS_COLOR, width=2.5, shape='hv')))
+        else:
+            _obs_sort_rs = None
+            _obs_sorted_rs = None
+            _obs_cdf_rs = None
+
+        # Per-star truth-coded markers — paired with the SAME sort that
+        # built the obs step, so dots sit ON the curve.
+        from bc.validation_io import load_per_star_truth
+        _is_bin = load_per_star_truth(result)
+        if (_is_bin is not None and _obs_sorted_rs is not None
+                and len(_is_bin) == len(obs)):
+            _is_bin_full_rs = np.asarray(_is_bin, dtype=bool)
+            _finite_mask_rs = np.isfinite(_obs_arr_rs)
+            if _is_bin_full_rs.size == _obs_arr_rs.size:
+                _is_bin_finite_rs = _is_bin_full_rs[_finite_mask_rs]
+                _is_bin_sorted_rs = _is_bin_finite_rs[_obs_sort_rs]
+            else:
+                _is_bin_sorted_rs = np.zeros(_n_obs_rs, dtype=bool)
+            _single_mask_rs = ~_is_bin_sorted_rs
+            if np.any(_single_mask_rs):
+                fig.add_trace(go.Scatter(
+                    x=_obs_sorted_rs[_single_mask_rs],
+                    y=_obs_cdf_rs[_single_mask_rs],
+                    mode='markers',
+                    marker=dict(color=_CLR_SINGLE, size=8,
+                                line=dict(color='black', width=0.6)),
+                    name=f'Single ({int(_single_mask_rs.sum())})',
+                    hovertemplate='single · ΔRV=%{x:.1f} km/s<extra></extra>',
+                ))
+            if np.any(_is_bin_sorted_rs):
+                fig.add_trace(go.Scatter(
+                    x=_obs_sorted_rs[_is_bin_sorted_rs],
+                    y=_obs_cdf_rs[_is_bin_sorted_rs],
+                    mode='markers',
+                    marker=dict(color=_CLR_BINARY, size=8,
+                                line=dict(color='black', width=0.6)),
+                    name=f'Binary ({int(_is_bin_sorted_rs.sum())})',
+                    hovertemplate='binary · ΔRV=%{x:.1f} km/s<extra></extra>',
+                ))
+
+        # GRID best-fit: 16/84 band + median
         _hi_y = np.concatenate([[0.0], hi_c])
         _lo_y = np.concatenate([[0.0], lo_c])
         fig.add_trace(go.Scatter(
@@ -250,21 +665,50 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
             x=rx, y=_hi_y, mode='lines',
             line=dict(color='rgba(0,0,0,0)', shape='hv'),
             fill='tonexty',
-            fillcolor=_hex_to_rgba(_METHOD_COLOR, 0.2),
-            showlegend=False, hoverinfo='skip'))
+            fillcolor=_hex_to_rgba(_CDF_FIT_COLOR, 0.18),
+            name='Grid best-fit 16/84', hoverinfo='skip'))
         fig.add_trace(go.Scatter(
             x=rx, y=np.concatenate([[0.0], med_c]),
-            mode='lines', name='Simulated (interp)',
-            line=dict(color=_METHOD_COLOR, width=2.5, dash='dash',
+            mode='lines', name='Grid best-fit (median)',
+            line=dict(color=_CDF_FIT_COLOR, width=2.5, dash='dash',
                       shape='hv')))
+
+        # MARGINAL best-fit: 16/84 band + median (purple)
+        if marg_med is not None:
+            _hi_y_m = np.concatenate([[0.0], marg_hi])
+            _lo_y_m = np.concatenate([[0.0], marg_lo])
+            fig.add_trace(go.Scatter(
+                x=rx, y=_lo_y_m, mode='lines',
+                line=dict(color='rgba(0,0,0,0)', shape='hv'),
+                showlegend=False, hoverinfo='skip'))
+            fig.add_trace(go.Scatter(
+                x=rx, y=_hi_y_m, mode='lines',
+                line=dict(color='rgba(0,0,0,0)', shape='hv'),
+                fill='tonexty',
+                fillcolor=_hex_to_rgba(_CDF_FIT_MARG_COLOR, 0.18),
+                name='Marginal best-fit 16/84', hoverinfo='skip'))
+            fig.add_trace(go.Scatter(
+                x=rx, y=np.concatenate([[0.0], marg_med]),
+                mode='lines', name='Marginal best-fit (median)',
+                line=dict(color=_CDF_FIT_MARG_COLOR, width=2.5,
+                          dash='dash', shape='hv')))
+
+        _title_rs = f'Re-sim: Grid f_bin={fb:.4f}'
+        if marg_med is not None:
+            _title_rs += f', Marginal f_bin={_m_fb:.4f}'
+        else:
+            _title_rs += f', {x_label}={xv:.3f}'
         fig.update_layout(**{
             **PLOTLY_THEME, 'height': 380,
-            'title': dict(
-                text=f'Re-sim: f_bin={fb:.4f}, {x_label}={xv:.3f}',
-                font=dict(size=14)),
-            'xaxis_title': 'DeltaRV (km/s)',
+            'title': dict(text=_title_rs, font=dict(size=14)),
+            'xaxis_title': 'ΔRV (km/s)',
             'yaxis_title': 'Cumulative fraction',
         })
+        # A&A journal theme (white bg, black serif text)
+        from bc.render_validation import _AA_OVERRIDES
+        fig.update_layout(**_AA_OVERRIDES)
+        fig.update_xaxes(**_AA_OVERRIDES['xaxis'])
+        fig.update_yaxes(**_AA_OVERRIDES['yaxis'])
         st.plotly_chart(fig, use_container_width=True,
                         key=f'{pfx}_lk_resim_cdf')
         c3.metric('ln L (interp)', f"{logL:.3f}")
@@ -276,89 +720,400 @@ def _render_lk_resim_interp(interp, result, x_label, pfx):
 # CDF Sanity Check (cadence tabs only)
 # ---------------------------------------------------------------------------
 
-# WORKING — do not change this code (D18: CDF Sanity Check)
 def _render_lk_cdf_sanity_check(best_fbin, best_x, sigma_single,
                                 obs_delta_rv, period_model, result,
-                                p_prefix: str) -> None:
-    """Render 5 random CDF draws vs observed for cadence sanity check.
+                                p_prefix: str,
+                                page_prefix: 'str | None' = None,
+                                marg_params: dict | None = None,
+                                x_name: str = 'pi') -> None:
+    """Render CDF draws vs observed with an expected 16/84 band.
 
-    Generates 5 independent sets of 25 simulated stars at the best-fit
-    parameters, overlaid on the observed CDF.
+    Round-5 (2026-04-28) rewrite:
+      - Replace the binned obs CDF (``_binned_cdf(obs, bin_edges)``) with the
+        TRUE empirical step at sorted ΔRV values, so the per-star dots sit
+        EXACTLY on the black curve (the previous binned step landed at fixed
+        bin edges, while the dots landed at each star's ΔRV — they appeared
+        to "fly" off the step).
+      - Optionally accept ``marg_params`` and overlay a SECOND set of draws
+        + 16/84 band + bold median in PURPLE.  The grid set stays in RED.
+      - Each best-fit shows: all N_draw faint dashed draws + a bold median
+        + a translucent 16/84 shadow band.
+
+    Stage D (2026-04-23) rewrite (kept):
+      - configurable ``n_draw`` via an inline number_input (default 500),
+      - 16/84 percentile band from ``_n_band`` draws at n_draw stars,
+      - canonical mock sampler so overlays line up with the Explorer.
     """
     from wr_bias_simulation import (
-        simulate_delta_rv_sample, SimulationConfig, BinaryParameterConfig,
-        DEFAULT_DRV_BIN_EDGES,
+        BinaryParameterConfig, DEFAULT_DRV_BIN_EDGES,
     )
+    from bc.validation import _sample_delta_rv_mock
 
     cadence_library = result.get('cadence_library')
     if cadence_library is None:
         return
 
     _bin_edges = DEFAULT_DRV_BIN_EDGES
-    obs_cdf_b = _binned_cdf(obs_delta_rv, _bin_edges)
 
     st.markdown('### CDF Sanity Check')
-    st.caption(
-        '5 random draws of 25 simulated stars at the best-fit parameters, '
-        'compared to the observed CDF. Each draw uses different random seeds '
-        'but identical cadence assignments.'
-    )
 
-    # Build configs from result metadata
-    _bcfg_dict = result.get('bin_cfg', {})
+    # Inline control for per-draw sample size
+    _n_draw_key = f'{p_prefix}_cdf_sanity_n'
+    if _n_draw_key not in st.session_state:
+        st.session_state[_n_draw_key] = 500
+    _n_draw = int(st.number_input(
+        'Stars per draw (n_draw)',
+        min_value=25, max_value=5000, step=25,
+        key=_n_draw_key,
+        help=('How many simulated stars per CDF draw.  Higher n_draw = '
+              'smoother curves + tighter 16/84 band.  The caption describes '
+              'exactly what is plotted.')
+    ))
+
+    # Bug 2 fix: rebuild bin_cfg from the result so the canonical sampler
+    # sees the SAME physics config the grid did (E048).
+    _bcfg_dict = result.get('bin_cfg', {}) or {}
     bcfg = (BinaryParameterConfig(**_bcfg_dict)
             if _bcfg_dict else BinaryParameterConfig())
-    sim_cfg = SimulationConfig(
-        n_stars=25,
-        sigma_single=float(sigma_single),
-        sigma_measure=float(result.get('sigma_meas', 1.622)),
+
+    # Bug 2 fix: pull the joint argmax from the result so the 5 draws use
+    # the SAME (f_bin, π, σ, logP_max) tuple the rest of the Validation
+    # Explorer is wired to (memory/feedback_honest_labels.md).  Best-fit
+    # callers pass the joint argmax via best_fbin / best_x / sigma_single
+    # already; here we additionally need logP_max since the legacy
+    # sampler ignored it.
+    _eff_logPmax = float(result.get('argmax_logPmax',
+                                    _bcfg_dict.get('logP_max', 5.0)))
+    if not np.isfinite(_eff_logPmax):
+        _eff_logPmax = float(_bcfg_dict.get('logP_max', 5.0))
+
+    _sigma_meas = float(result.get('sigma_meas', 1.622))
+
+    # Bug 2 fix: derive validation context (error_model / error_params /
+    # validation seed) from session_state when this Explorer is rendered
+    # from the Validation tab.  page_prefix is the page-level prefix
+    # (e.g. 'bc_val_dsilva') under which the mock generator stashed the
+    # 8-tuple at f'{page_prefix}_val_mock_params'.  Outside the validation
+    # flow we get an empty mock-params tuple and fall back to
+    # 'fixed' / () — exactly what the legacy code assumed implicitly.
+    _pp = page_prefix
+    if _pp is None and isinstance(p_prefix, str):
+        # Fallback: strip the trailing '_<method_key>' the call site appended.
+        # Method keys today are always 'likelihood'; this is the same
+        # heuristic used by other re-sim helpers in this module.
+        if p_prefix.endswith('_likelihood'):
+            _pp = p_prefix[:-len('_likelihood')]
+        else:
+            _pp = p_prefix
+    _val_truth = (st.session_state.get(f'{_pp}_val_mock_params')
+                  if _pp else None)
+    _validation_mode = (_val_truth is not None
+                        and len(_val_truth) >= 5)
+    if _validation_mode:
+        _val_err_model = (str(_val_truth[6])
+                          if len(_val_truth) >= 8 else 'fixed')
+        _val_err_params = (tuple(_val_truth[7])
+                           if len(_val_truth) >= 8 else ())
+    else:
+        _val_err_model = 'fixed'
+        _val_err_params = ()
+
+    # The sanity-check needs a DIFFERENT rng per draw, so we don't reuse
+    # the validation seed (that one matches the mock byte-for-byte).
+    # Seeds 1000+i (band) and 42..(42+n_draw) (draws) are inherited from
+    # the 2026-04-23 rewrite for backward visual continuity.
+
+    def _draw_one(fb_v: float, x_v: float, sig_v: float,
+                  seed_int: int, n_stars: int) -> np.ndarray:
+        """Single CDF draw via the canonical mock sampler.  ``fb_v / x_v /
+        sig_v`` allow swapping in the marginal-best tuple at call time."""
+        # _sample_delta_rv_mock takes a cadence_library — we want
+        # n_stars samples, but the library has 25 entries.  Tile or
+        # slice as appropriate so the per-draw sample count matches the
+        # n_draw the user picked.
+        cad = list(cadence_library)
+        if n_stars <= len(cad):
+            cad = cad[:n_stars]
+        else:
+            # Repeat the cadence library cyclically to reach n_stars.
+            reps = (n_stars + len(cad) - 1) // len(cad)
+            cad = (cad * reps)[:n_stars]
+        drv = _sample_delta_rv_mock(
+            f_bin=float(fb_v),
+            pi=float(x_v),
+            sigma_single=float(sig_v),
+            logP_max=float(_eff_logPmax),
+            cadence_library=cad,
+            sigma_meas=float(_sigma_meas),
+            bin_cfg=bcfg,
+            period_model=str(period_model),
+            seed=int(seed_int),
+            error_model=str(_val_err_model),
+            error_params=tuple(_val_err_params),
+            collect_detail=False,
+        )
+        return np.asarray(drv, dtype=float)
+
+    # ── x-grid for empirical step CDFs ────────────────────────────────
+    # Use a fine grid so the simulated CDFs and obs CDF share the same
+    # x-axis.  Range = max(bin_edges, max(obs_delta_rv)) so the obs
+    # rightmost step and the sim tail are both captured.
+    _obs_max = float(np.nanmax(obs_delta_rv)) if len(obs_delta_rv) else 0.0
+    _be_max = float(np.nanmax(_bin_edges[np.isfinite(_bin_edges)])) if len(_bin_edges) else 0.0
+    _x_max_sc = max(_obs_max, _be_max, 1.0) * 1.05
+    _x_grid = np.linspace(0.0, _x_max_sc, 400)
+
+    def _ecdf_on_grid(sample: np.ndarray, grid: np.ndarray) -> np.ndarray:
+        """Empirical CDF of a sample evaluated at ``grid``.  Equivalent to
+        a step at sorted(sample) values but resampled onto a uniform x-axis
+        for traces that need to share x-coords (the 16/84 band needs all
+        traces on the same grid, otherwise ``np.percentile`` mixes apples
+        and oranges)."""
+        s = np.asarray(sample, dtype=float)
+        s = s[np.isfinite(s)]
+        if s.size == 0:
+            return np.zeros_like(grid)
+        ss = np.sort(s)
+        return np.searchsorted(ss, grid, side='right').astype(float) / s.size
+
+    # ── 1. Generate draws for GRID and MARGINAL best-fit tuples ─────────
+    _n_band = 50
+
+    def _draws_and_band(fb_v, x_v, sig_v, seed_offset):
+        """Run n_draw draws + n_band band draws, return median, lo, hi,
+        plus the n_draw individual CDFs (faint overlay)."""
+        # Faint individual draws — we plot all of them at alpha 0.3.
+        # Seeds offset by ``seed_offset`` so grid and marginal draws use
+        # different RNG streams.
+        _draw_seeds = list(range(42 + seed_offset, 42 + seed_offset + 5))
+        _draw_cdfs = []
+        for s_ in _draw_seeds:
+            try:
+                drv_d = _draw_one(fb_v, x_v, sig_v, s_, _n_draw)
+                _draw_cdfs.append(_ecdf_on_grid(drv_d, _x_grid))
+            except Exception:
+                continue
+        # 16/84 band from many draws
+        _band_cdfs = []
+        for _i in range(_n_band):
+            try:
+                drv_b = _draw_one(
+                    fb_v, x_v, sig_v, 1000 + seed_offset + _i, _n_draw)
+                _band_cdfs.append(_ecdf_on_grid(drv_b, _x_grid))
+            except Exception:
+                continue
+        if len(_band_cdfs) >= 5:
+            arr = np.asarray(_band_cdfs)
+            _med = np.median(arr, axis=0)
+            _lo = np.percentile(arr, 16, axis=0)
+            _hi = np.percentile(arr, 84, axis=0)
+        else:
+            _med = _lo = _hi = None
+        return _med, _lo, _hi, _draw_cdfs
+
+    # GRID best-fit tuple (red)
+    grid_med, grid_lo, grid_hi, grid_draws = _draws_and_band(
+        float(best_fbin), float(best_x), float(sigma_single),
+        seed_offset=0,
+    )
+
+    # MARGINAL best-fit tuple (purple) — only when caller provided one
+    # AND it differs from the grid tuple.  The grid sanity-check still
+    # works as a single-color overlay when ``marg_params is None``.
+    _have_marg = False
+    marg_med = marg_lo = marg_hi = None
+    marg_draws: list = []
+    if marg_params is not None:
+        _m_fb = float(marg_params.get('f_bin', best_fbin))
+        _m_x = float(marg_params.get(x_name, best_x))
+        _m_sig = float(marg_params.get('sigma', sigma_single))
+        _params_differ = (
+            (not np.isclose(_m_fb, float(best_fbin), atol=1e-6))
+            or (not np.isclose(_m_x, float(best_x), atol=1e-6))
+            or (not np.isclose(_m_sig, float(sigma_single), atol=1e-6))
+        )
+        if _params_differ:
+            _have_marg = True
+            marg_med, marg_lo, marg_hi, marg_draws = _draws_and_band(
+                _m_fb, _m_x, _m_sig, seed_offset=500,
+            )
+
+    # CDF style constants — keep observation/sim styles consistent across
+    # all CDF panels.  See render_validation._CDF_OBS_COLOR.
+    from bc.render_validation import (
+        _CDF_OBS_COLOR, _CDF_FIT_COLOR, _CDF_FIT_MARG_COLOR,
     )
 
     fig = go.Figure()
 
-    # Observed CDF
-    fig.add_trace(go.Scatter(
-        x=_bin_edges, y=obs_cdf_b,
-        mode='lines', name='Observed',
-        line=dict(color='white', width=3, shape='hv'),
-    ))
+    # ── 2. GRID 16/84 band (plotted FIRST so traces sit on top) ─────────
+    if grid_med is not None:
+        fig.add_trace(go.Scatter(
+            x=_x_grid, y=grid_lo, mode='lines',
+            line=dict(color='rgba(0,0,0,0)', shape='hv'),
+            showlegend=False, hoverinfo='skip',
+        ))
+        fig.add_trace(go.Scatter(
+            x=_x_grid, y=grid_hi, mode='lines',
+            line=dict(color='rgba(0,0,0,0)', shape='hv'),
+            fill='tonexty',
+            fillcolor=_hex_to_rgba(_CDF_FIT_COLOR, 0.16),
+            name='Grid best-fit 16/84',
+        ))
 
-    # 5 random draws
-    _draw_colors = ['#E25A53', '#50C878', '#9B59B6', '#F39C12', '#1ABC9C']
-    for i, seed in enumerate([42, 43, 44, 45, 46]):
-        rng = np.random.default_rng(seed)
-        try:
-            drv = simulate_delta_rv_sample(
-                f_bin=best_fbin,
-                pi=best_x,
-                sim_cfg=sim_cfg,
-                bin_cfg=bcfg,
-                rng=rng,
-            )
-            sim_cdf = _binned_cdf(drv, _bin_edges)
+    # ── 3. GRID faint individual draws (one legend entry only) ──────────
+    for _i, _gd in enumerate(grid_draws):
+        fig.add_trace(go.Scatter(
+            x=_x_grid, y=_gd,
+            mode='lines',
+            line=dict(color=_CDF_FIT_COLOR, width=1.0,
+                      dash='dash', shape='hv'),
+            opacity=0.30,
+            name='Grid best-fit draws' if _i == 0 else None,
+            showlegend=(_i == 0),
+            hoverinfo='skip',
+        ))
+
+    # ── 4. GRID median (BOLD red dashed) ────────────────────────────────
+    if grid_med is not None:
+        fig.add_trace(go.Scatter(
+            x=_x_grid, y=grid_med, mode='lines',
+            line=dict(color=_CDF_FIT_COLOR, width=2.5,
+                      dash='dash', shape='hv'),
+            name='Grid best-fit (median)',
+        ))
+
+    # ── 5. MARGINAL band + draws + median (purple) ──────────────────────
+    if _have_marg and marg_med is not None:
+        fig.add_trace(go.Scatter(
+            x=_x_grid, y=marg_lo, mode='lines',
+            line=dict(color='rgba(0,0,0,0)', shape='hv'),
+            showlegend=False, hoverinfo='skip',
+        ))
+        fig.add_trace(go.Scatter(
+            x=_x_grid, y=marg_hi, mode='lines',
+            line=dict(color='rgba(0,0,0,0)', shape='hv'),
+            fill='tonexty',
+            fillcolor=_hex_to_rgba(_CDF_FIT_MARG_COLOR, 0.16),
+            name='Marginal best-fit 16/84',
+        ))
+        for _i, _md in enumerate(marg_draws):
             fig.add_trace(go.Scatter(
-                x=_bin_edges, y=sim_cdf,
-                mode='lines', name=f'Draw {i+1} (seed={seed})',
-                line=dict(color=_draw_colors[i], width=1.5,
+                x=_x_grid, y=_md,
+                mode='lines',
+                line=dict(color=_CDF_FIT_MARG_COLOR, width=1.0,
                           dash='dash', shape='hv'),
-                opacity=0.7,
+                opacity=0.30,
+                name='Marginal best-fit draws' if _i == 0 else None,
+                showlegend=(_i == 0),
+                hoverinfo='skip',
             ))
-        except Exception as e:
-            st.warning(f'Draw {i+1} failed: {e}')
+        fig.add_trace(go.Scatter(
+            x=_x_grid, y=marg_med, mode='lines',
+            line=dict(color=_CDF_FIT_MARG_COLOR, width=2.5,
+                      dash='dash', shape='hv'),
+            name='Marginal best-fit (median)',
+        ))
 
+    # ── 6. Observed / Mock CDF — TRUE empirical step (NOT binned) ───────
+    # Round-5 (2026-04-28): the previous implementation used
+    # ``_binned_cdf(obs_delta_rv, _bin_edges)`` which placed y-values at
+    # FIXED bin-edge x-positions, while the per-star dots landed at each
+    # star's ΔRV — so dots appeared OFF the black step.  Fix: build the
+    # empirical step from sorted ΔRV values directly, so dots and step
+    # come from the same data and the dots sit ON the curve.
+    from bc.helpers import _obs_label as _obs_label_sc
+    _obs_name_sc = _obs_label_sc(result)
+    _obs_arr = np.asarray(obs_delta_rv, dtype=float)
+    _obs_finite = _obs_arr[np.isfinite(_obs_arr)]
+    _n_obs = int(_obs_finite.size)
+    if _n_obs > 0:
+        _obs_sort_idx = np.argsort(_obs_finite)
+        _obs_sorted = _obs_finite[_obs_sort_idx]
+        _obs_cdf_y = (np.arange(_n_obs) + 1) / _n_obs
+        fig.add_trace(go.Scatter(
+            x=_obs_sorted, y=_obs_cdf_y,
+            mode='lines', name='Mock observation',
+            line=dict(color=_CDF_OBS_COLOR, width=2.5, shape='hv'),
+            hovertemplate='ΔRV=%{x:.1f} km/s<br>CDF=%{y:.3f}<extra></extra>',
+        ))
+
+    # ── 7. Per-star truth-coded markers (validation flow only) ──────────
+    # Markers sit at each star's ΔRV on the empirical CDF (rank+1)/N —
+    # NOW exactly aligned with the black step (same source data).  Silently
+    # skipped outside the validation flow (no mock_stars file).
+    from bc.validation_io import load_per_star_truth
+    from bc.render_validation import _CLR_SINGLE, _CLR_BINARY
+    _is_bin = load_per_star_truth(result)
+    if (_is_bin is not None and _n_obs > 0
+            and len(_is_bin) == len(obs_delta_rv)):
+        # Apply the SAME sort that built the obs CDF.  ``_obs_sort_idx``
+        # indexes into ``_obs_finite`` which (when no NaNs) is the same as
+        # the original ``obs_delta_rv``.  When NaNs are present we fall
+        # back to argsorting the truth array against the original obs
+        # array.  This is the dot-positioning fix the brief flagged.
+        _is_bin_full = np.asarray(_is_bin, dtype=bool)
+        if _is_bin_full.size == _obs_arr.size:
+            _finite_mask = np.isfinite(_obs_arr)
+            _is_bin_finite = _is_bin_full[_finite_mask]
+            _is_bin_sorted = _is_bin_finite[_obs_sort_idx]
+        else:
+            _is_bin_sorted = np.zeros(_n_obs, dtype=bool)
+        _single_mask = ~_is_bin_sorted
+        if np.any(_single_mask):
+            fig.add_trace(go.Scatter(
+                x=_obs_sorted[_single_mask], y=_obs_cdf_y[_single_mask],
+                mode='markers',
+                marker=dict(color=_CLR_SINGLE, size=8,
+                            line=dict(color='black', width=0.6)),
+                name=f'Single ({int(_single_mask.sum())})',
+                hovertemplate='single · ΔRV=%{x:.1f} km/s<extra></extra>',
+            ))
+        if np.any(_is_bin_sorted):
+            fig.add_trace(go.Scatter(
+                x=_obs_sorted[_is_bin_sorted], y=_obs_cdf_y[_is_bin_sorted],
+                mode='markers',
+                marker=dict(color=_CLR_BINARY, size=8,
+                            line=dict(color='black', width=0.6)),
+                name=f'Binary ({int(_is_bin_sorted.sum())})',
+                hovertemplate='binary · ΔRV=%{x:.1f} km/s<extra></extra>',
+            ))
+
+    _title_parts = [f'CDF Sanity Check (Grid f_bin={best_fbin:.3f}']
+    if _have_marg:
+        _title_parts[0] += (
+            f', Marginal f_bin={float(marg_params["f_bin"]):.3f}'
+        )
+    _title_parts[0] += f', N_draw={_n_draw})'
     fig.update_layout(**{
         **PLOTLY_THEME,
-        'title': dict(
-            text=(f'CDF Sanity Check  (f_bin={best_fbin:.3f}, '
-                  f'25 stars x 5 draws)'),
-            font=dict(size=14)),
-        'xaxis_title': 'DeltaRV (km/s)',
+        'title': dict(text=_title_parts[0], font=dict(size=14)),
+        'xaxis_title': 'ΔRV (km/s)',
         'yaxis_title': 'Cumulative fraction',
-        'height': 420,
-        'legend': dict(x=0.55, y=0.35, font=dict(size=10)),
+        'height': 460,
+        'legend': dict(x=0.55, y=0.35, font=dict(size=9)),
     })
+    # A&A journal theme (white bg, black serif text)
+    from bc.render_validation import _AA_OVERRIDES
+    fig.update_layout(**_AA_OVERRIDES)
+    fig.update_xaxes(**_AA_OVERRIDES['xaxis'])
+    fig.update_yaxes(**_AA_OVERRIDES['yaxis'])
     st.plotly_chart(fig, use_container_width=True,
                     key=f'{p_prefix}_cdf_sanity')
+    _caption = (
+        f'5 faint individual draws (N={_n_draw} stars each) + median (bold) '
+        f'+ 16/84 percentile band (from {_n_band} draws) for the **grid** '
+        '(red) best-fit'
+    )
+    if _have_marg:
+        _caption += ' and the **marginal** (purple) best-fit'
+    _caption += (
+        f'.  Black step = {_obs_name_sc.lower()} empirical CDF.  '
+        'If the black curve sits inside the band across the full ΔRV range '
+        'the best-fit reproduces the data within expected Monte-Carlo '
+        'variation.'
+    )
+    st.caption(_caption)
 
 
 # ---------------------------------------------------------------------------
@@ -375,9 +1130,9 @@ def _render_lk_model_explorer(
     """Interactive Likelihood model explorer: sliders -> CDF + score + histogram + det frac."""
     try:
         from wr_bias_simulation import (
-            simulate_delta_rv_sample, simulate_with_params,
+            simulate_with_params,
             SimulationConfig, BinaryParameterConfig,
-            DEFAULT_DRV_BIN_EDGES, multinomial_log_likelihood,
+            DEFAULT_DRV_BIN_EDGES,
         )
     except ImportError:
         st.info('wr_bias_simulation not available for model explorer.')
@@ -398,32 +1153,150 @@ def _render_lk_model_explorer(
         return
 
     bv = me_info['best_vals']
-    def_fb = float(bv.get('fbin', 0.5))
-    def_x = float(bv.get(x_name, 0.0))
-    def_sig = float(bv.get('sigma', result.get('sigma_meas', 5.0)))
+
+    # ──────────────────────────────────────────────────────────────────
+    # Slider defaults from joint argmax of logL_raw (Reset-to-best fix)
+    # ──────────────────────────────────────────────────────────────────
+    # The marginalised best from `_method_best_and_hdi` (used elsewhere
+    # for HDI68 summaries) is a 2D-projected argmax that disagrees with
+    # the joint argmax of the full N-D logL_raw cube.  For the Explorer
+    # sliders + Reset button we want the joint argmax so that landing on
+    # the Reset target reproduces the displayed "Global best logL".
+    #
+    # We also need the actual GRID-fixed values for non-scanned axes
+    # (σ when sigma_grid.size==1, logP_max when logPmax_grid.size==1) —
+    # NOT sigma_meas (measurement noise constant).
+    _seed_base_me = int(result.get('seed_base', 1234))
+    _sigma_g_seed = np.asarray(result.get('sigma_grid', []))
+    _fbin_g_seed = np.asarray(result.get('fbin_grid', []))
+    _pi_g_seed = np.asarray(result.get('pi_grid', []))
+    _logPmax_g_seed = np.asarray(result.get('logPmax_grid', []))
+
+    # Recover bin_cfg dict so we can pull the fixed logP_max when
+    # logPmax_grid is size 1 / empty.
+    _bc_tuple_for_default = _result_bin_cfg_tuple(result)
+    _bc_dict_for_default = (
+        dict(_bc_tuple_for_default) if _bc_tuple_for_default is not None
+        else (result.get('bin_cfg') if isinstance(result.get('bin_cfg'), dict) else {})
+    )
+
+    # Safe fallbacks BEFORE ndim dispatch — guarantees all four _bf_*
+    # are defined for Case D (2D, neither σ nor logP_max scanned).
+    _bf_fb_v = float(bv.get('fbin', 0.5))
+    _bf_pi_v = float(bv.get(x_name, 0.0))
+    if _sigma_g_seed.size >= 1:
+        _bf_sig_v = float(_sigma_g_seed[0])
+    else:
+        _bf_sig_v = float(result.get('sigma_meas', 5.0))
+    if _logPmax_g_seed.size >= 1:
+        _bf_lp_v = float(_logPmax_g_seed[0])
+    else:
+        _bf_lp_v = float(_bc_dict_for_default.get('logP_max', 5.0))
+
+    _logL_raw_arr = (np.asarray(result.get('logL_raw'), dtype=float)
+                     if result.get('logL_raw') is not None else None)
+    _logL_best = float('nan')
+    if _logL_raw_arr is not None and _logL_raw_arr.size > 0:
+        try:
+            _flat_best = int(np.nanargmax(_logL_raw_arr))
+            _best_idx = np.unravel_index(_flat_best, _logL_raw_arr.shape)
+            _logL_best = float(_logL_raw_arr[_best_idx])
+            # Layout matches runner: [logPmax?, sigma?, fbin, pi]
+            _ndim = _logL_raw_arr.ndim
+            if _ndim == 4:
+                _bf_lp_v = float(_logPmax_g_seed[_best_idx[0]])
+                _bf_sig_v = float(_sigma_g_seed[_best_idx[1]])
+                _bf_fb_v = float(_fbin_g_seed[_best_idx[2]])
+                _bf_pi_v = float(_pi_g_seed[_best_idx[3]])
+            elif _ndim == 3:
+                _bf_sig_v = float(_sigma_g_seed[_best_idx[0]])
+                _bf_fb_v = float(_fbin_g_seed[_best_idx[1]])
+                _bf_pi_v = float(_pi_g_seed[_best_idx[2]])
+            elif _ndim == 2:
+                _bf_fb_v = float(_fbin_g_seed[_best_idx[0]])
+                _bf_pi_v = float(_pi_g_seed[_best_idx[1]])
+        except Exception:
+            pass
+
+    # Slider defaults — joint argmax of logL_raw (Bug A fix).
+    def_fb = float(_bf_fb_v)
+    def_x = float(_bf_pi_v)
+    def_sig = float(_bf_sig_v)
+    _bf_logPmax = float(_bf_lp_v)
 
     # Reset counter — slider keys include counter so reset forces new widgets
     _reset_key = f'{prefix}_lk_me_reset_count'
     _rc = st.session_state.get(_reset_key, 0)
 
-    # Reset button + best-fit labels
+    # Detect first render after Reset (or first page load) so we can
+    # bypass the slider's implicit-step quantisation for the simulation
+    # call.  See the override block below for the full rationale.
+    _last_rc_key = f'{prefix}_lk_me_last_rc'
+    _last_rc = st.session_state.get(_last_rc_key, None)
+    _just_reset = (_last_rc != _rc)
+    st.session_state[_last_rc_key] = _rc
+
+    # Caption + Reset button.  Two columns now — the Run button gate was
+    # removed (2026-04-29) so logL + CDF + heatmaps + histogram +
+    # detection-fraction recompute on every slider/number_input change
+    # via @st.cache_data on _explorer_run_grid_pipeline_cached.
     _lp_g = np.asarray(result.get('logPmax_grid', []))
-    _best_score = me_info.get('best_score', 0)
-    _reset_col1, _reset_col2 = st.columns([0.7, 0.3])
+    # _best_score (marginal best from _method_best_and_hdi) was previously
+    # shown in the caption, but the caption now reports the joint-argmax
+    # _logL_best from logL_raw to stay consistent with the Reset target
+    # and the "Global best logL" metric card.  me_info itself is still
+    # consumed elsewhere on the page for the marginalised HDI68 summary.
+    _reset_col1, _reset_col2 = st.columns([0.75, 0.25])
     with _reset_col1:
-        _best_parts = [f'f_bin={def_fb:.3f}', f'{x_label}={def_x:.2f}']
+        # Show joint-argmax for scanned axes, "(fixed)" for non-scanned.
+        _best_parts = [f'f_bin={_bf_fb_v:.3f}', f'{x_label}={_bf_pi_v:.3f}']
+
         _sig_g_pre = np.asarray(result.get('sigma_grid', []))
         if _sig_g_pre.size > 1:
-            _best_parts.append(f'σ={def_sig:.1f}')
-        st.caption(f'Best-fit model: {", ".join(_best_parts)}  |  Score: {_best_score:.4f}')
+            _best_parts.append(f'σ_single={_bf_sig_v:.2f}')
+        elif _sig_g_pre.size == 1:
+            _best_parts.append(f'σ_single={float(_sig_g_pre[0]):.2f} (fixed)')
+
+        _lp_g_pre = np.asarray(result.get('logPmax_grid', []))
+        if _lp_g_pre.size > 1:
+            _best_parts.append(f'logP_max={_bf_lp_v:.2f}')
+        elif _lp_g_pre.size == 1:
+            _best_parts.append(f'logP_max={float(_lp_g_pre[0]):.2f} (fixed)')
+
+        st.caption(f'Best-fit model: {", ".join(_best_parts)}  |  logL = {_logL_best:.4f}')
     with _reset_col2:
         if st.button('🟢 Reset to best', key=f'{prefix}_lk_me_reset'):
             st.session_state[_reset_key] = _rc + 1
             st.rerun()
 
-    # Sliders + synced number inputs for precise control
+    # ──────────────────────────────────────────────────────────────────
+    # Explorer-only likelihood bin editor (always visible, session-tunable).
+    # Persists to a SEPARATE settings namespace
+    # (`explorer_likelihood_bin_config`) so the simulation's saved
+    # `likelihood_bin_config` is never overwritten.  Defaults pre-populate
+    # from the loaded simulation's `result['likelihood_bin_edges']`.
+    # ──────────────────────────────────────────────────────────────────
+    st.markdown('**Likelihood bins (Explorer)**')
+    try:
+        from wr_bias_simulation import DSILVA_LIKELIHOOD_BINS as _DSILVA_LK_BINS
+    except ImportError:
+        _DSILVA_LK_BINS = np.array([0.0, 50.0, 250.0, 650.0, np.inf])
+    _sim_lk_be = (np.asarray(result.get('likelihood_bin_edges'), dtype=float)
+                  if result.get('likelihood_bin_edges') is not None
+                  else _DSILVA_LK_BINS)
+    try:
+        from shared import get_settings_manager as _gsm_me
+        _sm_me = _gsm_me()
+    except Exception:
+        _sm_me = None
+    from bc.params import _render_explorer_lk_bin_config as _render_me_lk_be
+    lk_be = _render_me_lk_be(prefix, '_lk', _sm_me, _sim_lk_be)
+
+    # Sliders + synced number inputs for precise control.  n_sets gets
+    # its own (rightmost) column — see step 2 of the 2026-04-29
+    # auto-update spec.  Extend _ncols by 1 for the n_sets number_input.
     sig_g = np.asarray(result.get('sigma_grid', []))
-    _ncols = 4 if _lp_g.size > 1 else 3
+    _ncols = (4 if _lp_g.size > 1 else 3) + 1
 
     def _synced_slider_input(col, label, mn, mx, default, step, fmt, key_base):
         """Slider + number_input with bidirectional sync."""
@@ -474,11 +1347,13 @@ def _render_lk_model_explorer(
             min(max(def_sig, float(sig_g[0])), float(sig_g[-1])),
             0.1, '%.2f', f'{prefix}_lk_me_sig')
     else:
-        me_sig = def_sig
+        # Bug B fix: use the grid-fixed value, NOT sigma_meas.
+        me_sig = (float(sig_g[0]) if sig_g.size == 1
+                  else float(result.get('sigma_meas', 5.0)))
 
     me_logPmax = None
     if _lp_g.size > 1:
-        _dlp = float(bv.get('logPmax', float(_lp_g[0])))
+        _dlp = float(_bf_lp_v)
         _c = cols[3] if sig_g.size > 1 else cols[2]
         me_logPmax = _synced_slider_input(
             _c, f'logP_max  (best: {_dlp:.2f})',
@@ -486,112 +1361,400 @@ def _render_lk_model_explorer(
             min(max(_dlp, float(_lp_g[0])), float(_lp_g[-1])),
             0.01, '%.3f', f'{prefix}_lk_me_logPmax')
 
-    # Resolve effective logP_max for simulation
-    _eff_logPmax = me_logPmax if me_logPmax is not None else float(
-        _lp_g[0] if _lp_g.size >= 1 else 5.0)
-    _bf_logPmax = float(bv.get('logPmax', _eff_logPmax))
+    # Resolve effective logP_max for simulation.  Bug B fix: when
+    # logP_max isn't scanned use the grid's fixed value (size==1) or
+    # the bin_cfg value, NOT a hardcoded 5.0 fallback.
+    if me_logPmax is not None:
+        _eff_logPmax = float(me_logPmax)
+    elif _lp_g.size == 1:
+        _eff_logPmax = float(_lp_g[0])
+    else:
+        _eff_logPmax = float(_bc_dict_for_default.get('logP_max', 5.0))
+
+    # Bypass slider quantisation on Reset.  Streamlit's float slider quantises
+    # its session_state value to an implicit step (≈ (max-min)/100), so even
+    # when we write the exact _bf_* float as the default, the slider returns
+    # a rounded version that does NOT reproduce the grid's stored logL.
+    # On the first render after Reset (and on first page load), force the
+    # simulation to receive the exact joint-argmax floats.  Subsequent renders
+    # pass the user's slider value through untouched — no auto-snap.
+    if _just_reset and _logL_raw_arr is not None and _logL_raw_arr.size > 0:
+        me_fb = float(_bf_fb_v)
+        me_x = float(_bf_pi_v)
+        if sig_g.size > 1:
+            me_sig = float(_bf_sig_v)
+        if _lp_g.size > 1:
+            me_logPmax = float(_bf_lp_v)
+            _eff_logPmax = me_logPmax
+
+    # n_sets number_input (2026-04-29): user-tunable simulation count.
+    # Default mirrors what the grid worker actually used so the Explorer
+    # score lands on the SAME number stored in logL_raw at that cell.
+    # Persist on every change per project rule "All UI inputs persist
+    # on change" (see _render_cadence_adaptive_bins, params.py:442).
+    _ns_default_raw = result.get('grid_n_sets', result.get('n_sets', 1000))
+    if _ns_default_raw is None:
+        _ns_default_raw = 1000
+    _ns_default = int(_ns_default_raw)
+    _ns_key = f'{prefix}_lk_me_n_sets'
+    if _ns_key not in st.session_state:
+        # Seed from settings_manager if a previously-saved value exists.
+        try:
+            from shared import get_settings_manager as _gsm_lk
+            _sm_lk = _gsm_lk()
+            _saved = _sm_lk.load().get('lk_explorer', {}).get('n_sets')
+            if _saved is not None:
+                st.session_state[_ns_key] = int(_saved)
+            else:
+                st.session_state[_ns_key] = _ns_default
+        except Exception:
+            st.session_state[_ns_key] = _ns_default
+
+    def _persist_n_sets():
+        try:
+            from shared import get_settings_manager as _gsm_lk2
+            _gsm_lk2().save(['lk_explorer', 'n_sets'],
+                            value=int(st.session_state[_ns_key]))
+        except Exception:
+            pass
+
+    # Place the n_sets input in the rightmost slider column.  No
+    # `value=` arg — Streamlit pulls the initial value from
+    # st.session_state[_ns_key] (seeded above from settings or default).
+    _ns_col = cols[-1]
+    _ns_col.number_input(
+        'n_sets',
+        min_value=1, step=100, format='%d',
+        key=_ns_key, on_change=_persist_n_sets,
+        help='Number of simulations per Explorer recompute.  Default '
+             'matches the grid worker\'s n_sets so the Explorer logL '
+             'matches the grid\'s stored logL_raw at the same cell.',
+    )
+    _n_sets_me = int(st.session_state[_ns_key])
 
     obs_drv = np.asarray(result.get('obs_delta_rv'))
     be = result.get('bin_edges')
     be = np.asarray(be) if be is not None else DEFAULT_DRV_BIN_EDGES
-    lk_be = result.get('likelihood_bin_edges')
-    lk_be = np.asarray(lk_be) if lk_be is not None else be
+    # NB: `lk_be` is supplied by the Explorer-only bin editor above; do NOT
+    # overwrite from `result['likelihood_bin_edges']` here.
     sigma_m = float(result.get('sigma_meas', 3.0))
     _cad_lib = result.get('cadence_library')
     _cad_wt = result.get('cadence_weights')
-    _n_sets_me = int(result.get('n_sets', 50))
     # E048: full physics config so the explorer's re-sim matches the grid.
     _bc_tuple_me = _result_bin_cfg_tuple(result)
     _pm_me = _result_period_model(result, default='powerlaw')
 
-    # Multi-seed CDF band (cached, cadence-aware when available)
-    med_cdf, lo_cdf, hi_cdf, pooled_drv = _me_cdf_band(
-        me_fb, me_x, me_sig, sigma_m, tuple(be.tolist()),
-        logPmax=_eff_logPmax, n_sets=_n_sets_me,
-        _cadence_library=_cad_lib, _cadence_weights=_cad_wt,
-        _bin_cfg_dict=_bc_tuple_me, period_model=_pm_me)
+    # ──────────────────────────────────────────────────────────────────
+    # Auto-recompute (2026-04-29): the Run-button gate was removed —
+    # logL + CDF + heatmaps + histogram + detection-fraction now refresh
+    # on every slider/number_input change.  The grid pipeline call goes
+    # through @st.cache_data, so back-and-forth slider motion is instant
+    # after the first compute at each cell.  Numerical equivalence with
+    # the grid is preserved bit-for-bit (same simulate_delta_rv_cadence_aware
+    # + multinomial_log_likelihood, deterministic seed_base+idx_cell seed).
+    # ──────────────────────────────────────────────────────────────────
+
+    # Build the seed for THIS cell exactly the way the grid worker did.
+    # Note: _seed_base_me, _sigma_g_seed, _fbin_g_seed, _pi_g_seed,
+    # _logPmax_g_seed, _logL_raw_arr, _logL_best, and the joint-argmax
+    # _bf_* values were all resolved earlier (above the slider block) so
+    # they could feed the slider defaults / Reset target.
+    _cell_seed = _explorer_seed_for_cell(
+        result, _sigma_g_seed, _fbin_g_seed, _pi_g_seed, _logPmax_g_seed,
+        me_sig, me_fb, me_x, _eff_logPmax, seed_base=_seed_base_me,
+    )
+
+    # Rebuild the best-fit seed for the optional best-fit-CDF overlay
+    # using the joint-argmax coords already computed above.
+    _bf_seed = _seed_base_me  # fallback
+    if _logL_raw_arr is not None and _logL_raw_arr.size > 0:
+        try:
+            _bf_seed = _explorer_seed_for_cell(
+                result, _sigma_g_seed, _fbin_g_seed, _pi_g_seed,
+                _logPmax_g_seed,
+                _bf_sig_v, _bf_fb_v, _bf_pi_v, _bf_lp_v,
+                seed_base=_seed_base_me,
+            )
+        except Exception:
+            _bf_seed = _seed_base_me
+
+    # Auto-recompute on every change.  The cached wrapper makes back-
+    # and-forth slider motion instant after the first compute at each
+    # (params, n_sets) cell.  Spinner is shown only while the actual
+    # simulation runs (cache hits return immediately).
+    try:
+        with st.spinner('Computing logL…'):
+            _run_payload = _run_grid_pipeline_via_cache(
+                me_fb, me_x, me_sig, _eff_logPmax,
+                sigma_m, be, lk_be, obs_drv, _cad_lib, _cad_wt,
+                _bc_tuple_me, _pm_me, _n_sets_me, _cell_seed, result,
+            )
+        _have_run = True
+        _logL = float(_run_payload['logL'])
+        med_cdf = np.asarray(_run_payload['median_cdf'])
+        pooled_drv = np.asarray(_run_payload['pooled'])
+    except Exception as _err:
+        st.warning(f'Explorer recompute failed: {_err}')
+        _have_run = False
+        _logL = None
+        med_cdf = None
+        pooled_drv = None
 
     # ── D17: Score metric cards (logL) ──
-    _logL = multinomial_log_likelihood(obs_drv, pooled_drv, lk_be)
-    # Compute logL for the global best-fit
-    _bf_med, _, _, _bf_pooled = _me_cdf_band(
-        def_fb, def_x, def_sig, sigma_m, tuple(be.tolist()),
-        logPmax=_bf_logPmax, n_sets=_n_sets_me,
-        _cadence_library=_cad_lib, _cadence_weights=_cad_wt,
-        _bin_cfg_dict=_bc_tuple_me, period_model=_pm_me)
-    _logL_best = multinomial_log_likelihood(obs_drv, _bf_pooled, lk_be)
-
     mc1, mc2 = st.columns(2)
-    mc1.metric(
-        label='Current (Explorer)',
-        value=f'f_bin={me_fb:.3f}, {x_label}={me_x:.2f}',
-        delta=f'logL = {_logL:.4f}',
-        delta_color='off',
-    )
-    mc2.metric(
-        label='Global best',
-        value=f'f_bin={def_fb:.3f}, {x_label}={def_x:.2f}',
-        delta=f'logL = {_logL_best:.4f}',
-        delta_color='off',
-    )
+    if _have_run:
+        mc1.metric(
+            label='Current (Explorer)',
+            value=f'f_bin={me_fb:.3f}, {x_label}={me_x:.2f}',
+            delta=f'logL = {_logL:.4f}',
+            delta_color='off',
+        )
+    else:
+        mc1.metric(
+            label='Current (Explorer)',
+            value=f'f_bin={me_fb:.3f}, {x_label}={me_x:.2f}',
+            delta='—',
+            delta_color='off',
+        )
+    if np.isfinite(_logL_best):
+        mc2.metric(
+            label='Global best',
+            value=f'f_bin={def_fb:.3f}, {x_label}={def_x:.2f}',
+            delta=f'logL = {_logL_best:.4f}',
+            delta_color='off',
+        )
+    else:
+        mc2.metric(
+            label='Global best',
+            value=f'f_bin={def_fb:.3f}, {x_label}={def_x:.2f}',
+            delta='—',
+            delta_color='off',
+        )
 
     # -- CDF with error shadow + optional best-fit overlay --------
     obs_cdf = _binned_cdf(obs_drv, be)
-    med_x = np.concatenate([[0.0], be])
-    med_y = np.concatenate([[0.0], med_cdf])
+    if med_cdf is not None:
+        # Append (pooled_max, 1.0) so the step CDF visibly reaches 1.0.
+        # Every simulated star is ≤ pooled_max by construction, so the
+        # empirical CDF at pooled_max is 1.0 in every set, hence the
+        # per-set median is also 1.0.
+        if pooled_drv is not None and len(pooled_drv):
+            _pooled_max = float(np.nanmax(pooled_drv))
+        else:
+            _pooled_max = float(be[-1])
+        med_x = np.concatenate([[0.0], be, [_pooled_max]])
+        med_y = np.concatenate([[0.0], med_cdf, [1.0]])
+    else:
+        med_x = np.array([])
+        med_y = np.array([])
 
-    # Best-fit overlay (algorithm's best vs explorer's current)
+    # Best-fit overlay (algorithm's best vs explorer's current).  Lazily
+    # computed via the SAME grid pipeline at the algorithm's best-fit
+    # cell, then cached for the duration of the session.
     _show_bestfit = st.checkbox('Compare with algorithm best-fit',
                                 value=False, key=f'{prefix}_lk_me_cmp_best')
     _bf_med = None
-    if _show_bestfit and info is not None:
+    _bf_pooled = None
+    if _show_bestfit and info is not None and _have_run:
         _bf_bv = info.get('best_vals', {})
-        _bf_fb = float(_bf_bv.get('fbin', 0.5))
-        _bf_x = float(_bf_bv.get(x_name, 0.0))
-        _bf_sig = float(_bf_bv.get('sigma', me_sig))
+        _bf_fb = float(_bf_bv.get('fbin', def_fb))
+        _bf_x = float(_bf_bv.get(x_name, def_x))
+        _bf_sig = float(_bf_bv.get('sigma', def_sig))
         _bf_lp = float(_bf_bv.get('logPmax', _bf_logPmax))
-        _bf_med, _bf_lo, _bf_hi, _ = _me_cdf_band(
-            _bf_fb, _bf_x, _bf_sig, sigma_m,
-            tuple(be.tolist()), logPmax=_bf_lp, n_sets=_n_sets_me,
-            _cadence_library=_cad_lib, _cadence_weights=_cad_wt,
-            _bin_cfg_dict=_bc_tuple_me, period_model=_pm_me)
+        # Routed through the same cached wrapper — first hit runs the
+        # simulation, all subsequent slider movements are instant.
+        try:
+            with st.spinner('Computing best-fit CDF…'):
+                _bf_payload = _run_grid_pipeline_via_cache(
+                    _bf_fb, _bf_x, _bf_sig, _bf_lp,
+                    sigma_m, be, lk_be, obs_drv, _cad_lib, _cad_wt,
+                    _bc_tuple_me, _pm_me, _n_sets_me, _bf_seed, result,
+                )
+            _bf_med = np.asarray(_bf_payload['median_cdf'])
+            _bf_pooled = np.asarray(_bf_payload['pooled'])
+        except Exception:
+            _bf_med = None
+            _bf_pooled = None
+
+    # Conditional "Mock Observation" label in the Validation flow.
+    from bc.helpers import _obs_label as _obs_label_me, smooth_pooled_cdf
+    _obs_name_me = _obs_label_me(result)
+    # CDF style constants — observation = teal step (NO markers on the
+    # line itself; coloured truth-coded dots overlay separately when the
+    # validation truth is available).  Current explorer trace and global
+    # best-fit overlay both render in dashed red so all 5 CDFs share the
+    # same look (best-fit is dotted to distinguish it from the live trace).
+    from bc.render_validation import (
+        _CDF_OBS_COLOR, _CDF_FIT_COLOR, _CLR_SINGLE, _CLR_BINARY,
+    )
+
+    # Snapshot store (session-only) — feature: Saved attempts.
+    _snap_key = f'{prefix}_lk_me_snapshots'
+    st.session_state.setdefault(_snap_key, [])
 
     fig_cdf = go.Figure()
     fig_cdf.add_trace(go.Scatter(
-        x=be, y=obs_cdf, mode='lines', name='Observed',
-        line=dict(color='white', width=2.5, shape='hv'),
+        x=be, y=obs_cdf, mode='lines', name=_obs_name_me,
+        line=dict(color=_CDF_OBS_COLOR, width=2.5, shape='hv'),
     ))
-    # Explorer median CDF (no error band)
-    fig_cdf.add_trace(go.Scatter(
-        x=med_x, y=med_y, mode='lines', name='Explorer (current)',
-        line=dict(color=_METHOD_COLOR, width=2, dash='dash',
-                  shape='hv'),
-    ))
-    # Best-fit overlay
+
+    # Per-star truth-coded markers (validation flow only).  Skipped
+    # silently when load_per_star_truth returns None (real-obs flow).
+    from bc.validation_io import load_per_star_truth
+    _is_bin = load_per_star_truth(result)
+    if _is_bin is not None and len(_is_bin) == len(obs_drv):
+        _sort_idx = np.argsort(np.asarray(obs_drv))
+        _drv_sorted = np.asarray(obs_drv)[_sort_idx]
+        _is_bin_sorted = np.asarray(_is_bin)[_sort_idx]
+        _cdf_vals = (np.arange(len(_drv_sorted)) + 1) / max(len(_drv_sorted), 1)
+        _single_mask = ~_is_bin_sorted
+        if np.any(_single_mask):
+            fig_cdf.add_trace(go.Scatter(
+                x=_drv_sorted[_single_mask], y=_cdf_vals[_single_mask],
+                mode='markers',
+                marker=dict(color=_CLR_SINGLE, size=8,
+                            line=dict(color='black', width=0.6)),
+                name=f'Single ({int(_single_mask.sum())})',
+                hovertemplate='single · ΔRV=%{x:.1f} km/s<extra></extra>',
+            ))
+        if np.any(_is_bin_sorted):
+            fig_cdf.add_trace(go.Scatter(
+                x=_drv_sorted[_is_bin_sorted], y=_cdf_vals[_is_bin_sorted],
+                mode='markers',
+                marker=dict(color=_CLR_BINARY, size=8,
+                            line=dict(color='black', width=0.6)),
+                name=f'Binary ({int(_is_bin_sorted.sum())})',
+                hovertemplate='binary · ΔRV=%{x:.1f} km/s<extra></extra>',
+            ))
+    # Explorer current — smooth pooled CDF + 16/84 band.
+    if _have_run:
+        _scdf_cur = smooth_pooled_cdf(pooled_drv, _n_sets_me)
+        if _scdf_cur is not None:
+            _sp, _yp, _xf, _lo, _hi = _scdf_cur
+            fig_cdf.add_trace(go.Scatter(
+                x=_xf, y=_lo, mode='lines',
+                line=dict(color='rgba(0,0,0,0)'),
+                legendgroup='cur', showlegend=False, hoverinfo='skip',
+            ))
+            fig_cdf.add_trace(go.Scatter(
+                x=_xf, y=_hi, mode='lines',
+                line=dict(color='rgba(0,0,0,0)'),
+                fill='tonexty',
+                fillcolor=_hex_to_rgba(_CDF_FIT_COLOR, 0.20),
+                legendgroup='cur', showlegend=False, hoverinfo='skip',
+            ))
+            fig_cdf.add_trace(go.Scatter(
+                x=_sp, y=_yp, mode='lines', name='Explorer (current)',
+                line=dict(color=_CDF_FIT_COLOR, width=2, dash='dash'),
+                legendgroup='cur',
+            ))
+        else:
+            # Fallback: empty pool — keep step CDF.
+            fig_cdf.add_trace(go.Scatter(
+                x=med_x, y=med_y, mode='lines', name='Explorer (current)',
+                line=dict(color=_CDF_FIT_COLOR, width=2, dash='dash',
+                          shape='hv'),
+            ))
+    # Best-fit overlay — smooth pooled CDF + 16/84 band.
     if _bf_med is not None:
-        _bf_x_arr = np.concatenate([[0.0], be])
-        _bf_y_arr = np.concatenate([[0.0], _bf_med])
-        fig_cdf.add_trace(go.Scatter(
-            x=_bf_x_arr, y=_bf_y_arr,
-            mode='lines', name='Best-fit (algorithm)',
-            line=dict(color='#E25A53', width=2, dash='dot', shape='hv'),
-        ))
-    # Full x-range: cover all observed data + bin edges
-    _xmax_cdf = float(np.nanmax(obs_drv)) if len(obs_drv) else 1.0
-    _be_finite = be[np.isfinite(be)]
-    if len(_be_finite):
-        _xmax_cdf = max(_xmax_cdf, float(np.max(_be_finite)))
+        _scdf_bf = None
+        if _bf_pooled is not None and len(_bf_pooled):
+            _scdf_bf = smooth_pooled_cdf(_bf_pooled, _n_sets_me)
+        if _scdf_bf is not None:
+            _sp_b, _yp_b, _xf_b, _lo_b, _hi_b = _scdf_bf
+            fig_cdf.add_trace(go.Scatter(
+                x=_xf_b, y=_lo_b, mode='lines',
+                line=dict(color='rgba(0,0,0,0)'),
+                legendgroup='bf', showlegend=False, hoverinfo='skip',
+            ))
+            fig_cdf.add_trace(go.Scatter(
+                x=_xf_b, y=_hi_b, mode='lines',
+                line=dict(color='rgba(0,0,0,0)'),
+                fill='tonexty',
+                fillcolor=_hex_to_rgba(_CDF_FIT_COLOR, 0.12),
+                legendgroup='bf', showlegend=False, hoverinfo='skip',
+            ))
+            fig_cdf.add_trace(go.Scatter(
+                x=_sp_b, y=_yp_b, mode='lines', name='Best-fit (algorithm)',
+                line=dict(color=_CDF_FIT_COLOR, width=2, dash='dot'),
+                legendgroup='bf',
+            ))
+        else:
+            # Fallback: empty pool — keep step CDF.
+            if _bf_pooled is not None and len(_bf_pooled):
+                _bf_pooled_max = float(np.nanmax(_bf_pooled))
+            else:
+                _bf_pooled_max = float(be[-1])
+            _bf_x_arr = np.concatenate([[0.0], be, [_bf_pooled_max]])
+            _bf_y_arr = np.concatenate([[0.0], _bf_med, [1.0]])
+            fig_cdf.add_trace(go.Scatter(
+                x=_bf_x_arr, y=_bf_y_arr,
+                mode='lines', name='Best-fit (algorithm)',
+                line=dict(color=_CDF_FIT_COLOR, width=2, dash='dot', shape='hv'),
+            ))
+    # Saved-attempt overlays — smooth CDF + 16/84 band per snapshot.
+    for _snap in st.session_state[_snap_key]:
+        _sc = _snap['color']
+        _smooth = _snap.get('smooth_cdf')
+        if _smooth is not None:
+            _sp, _yp, _xf, _lo, _hi = (np.asarray(a) for a in _smooth)
+            # Lower band edge (invisible).
+            fig_cdf.add_trace(go.Scatter(
+                x=_xf, y=_lo, mode='lines',
+                line=dict(color='rgba(0,0,0,0)'),
+                legendgroup=f"snap_{_snap['id']}",
+                showlegend=False, hoverinfo='skip',
+            ))
+            # Upper band edge + fill between this and previous trace.
+            fig_cdf.add_trace(go.Scatter(
+                x=_xf, y=_hi, mode='lines',
+                line=dict(color='rgba(0,0,0,0)'),
+                fill='tonexty',
+                fillcolor=_hex_to_rgba(_sc, 0.18),
+                legendgroup=f"snap_{_snap['id']}",
+                showlegend=False, hoverinfo='skip',
+            ))
+            # Median dashed line.
+            fig_cdf.add_trace(go.Scatter(
+                x=_sp, y=_yp, mode='lines',
+                name=f"Save #{_snap['id']} · logL={_snap['logL']:.2f}",
+                line=dict(color=_sc, width=2, dash='dash'),
+                legendgroup=f"snap_{_snap['id']}",
+            ))
+        else:
+            # Fallback for legacy snapshots without smooth_cdf (or empty pool).
+            _smedian = np.asarray(_snap['median_cdf'])
+            _spm = float(_snap['pooled_max'])
+            _smx = np.concatenate([[0.0], be, [_spm]])
+            _smy = np.concatenate([[0.0], _smedian, [1.0]])
+            fig_cdf.add_trace(go.Scatter(
+                x=_smx, y=_smy, mode='lines',
+                name=f"Save #{_snap['id']} · logL={_snap['logL']:.2f}",
+                line=dict(color=_sc, width=2, dash='dash', shape='hv'),
+                legendgroup=f"snap_{_snap['id']}",
+            ))
+
+    # x-range: let plotly autofocus from the data extents.  The trace
+    # extension above guarantees the Explorer / best-fit step CDFs reach
+    # (pooled_max, 1.0) so the natural data range covers all curves and
+    # the rightmost point of any trace at CDF=1.0 is the auto right-edge.
+    if _have_run:
+        _cdf_title = f'CDF -- logL = {_logL:.3f}'
+    else:
+        _cdf_title = 'CDF — recompute failed'
     fig_cdf.update_layout(**{
         **PLOTLY_THEME,
-        'title': dict(
-            text=f'CDF -- logL = {_logL:.3f}',
-            font=dict(size=14)),
+        'title': dict(text=_cdf_title, font=dict(size=14)),
         'xaxis_title': 'ΔRV (km/s)',
-        'xaxis_range': [0, _xmax_cdf * 1.05],
         'yaxis_title': 'Cumulative fraction',
         'height': 380,
         'legend': dict(x=0.6, y=0.15),
     })
+    # A&A journal theme (white bg, black serif text) — see feedback_aa_journal_style
+    from bc.render_validation import _AA_OVERRIDES
+    fig_cdf.update_layout(**_AA_OVERRIDES)
+    fig_cdf.update_xaxes(**_AA_OVERRIDES['xaxis'])
+    fig_cdf.update_yaxes(**_AA_OVERRIDES['yaxis'])
     # -- Bin overlay toggle (uses likelihood bins, not CDF bins) ----
     _show_bins_me = st.checkbox('Show likelihood bin edges on CDF', value=False,
                                 key=f'{prefix}_lk_me_show_bins')
@@ -608,9 +1771,111 @@ def _render_lk_model_explorer(
             fig_cdf.add_vline(
                 x=float(_ei),
                 line=dict(color='grey', width=1, dash='dot'))
+        # Snapshot bin-edge overlays — one set of vlines per saved attempt.
+        for _snap in st.session_state[_snap_key]:
+            _sc = _snap['color']
+            for _ei in _snap['lk_be']:
+                if np.isfinite(_ei):
+                    fig_cdf.add_vline(
+                        x=float(_ei),
+                        line=dict(color=_sc, width=1, dash='dot'))
     st.plotly_chart(fig_cdf, use_container_width=True,
                     key=f'{prefix}_lk_me_cdf')
-    if _show_bins_me:
+
+    # ── Saved attempts table (session-only) ──────────────────────────
+    from bc.helpers import _SNAPSHOT_PALETTE
+    _t_c1, _t_c2, _t_c3 = st.columns([0.7, 0.15, 0.15])
+    _t_c1.markdown(
+        f'### Saved attempts ({len(st.session_state[_snap_key])})')
+    if _t_c2.button('💾 Save', key=f'{prefix}_lk_me_snap_save',
+                    disabled=(not _have_run)):
+        _existing_ids = [s['id'] for s in st.session_state[_snap_key]]
+        _new_id = (max(_existing_ids) + 1) if _existing_ids else 1
+        _new_color = _SNAPSHOT_PALETTE[(_new_id - 1) % len(_SNAPSHOT_PALETTE)]
+        # pooled_max used for trace right edge (mirrors current trace logic).
+        if pooled_drv is not None and len(pooled_drv):
+            _snap_pmax = float(np.nanmax(pooled_drv))
+        else:
+            _snap_pmax = float(be[-1])
+        _snap = {
+            'id': int(_new_id),
+            'color': _new_color,
+            'lk_be': tuple(float(_e) for _e in np.asarray(lk_be, dtype=float)),
+            'f_bin': float(me_fb),
+            'x': float(me_x),
+            'sigma': float(me_sig),
+            'logPmax': (float(me_logPmax)
+                        if me_logPmax is not None else None),
+            'n_sets': int(_n_sets_me),
+            'logL': float(_logL),
+            'median_cdf': tuple(float(v) for v in np.asarray(med_cdf, dtype=float)),
+            'pooled_max': float(_snap_pmax),
+        }
+        # Replicate the live Explorer's smooth-CDF rendering for this snapshot.
+        # smooth_pooled_cdf returns (_sp, _yp, _xf, _lo, _hi) or None for empty pool.
+        _smooth = smooth_pooled_cdf(pooled_drv, _n_sets_me)
+        if _smooth is not None:
+            _sp, _yp, _xf, _lo, _hi = _smooth
+            _snap['smooth_cdf'] = (
+                tuple(float(v) for v in np.asarray(_sp, dtype=float)),
+                tuple(float(v) for v in np.asarray(_yp, dtype=float)),
+                tuple(float(v) for v in np.asarray(_xf, dtype=float)),
+                tuple(float(v) for v in np.asarray(_lo, dtype=float)),
+                tuple(float(v) for v in np.asarray(_hi, dtype=float)),
+            )
+        else:
+            _snap['smooth_cdf'] = None
+        st.session_state[_snap_key].append(_snap)
+        st.rerun()
+    if _t_c3.button('🧹 Clear all', key=f'{prefix}_lk_me_snap_clear',
+                    disabled=(not st.session_state[_snap_key])):
+        st.session_state[_snap_key] = []
+        st.rerun()
+
+    if st.session_state[_snap_key]:
+        # Header row
+        _h = st.columns([0.04, 0.20, 0.10, 0.10, 0.10, 0.10, 0.10, 0.06])
+        _h[0].caption('')
+        _h[1].caption('lk bin edges')
+        _h[2].caption('f_bin')
+        _h[3].caption(x_label)
+        _h[4].caption('σ_single')
+        _h[5].caption('logP_max')
+        _h[6].caption('logL')
+        _h[7].caption('')
+        _best_logL_snap = max(
+            (float(s['logL']) for s in st.session_state[_snap_key]),
+            default=float('-inf'))
+        for _snap in list(st.session_state[_snap_key]):
+            _r = st.columns([0.04, 0.20, 0.10, 0.10, 0.10, 0.10, 0.10, 0.06])
+            _r[0].markdown(
+                f'<div style="background:{_snap["color"]}; width:20px; '
+                'height:20px; border-radius:3px;"></div>',
+                unsafe_allow_html=True)
+            _edges_lbl = ', '.join(
+                f'{_e:g}' if np.isfinite(_e) else '∞' for _e in _snap['lk_be'])
+            _r[1].markdown(f'`{_edges_lbl}`')
+            _r[2].write(f'{_snap["f_bin"]:.3f}')
+            _r[3].write(f'{_snap["x"]:.3f}')
+            _r[4].write(f'{_snap["sigma"]:.2f}')
+            _r[5].write(f'{_snap["logPmax"]:.2f}'
+                        if _snap['logPmax'] is not None else '—')
+            _is_best = (float(_snap['logL']) >= _best_logL_snap - 1e-12)
+            _logL_txt = f'{_snap["logL"]:.4f}'
+            if _is_best:
+                _r[6].markdown(f'**{_logL_txt}**')
+            else:
+                _r[6].write(_logL_txt)
+            if _r[7].button(
+                    '✕',
+                    key=f'{prefix}_lk_me_snap_del_{_snap["id"]}'):
+                st.session_state[_snap_key] = [
+                    s for s in st.session_state[_snap_key]
+                    if s['id'] != _snap['id']]
+                st.rerun()
+    # Bin diagnostics depend on the pooled sim data — only when a Run
+    # has produced it.
+    if _show_bins_me and _have_run and pooled_drv is not None:
         _no = np.histogram(obs_drv, bins=lk_be)[0]
         _ns = np.histogram(pooled_drv, bins=lk_be)[0]
         _sf = _ns / max(_ns.sum(), 1)
@@ -621,6 +1886,16 @@ def _render_lk_model_explorer(
                for i in range(len(lk_be) - 1)]
         st.dataframe(pd.DataFrame(_br), use_container_width=True,
                      hide_index=True)
+
+    # All downstream panels (heatmaps + histogram + detection fraction)
+    # depend on either the green-dot at the slider position or the
+    # freshly simulated pooled ΔRV array.  In auto-recompute mode the
+    # only path here is when the simulation itself failed — surface the
+    # warning above and bail.
+    if not _have_run:
+        st.info('Adjust the sliders to retry — see warning above for the '
+                'recompute failure.')
+        return
 
     # ── D17: Explorer heatmaps (2×2) with green dot ──
     _sig_g_hm = np.asarray(result.get('sigma_grid', []))
@@ -765,6 +2040,14 @@ def _render_lk_model_explorer(
                     'xaxis_title': _norm_1d_label,
                     'yaxis_title': 'Max Norm. Likelihood',
                 })
+                # User authorised 2026-04-28: A&A theme override applied inside WORKING block
+                try:
+                    from bc.render_validation import _AA_OVERRIDES
+                    _fig2.update_layout(**_AA_OVERRIDES)
+                    _fig2.update_xaxes(**_AA_OVERRIDES['xaxis'])
+                    _fig2.update_yaxes(**_AA_OVERRIDES['yaxis'])
+                except Exception:
+                    pass
                 st.plotly_chart(_fig2, use_container_width=True,
                                 key=f'{prefix}_lk_me_hm_norm_siglp')
 
@@ -810,15 +2093,24 @@ def _render_lk_model_explorer(
                     'xaxis_title': _norm_1d_label,
                     'yaxis_title': 'Max log L',
                 })
+                # User authorised 2026-04-28: A&A theme override applied inside WORKING block
+                try:
+                    from bc.render_validation import _AA_OVERRIDES
+                    _fig4.update_layout(**_AA_OVERRIDES)
+                    _fig4.update_xaxes(**_AA_OVERRIDES['xaxis'])
+                    _fig4.update_yaxes(**_AA_OVERRIDES['yaxis'])
+                except Exception:
+                    pass
                 st.plotly_chart(_fig4, use_container_width=True,
                                 key=f'{prefix}_lk_me_hm_unnorm_siglp')
 
     # ── WORKING — do not change this code · D17: Histogram overlay ──
+    # (User explicitly authorised CDF colour-constant migration 2026-04-28)
     sim_drv_single = pooled_drv[:1000]
     fig_hist = go.Figure()
     fig_hist.add_trace(go.Histogram(
         x=obs_drv, nbinsx=30, histnorm='probability density',
-        name='Observed', marker_color='#4A90D9', opacity=0.6,
+        name=_obs_name_me, marker_color=_CDF_OBS_COLOR, opacity=0.6,
     ))
     fig_hist.add_trace(go.Histogram(
         x=sim_drv_single, nbinsx=30, histnorm='probability density',
@@ -833,6 +2125,15 @@ def _render_lk_model_explorer(
         'height': 380,
         'legend': dict(x=0.65, y=0.95),
     })
+    # User authorised 2026-04-28: A&A theme override applied inside WORKING block
+    # (D17 Histogram overlay)
+    try:
+        from bc.render_validation import _AA_OVERRIDES
+        fig_hist.update_layout(**_AA_OVERRIDES)
+        fig_hist.update_xaxes(**_AA_OVERRIDES['xaxis'])
+        fig_hist.update_yaxes(**_AA_OVERRIDES['yaxis'])
+    except Exception:
+        pass
     st.plotly_chart(fig_hist, use_container_width=True,
                     key=f'{prefix}_lk_me_hist')
 
@@ -981,6 +2282,19 @@ def _render_lk_model_explorer(
         'showlegend': True, 'legend': dict(x=0.55, y=0.95, font=dict(size=10)),
         'yaxis': dict(range=[0, min(1.0, intrinsic_fbin * 1.5)]),
     })
+    # User authorised 2026-04-28: A&A theme override applied inside WORKING block
+    # (D17j Binary Fraction vs Threshold).  Note: deferred white traces
+    # (observed-fbin curve, diamond marker) intentionally NOT touched.
+    try:
+        from bc.render_validation import _AA_OVERRIDES
+        fig_det.update_layout(**_AA_OVERRIDES)
+        fig_det.update_xaxes(**_AA_OVERRIDES['xaxis'])
+        # Preserve the existing yaxis range while adding A&A styling
+        _aa_y = dict(_AA_OVERRIDES['yaxis'])
+        _aa_y['range'] = [0, min(1.0, intrinsic_fbin * 1.5)]
+        fig_det.update_yaxes(**_aa_y)
+    except Exception:
+        pass
     st.plotly_chart(fig_det, use_container_width=True,
                     key=f'{prefix}_lk_me_det')
     st.caption(
@@ -1109,14 +2423,44 @@ def render_lk_explorer(
     _cadence_lib = cadence_library or result.get('cadence_library')
     if _cadence_lib is not None and obs_delta_rv is not None:
         _bv = info['best_vals'] if info is not None else {}
-        _pm = 'dsilva'
-        if result.get('period_model') == 'langer':
-            _pm = 'langer'
+        # Round-5 (2026-04-28): also pass the MARGINAL-best param tuple
+        # so the sanity-check overlays a second (purple) draw set.
+        # ``info['hdi'][name]`` is (mode, lo, hi) where mode IS the marginal
+        # max (peak of the 1-D marginal posterior).
+        _hdi_dict = info.get('hdi', {}) if info is not None else {}
+        def _marg_or(default, name):
+            t = _hdi_dict.get(name)
+            try:
+                m = float(t[0]) if t is not None else float('nan')
+            except (TypeError, ValueError, IndexError):
+                m = float('nan')
+            return m if np.isfinite(m) else default
+        _grid_fb = float(_bv.get('fbin', 0.5))
+        _grid_x = float(_bv.get(x_name, 0.0))
+        _grid_sig = float(_bv.get('sigma',
+                                  float(result.get('sigma_meas', 5.0))))
+        _marg_dict = {
+            'f_bin': _marg_or(_grid_fb, 'fbin'),
+            x_name: _marg_or(_grid_x, x_name),
+            'sigma': _marg_or(_grid_sig, 'sigma'),
+        }
+        # Bug 1e fix (2026-04-28): translate the runner-mode tag into the
+        # actual `period_model` string accepted by `sample_logP`
+        # (powerlaw / langer2020).  Previously this passed 'dsilva' /
+        # 'langer' which raised "Unknown period_model" inside the mock
+        # sampler.  Mirror the translation in render_validation.py:57.
+        _stored_pm = str(result.get('period_model', 'powerlaw')).lower()
+        if _stored_pm in ('langer', 'langer2020'):
+            _pm = 'langer2020'
+        else:
+            _pm = 'powerlaw'
         try:
             _render_lk_cdf_sanity_check(
-                _bv.get('fbin', 0.5), _bv.get(x_name, 0.0),
-                _bv.get('sigma', float(result.get('sigma_meas', 5.0))),
+                _grid_fb, _grid_x, _grid_sig,
                 np.asarray(obs_delta_rv), _pm, result,
-                f'{p}_{method_key}')
-        except Exception:
-            pass
+                f'{p}_{method_key}', page_prefix=p,
+                marg_params=_marg_dict, x_name=x_name)
+        except Exception as _sanity_err:
+            # Phase-6 debug (2026-04-28): surface sanity-check failures so
+            # downstream "missing graph" reports have a visible cause.
+            st.warning(f'CDF sanity check failed: {_sanity_err}')

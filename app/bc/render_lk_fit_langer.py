@@ -21,6 +21,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from shared import PLOTLY_THEME
+from bc.helpers import smooth_pooled_cdf
 
 _METHOD_COLOR = '#DAA520'
 _DISPLAY_NAME = 'Likelihood'
@@ -256,6 +257,15 @@ def _render_cvm_1d_plot(col, t_grid, S_grid, label, best_t, best_S,
     fig.update_layout(**{**_theme, 'title': dict(text=f'{_y_title} vs {label}'),
                          'xaxis': dict(title=label), 'yaxis': dict(title=_y_title),
                          'height': height, 'showlegend': False})
+    # User authorised 2026-04-28: A&A theme override applied inside WORKING block
+    # (D9 Parabola — Langer).  See task brief — interpolation section A&A pass.
+    try:
+        from bc.render_validation import _AA_OVERRIDES
+        fig.update_layout(**_AA_OVERRIDES)
+        fig.update_xaxes(**_AA_OVERRIDES['xaxis'])
+        fig.update_yaxes(**_AA_OVERRIDES['yaxis'])
+    except Exception:
+        pass
     col.plotly_chart(fig, use_container_width=True)
     col.caption(caption_text)
 
@@ -278,8 +288,9 @@ def _squeeze_to_match(arr: np.ndarray, target_ndim: int) -> np.ndarray:
     return arr
 
 
+# UPDATED 2026-05-06: added validation truth-line markers — user authorised. WORKING — do not change without explicit user approval
 def _add_1d_posterior(fig, row, col, grid, post_1d, hdi_tuple,
-                      color=_METHOD_COLOR):
+                      color=_METHOD_COLOR, true_value=None):
     """Add 1D posterior trace with HDI shading + mode line to a subplot cell."""
     mode_val, lo, hi = hdi_tuple
     if len(post_1d) != len(grid):
@@ -308,9 +319,19 @@ def _add_1d_posterior(fig, row, col, grid, post_1d, hdi_tuple,
                   line_color='#E25A53', line_width=1.5,
                   row=row, col=col)
 
+    if true_value is not None and np.isfinite(true_value):
+        fig.add_vline(x=float(true_value), line_dash='dash',
+                      line_color='#16A34A', line_width=1.5,
+                      annotation_text='True input',
+                      annotation_position='top left',
+                      annotation_font_color='#16A34A',
+                      annotation_font_size=9,
+                      row=row, col=col)
 
+
+# UPDATED 2026-05-06: added validation truth-line markers — user authorised. WORKING — do not change without explicit user approval
 def _add_2d_heatmap(fig, row, col, x_grid, y_grid, z_2d,
-                     best_x, best_y, pal):
+                     best_x, best_y, pal, true_x=None, true_y=None):
     """Add 2D marginalized heatmap with contours + best-fit star."""
     z_max = float(np.nanmax(z_2d)) if np.any(np.isfinite(z_2d)) else 1.0
     fig.add_trace(go.Heatmap(
@@ -349,8 +370,18 @@ def _add_2d_heatmap(fig, row, col, x_grid, y_grid, z_2d,
         showlegend=False,
     ), row=row, col=col)
 
+    if (true_x is not None and true_y is not None
+            and np.isfinite(true_x) and np.isfinite(true_y)):
+        fig.add_trace(go.Scatter(
+            x=[float(true_x)], y=[float(true_y)],
+            mode='markers',
+            marker=dict(symbol='x', size=12, color='#16A34A',
+                        line=dict(color='#16A34A', width=2)),
+            showlegend=False,
+        ), row=row, col=col)
 
-# D14: Corner Plot (fixed 2026-03-30, pending user approval)
+
+# UPDATED 2026-05-06: added validation truth-line markers — user authorised. WORKING — do not change without explicit user approval
 def _render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
                            ndim_mode, result, prefix, pal, use_cw=True):
     """Render N-parameter corner plot for Likelihood scoring."""
@@ -420,6 +451,26 @@ def _render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
         _hdi = _info['hdi']
         _bv = _info['best_vals']
 
+        _truth_keys = {
+            'fbin': 'true_fbin',
+            'pi': 'true_pi',
+            'sigma': 'true_sigma',
+            'logPmax': 'true_logPmax',
+        }
+        _is_validation = bool(result.get('is_validation', False))
+
+        def _truth_for(axis_name):
+            if not _is_validation:
+                return None
+            key = _truth_keys.get(axis_name)
+            if key is None or key not in result:
+                return None
+            try:
+                v = float(result[key])
+            except (TypeError, ValueError):
+                return None
+            return v if np.isfinite(v) else None
+
         # Determine which axes to show — only scanned dimensions (size > 1)
         show_axes = []
         if x_g.size > 1:
@@ -453,7 +504,8 @@ def _render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
             hdi_i = _hdi.get(name_i, (0, 0, 0))
             _add_1d_posterior(fig_c, row=i + 1, col=i + 1,
                               grid=grid_i, post_1d=post_1d,
-                              hdi_tuple=hdi_i)
+                              hdi_tuple=hdi_i,
+                              true_value=_truth_for(name_i))
 
         # Lower-triangle: 2D marginalized heatmaps
         for j in range(n_params):
@@ -475,7 +527,9 @@ def _render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
                                 z_2d=z_2d,
                                 best_x=_bv.get(name_col, 0),
                                 best_y=_bv.get(name_row, 0),
-                                pal=pal)
+                                pal=pal,
+                                true_x=_truth_for(name_col),
+                                true_y=_truth_for(name_row))
 
         # Hide upper-triangle cells
         for j in range(n_params):
@@ -496,9 +550,26 @@ def _render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
             'showlegend': False,
             'margin': dict(l=60, r=20, t=30, b=60),
         })
+        # User authorised 2026-04-28: A&A theme override applied inside WORKING block
+        # (D14 Corner Plot — Langer).  See task brief — corner plots A&A pass.
+        try:
+            from bc.render_validation import _AA_OVERRIDES
+            fig_c.update_layout(**_AA_OVERRIDES)
+            fig_c.update_xaxes(**_AA_OVERRIDES['xaxis'])
+            fig_c.update_yaxes(**_AA_OVERRIDES['yaxis'])
+        except Exception:
+            pass
         st.plotly_chart(fig_c, use_container_width=True,
                         key=f'{prefix}_{_DISPLAY_NAME.lower()}_corner')
         _param_list = ' x '.join(lbl for _, _, lbl in show_axes)
+        _truth_caption_extra = ''
+        if _is_validation:
+            _any_truth = any(_truth_for(n) is not None for n in _truth_keys)
+            if _any_truth:
+                _truth_caption_extra = (
+                    ' Green dashed line / green × marker: user-chosen input '
+                    'parameter for this mock run.'
+                )
         st.caption(
             f'{n_params}-parameter corner plot for {_DISPLAY_NAME} '
             f'({_param_list}). '
@@ -509,7 +580,7 @@ def _render_lk_corner_plot(p_nd, fbin_g, x_g, x_name, x_display_label,
             f'with 68%/95% contours and best fit (gold star). '
             f'Note: the gold star marks the joint maximum (argmax of the '
             f'full N-D likelihood), which may differ from the marginal '
-            f'mode shown on each diagonal.'
+            f'mode shown on each diagonal.' + _truth_caption_extra
         )
 
     return _info
@@ -603,42 +674,44 @@ def _render_likelihood_cdf(
     )
     bin_cfg = BinaryParameterConfig()
 
-    all_cdfs, all_sim_drv = [], []
+    all_sim_drv = []
     for seed_i in range(n_cdf_sets):
         rng = np.random.default_rng(42 + seed_i)
         sim_drv = simulate_delta_rv_sample(
             f_bin=fb, pi=pi_v,
             sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
-        all_cdfs.append(_bcdf(sim_drv, fine_edges))
         all_sim_drv.append(sim_drv)
 
-    all_cdfs_arr = np.array(all_cdfs)
     pooled_sim = np.concatenate(all_sim_drv)
-    median_cdf = np.median(all_cdfs_arr, axis=0)
-    lo_cdf = np.percentile(all_cdfs_arr, 16, axis=0)
-    hi_cdf = np.percentile(all_cdfs_arr, 84, axis=0)
-    obs_cdf = _bcdf(obs_drv, fine_edges)
     logL = multinomial_log_likelihood(obs_drv, pooled_sim, lk_edges)
 
-    obs_x = np.concatenate([[0.0], fine_edges])
-    obs_y = np.concatenate([[0.0], obs_cdf])
-    med_x = np.concatenate([[0.0], fine_edges])
-    med_y = np.concatenate([[0.0], median_cdf])
-    lo_y = np.concatenate([[0.0], lo_cdf])
-    hi_y = np.concatenate([[0.0], hi_cdf])
+    _obs_sorted = np.sort(obs_drv)
+    obs_x = np.concatenate([[0.0], _obs_sorted])
+    obs_y = np.concatenate([[0.0],
+                            np.arange(1, _obs_sorted.size + 1, dtype=float)
+                            / max(1, _obs_sorted.size)])
 
+    _scdf = smooth_pooled_cdf(pooled_sim, n_cdf_sets)
+    if _scdf is not None:
+        _sp, _yp, _xf, _lof, _hif = _scdf
+    else:
+        _sp = np.array([0.0]); _yp = np.array([0.0])
+        _xf = np.array([0.0]); _lof = np.array([0.0]); _hif = np.array([0.0])
+
+    from bc.helpers import _obs_label as _obs_label_lf
+    _obs_name_lf = _obs_label_lf(result)
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=obs_x, y=obs_y, mode='lines', name='Observed',
-        line=dict(color='#4A90D9', width=2.5)))
+        x=obs_x, y=obs_y, mode='lines', name=_obs_name_lf,
+        line=dict(color='#4A90D9', width=2.5, shape='hv')))
     fig.add_trace(go.Scatter(
-        x=np.concatenate([med_x, med_x[::-1]]),
-        y=np.concatenate([hi_y, lo_y[::-1]]),
+        x=np.concatenate([_xf, _xf[::-1]]),
+        y=np.concatenate([_hif, _lof[::-1]]),
         fill='toself', fillcolor='rgba(218, 165, 32, 0.2)',
         line=dict(color='rgba(0,0,0,0)'),
         legendgroup='sim_lk', showlegend=False, hoverinfo='skip'))
     fig.add_trace(go.Scatter(
-        x=med_x, y=med_y, mode='lines',
+        x=_sp, y=_yp, mode='lines',
         name=f'Simulated (f_bin={fb:.3f}, pi={pi_v:.2f}, sigma={sig_v:.1f})',
         legendgroup='sim_lk',
         line=dict(color='#DAA520', width=2.5, dash='dash')))
@@ -666,9 +739,15 @@ def _render_likelihood_cdf(
         'annotations': fig.layout.annotations + (dict(
             x=0.98, y=0.95, xref='paper', yref='paper',
             text=f'ln L = {logL:.2f}', showarrow=False,
-            font=dict(size=12), bgcolor='rgba(255,255,255,0.8)',
+            font=dict(size=12, color='#000000'),
+            bgcolor='rgba(255,255,255,0.8)',
             borderpad=6, xanchor='right'),),
     })
+    # A&A journal theme (white bg, black serif text) — see feedback_aa_journal_style
+    from bc.render_validation import _AA_OVERRIDES
+    fig.update_layout(**_AA_OVERRIDES)
+    fig.update_xaxes(**_AA_OVERRIDES['xaxis'])
+    fig.update_yaxes(**_AA_OVERRIDES['yaxis'])
     st.plotly_chart(fig, use_container_width=True, key=f'{prefix}_lk_cdf')
     st.caption(
         f'Observed DeltaRV CDF (solid blue) vs simulated at best-fit likelihood '

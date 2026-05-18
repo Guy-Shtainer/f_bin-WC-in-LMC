@@ -78,51 +78,51 @@ def render_likelihood_cdf(
     )
     bin_cfg = BinaryParameterConfig()
 
-    all_cdfs = []
     all_sim_drv = []
     for seed_i in range(n_cdf_sets):
         rng = np.random.default_rng(42 + seed_i)
         sim_drv = simulate_delta_rv_sample(
             f_bin=fb, pi=pi_v,
             sim_cfg=sim_cfg, bin_cfg=bin_cfg, rng=rng)
-        all_cdfs.append(_bcdf(sim_drv, fine_edges))
         all_sim_drv.append(sim_drv)
 
-    all_cdfs = np.array(all_cdfs)
     pooled_sim = np.concatenate(all_sim_drv)
-    median_cdf = np.median(all_cdfs, axis=0)
-    lo_cdf = np.percentile(all_cdfs, 16, axis=0)
-    hi_cdf = np.percentile(all_cdfs, 84, axis=0)
-
-    obs_cdf = _bcdf(obs_drv, fine_edges)
-
-    # Compute log-likelihood at best-fit
     logL = multinomial_log_likelihood(obs_drv, pooled_sim, lk_edges)
 
-    # --- Build CDF plot ---
-    obs_x = np.concatenate([[0.0], fine_edges])
-    obs_y = np.concatenate([[0.0], obs_cdf])
-    med_x = np.concatenate([[0.0], fine_edges])
-    med_y = np.concatenate([[0.0], median_cdf])
-    lo_y = np.concatenate([[0.0], lo_cdf])
-    hi_y = np.concatenate([[0.0], hi_cdf])
+    # Observed empirical step CDF.
+    _obs_sorted = np.sort(obs_drv)
+    obs_x = np.concatenate([[0.0], _obs_sorted])
+    obs_y = np.concatenate([[0.0],
+                            np.arange(1, _obs_sorted.size + 1, dtype=float)
+                            / max(1, _obs_sorted.size)])
 
+    # Smooth empirical CDF of pooled simulated ΔRVs + 500-point fine band.
+    from bc.helpers import smooth_pooled_cdf
+    _scdf = smooth_pooled_cdf(pooled_sim, n_cdf_sets)
+    if _scdf is not None:
+        _sp, _yp, _xf, _lof, _hif = _scdf
+    else:
+        _sp = np.array([0.0]); _yp = np.array([0.0])
+        _xf = np.array([0.0]); _lof = np.array([0.0]); _hif = np.array([0.0])
+
+    from bc.helpers import _obs_label as _obs_label_lv
+    _obs_name_lv = _obs_label_lv(result)
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=obs_x, y=obs_y,
-        mode='lines', name='Observed',
-        line=dict(color='#4A90D9', width=2.5),
+        mode='lines', name=_obs_name_lv,
+        line=dict(color='#4A90D9', width=2.5, shape='hv'),
     ))
     # Confidence band
     fig.add_trace(go.Scatter(
-        x=np.concatenate([med_x, med_x[::-1]]),
-        y=np.concatenate([hi_y, lo_y[::-1]]),
+        x=np.concatenate([_xf, _xf[::-1]]),
+        y=np.concatenate([_hif, _lof[::-1]]),
         fill='toself', fillcolor='rgba(226, 90, 83, 0.2)',
         line=dict(color='rgba(0,0,0,0)'),
         legendgroup='sim_lk', showlegend=False, hoverinfo='skip',
     ))
     fig.add_trace(go.Scatter(
-        x=med_x, y=med_y,
+        x=_sp, y=_yp,
         mode='lines', name=f'Simulated (f_bin={fb:.3f}, π={pi_v:.2f}, σ={sig_v:.1f})',
         legendgroup='sim_lk',
         line=dict(color='#E25A53', width=2.5, dash='dash'),
@@ -149,7 +149,8 @@ def render_likelihood_cdf(
             fig.add_annotation(
                 x=mid, y=1.02, yref='paper',
                 text=f'Bin {bi+1}', showarrow=False,
-                font=dict(size=10, color='grey'),
+                font=dict(size=10, color='#000000',
+                          family='Times New Roman, serif'),
             )
 
     fig.update_layout(**{
@@ -166,15 +167,24 @@ def render_likelihood_cdf(
             x=0.98, y=0.95, xref='paper', yref='paper',
             text=f'ln L = {logL:.2f}',
             showarrow=False,
-            font=dict(size=12),
+            font=dict(size=12, color='#000000',
+                      family='Times New Roman, serif'),
             bgcolor='rgba(255,255,255,0.8)',
             borderpad=6, xanchor='right',
         ),),
     })
+    # A&A journal theme (white bg, black serif text)
+    try:
+        from bc.render_validation import _AA_OVERRIDES
+        fig.update_layout(**_AA_OVERRIDES)
+        fig.update_xaxes(**_AA_OVERRIDES['xaxis'])
+        fig.update_yaxes(**_AA_OVERRIDES['yaxis'])
+    except Exception:
+        pass
     st.plotly_chart(fig, use_container_width=True, key=f'{prefix}_lk_cdf')
     st.caption(
-        f'Observed ΔRV CDF (solid blue) vs simulated at best-fit likelihood parameters '
-        f'(dashed red, median of {n_cdf_sets} draws). '
+        f'{_obs_name_lv} ΔRV CDF (solid blue) vs simulated at best-fit '
+        f'likelihood parameters (dashed red, median of {n_cdf_sets} draws). '
         f'Shaded band = 16th–84th percentile.'
     )
 
