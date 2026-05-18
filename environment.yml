@@ -1,0 +1,22 @@
+name: guyenv
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - scipy
+  - astropy
+  - matplotlib
+  - ipywidgets
+  - ipython
+  - requests
+  - pip
+  - pip:
+    - plotly
+    - streamlit
+    - streamlit-autorefresh
+    - "dash==2.18.2"
+    - "dash-mantine-components==0.14.4"
+    - dash-iconify
+    - spectres

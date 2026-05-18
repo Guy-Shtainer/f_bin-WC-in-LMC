@@ -1,0 +1,12 @@
+{
+  "inspector": {
+    "insp_band_bins": 5000,
+    "insp_f_bin": 0.7,
+    "insp_logPmax": 3.5,
+    "insp_n_iter": 5000,
+    "insp_pi": 3.0,
+    "insp_sigma_meas": 1.622,
+    "insp_sigma_single": 10.0,
+    "insp_single_seed": 42
+  }
+}
