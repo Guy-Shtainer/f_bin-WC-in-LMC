@@ -642,3 +642,16 @@ When you encounter a new recurring error, add it here with:
 | **Found in** | `scripts/make_powerlaw_explainer.py` page-6 caption (initial draft, fixed 2026-05-07). All math in the caption rendered as literal `$\pi=-1$ — $p(\log P)\propto 1/\log P$, …`. |
 | **Prevention** | Avoid `wrap=True` for any caption that mixes prose with math. Pre-wrap into lines yourself, or use `fig.text()` inside a known-width axes and let the line-by-line layout do the wrapping. When in doubt, always rasterise the PDF with `pdftoppm` and visually inspect each page before declaring success — multipage PDFs with captions are the highest-risk case. |
 
+---
+
+### E054 — Validation lane persists metadata to disk but not to the in-memory `result` dict
+
+| | |
+|---|---|
+| **Bad** | Inside the validation/mock-backend branch of a background runner: `result['is_validation'] = True; _vio.save_validation_result(result, _validation_mock, _validation_truth, …)` — the disk save absorbs the four `true_*` truth fields via `_validation_truth`, but the in-memory `result` returned to the UI keeps only `is_validation` and is missing `true_fbin / true_pi / true_sigma / true_logPmax`. |
+| **Fix** | After flagging `result['is_validation'] = True`, also attach the truth fields locally: `for k in ('true_fbin','true_pi','true_sigma','true_logPmax'): result[k] = float(_validation_truth.get(k, np.nan))`. Now the in-memory dict the UI consumes has the same shape the disk save persists. |
+| **Grep** | *(not greppable cleanly — context-dependent; look for `save_validation_result(` callers that pass `_validation_truth` separately but never write the `true_*` keys onto `result`)* |
+| **Why** | The disk save handler accepts truth as a separate argument and merges it into the persisted blob via `validation_io.save_validation_result`. The in-memory dict goes back to the UI untouched. Fresh validation runs therefore differ from disk reloads: corner_plots._truth_for() reads `result['true_fbin']` etc. directly, returns None on fresh runs (key missing), and the green dashed truth lines vanish — but they reappear after the user reloads the same .npz because the disk path filled the keys. The disk vs memory shape divergence is invisible until a consumer specifically asks for the missing field. |
+| **Found in** | `app/bc/runners_cadence.py` `_run_cadence_bg` mock-backend branch (~L672), fixed 2026-05-18. Symptom: corner-plot green truth line missing on fresh validation runs but present after disk reload. |
+| **Prevention** | When a background-runner branch persists state to disk via a sibling helper that accepts metadata as a separate argument, mirror those metadata writes onto the in-memory `result` dict before `job['result'] = result; job['status'] = 'done'`. Disk and memory should have the SAME shape — every consumer downstream sees only the in-memory dict; only the on-disk format is for reload. Cross-check by listing all consumers that read `result[KEY]` and confirming every KEY they read is set by the in-memory branch, not just the disk-save branch. |
+

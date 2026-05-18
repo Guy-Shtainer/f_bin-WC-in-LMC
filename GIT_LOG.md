@@ -6,6 +6,54 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-05-18 — First big code push to main since 2026-04-19: 5-commit batch (Model Explorer + validation pipeline + agent skill restructure + .gitignore + plots), plus end-of-day docs + bin-sync-on-Load + flag-driven seeding
+
+**Tag:** `v260518-working` *(first working tag after 2 weeks where code work was queued awaiting visual sign-off. Today's `/git` workflow finally landed the accumulated `app/bc/` batch on main; EnDay then committed the bin-sync-on-Load feature + end-of-day documentation.)*
+
+| Hash | Summary |
+|------|---------|
+| `f40576e` | Ignore large simulation outputs and runtime caches (.gitignore) |
+| `faf92da` | Model Explorer + validation pipeline: accumulated feature work (23 files, +7432 / -820) |
+| `5bef671` | Restructure agent skills under .claude/skills/<role>/ per role |
+| `a67f51c` | Add verification pages, diagnostic scripts, and inspector tools |
+| `d462fa5` | Refresh exported plot PDFs |
+| *(EnDay)* | Validation tab — sync likelihood bins on Load via one-shot `is_loaded_result` flag |
+| *(EnDay)* | End-of-day 2026-05-18 docs: TODO entries 207-214, DOCUMENTATION §7, daily log, COMMON_ERRORS E054, learnings |
+
+**Major changes (committed today during `/git`):**
+
+- **`f40576e` — `.gitignore` update.** Excludes `results/` (2.3 GB of `.npz` simulation outputs), `mock_results/` (222 MB), `bin_sensitivity_results/`, `settings/states/` (had a leaked `<MagicMock>` filename), `bias_app/.cache/` + `.obs_delta_rv_cache.npy`, `mock_inspector_app/__pycache__/`, `scripts/.agent_live_output.txt` + `.agent_work/`, and `papers/*.pdf` (reference papers, 14 MB). None of these were ever meant to live in git history.
+
+- **`faf92da` — Model Explorer + validation pipeline (23 files, +7432 / -820).** The big bundled commit that absorbed ~2 weeks of accumulated `to-test` work. Headlines: Max ΔRV control removal + auto-derive from observed ΔRVs (`params.py`, `cadence.py`); truth attachment to in-memory result in the validation lane (`runners_cadence.py`, **E054**); Model Explorer tunable likelihood-bin editor with separate `explorer_likelihood_bin_config` namespace + 8-color snapshot table + per-snapshot smooth-CDF replay + 16/84 band (`params.py`, `helpers.py`, `render_lk_explorer.py`, `render_lk_explorer_langer.py`); new `app/bc/validation_io.py` owning the `mock_results/` save/load schema; supporting refresh across `analysis.py`, `corner_plots.py`, `extras.py`, `file_ops.py`, `likelihood_viz.py`, `render_lk.py`, `render_lk_fit{,_langer}.py`, `render_shared{,_langer}.py`, `render_validation.py`, `sim_plots.py`, `validation.py`, `app/shared.py`, `wr_bias_simulation.py`. Settings JSON gained the new `explorer_likelihood_bin_config` block (separate from the simulation's `likelihood_bin_config` so the Explorer never overrides simulation bins).
+
+- **`5bef671` — Agent skill restructure under `.claude/skills/<role>/` per role.** All `.claude/agents/*-skills/` subdirectories relocated to `.claude/skills/<role>/` to match the harness's updated skill discovery layout. Pure renames detected by git as `R` (rename) entries; agent behaviour unchanged. Also refreshed the per-agent `comms/*.md` files and added the latest `command_history.log` snapshot (+2818 lines).
+
+- **`a67f51c` — Verification pages, diagnostic scripts, mock_inspector_app, docs, environment.yml.** New `app/pages/13_tests_verification.py` + `_tests_verification_helpers.py` consolidating pipeline-correctness checks; standalone diagnostic scripts (`scripts/test_explorer_mock_equal{,_langer}.py`, `test_grid_vs_explorer_score.py`, `test_hdi_vs_nbins_frame.py`, `test_mock_distribution.py`, `make_powerlaw_explainer.py`); standalone `mock_inspector_app/` Streamlit inspector for browsing generated mock observations on port 8503; `docs/sample_logP_powerlaw_explained.pdf`; `environment.yml`.
+
+- **`d462fa5` — Refresh exported plot PDFs.** Regenerated `plots/agreement.pdf` + `bin_sensitivity.pdf` + `cdf_obs_vs_sim.pdf` + `fbin_pi_heatmap.pdf` + `fbin_pi_marginals.pdf` + `langer_heatmap.pdf` + `peak_drv_per_star.pdf` from the current pipeline state.
+
+**Major changes (committed at EnDay):**
+
+- **Validation tab — sync likelihood bins on Load via one-shot `is_loaded_result` flag (TODO #214).** Both bin widgets (simulation-params global + Model Explorer) now pre-fill with the saved run's `likelihood_bin_edges` when a result is loaded. Load handler in `render_validation.py:101` sets `f'{p}_is_loaded_result'=True`; both widgets check the flag at the top and override their session-state keys via the new `_infer_lk_bin_mode(bin_edges)` helper (recognises canonical `[0,T,250,650,inf]` schema as Threshold-based; else Manual with comma-joined finite edges). Flag cleared at end of `_render_single_point` so the override is strictly one-shot — user edits after Load are preserved. Global widget gains `default_bin_edges` parameter; `cadence.py:1087` threads `result['likelihood_bin_edges']` in at the call site. User explicitly rejected an earlier helper-based design.
+
+- **End-of-day 2026-05-18 docs:** TODO.md entries #207–#214 (the day's eight logical work units: bulk push, infrastructure, validation truth fix, Max ΔRV removal, Explorer bin editor, snapshot CDF visual fixes, mock-stack restoration, bin-sync-on-Load). DOCUMENTATION.md §7 gains a 2026-05-18 entry with full methodology notes (auto-derived bin-grid upper bound; visual likelihood-bin sensitivity exploration; in-memory vs disk-state contract for validation runs). COMMON_ERRORS.md gains **E054** ("Validation lane persists metadata to disk but not to the in-memory `result` dict"). `.claude/references/learnings.md` Context & Memory gains one new rule: "Prefer minimal session-state flags over helpers when the widget already has a `default_*` parameter path" (triggered when the user rejected my first plan for the bin-sync feature). Daily log gained 2 conversation entries (23:49, 23:50).
+
+**Pending visual verification (next session — multi-feature hand-off):**
+
+- **(today)** Max ΔRV removal — open Validation tab, confirm "Max ΔRV" input is gone, caption shows `N bins · max ΔRV = X km/s (auto)`; Mock Observation step CDF extends past previous 460 km/s out to actual data max (~900 km/s).
+- **(today)** Corner-plot green truth lines — fresh validation run with non-default truth params (e.g., fbin=0.5, σ=10, logPmax=3.5) → green dashed lines on 1D diagonals + green × on 2D off-diagonals appear without disk reload.
+- **(today)** Explorer bin editor — bin editor visible above sliders, Threshold + Manual modes work, defaults match simulation on first open, hitting Save adds a colored row + new CDF trace; per-row × delete + Clear all behave correctly. Both DSilva and Langer tabs. Confirm `settings/user_settings.json` shows new `explorer_likelihood_bin_config` block but `likelihood_bin_config` (simulation namespace) is unchanged.
+- **(today)** Snapshot CDF visual — saved snapshot's CDF line matches the live Explorer line in smoothness at the same params + n_sets; shadow is a symmetric 16/84 band around the median (NOT filling to y=0).
+- **(today)** Mock-observation stacking — multiple Generate clicks produce dotted colored prior-CDF traces in cycled palette colors; counter on Clear-stack button increments; recovery grid still uses the most-recent mock.
+- **(today)** Bin-sync-on-Load — Threshold result `[0,45.5,250,650,inf]` loads both widgets at Threshold-based + 45.5; Manual result `[0,60,200,800,inf]` loads both widgets at Manual + `0,60,200,800`; override-from-stale (manually set widget to Manual + custom, then Load a Threshold → flips); user-edit-preserved (after Load, change widget → Run → recovery uses new bins).
+- **(rolling)** All older `to-test` entries (TODO 200, 198, 199, 196, 192, 191, 190, 185, 202, 203, 204, 205, 206) are now mostly committed in `faf92da` but still need visual sign-off.
+
+**Pending follow-ons:**
+- Investigate pre-existing `test_render.py` failure at `render_lk_explorer.py:1810 'logL': float(_logL)` (NoneType). Confirmed reproducible on baseline `d462fa5` and unrelated to today's edits. Likely a test-harness scaffold quirk where `_t_c2.button(...)` is mocked truthy and the Save handler fires even when `_logL is None`.
+- User queued follow-on investigation: "why when the simulation runs on the real parameters they don't get a better logL" — half of that (likelihood-bin variation) is now exposed via the Explorer editor; the other half (potential grading-method bug) is queued.
+
+---
+
 ## 2026-05-10 — End-of-day docs only: Validation Model Explorer CDF smoothing + standalone mock_inspector_app + q_range fix (E048 recurrence) UNCOMMITTED awaiting visual sign-off
 
 **Tag:** `v260510-working` *(docs only — code work uncommitted; the three sessions today touched 2 `app/bc/` Model Explorer files, 1 `app/bc/render_validation.py`, and added a new top-level `mock_inspector_app/` directory (5 files, ~2200 lines), all carrying TODO `to-test` status pending visual confirmation. The `v260507-working` and earlier backlog remains on `main` unchanged.)*
