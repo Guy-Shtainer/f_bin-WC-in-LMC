@@ -6,6 +6,38 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-05-19 — Validation tab UX: bin-edges sync from 3 load paths + one-click batch mock generation; validation strategy framed for 2026-05-20
+
+**Tag:** `v260519-working` *(small focused day building on yesterday's batch push. One code commit extends `to-test` features #213 and #214 (mock stacking and bin-sync-on-Load) into their final UX shape: batch mock generation and a complete 3-path bin-sync. End-of-day docs add three TODO entries (#215–#217), a DOCUMENTATION §7 entry, and a daily log. No new errors documented (UI state-management work, not greppable patterns).)*
+
+| Hash | Summary |
+|------|---------|
+| `2b5fb06` | Validation tab: 3-path bin-edges sync + one-click batch mock generation |
+| `dfcd08c` | End-of-day 2026-05-19 docs: TODO 215-217, DOCUMENTATION §7, daily log |
+| `4cf20ea` | Daily log + settings + command history snapshot at end of 2026-05-19 |
+
+**Major changes:**
+
+- **`2b5fb06` — Validation tab: 3-path bin-edges sync + one-click batch mock generation.** Two extensions to features that landed yesterday in `faf92da` + `dd47a79`. (a) **Bin-edges sync (#215, extends #214):** the `_is_loaded_result` one-shot flag — which yesterday fired only from the validation-tab Load handler — now also fires from (i) the cadence-tab "Load saved result" loader (`app/bc/cadence.py:1062`) and (ii) a fresh-run-completion detector at the top of `_render_single_point` in `app/bc/render_validation.py`. The detector compares `result['timestamp']` (worker-stamped per run) against the new `_val_last_seen_result_id` session key and fires the flag when they differ, so the bin widgets resync the moment a new run completes. `id(result)` is the fallback marker for legacy files without timestamps. (b) **Batch mock generation (#216, extends #213):** new `_generate_one_mock` helper extracted from the inline single-click body; Generate-Mock row reorganised into a 3-column layout (single-click, N-input + "Generate N mocks (ascending seeds)" with `st.progress`, Clear stack). Seeds run `[seed, seed+1, …, seed+N-1]`. The helper does NOT call `st.rerun()` or clear Explorer CDF caches — caller owns both, so cache clearing happens once per user action rather than once per iteration. N persists to `grid_cadence_{dsilva,langer}.val_batch_n` via the standard `sm.save(...)` pattern. "Current mock state" in batch mode is the LAST (highest) seed so downstream code sees a deterministic active realisation.
+
+- **`dfcd08c` — End-of-day 2026-05-19 docs.** TODO.md gains three entries: **#215** (3-path bin sync, `to-test`), **#216** (batch mock generation, `to-test`), and **#217** (research plan — representative-vs-outlier mock posterior comparison, `open`, results expected 2026-05-20). DOCUMENTATION.md §7 gains a 2026-05-19 entry with methodology notes on the validation-strategy framing ("representative vs outlier mocks as a test of inference honesty"). No new COMMON_ERRORS patterns and no new learnings — today's work was state-management and feature-addition, cleanly covered by existing rules.
+
+- **`4cf20ea` — Daily log + settings + command history snapshot.** New `daily_logs/2026-05-19.md` with the two conversation summaries from the day (16:13 — code work; 16:14 — strategy framing). Settings drift captures exploratory parameter sweeps during the day: `val_batch_n=100` (new key for the batch-mock control), `val_seed=68`, `val_true_pi=-3.0`, `val_true_sigma=2.0`, `sigma_steps=22`, `lk_explorer.n_sets=1`, `likelihood_bin_config.manual_edges='0,5,20,300,700,1200'`.
+
+**Pending visual verification (next session):**
+
+- **(today)** Bin-edges sync — load a validation `.npz` via the cadence-tab picker → both bin widgets resync; complete a fresh validation run with custom bins → widgets reflect run bins without manual Load; #214 path (validation-tab Load) still works.
+- **(today)** Batch mock generation — N=5 batch produces 5 stacked CDFs with ascending seeds; `st.progress` advances; Clear stack resets; "Current mock state" matches seed `start+N-1`; N field persists across reruns.
+- **(rolling)** All older `to-test` entries from #207–#214 still need their visual sign-off.
+
+**Pending experiment (2026-05-20):**
+- Run the representative-vs-outlier validation experiment (#217): 3 sub-cases × 2 outlier mocks per separation regime, compare posterior widths against representative-mock pass. Success = sharp on representative, wide-but-truth-containing on outliers; failure = sharp on outliers (would force inference redesign).
+
+**Pending follow-ons:**
+- Pre-existing `render_lk_tab` TypeError in `scripts/test_render.py` confirmed unrelated to today's edits (reproduces on baseline via `git stash`); not investigated this session.
+
+---
+
 ## 2026-05-18 — First big code push to main since 2026-04-19: 5-commit batch (Model Explorer + validation pipeline + agent skill restructure + .gitignore + plots), plus end-of-day docs + bin-sync-on-Load + flag-driven seeding
 
 **Tag:** `v260518-working` *(first working tag after 2 weeks where code work was queued awaiting visual sign-off. Today's `/git` workflow finally landed the accumulated `app/bc/` batch on main; EnDay then committed the bin-sync-on-Load feature + end-of-day documentation.)*
