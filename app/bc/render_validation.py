@@ -217,6 +217,150 @@ def _render_validation_results_table(p: str, is_dsilva: bool) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Mock-generation helper (used by single-click + batch buttons)
+# TO-TEST (2026-05-19): extracted from inline body in _render_single_point so
+# the new "Generate N mocks (ascending seeds)" batch button can reuse it
+# without duplicating the BinaryParameterConfig assembly / snapshot logic.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _generate_one_mock(
+    p: str,
+    seed: int,
+    true_fbin: float,
+    true_pi: float,
+    true_sigma: float,
+    true_logPmax: float,
+    period_model: str,
+    is_dsilva: bool,
+    settings: dict,
+    cadence_list,
+    cadence_weights,
+    sigma_meas: float,
+    sigma_meas_binary: float,
+    error_model: str,
+    error_params: tuple,
+    error_model_binary: str,
+    error_params_binary: tuple,
+    stack_key: str,
+) -> None:
+    """Generate one mock realisation, set current-mock state, append to stack.
+
+    Does NOT call ``st.rerun()`` — the caller is responsible (single-click
+    triggers immediately; batch defers until the loop completes).  Does NOT
+    clear the explorer CDF caches — the caller does that once at the end.
+    """
+    import dataclasses
+    from wr_bias_simulation import BinaryParameterConfig
+    from bc.validation import generate_mock_observations_detail
+    from bc.helpers import _SNAPSHOT_PALETTE
+
+    mock_key = f'{p}_val_mock_drv'
+    mock_detail_key = f'{p}_val_mock_detail'
+    mock_params_key = f'{p}_val_mock_params'
+
+    e_model = 'flat' if is_dsilva else 'zero'
+    # Build a base bin_cfg identical to what the grid worker uses, by
+    # reading the SAME orbital sub-dict that bc.cadence._render_cadence_*
+    # tabs read.  This makes the mock inherit q_range, mass_primary_*,
+    # langer_*, q_flipped from the user's orbital-params widget instead
+    # of falling back to dataclass defaults (q_range=(0.1,2.0)) which
+    # mismatched the grid (q_range=(0.1,4.0)) and produced a visible
+    # ΔRV-distribution offset in the Model Explorer.
+    if is_dsilva:
+        _orb = settings.get('grid_cadence_dsilva', {}).get('orbital', {})
+        _base_bin_cfg = BinaryParameterConfig(
+            logP_min=float(_orb.get('logP_min', 0.15)),
+            logP_max=float(_orb.get('logP_max', 5.0)),
+            period_model='powerlaw',
+            e_model=str(_orb.get('e_model', 'flat')),
+            e_max=float(_orb.get('e_max', 0.9)),
+            mass_primary_model=str(_orb.get('mass_primary_model', 'fixed')),
+            mass_primary_fixed=float(_orb.get('mass_primary_fixed', 10.0)),
+            mass_primary_range=tuple(
+                _orb.get('mass_primary_range', [10.0, 20.0])),
+            q_model=str(_orb.get('q_model', 'flat')),
+            q_range=tuple(_orb.get('q_range', [0.1, 2.0])),
+            langer_q_mu=float(_orb.get('langer_q_mu', 0.7)),
+            langer_q_sigma=float(_orb.get('langer_q_sigma', 0.2)),
+        )
+    else:
+        _lg = settings.get('grid_cadence_langer', {})
+        _lg_pp = _lg.get('langer_period_params', {})
+        _base_bin_cfg = BinaryParameterConfig(
+            logP_min=float(_lg.get('logP_min', 0.5)),
+            logP_max=float(_lg.get('logP_max', 3.5)),
+            period_model='langer2020',
+            langer_period_params=dict(_lg_pp) if _lg_pp else {},
+            e_model='zero',
+            e_max=0.0,
+            mass_primary_model=str(_lg.get('mass_primary_model', 'fixed')),
+            mass_primary_fixed=float(_lg.get('mass_primary_fixed', 10.0)),
+            mass_primary_range=tuple(
+                _lg.get('mass_primary_range', [10.0, 20.0])),
+            q_model=str(_lg.get('q_model', 'flat')),
+            q_range=tuple(_lg.get('q_range', [0.25, 1.65])),
+            langer_q_mu=float(_lg.get('langer_q_mu', 0.67)),
+            langer_q_sigma=float(_lg.get('langer_q_sigma', 0.39)),
+            q_flipped=bool(_lg.get('q_flipped', False)),
+        )
+    # Override only fields the mock legitimately owns.
+    mock_bin_cfg = dataclasses.replace(
+        _base_bin_cfg,
+        logP_min=0.15,
+        logP_max=true_logPmax,
+        period_model=period_model,
+        e_model=e_model,
+        e_max=0.9,
+    )
+    mock_detail = generate_mock_observations_detail(
+        true_fbin=true_fbin,
+        true_pi=true_pi,
+        true_sigma=true_sigma,
+        true_logPmax=true_logPmax,
+        cadence_library=cadence_list,
+        cadence_weights=cadence_weights,
+        sigma_meas=float(sigma_meas),
+        bin_cfg=mock_bin_cfg,
+        period_model=period_model,
+        seed=int(seed),
+        error_model=error_model,
+        error_params=error_params,
+        sigma_meas_binary=float(sigma_meas_binary),
+        error_model_binary=error_model_binary,
+        error_params_binary=error_params_binary,
+    )
+    st.session_state[mock_key] = mock_detail['delta_rv']
+    st.session_state[mock_detail_key] = mock_detail
+    st.session_state[mock_params_key] = (
+        true_fbin, true_pi, true_sigma, true_logPmax,
+        int(seed), period_model, error_model, error_params,
+        error_model_binary, error_params_binary,
+        float(sigma_meas), float(sigma_meas_binary),
+    )
+    # Append to visual stack — distribution-inspection only.
+    # Store ONLY what the CDF render needs (no rvs_per_star / errs_per_star
+    # arrays — keeps session state small even after dozens of stacked mocks).
+    _existing = st.session_state[stack_key]
+    _id = (max((s['id'] for s in _existing), default=0) + 1)
+    _color = _SNAPSHOT_PALETTE[(_id - 1) % len(_SNAPSHOT_PALETTE)]
+    _snap = {
+        'id': int(_id),
+        'color': _color,
+        'delta_rv': np.asarray(mock_detail['delta_rv'], dtype=float).copy(),
+        'is_binary': np.asarray(mock_detail['is_binary'], dtype=bool).copy(),
+        'seed': int(seed),
+        'true_fbin': float(true_fbin),
+        'true_pi': float(true_pi),
+        'true_sigma': float(true_sigma),
+        'true_logPmax': float(true_logPmax),
+    }
+    st.session_state[stack_key].append(_snap)
+    # Clear any previous cadence run state for this prefix
+    st.session_state.pop(f'{p}_result', None)
+    st.session_state.pop(f'{p}_job', None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Single-point recovery: mock generation header + cadence tab delegation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -337,12 +481,34 @@ def _render_single_point(
     mock_detail_key = f'{p}_val_mock_detail'
     mock_params_key = f'{p}_val_mock_params'
 
-    _gen_c1, _gen_c2 = st.columns([0.78, 0.22])
-    gen_btn = _gen_c1.button('Generate Mock Observations', type='primary',
-                             key=f'{p}_val_gen')
     _stack_key = f'{p}_val_mock_stack'
     st.session_state.setdefault(_stack_key, [])
-    clear_btn = _gen_c2.button(
+
+    # TO-TEST (2026-05-19): three-column layout adds a batch generator
+    # next to the single-click button.  Middle column hosts an N input
+    # + "Generate N mocks (ascending seeds)" button; the helper
+    # `_generate_one_mock` is shared between single-click and batch paths
+    # to avoid duplicated BinaryParameterConfig assembly / snapshot logic.
+    _gen_c1, _gen_c2, _gen_c3 = st.columns([0.55, 0.27, 0.18])
+    gen_btn = _gen_c1.button('Generate Mock Observations', type='primary',
+                             key=f'{p}_val_gen')
+
+    _k_bn = f'{p}_val_batch_n'
+    batch_n = _gen_c2.number_input(
+        'N (batch)',
+        value=int(_simcfg_for_errs.get('val_batch_n', 10)),
+        step=1,
+        key=_k_bn,
+        on_change=lambda: _val_save('val_batch_n', _k_bn),
+        help='Number of mocks to generate with ascending seeds, '
+             'starting from the current "Random seed" above.',
+    )
+    batch_btn = _gen_c2.button(
+        'Generate N mocks (ascending seeds)',
+        key=f'{p}_val_gen_batch',
+    )
+
+    clear_btn = _gen_c3.button(
         f'🧹 Clear stack ({len(st.session_state[_stack_key])})',
         key=f'{p}_val_mock_clear',
         disabled=(len(st.session_state[_stack_key]) == 0),
@@ -356,109 +522,8 @@ def _render_single_point(
                       error_model_binary, error_params_binary,
                       float(sigma_meas), float(sigma_meas_binary))
 
-    if gen_btn:
-        import dataclasses
-        from bc.validation import generate_mock_observations_detail
-
-        e_model = 'flat' if is_dsilva else 'zero'
-        # Build a base bin_cfg identical to what the grid worker uses, by
-        # reading the SAME orbital sub-dict that bc.cadence._render_cadence_*
-        # tabs read.  This makes the mock inherit q_range, mass_primary_*,
-        # langer_*, q_flipped from the user's orbital-params widget instead
-        # of falling back to dataclass defaults (q_range=(0.1,2.0)) which
-        # mismatched the grid (q_range=(0.1,4.0)) and produced a visible
-        # ΔRV-distribution offset in the Model Explorer.
-        if is_dsilva:
-            _orb = settings.get('grid_cadence_dsilva', {}).get('orbital', {})
-            _base_bin_cfg = BinaryParameterConfig(
-                logP_min=float(_orb.get('logP_min', 0.15)),
-                logP_max=float(_orb.get('logP_max', 5.0)),
-                period_model='powerlaw',
-                e_model=str(_orb.get('e_model', 'flat')),
-                e_max=float(_orb.get('e_max', 0.9)),
-                mass_primary_model=str(_orb.get('mass_primary_model', 'fixed')),
-                mass_primary_fixed=float(_orb.get('mass_primary_fixed', 10.0)),
-                mass_primary_range=tuple(
-                    _orb.get('mass_primary_range', [10.0, 20.0])),
-                q_model=str(_orb.get('q_model', 'flat')),
-                q_range=tuple(_orb.get('q_range', [0.1, 2.0])),
-                langer_q_mu=float(_orb.get('langer_q_mu', 0.7)),
-                langer_q_sigma=float(_orb.get('langer_q_sigma', 0.2)),
-            )
-        else:
-            _lg = settings.get('grid_cadence_langer', {})
-            _lg_pp = _lg.get('langer_period_params', {})
-            _base_bin_cfg = BinaryParameterConfig(
-                logP_min=float(_lg.get('logP_min', 0.5)),
-                logP_max=float(_lg.get('logP_max', 3.5)),
-                period_model='langer2020',
-                langer_period_params=dict(_lg_pp) if _lg_pp else {},
-                e_model='zero',
-                e_max=0.0,
-                mass_primary_model=str(_lg.get('mass_primary_model', 'fixed')),
-                mass_primary_fixed=float(_lg.get('mass_primary_fixed', 10.0)),
-                mass_primary_range=tuple(
-                    _lg.get('mass_primary_range', [10.0, 20.0])),
-                q_model=str(_lg.get('q_model', 'flat')),
-                q_range=tuple(_lg.get('q_range', [0.25, 1.65])),
-                langer_q_mu=float(_lg.get('langer_q_mu', 0.67)),
-                langer_q_sigma=float(_lg.get('langer_q_sigma', 0.39)),
-                q_flipped=bool(_lg.get('q_flipped', False)),
-            )
-        # Override only fields the mock legitimately owns.
-        mock_bin_cfg = dataclasses.replace(
-            _base_bin_cfg,
-            logP_min=0.15,
-            logP_max=true_logPmax,
-            period_model=period_model,
-            e_model=e_model,
-            e_max=0.9,
-        )
-        mock_detail = generate_mock_observations_detail(
-            true_fbin=true_fbin,
-            true_pi=true_pi,
-            true_sigma=true_sigma,
-            true_logPmax=true_logPmax,
-            cadence_library=cadence_list,
-            cadence_weights=cadence_weights,
-            sigma_meas=float(sigma_meas),
-            bin_cfg=mock_bin_cfg,
-            period_model=period_model,
-            seed=int(seed),
-            error_model=error_model,
-            error_params=error_params,
-            sigma_meas_binary=float(sigma_meas_binary),
-            error_model_binary=error_model_binary,
-            error_params_binary=error_params_binary,
-        )
-        st.session_state[mock_key] = mock_detail['delta_rv']
-        st.session_state[mock_detail_key] = mock_detail
-        st.session_state[mock_params_key] = current_params
-        # Append to visual stack — distribution-inspection only.
-        # Store ONLY what the CDF render needs (no rvs_per_star / errs_per_star
-        # arrays — keeps session state small even after dozens of stacked mocks).
-        from bc.helpers import _SNAPSHOT_PALETTE
-        _existing = st.session_state[_stack_key]
-        _id = (max((s['id'] for s in _existing), default=0) + 1)
-        _color = _SNAPSHOT_PALETTE[(_id - 1) % len(_SNAPSHOT_PALETTE)]
-        _snap = {
-            'id': int(_id),
-            'color': _color,
-            'delta_rv': np.asarray(mock_detail['delta_rv'], dtype=float).copy(),
-            'is_binary': np.asarray(mock_detail['is_binary'], dtype=bool).copy(),
-            'seed': int(seed),
-            'true_fbin': float(true_fbin),
-            'true_pi': float(true_pi),
-            'true_sigma': float(true_sigma),
-            'true_logPmax': float(true_logPmax),
-        }
-        st.session_state[_stack_key].append(_snap)
-        # Clear any previous cadence run state for this prefix
-        st.session_state.pop(f'{p}_result', None)
-        st.session_state.pop(f'{p}_job', None)
-        # Stale-cache guard: the Explorer caches CDFs keyed on
-        # (…, validation_seed).  New mock → new seed (possibly) → cache miss,
-        # but belt-and-braces: clear both Dsilva + Langer twins.
+    def _clear_explorer_cdf_caches() -> None:
+        """Belt-and-braces: drop CDF caches in both Explorer twins."""
         try:
             from bc.render_lk_explorer import _me_cdf_band
             _me_cdf_band.clear()
@@ -469,7 +534,61 @@ def _render_single_point(
             _me_cdf_band_langer.clear()
         except Exception:
             pass
+
+    if gen_btn:
+        _generate_one_mock(
+            p=p, seed=int(seed),
+            true_fbin=true_fbin, true_pi=true_pi,
+            true_sigma=true_sigma, true_logPmax=true_logPmax,
+            period_model=period_model, is_dsilva=is_dsilva,
+            settings=settings,
+            cadence_list=cadence_list, cadence_weights=cadence_weights,
+            sigma_meas=sigma_meas, sigma_meas_binary=sigma_meas_binary,
+            error_model=error_model, error_params=error_params,
+            error_model_binary=error_model_binary,
+            error_params_binary=error_params_binary,
+            stack_key=_stack_key,
+        )
+        _clear_explorer_cdf_caches()
         st.rerun()
+
+    if batch_btn:
+        # TO-TEST (2026-05-19): batch mock generation with ascending seeds.
+        # Per-iteration cost is small (single mock, no grid) but the
+        # progress bar gives feedback for larger N (e.g. 100).  Single
+        # st.rerun() at the end — re-rendering on every iteration would
+        # discard the progress bar and break the loop.
+        _n = int(batch_n)
+        if _n <= 0:
+            st.warning('N must be at least 1.')
+        else:
+            _seed0 = int(seed)
+            _bar = st.progress(
+                0.0, text=f'Generating mock 1/{_n} (seed={_seed0})…')
+            for _i in range(_n):
+                _s = _seed0 + _i
+                _generate_one_mock(
+                    p=p, seed=_s,
+                    true_fbin=true_fbin, true_pi=true_pi,
+                    true_sigma=true_sigma, true_logPmax=true_logPmax,
+                    period_model=period_model, is_dsilva=is_dsilva,
+                    settings=settings,
+                    cadence_list=cadence_list,
+                    cadence_weights=cadence_weights,
+                    sigma_meas=sigma_meas,
+                    sigma_meas_binary=sigma_meas_binary,
+                    error_model=error_model, error_params=error_params,
+                    error_model_binary=error_model_binary,
+                    error_params_binary=error_params_binary,
+                    stack_key=_stack_key,
+                )
+                _bar.progress(
+                    (_i + 1) / _n,
+                    text=f'Mock {_i + 1}/{_n}, seed={_s}',
+                )
+            _clear_explorer_cdf_caches()
+            _bar.empty()
+            st.rerun()
 
     mock_drv = st.session_state.get(mock_key)
     mock_detail = st.session_state.get(mock_detail_key)
@@ -516,6 +635,30 @@ def _render_single_point(
         'true_logPmax': float(_saved[3]),
         'seed': int(_saved[4]),
     }
+
+    # ── Re-seed bin-edges widget on fresh run completion ─────────────────
+    # TO-TEST (2026-05-19): when a Run transitions from "running" to "done",
+    # set the one-shot `_is_loaded_result` flag so the Bin edges field
+    # syncs to what the run actually used.  The result's `timestamp` is
+    # written by the cadence worker (runners_cadence.py:197/662) and is
+    # unique per run; we compare against `_val_last_seen_result_id` to
+    # detect the transition.  Falls back to `id(result)` if timestamp is
+    # missing (older saved results).  See memory/feedback_no_self_approve.md
+    # — user visual sign-off still required.
+    _cur_result = st.session_state.get(f'{p}_result')
+    if _cur_result is not None:
+        _cur_ts = _cur_result.get('timestamp')
+        if _cur_ts is not None:
+            try:
+                _cur_ts = str(np.asarray(_cur_ts).item())
+            except Exception:
+                _cur_ts = str(_cur_ts)
+        else:
+            _cur_ts = id(_cur_result)
+        _last_seen_key = f'{p}_val_last_seen_result_id'
+        if st.session_state.get(_last_seen_key) != _cur_ts:
+            st.session_state[f'{p}_is_loaded_result'] = True
+            st.session_state[_last_seen_key] = _cur_ts
 
     # ── Delegate to the cadence tab with obs_override ─────────────────────
     if is_dsilva:

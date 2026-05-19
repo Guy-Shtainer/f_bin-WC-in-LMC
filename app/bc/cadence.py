@@ -1061,6 +1061,27 @@ def _cadence_run_and_results(p: str, _is_dsilva: bool, _period_model: str,
                         _cad_loaded['likelihood_bin_edges'] = DSILVA_LIKELIHOOD_BINS
                     st.session_state[f'{p}_result'] = _cad_loaded
                     st.session_state[f'{p}_loaded_path'] = _cad_sel_path
+                    # TO-TEST (2026-05-19): re-seed likelihood-bin widget from
+                    # the loaded result on next render (mirrors the validation
+                    # tab's Load handler at render_validation.py:101).  Needed
+                    # so the Bin edges field reflects the file when a saved
+                    # result is loaded via this cadence-tab loader (which is
+                    # also surfaced inside the Validation tab via delegation).
+                    st.session_state[f'{p}_is_loaded_result'] = True
+                    # Track this load as the "last seen" run so the validation
+                    # tab's run-completion detector does NOT re-fire the flag
+                    # on the next render (would be a no-op anyway, but keeps
+                    # the timestamp identity-check honest).
+                    _loaded_ts = _cad_loaded.get('timestamp')
+                    if _loaded_ts is not None:
+                        try:
+                            _loaded_ts = str(np.asarray(_loaded_ts).item())
+                        except Exception:
+                            _loaded_ts = str(_loaded_ts)
+                    else:
+                        _loaded_ts = id(_cad_loaded)
+                    st.session_state[
+                        f'{p}_val_last_seen_result_id'] = _loaded_ts
                     st.toast(
                         f"Loaded: {_cad_meta.iloc[_cad_idx]['File']}")
                     st.rerun()
