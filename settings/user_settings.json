@@ -121,7 +121,7 @@
     "sigma_single": 5.0,
     "sigma_min": 1.0,
     "sigma_max": 11.0,
-    "sigma_steps": 11,
+    "sigma_steps": 22,
     "sigma_meas": 1.622,
     "orbital": {
       "logP_min": 0.15,
@@ -170,16 +170,17 @@
     "errp_val_binary_1": 0.9617,
     "errp_val_binary_2": 1.8592,
     "val_true_fbin": 0.7,
-    "val_true_pi": 3.0,
-    "val_true_sigma": 10.0,
+    "val_true_pi": -3.0,
+    "val_true_sigma": 2.0,
     "adaptive_bins": false,
-    "val_seed": 81,
+    "val_seed": 70,
     "val_true_logPmax": 3.5,
     "logPmax_fixed": 3.5,
     "error_model_type_single": "Weibull",
     "error_model_type_binary": "Weibull",
     "error_model_type_val_single": "Weibull",
-    "error_model_type_val_binary": "Weibull"
+    "error_model_type_val_binary": "Weibull",
+    "val_batch_n": 100
   },
   "grid_cadence_langer": {
     "fbin_min": 0.01,
@@ -248,7 +249,7 @@
   },
   "likelihood_bin_config": {
     "mode": "Manual",
-    "manual_edges": "0, 20,40,100,200"
+    "manual_edges": "0,5,20,250,500,900"
   },
   "rv_modeling": {
     "simulation": {
@@ -325,7 +326,7 @@
     ]
   },
   "lk_explorer": {
-    "n_sets": 3000
+    "n_sets": 1
   },
   "explorer_likelihood_bin_config": {
     "mode": "Manual",
