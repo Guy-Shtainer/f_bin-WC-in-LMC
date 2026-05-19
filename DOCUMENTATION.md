@@ -2326,4 +2326,48 @@ Four interleaved coding sprints, all still uncommitted on \texttt{main} pending 
 
 ---
 
-*Last updated: 2026-05-18*
+### 2026-05-19 — Validation tab: bin-edges sync covers all three load paths; one-click batch mock generation; representative-vs-outlier strategy framed
+
+**What was done:**
+
+- **Bin-edges sync extended to two additional entry paths (TODO #215, extends #214).** The 2026-05-18 implementation of the one-shot `f'{p}_is_loaded_result'` session flag covered the validation-tab saved-runs loader only. User testing revealed that loading a validation `.npz` through the cadence-tab "Load saved result" picker did not sync the global and Model-Explorer bin widgets, and that completing a fresh validation run also left the widgets at whatever the user had typed pre-Run rather than reflecting the bins actually used in the simulation. Today's fix wires the flag from two further sources: (a) the in-tab Load handler in `app/bc/cadence.py:1062` now also sets `_is_loaded_result=True` plus a new `_val_last_seen_result_id` session key (used as a per-run identity marker); (b) a fresh-run detector at the top of `_render_single_point` in `app/bc/render_validation.py` compares `result['timestamp']` (worker-stamped per run) against the last-seen marker — when they differ, it fires the same `_is_loaded_result` flag before cadence delegation, so the widgets refresh once and only once when a new result lands. `id(result)` is the fallback identity marker for legacy saved files without timestamps. This guarantees the bin widgets always reflect the run currently in view, irrespective of how that run got there (validation-tab Load, cadence-tab Load, or fresh completion).
+
+- **One-click batch mock generation with ascending seeds (TODO #216, extends #213).** The "Generate Mock Observations" row in the Validation tab has been restructured into three columns: (a) the existing single-click Generate button; (b) a new N-input + "Generate N mocks (ascending seeds)" button that runs seeds `seed, seed+1, …, seed+(N-1)` through a newly extracted helper `_generate_one_mock` while displaying an `st.progress` bar; (c) the existing "Clear stack" button. N persists to `grid_cadence_{dsilva,langer}.val_batch_n` via the standard `sm.save(...)` pattern, so the user's batch-size preference is preserved across reruns. The helper does not call `st.rerun()` or clear Explorer CDF caches — the caller owns both, so cache clearing happens once per user action rather than once per iteration in the loop. "Current mock state" in batch mode reflects the LAST (highest) seed, ensuring downstream code sees a consistent realisation after the batch finishes. Implementation lives in `app/bc/render_validation.py` (~357-line diff covering the helper extraction, the 3-column layout, the batch handler with progress bar, and a single final `st.rerun()`). N has no min/max constraints per `feedback_index.md`; the handler guards with a warning if `N <= 0`.
+
+- **Validation strategy framed: representative-vs-outlier mock posterior comparison (TODO #217).** A discussion-only session captured the experimental design for using the new batch button to test inference honesty. The plan: per separation regime (easy / medium / hard blend of the singles vs binaries CDFs), generate **3 sub-cases × 2 outlier mocks** — one outlier drawn from each tail of the σ-distribution — and compare to a representative-mock pass at the same parameters. The success criterion is that posteriors should be **sharp** on representative mocks (centered on truth) and **wide** on outlier mocks while still **containing** the true parameters in the corner-plot HDIs. The failure criterion — and the case the experiment is designed to detect — is that posteriors stay sharp under outlier mocks, in which case the simulation would report a confident wrong answer when real data happens to be an outlier draw, and no internal flag would catch it. The simulation already keeps full per-model likelihoods so that the posterior can in principle express that uncertainty; the experiment will reveal whether it actually does.
+
+**Key results:**
+
+- The Validation tab's bin-edge widgets now stay in sync with the visible result from every load path (validation-tab Load, cadence-tab Load, fresh run-completion). One-shot semantics preserved: user edits made after the load are not stomped on subsequent reruns because the flag is cleared at the end of `_render_single_point`.
+- Batch mock generation throughput is bottlenecked by `generate_mock_observations_detail()` rather than by Streamlit rerun overhead — the previous click-once-rerun-once pattern multiplied each iteration's cost by the rerun cycle, while the new single-rerun-at-end pattern eliminates ~N rerun cycles per batch.
+- No new scientific results were produced today; today's work enables tomorrow's representative-vs-outlier experiment.
+
+**Methodology notes for paper:**
+
+- **Validation strategy — representative vs outlier mocks.** Per separation regime, the validation experiment compares the inference posterior on a representative mock realisation against the posteriors on two outlier mocks drawn from opposite tails of the σ-of-realisations distribution. If the posterior widens to cover the truth on outliers, the inference is honest about its uncertainty; if it stays sharp on a wrong answer, the inference must be redesigned because real data can equally well be an outlier and the user has no way to tell from data alone. This frames the validation lane as a test of inference honesty, not just point-recovery accuracy.
+
+**Decisions:**
+
+- **`result['timestamp']` chosen as the run-identity marker, with `id(result)` as fallback.** The worker stamps a timestamp on every run by design (used elsewhere in the result schema), so it is a stable per-run identity that survives Streamlit reruns but changes on every new run. `id(result)` is the fallback for legacy saved files that pre-date the timestamp convention.
+- **Helper extraction (`_generate_one_mock`) does not own UI side-effects.** The helper performs the mock generation and stack update but explicitly does NOT call `st.rerun()` or clear Explorer caches — those are caller responsibilities. This keeps the batch loop tight (no per-iteration rerun cycles) and prevents subtle bugs where cache clearing happens N times during a single user action.
+- **"Current mock state" in batch mode reflects the highest seed.** Downstream code (the recovery flow, the Explorer CDF) reads a single active mock; in batch mode this is consistently the last (highest) seed, so the user sees a deterministic active realisation after the batch finishes. The stacked CDFs visualise the full distribution; the active mock drives inference.
+- **N field has no min/max bounds per project preference; runtime guards instead.** Per `feedback_index.md`, number_input controls should not constrain user values via min/max; instead, the handler validates at submit time and surfaces a warning when `N <= 0`.
+- **Validation strategy captured as research TODO (#217 status `open`), not as code today.** The discussion produced a concrete experimental design but no code or runs yet. Results expected 2026-05-20; the outcome determines whether the current inference layer needs revisiting.
+
+**Bugs found and fixed:**
+
+- None new (today's work was state-management and feature-addition, not bug-fixing).
+
+**Open questions:**
+
+- **Three uncommitted features are TO-TEST.** Visual sign-off needed on: (a) bin-edge widgets reflecting loaded file's `likelihood_bin_edges` after each load path (validation-tab Load, cadence-tab Load, fresh run-completion); (b) batch button producing N stacked CDF curves with correct ascending seeds and a working progress bar; (c) Clear stack resetting correctly; (d) N field persisting across reruns via settings.
+- **Outcome of the representative-vs-outlier experiment (2026-05-20).** If posteriors remain sharp under outlier mocks, the inference layer needs revisiting; in that case there is also an open design question on how to flag "real data may be an outlier" from data alone, with no plan yet.
+- **Pre-existing `render_lk_tab` TypeError in `scripts/test_render.py`** confirmed unrelated to today's edits (reproduces on baseline via `git stash`). Not investigated today; deferred to a future session along with the 2026-05-18 `test_render.py` failure at `render_lk_explorer.py:1810`.
+
+**New learnings (0):**
+
+No new learnings — the existing rules (surgical edits, no self-approve, UI persist on change) already covered this work cleanly.
+
+---
+
+*Last updated: 2026-05-19*
