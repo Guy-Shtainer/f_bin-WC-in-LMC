@@ -202,12 +202,12 @@ grep -rn -E 'np\.trapz\b|\.bool_\b.*is (True|False)|\.int_\b|\.float_\b|\.comple
 
 | | |
 |---|---|
-| **Bad** | `fig.update_layout(title=dict(...), **PLOTLY_THEME)` or `dict(title=..., **PLOTLY_THEME)` |
-| **Fix** | `fig.update_layout(**{**PLOTLY_THEME, 'title': dict(...)})` (dict literal with override) |
+| **Bad** | `fig.update_layout(title=dict(...), **PLOTLY_THEME)` or `dict(title=..., **PLOTLY_THEME)` or `fig.update_layout(**PLOTLY_THEME, **_AA_OVERRIDES)` (dual-spread variant — both dicts have `plot_bgcolor`/`xaxis`/etc.) |
+| **Fix** | `fig.update_layout(**{**PLOTLY_THEME, 'title': dict(...)})` (dict literal with override). Dual-spread: `_merged = {**PLOTLY_THEME, **_AA_OVERRIDES}; _merged['title'] = ...; fig.update_layout(**_merged)` — last-wins merge resolves duplicates. |
 | **Grep** | *(not reliably greppable — requires manual attention)* |
-| **Why** | `PLOTLY_THEME` contains `title`, `legend`, `xaxis`, `yaxis`, `font` keys. Python raises `TypeError: got multiple values for keyword argument` when the same key appears both as an explicit kwarg AND inside `**dict_unpack` in any function call (`dict()`, `update_layout()`, etc.). Dict literal syntax `{**base, 'key': override}` allows later keys to override earlier ones. |
-| **Colliding keys** | `title`, `legend`, `yaxis`, `xaxis`, `font` |
-| **Found in** | `app/pages/05_bias_correction.py` (10 sites) |
+| **Why** | `PLOTLY_THEME` contains `title`, `legend`, `xaxis`, `yaxis`, `font`, `plot_bgcolor`, `paper_bgcolor` keys. Python raises `TypeError: got multiple values for keyword argument` whenever the same key appears in two `**dict_unpack` operations or in a `**spread` plus an explicit kwarg in the same call (`dict()`, `update_layout()`, etc.). Dict-literal merge syntax `{**base, **override}` resolves duplicates by last-wins. |
+| **Colliding keys** | `title`, `legend`, `yaxis`, `xaxis`, `font`, `plot_bgcolor`, `paper_bgcolor` |
+| **Found in** | `app/pages/05_bias_correction.py` (10 sites); `scripts/plot_validation_summary.py` (dual-spread variant, 2026-05-20) |
 
 ---
 
