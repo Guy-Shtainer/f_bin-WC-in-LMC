@@ -6,6 +6,55 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-05-20 — Validation sweep analysed + first D'Silva real-data inference + Home page CDF panel + validation summary corner plot (TODOs #218, #219, #217→to-test)
+
+**Tag:** `v260520-working` *(four-commit day: one code commit per logical change. Major scientific output — the 8-mock validation sweep from TODO #217 was executed and analysed, surfacing the f_bin ↔ σ_single degeneracy in heavy-blend regimes; the first D'Silva real-data inference came in at π=+2.46, σ=4.37, f_bin=0.65; three real-anchored sub-runs returned L_max/L_true=1.28 on the representative case — best of all 12 mocks. End-of-day docs cover the inference-honesty verdict by parameter, the paper-direction decisions still open, and the COMMON_ERRORS E018 dual-spread variant.)*
+
+| Hash | Summary |
+|------|---------|
+| `2334a47` | Home page: replace K-S p-value heatmap with Observed ΔRV Empirical CDF panel |
+| `be3fa47` | Validation summary plot: σ-vs-π scatter + 3-panel corner plot with 12 mocks + real D'Silva inference |
+| `fb4efdb` | End-of-day 2026-05-20 docs: TODO 218-219 + #217 to-test, DOCUMENTATION §7, daily log |
+| `22abbaa` | Settings + command history snapshot at end of 2026-05-20 |
+
+**Major changes:**
+
+- **`2334a47` — Home page Observed ΔRV CDF panel (TODO #218).** The K-S p-value heatmap block at `app/app.py:283-298` (~16 lines, flagged by user as filler) replaced with a ~115-line Observed ΔRV empirical CDF panel in `plot_col2`. Black step CDF over the X-Shooter sample (stars with `is_binary is not None`), red single dots / green binary dots with horizontal `error_x` bars from `best_sigma`, orange dashed vline at the 45.5 km/s detection threshold. Style constants (`_CDF_OBS_COLOR`, `_CLR_SINGLE`, `_CLR_BINARY`, `_AA_OVERRIDES`) imported from `bc.render_validation` per the single-source-of-truth convention. The K-S computation upstream (lines 102-117) is preserved — it still feeds the "Best K-S p" metric card and the Model Detection Fraction panel in `plot_col3`.
+
+- **`be3fa47` — Validation summary plot (TODO #219).** New `scripts/plot_validation_summary.py` (~920 lines) with two public pure functions: `make_validation_summary_figure(runs_df)` (single-panel σ-vs-π) and `make_validation_corner_figure(runs_df)` (3-panel lower-triangle corner with an L_max/L_true table in the unused quadrant). `__main__` loads 9 mock `.npz` files (3 cases × upper/rep/bottom outlier sub-runs) + 3 real-anchored sub-runs + the real-data D'Silva inference, marginalises the 3D likelihood over the other two axes per parameter, and computes marginal max + 68% HDI via `compute_hdi68` from `wr_bias_simulation.py:1277`. Encoding: colour = case (A blue / B green / C red / REAL purple), shape = sub-run (upper ▲ / rep ● / bottom ■ / true + / real ★), per-sub-run asymmetric shade offset (+0.55 / 0 / −0.30), rectangle-border dash patterns (upper dash / rep dot / bottom solid / real longdashdot) plus Unicode glyphs in legend labels. Writes `plots/validation_summary_sigma_vs_pi.html` and `plots/validation_summary_corner.html`. Headline: REAL.representative (seed 43) recovers L_max/L_true = 1.28 — best of all 12 mocks; real-data D'Silva inference at π = +2.455 +0.55/−0.97, σ_single = 4.37 +1.22/−0.80 km/s, f_bin = 0.646 +0.139/−0.162. Also extends `COMMON_ERRORS.md` E018 to cover the dual-spread variant (`**PLOTLY_THEME, **_AA_OVERRIDES`) that raises duplicate-kwarg `TypeError` on `plot_bgcolor`/`paper_bgcolor`/`xaxis`/`yaxis`/`font` — fix is to merge into a single dict literal first.
+
+- **`fb4efdb` — End-of-day docs.** TODO.md: added **#218** (Home page CDF panel, `to-test`) and **#219** (validation summary plot, `to-test`); moved **#217** (representative-vs-outlier mock posterior comparison) from `open` → `to-test` with the 5-pattern verdict embedded in the Notes column. DOCUMENTATION.md §7 gains a 2026-05-20 entry covering the validation experiment results, the f_bin ↔ σ_single degeneracy mechanism, the real-data D'Silva inference, the L_max/L_true diagnostic across 12 mocks, and the paper-direction decisions still open. `daily_logs/2026-05-20.md` has four conversation summaries (20:15 Home CDF panel, 20:17 sweep analysis + prompt-writing, 20:17 corner plot v1, 23:46 real-anchored sub-runs + styling polish).
+
+- **`22abbaa` — Settings + command history snapshot.** D'Silva config: `n_sets` 500→3000, sigma scan 1.0–16.0 with 50 steps (was 1.0–11.0 / 22 steps); validation truth params `val_true_pi=3.0`, `val_true_sigma=10.0`, `val_seed=48` (Case-C bottom-outlier sub-run config); Langer config `n_sets` 10000→3000, `scan_sigma` ON, `sigma_max` 9→15; likelihood bin edges `0,12,20,45,150,350` (the layout the real-data run used); `adaptive_bins=false`, `drv_bin_width=1.0`; `lk_explorer.n_sets` 1→10000.
+
+**Major scientific output (preliminary — not yet promoted to paper macros):**
+
+- **Validation honesty verdict by parameter:** f_bin **passes** the outlier-posterior honesty test (7/8 within 1σ across difficulty regimes); σ_single **fails** in heavy-blend regimes (posterior stays sharp around the wrong value — confirmed for Case C); π **passes except on extreme tails**.
+- **f_bin ↔ σ_single degeneracy mechanism isolated.** Both parameters affect the same observable — the high-ΔRV tail of the binary CDF — via different mechanisms; the current likelihood-bin layout does not separate them cleanly enough at the upper σ_single grid, producing a degeneracy direction where f_bin ↑ trades for σ_single ↓.
+- **Real-data D'Silva inference (preliminary):** f_bin = 0.65 +0.14/−0.16, π = +2.46 +0.55/−0.97, σ_single = 4.37 +1.22/−0.80 km/s. Lands in the previously-missing bottom-right quadrant (high π, low σ_single, moderate-high f_bin) of the validation grid; 3 real-anchored sub-runs were then launched to validate the inference at the data's own parameters.
+- **REAL.representative (seed 43) L_max/L_true = 1.28** — strongest single-mock evidence the inference at the real-data position is honest about its uncertainty.
+
+**Pending paper-direction decisions:**
+
+- σ_single defensibility: (a) add an Anderson–Darling or σ-coverage alternative scorer per [[pending_alt_scorer_model_explorer]], (b) tighten the σ_single prior using external physical input from §4b.1, or (c) report f_bin as the headline and explicitly acknowledge the σ_single degeneracy without a point estimate.
+- f_bin promotion deferred until the Langer-model repeat sweep [[pending_langer_validation_tests]] confirms robustness to period-model choice.
+
+**Pending visual verification (next session):**
+
+- **(today)** Home page Observed ΔRV CDF panel — live `streamlit run app/app.py` needed to verify the panel renders correctly, error bars + threshold vline are present, caption mentions the usable-star count, downstream metric card + detection-fraction panel still work.
+- **(today)** Validation summary corner plot — visual sign-off on Unicode dash-pattern legend glyphs (font-rendering sanity check across systems), purple REAL shade range, L_max/L_true table row backgrounds.
+- **(rolling)** All older `to-test` entries from #210–#216 still need their visual sign-off.
+
+**Pending experiment runs:**
+- B1 rerun (Medium upper-outlier, first draw not extreme enough) and B3 (Medium bottom-outlier, first run) — deferred to next overnight slot.
+- Langer-model repeat sweep [[pending_langer_validation_tests]] — gating dependency for paper-macro updates.
+
+**Pending follow-ons:**
+- HDI / posterior-area rendering bug: σ_single marginal posterior shades the 68% HDI only to the LEFT of the marker — separate ticket needed.
+- Pre-existing `render_lk_tab` TypeError in `scripts/test_render.py` confirmed unrelated to today's edits.
+
+---
+
 ## 2026-05-19 — Validation tab UX: bin-edges sync from 3 load paths + one-click batch mock generation; validation strategy framed for 2026-05-20
 
 **Tag:** `v260519-working` *(small focused day building on yesterday's batch push. One code commit extends `to-test` features #213 and #214 (mock stacking and bin-sync-on-Load) into their final UX shape: batch mock generation and a complete 3-path bin-sync. End-of-day docs add three TODO entries (#215–#217), a DOCUMENTATION §7 entry, and a daily log. No new errors documented (UI state-management work, not greppable patterns).)*
