@@ -29,9 +29,12 @@ from shared import (
     inject_theme, render_sidebar, get_settings_manager,
     cached_load_observed_delta_rvs, settings_hash, preload_all_data,
     cached_load_grid_result, cached_load_nres_rvs,
-    find_best_grid_point, make_heatmap_fig,
+    find_best_grid_point,
     COLOR_BINARY, COLOR_SINGLE, COLOR_UNKNOWN, COLOR_CLEANED,
     PLOTLY_THEME, load_run_history,
+)
+from bc.render_validation import (
+    _CDF_OBS_COLOR, _CLR_SINGLE, _CLR_BINARY, _AA_OVERRIDES,
 )
 import specs
 
@@ -280,22 +283,121 @@ if data_loaded and detail:
         st.plotly_chart(fig_frac, use_container_width=True)
         st.caption('Fraction of stars classified as binary as a function of the ΔRV detection threshold.')
 
-    # ── (b) K-S heatmap (if grid result available) ────────────────────────
+    # ── (b) Observed ΔRV empirical CDF ────────────────────────────────────
     with plot_col2:
-        st.markdown('### K-S p-value Heatmap')
-        if grid_result is not None:
+        st.markdown('### Observed ΔRV Empirical CDF')
+        if data_loaded and detail:
             try:
-                fig_heatmap = make_heatmap_fig(
-                    ks_p_2d, fbin_vals, pi_vals,
-                    title='Dsilva K-S p-value',
-                    height=400,
-                )
-                st.plotly_chart(fig_heatmap, use_container_width=True)
-                st.caption('K-S test p-value grid: higher values (blue) indicate better agreement with observations.')
+                # Collect usable stars (is_binary not None) — these are the
+                # X-Shooter sample stars with enough data to classify.
+                _drv_list: list[float] = []
+                _sig_list: list[float] = []
+                _bin_list: list[bool] = []
+                for _sname in specs.star_names:
+                    _d = detail.get(_sname, {})
+                    _ib = _d.get('is_binary', None)
+                    if _ib is None:
+                        continue
+                    _drv_list.append(float(_d.get('best_dRV', 0.0)))
+                    _sig_list.append(float(_d.get('best_sigma', 0.0)))
+                    _bin_list.append(bool(_ib))
+
+                if len(_drv_list) == 0:
+                    st.info('No usable stars (is_binary is None for all).')
+                else:
+                    _drv = np.asarray(_drv_list, dtype=float)
+                    _sig = np.asarray(_sig_list, dtype=float)
+                    _isb = np.asarray(_bin_list, dtype=bool)
+
+                    # Sort ascending by ΔRV.
+                    _order = np.argsort(_drv)
+                    _drv_s = _drv[_order]
+                    _sig_s = _sig[_order]
+                    _isb_s = _isb[_order]
+                    _n = _drv_s.size
+                    _cdf = (np.arange(_n) + 1) / _n
+
+                    fig_obs_cdf = go.Figure()
+                    # Black step CDF.
+                    fig_obs_cdf.add_trace(go.Scatter(
+                        x=_drv_s, y=_cdf, mode='lines',
+                        line=dict(color=_CDF_OBS_COLOR, width=2.5, shape='hv'),
+                        name='Observation CDF',
+                        hovertemplate=('ΔRV=%{x:.1f} km/s<br>'
+                                       'CDF=%{y:.3f}<extra></extra>'),
+                    ))
+                    # Single dots (red) with horizontal σ_ΔRV error bars.
+                    _single_mask = ~_isb_s
+                    if np.any(_single_mask):
+                        fig_obs_cdf.add_trace(go.Scatter(
+                            x=_drv_s[_single_mask],
+                            y=_cdf[_single_mask],
+                            mode='markers',
+                            marker=dict(color=_CLR_SINGLE, size=8,
+                                        line=dict(color='black', width=0.6)),
+                            error_x=dict(
+                                type='data',
+                                array=_sig_s[_single_mask],
+                                visible=True, thickness=1.2, width=3,
+                                color='rgba(0,0,0,0.55)'),
+                            name='Single',
+                            hovertemplate=('single · ΔRV=%{x:.1f} ± '
+                                           '%{error_x.array:.1f} km/s'
+                                           '<extra></extra>'),
+                        ))
+                    # Binary dots (green) with horizontal σ_ΔRV error bars.
+                    if np.any(_isb_s):
+                        fig_obs_cdf.add_trace(go.Scatter(
+                            x=_drv_s[_isb_s],
+                            y=_cdf[_isb_s],
+                            mode='markers',
+                            marker=dict(color=_CLR_BINARY, size=8,
+                                        line=dict(color='black', width=0.6)),
+                            error_x=dict(
+                                type='data',
+                                array=_sig_s[_isb_s],
+                                visible=True, thickness=1.2, width=3,
+                                color='rgba(0,0,0,0.55)'),
+                            name='Binary',
+                            hovertemplate=('binary · ΔRV=%{x:.1f} ± '
+                                           '%{error_x.array:.1f} km/s'
+                                           '<extra></extra>'),
+                        ))
+                    # Orange dashed ΔRV threshold line.
+                    fig_obs_cdf.add_vline(
+                        x=threshold, line_dash='dash',
+                        line_color='#F5A623', line_width=1.5,
+                        annotation_text=f'{threshold:.1f} km/s',
+                        annotation_position='top right',
+                        annotation_font_color='#F5A623',
+                    )
+                    fig_obs_cdf.update_layout(**{
+                        **PLOTLY_THEME,
+                        'title': dict(text='Observed ΔRV Empirical CDF',
+                                      font=dict(size=14)),
+                        'xaxis_title': 'ΔRV (km/s)',
+                        'yaxis_title': 'Cumulative fraction',
+                        'height': 400,
+                        'margin': dict(l=60, r=30, t=50, b=50),
+                        'legend': dict(x=0.55, y=0.25, font=dict(size=10)),
+                    })
+                    # A&A journal overrides (white bg + black serif).
+                    fig_obs_cdf.update_layout(**_AA_OVERRIDES)
+                    fig_obs_cdf.update_xaxes(**_AA_OVERRIDES['xaxis'])
+                    fig_obs_cdf.update_yaxes(**_AA_OVERRIDES['yaxis'])
+
+                    st.plotly_chart(fig_obs_cdf, use_container_width=True)
+                    st.caption(
+                        'Black step: empirical CDF over the X-Shooter sample '
+                        f'({_n} stars with classification data). Green = binary, '
+                        'red = single; horizontal error bars are σ_ΔRV (combined '
+                        'error at the min/max RV epochs). Orange dashed: ΔRV '
+                        f'detection threshold ({threshold:.1f} km/s).'
+                    )
             except Exception as exc:
-                st.info(f'Could not render K-S heatmap: {exc}')
+                st.info(f'Could not render observed CDF: {exc}')
         else:
-            st.info('No Dsilva grid result available. Run the Bias Correction page first.')
+            st.info('No observed star data available.')
 
     # ── Row 2 ─────────────────────────────────────────────────────────────
     plot_col3, plot_col4 = st.columns(2)
