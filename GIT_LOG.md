@@ -6,6 +6,28 @@ To see what a commit changed: `git show <hash>`
 
 ---
 
+## 2026-05-24 — Paper scope freeze: delete Langer-model subsection and spectroscopic-morphology subsection
+
+**Per [memory/project_paper_scope_freeze_2026_05_24.md], two paper sections were deleted outright (not relegated to appendix).**
+
+| File | Lines deleted | Section |
+|------|---------------|---------|
+| `paper/sections/bias_correction.tex` | 165–230 (66 lines) | `\subsection{Alternative period distribution: Langer+2020}` (label `sec:langer_model`) — D'Silva π-power-law is the canonical and only period model in the paper |
+| `paper/sections/methods.tex` | 371–421 (51 lines) | `\subsection{Spectroscopic morphology investigation}` (label `sec:spec_morphology`) — by-eye absorption-line search dropped because attribution between companion/ISM/WR atmosphere is too ambiguous |
+
+**Cross-reference rewrites (no orphaned `\ref`s remain in the paper):**
+
+- `paper/sections/discussion.tex` (Sect. Formation channels): dropped the parenthetical "together with its Langer-model alternative (Sect.~\ref{sec:langer_model})" — the orbital-period exponent \pibestfit now stands alone as the orthogonal test.
+- `paper/sections/conclusions.tex` (cross-checks paragraph): "Three orthogonal cross-checks" → "Two orthogonal cross-checks"; Langer-model bullet removed; the remaining two are the simulation-derived threshold-curve fit and the bin-choice sensitivity envelope.
+- `paper/sections/conclusions.tex` (planned-extensions paragraph): "Three planned extensions" → "Two planned extensions"; the photospheric-absorption confirmation bullet (which pointed to `sec:spec_morphology`) removed; remaining extensions are the refined threshold-curve fit and the WC + compact-object follow-up.
+
+**Untouched on purpose:**
+
+- `paper/references.bib` Langer2020 entry left in place (unused refs are harmless under aa.bst; safer than risking accidental damage to the .bib).
+- `plots/langer_heatmap.pdf` and `plots/period_models.pdf` left on disk — orchestrator decides whether to keep or move.
+
+---
+
 ## 2026-05-20 — Validation sweep analysed + first D'Silva real-data inference + Home page CDF panel + validation summary corner plot (TODOs #218, #219, #217→to-test)
 
 **Tag:** `v260520-working` *(four-commit day: one code commit per logical change. Major scientific output — the 8-mock validation sweep from TODO #217 was executed and analysed, surfacing the f_bin ↔ σ_single degeneracy in heavy-blend regimes; the first D'Silva real-data inference came in at π=+2.46, σ=4.37, f_bin=0.65; three real-anchored sub-runs returned L_max/L_true=1.28 on the representative case — best of all 12 mocks. End-of-day docs cover the inference-honesty verdict by parameter, the paper-direction decisions still open, and the COMMON_ERRORS E018 dual-spread variant.)*
